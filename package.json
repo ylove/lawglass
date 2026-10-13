@@ -25,6 +25,7 @@
     "typecheck": "tsc --project tsconfig.json && tsc --project src/web/tsconfig.json",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
+    "test:live": "vitest run --project live --passWithNoTests",
     "build": "tsup && vite build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

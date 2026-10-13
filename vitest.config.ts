@@ -3,14 +3,30 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
+    // CI runners (especially macOS) are slower than dev machines; keep real hangs visible.
+    testTimeout: 15_000,
     projects: [
       {
         test: {
           name: 'node',
           environment: 'node',
-          include: ['src/**/*.test.ts', 'tests/**/*.test.ts'],
-          exclude: ['src/web/**'],
+          include: [
+            'src/**/*.test.ts',
+            'tests/**/*.test.ts',
+            'scripts/**/*.test.mjs',
+          ],
+          exclude: ['src/web/**', '**/*.live.test.ts'],
           setupFiles: ['tests/setup.node.ts'],
+        },
+      },
+      {
+        // Live tests call real services (Pinecone, LLM providers) and run only via
+        // `npm run test:live` (nightly workflow), never in `npm run check`.
+        test: {
+          name: 'live',
+          environment: 'node',
+          include: ['src/**/*.live.test.ts', 'tests/**/*.live.test.ts'],
+          testTimeout: 120_000,
         },
       },
       {
