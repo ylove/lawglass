@@ -19,6 +19,7 @@ import {
   BillMetadata,
   DocFormat,
   ExternalRef,
+  SectionId,
   SourceLocation,
   Span,
 } from './doc.js';
@@ -108,7 +109,7 @@ export const IngestEvent = z.discriminatedUnion('type', [
 export type IngestEvent = z.infer<typeof IngestEvent>;
 
 export const OutlineItem = z.object({
-  id: z.string(),
+  id: SectionId,
   num: z.string().optional(),
   heading: z.string().optional(),
   level: z.number().int(),
@@ -127,7 +128,7 @@ export const DocDetail = z.object({
 export type DocDetail = z.infer<typeof DocDetail>;
 
 export const SectionExcerpt = z.object({
-  sectionId: z.string(),
+  sectionId: SectionId,
   breadcrumb: z.string(),
   num: z.string().optional(),
   heading: z.string().optional(),
@@ -150,7 +151,7 @@ export type AskRequest = z.infer<typeof AskRequest>;
 
 export const RetrievedRef = z.object({
   chunkId: z.string(),
-  sectionId: z.string(),
+  sectionId: SectionId,
   breadcrumb: z.string(),
   score: z.number(),
   injectedDefinition: z.boolean(),

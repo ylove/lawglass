@@ -3,6 +3,7 @@
  * Golden sets are frozen before the first run (`frozenAtCommit`) and never tuned to make a mode win.
  */
 import { z } from 'zod';
+import { SectionId } from './doc.js';
 
 export const QuestionKind = z.enum([
   /** Quotes or names an exact citation/term: sparse should do well. */
@@ -24,7 +25,7 @@ export const GoldenQuestion = z
     question: z.string().min(1),
     kind: QuestionKind,
     /** Section ids that contain the answer. Empty only for `unanswerable`. */
-    expectedSectionIds: z.array(z.string()),
+    expectedSectionIds: z.array(SectionId),
     notes: z.string().optional(),
   })
   .refine(

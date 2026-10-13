@@ -4,13 +4,24 @@
  */
 import { z } from 'zod';
 import { ChunkFilter } from './chunk.js';
-import { SourceLocation } from './doc.js';
+import { SectionId, SourceLocation } from './doc.js';
 
-/** Matches one citation marker in answer text, e.g. `[S:sec-4/b/2]`. Global: use with matchAll. */
+/**
+ * Matches one citation marker in answer text, e.g. `[S:sec-4/b/2]`. It is global, so prefer
+ * `findCitationIds`, which never shares `lastIndex` state between calls.
+ */
 export const CITATION_PATTERN = /\[S:([^\]\s]+)\]/g;
 
+/** Section ids cited in `text`, in order of appearance (duplicates kept). */
+export function findCitationIds(text: string): string[] {
+  return Array.from(
+    text.matchAll(new RegExp(CITATION_PATTERN.source, 'g')),
+    (m) => m[1] ?? '',
+  ).filter(Boolean);
+}
+
 export const Citation = z.object({
-  sectionId: z.string(),
+  sectionId: SectionId,
   /** True when the section is in the retrieved set given to the model. */
   valid: z.boolean(),
   /** Retrieved chunks from that section (for the excerpt drawer). */

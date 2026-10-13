@@ -3,7 +3,7 @@
  * Produced by core/chunk from a NormalizedDoc, enriched by core/enrich.
  */
 import { z } from 'zod';
-import { SourceLocation } from './doc.js';
+import { SectionId, SourceLocation } from './doc.js';
 
 /** Heuristic classification used by chip filters (spec §5.4). */
 export const ChunkType = z.enum([
@@ -31,7 +31,7 @@ export const Chunk = SourceLocation.extend({
   /** Deterministic: `${docId}:${sectionId}:${n}`, so re-ingest is an idempotent upsert. */
   id: z.string().min(1),
   docId: z.string().min(1),
-  sectionId: z.string().min(1),
+  sectionId: SectionId,
   sectionNum: z.string().optional(),
   heading: z.string().optional(),
   /** Human-readable path, e.g. "Sec. 4 > (b) > (2) Eligibility". */
@@ -71,7 +71,7 @@ export function makeChunkId(
 export const ChunkFilter = z.object({
   chunkType: z.array(ChunkType).nonempty().optional(),
   amendmentStatus: z.array(AmendmentStatus).nonempty().optional(),
-  sectionIds: z.array(z.string()).nonempty().optional(),
+  sectionIds: z.array(SectionId).nonempty().optional(),
   /** Match chunks that define any of these terms. */
   definesTerm: z.array(z.string()).nonempty().optional(),
 });

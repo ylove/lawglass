@@ -18,6 +18,8 @@ import {
   ZERO_USAGE,
   addUsage,
   isAppError,
+  findCitationIds,
+  SectionId,
 } from '../../src/core/model/index.js';
 import { describeBackendContract } from './backend.contract.js';
 import { describeProviderContract } from './provider.contract.js';
@@ -176,5 +178,21 @@ describe('model contracts', () => {
   it('recognizes AppError instances only', () => {
     expect(isAppError(new AppError('DOC_NOT_FOUND'))).toBe(true);
     expect(isAppError(new Error('plain'))).toBe(false);
+  });
+
+  it('only accepts citation-safe section ids, everywhere a section id appears', () => {
+    expect(SectionId.safeParse('sec-5747.01/a/1').success).toBe(true);
+    for (const bad of ['', 'sec 1', 'sec-1]', '[sec-1', 'sec-1\n']) {
+      expect(SectionId.safeParse(bad).success).toBe(false);
+    }
+    const bad = { ...CHUNKS_A[0], sectionId: 'sec 1]' };
+    expect(Chunk.safeParse(bad).success).toBe(false);
+  });
+
+  it('findCitationIds is stateless across calls', () => {
+    const text = 'A [S:sec-1] and B [S:sec-2/a].';
+    expect(findCitationIds(text)).toEqual(['sec-1', 'sec-2/a']);
+    expect(findCitationIds(text)).toEqual(['sec-1', 'sec-2/a']);
+    expect(findCitationIds('no citations')).toEqual([]);
   });
 });

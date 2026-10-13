@@ -5,6 +5,19 @@
  */
 import { z } from 'zod';
 
+/**
+ * A section id as used in citations `[S:<id>]`: a non-empty path with no whitespace and no
+ * square brackets (e.g. "sec-4/b/2", "sec-5747.01/a"). Every contract field holding a section
+ * id uses this schema, so an id that parses can always be cited and matched back.
+ */
+export const SectionId = z
+  .string()
+  .regex(
+    /^[^\s[\]]+$/,
+    'section ids must be non-empty with no whitespace or brackets',
+  );
+export type SectionId = z.infer<typeof SectionId>;
+
 export const DocFormat = z.enum(['xml', 'html', 'pdf', 'text']);
 export type DocFormat = z.infer<typeof DocFormat>;
 
@@ -50,7 +63,7 @@ export interface Section extends SourceLocation {
 }
 export const Section: z.ZodType<Section> = z.lazy(() =>
   SourceLocation.extend({
-    id: z.string().min(1),
+    id: SectionId,
     num: z.string().optional(),
     heading: z.string().optional(),
     level: z.number().int().positive(),
@@ -91,14 +104,14 @@ export const Definition = z.object({
   term: z.string().min(1),
   text: z.string().min(1),
   /** Section where the definition appears. */
-  sectionId: z.string().min(1),
+  sectionId: SectionId,
   /**
    * Where the definition applies, as the document states it: the whole act, or one section
    * ("As used in this section"). `unknown` when the text doesn't say.
    */
   scope: z.enum(['document', 'section', 'unknown']),
   /** For `scope: 'section'`, the section the definition is limited to. */
-  scopeSectionId: z.string().optional(),
+  scopeSectionId: SectionId.optional(),
 });
 export type Definition = z.infer<typeof Definition>;
 
@@ -110,7 +123,7 @@ export const ExternalRef = z.object({
   citation: z.string().min(1),
   kind: z.enum(['us_code', 'public_law', 'state_code', 'cfr', 'other']),
   /** Sections of this document that cite it. */
-  sectionIds: z.array(z.string()),
+  sectionIds: z.array(SectionId),
 });
 export type ExternalRef = z.infer<typeof ExternalRef>;
 
