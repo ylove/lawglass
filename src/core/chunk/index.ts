@@ -73,8 +73,8 @@ function location(spans: readonly Span[]): SourceLocation {
 /**
  * Chunks own spans independently of children. Only small adjacent leaf siblings may
  * share a chunk, identified by their parent. Counters also cover parent-owned text.
- * Invalid input or an indivisible word/prefix/metadata over budget fails explicitly;
- * silently shortening legislation would lose source text or citation information.
+ * Oversized words split without losing source text. Invalid input or over-budget
+ * breadcrumbs/metadata fail explicitly to avoid losing citation information.
  */
 export function chunkDocument(input: NormalizedDoc): Chunk[] {
   const parsed = NormalizedDoc.safeParse(input);
@@ -90,15 +90,39 @@ export function chunkDocument(input: NormalizedDoc): Chunk[] {
     path: readonly Section[],
     spans: readonly Span[],
     deleted: boolean,
+    refs: readonly string[] = [],
   ): void {
     const run = textRun(spans);
-    const words = Array.from(run.text.matchAll(/\S+/g), (match) => ({
-      start: match.index,
-      end: match.index + match[0].length,
-      sentenceEnd: /[.!?]["'”’)\]]*$/.test(match[0]),
-    }));
-    if (!words.length) return;
+    if (!/\S/.test(run.text)) return;
     const prefix = breadcrumb(path);
+    if (estimateTokens(`${prefix}: x`) > HARD_MAX)
+      throw new AppError(
+        'TOO_LARGE',
+        'A breadcrumb exceeds the chunk token budget.',
+      );
+    // The estimator budgets four characters per token; include the prefix and separator.
+    const maxWordChars = HARD_MAX * 4 - prefix.length - 2;
+    const words = Array.from(run.text.matchAll(/\S+/g)).flatMap((match) => {
+      const boundaries = [];
+      const wordEnd = match.index + match[0].length;
+      for (let start = match.index; start < wordEnd;) {
+        let end = Math.min(start + maxWordChars, wordEnd);
+        // Keep UTF-16 surrogate pairs together when a split falls inside one.
+        if (
+          maxWordChars > 1 &&
+          end < wordEnd &&
+          /[\uD800-\uDBFF]/.test(run.text.slice(end - 1, end))
+        )
+          end--;
+        boundaries.push({
+          start,
+          end,
+          sentenceEnd: end === wordEnd && /[.!?]["'”’)\]]*$/.test(match[0]),
+        });
+        start = end;
+      }
+      return boundaries;
+    });
     const excerpt = (start: number, end: number): string =>
       run.text.slice(words[start]?.start, words[end - 1]?.end);
     const fits = (start: number, end: number, budget: number): boolean =>
@@ -110,11 +134,6 @@ export function chunkDocument(input: NormalizedDoc): Chunk[] {
       // Shrink overlap if necessary so every iteration includes new source text.
       while (start < previousEnd && !fits(start, previousEnd + 1, TARGET_MAX))
         start++;
-      if (!fits(start, start + 1, HARD_MAX))
-        throw new AppError(
-          'TOO_LARGE',
-          'A word or breadcrumb exceeds the chunk token budget.',
-        );
       let end = start + 1;
       let sentenceEnd = 0;
       while (end <= words.length && fits(start, end, TARGET_MAX)) {
@@ -160,7 +179,7 @@ export function chunkDocument(input: NormalizedDoc): Chunk[] {
         embedText,
         tokenCount: estimateTokens(embedText),
         definedTermsUsed: [],
-        refs: [],
+        refs: [...refs],
         ...location(includedSpans),
       };
       const { embedText: _omit, ...metadata } = chunk;
@@ -187,6 +206,7 @@ export function chunkDocument(input: NormalizedDoc): Chunk[] {
       section.spans.filter((span) => span.status !== 'deleted'),
       false,
     );
+    // Deleted chunks follow the section's normal chunks.
     let deleted: Span[] = [];
     for (const span of section.spans) {
       if (span.status === 'deleted') deleted.push(span);
@@ -199,14 +219,26 @@ export function chunkDocument(input: NormalizedDoc): Chunk[] {
 
     let siblings: Section[] = [];
     const combinedSpans = (group: readonly Section[]): Span[] =>
-      group.flatMap((s, index) =>
-        index === 0
-          ? s.spans
-          : [{ text: '\n\n', status: 'unchanged' as const }, ...s.spans],
-      );
+      group.flatMap((s, index) => {
+        const label = [s.num, s.heading].filter(Boolean).join(' ');
+        const punctuation = s.heading && !/[.!?:]$/.test(label) ? '.' : '';
+        return [
+          {
+            text: `${index === 0 ? '' : '\n\n'}${label ? `${label}${punctuation} ` : ''}`,
+            status: 'unchanged' as const,
+          },
+          ...s.spans,
+        ];
+      });
     const flush = (): void => {
       if (siblings.length > 1)
-        emit(section, path, combinedSpans(siblings), false);
+        emit(
+          section,
+          path,
+          combinedSpans(siblings),
+          false,
+          siblings.map((s) => s.id),
+        );
       else if (siblings[0]) visit(siblings[0], path);
       siblings = [];
     };

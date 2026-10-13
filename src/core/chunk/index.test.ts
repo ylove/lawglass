@@ -103,7 +103,7 @@ describe('chunkDocument', () => {
     ]);
   });
 
-  it('merges adjacent small leaf siblings under their parent with span locations and empty unions', () => {
+  it('merges adjacent small leaf siblings under their parent with span locations and child refs', () => {
     const doc = document([
       section('sec-4', 'Parent own text.', {
         num: 'Sec. 4',
@@ -135,9 +135,36 @@ describe('chunkDocument', () => {
       pageEnd: 3,
       lineStart: 28,
       lineEnd: 2,
-      refs: [],
+      refs: ['sec-4/a', 'sec-4/b'],
       definedTermsUsed: [],
     });
+  });
+
+  it('retains each merged child enumerator and heading inline in the excerpt', () => {
+    const [chunk] = chunkDocument(
+      document([
+        section('sec-2', '', {
+          num: '2',
+          children: [
+            section('sec-2/a', 'Residents may apply.', {
+              num: '(a)',
+              heading: 'Eligibility',
+            }),
+            section('sec-2/b', 'Apply by January 1.', {
+              num: '(b)',
+              heading: 'Deadline.',
+            }),
+            section('sec-2/c', 'Use the prescribed form.', { num: '(c)' }),
+          ],
+        }),
+      ]),
+    );
+    expect(chunk).toMatchObject({
+      sectionId: 'sec-2',
+      text: '(a) Eligibility. Residents may apply.\n\n(b) Deadline. Apply by January 1.\n\n(c) Use the prescribed form.',
+      refs: ['sec-2/a', 'sec-2/b', 'sec-2/c'],
+    });
+    expect(chunk?.embedText).toBe(`Sec. 2: ${chunk!.text}`);
   });
 
   it('limits sibling merges to the target and never merges through branches, empty leaves, or deletions', () => {
@@ -351,8 +378,43 @@ describe('chunkDocument', () => {
     );
   });
 
-  it('rejects unfit words, breadcrumbs, and metadata rather than truncating source', () => {
-    expectError(document([section('s', 'x'.repeat(2000))]), 'TOO_LARGE');
+  it.each([2000, 50_000])(
+    'hard-splits a %i-character token without losing text or aborting the document',
+    (length) => {
+      const text = '0123456789'.repeat(length / 10);
+      for (const status of ['unchanged', 'deleted'] as const) {
+        const chunks = chunkDocument(
+          document([
+            section('s', '', { spans: [{ text, status, page: 2, line: 3 }] }),
+            section('next', 'The next section is still processed.'),
+          ]),
+        );
+        const split = chunks.filter((chunk) => chunk.sectionId === 's');
+        expect(split.length).toBeGreaterThan(1);
+        expect(split.map((chunk) => chunk.text).join('')).toBe(text);
+        for (const chunk of split) {
+          expect(chunk.tokenCount).toBe(estimateTokens(chunk.embedText));
+          expect(chunk.tokenCount).toBeLessThanOrEqual(480);
+          expect(chunk).toMatchObject({
+            amendmentStatus: status,
+            pageStart: 2,
+            pageEnd: 2,
+            lineStart: 3,
+            lineEnd: 3,
+          });
+          expect(Chunk.safeParse(chunk).success).toBe(true);
+        }
+        expect(new Set(chunks.map((chunk) => chunk.id)).size).toBe(
+          chunks.length,
+        );
+        expect(chunks.at(-1)?.text).toBe(
+          'The next section is still processed.',
+        );
+      }
+    },
+  );
+
+  it('rejects unfit breadcrumbs and metadata rather than truncating citation context', () => {
     expectError(
       document([section('s', 'word', { heading: 'h'.repeat(2000) })]),
       'TOO_LARGE',
@@ -362,6 +424,46 @@ describe('chunkDocument', () => {
       document([section('s'.repeat(27_000), 'word', { heading })]),
       'TOO_LARGE',
     );
+  });
+
+  it('hard-splits Unicode tokens with contextual prefixes while preserving complete characters and locations', () => {
+    const text = '😀'.repeat(2000);
+    const chunks = chunkDocument(
+      document([
+        section('s', '', {
+          heading: 'Context',
+          spans: [
+            {
+              text: text.slice(0, 2000),
+              status: 'unchanged',
+              page: 1,
+              line: 5,
+            },
+            { text: text.slice(2000), status: 'inserted', page: 2, line: 6 },
+          ],
+        }),
+      ]),
+    );
+    expect(chunks.map((chunk) => chunk.text).join('')).toBe(text);
+    for (const chunk of chunks) {
+      expect(chunk.tokenCount).toBeLessThanOrEqual(480);
+      expect(chunk.text).toMatch(/^(?:😀)+$/u);
+    }
+    expect(chunks[0]).toMatchObject({
+      amendmentStatus: 'unchanged',
+      pageStart: 1,
+      pageEnd: 1,
+    });
+    expect(chunks[1]).toMatchObject({
+      amendmentStatus: 'inserted',
+      pageStart: 1,
+      pageEnd: 2,
+    });
+    expect(chunks.at(-1)).toMatchObject({
+      amendmentStatus: 'inserted',
+      pageStart: 2,
+      pageEnd: 2,
+    });
   });
 
   it('round-trips chunks through MemoryBackend and keeps deleted chunks out of normal filters', async () => {
@@ -480,9 +582,23 @@ describe('generated document properties', () => {
         expect(
           Buffer.byteLength(JSON.stringify(metadata), 'utf8'),
         ).toBeLessThan(30_000);
+        const mergedLabels = new Set(
+          sections
+            .filter((node) => chunk.refs.includes(node.id))
+            .flatMap((node) =>
+              [node.num ?? '', node.heading ? `${node.heading}.` : '']
+                .join(' ')
+                .split(/\s+/),
+            ),
+        );
+        for (const word of chunk.text.split(/\s+/))
+          expect(sourceOwners.has(word) || mergedLabels.has(word)).toBe(true);
         const owners = [
           ...new Set(
-            chunk.text.split(/\s+/).map((word) => sourceOwners.get(word)),
+            chunk.text.split(/\s+/).flatMap((word) => {
+              const owner = sourceOwners.get(word);
+              return owner ? [owner] : [];
+            }),
           ),
         ];
         expect(owners.length).toBeGreaterThan(0);
@@ -493,9 +609,7 @@ describe('generated document properties', () => {
           expect(
             owners.every(
               (node) =>
-                node !== undefined &&
-                parent.children.includes(node) &&
-                node.children.length === 0,
+                parent.children.includes(node) && node.children.length === 0,
             ),
           ).toBe(true);
           expect(chunk.amendmentStatus).not.toBe('deleted');
