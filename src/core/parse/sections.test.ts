@@ -20,6 +20,16 @@ const ids = (source: SourceLine[]): string[] =>
 describe('section heading patterns', () => {
   it.each([
     ['Section 1. Short title', 'sec-1', '1', 'Short title'],
+    ['Section 1 Short title', 'sec-1', '1', 'Short title'],
+    ['Sec 2. Foo', 'sec-2', '2', 'Foo'],
+    ['Sec 2 Foo', 'sec-2', '2', 'Foo'],
+    ['§ 1395x. Definitions', 'sec-1395x', '1395x', 'Definitions'],
+    ['§ 1395x Definitions', 'sec-1395x', '1395x', 'Definitions'],
+    ['§ 5747.01. Definitions', 'sec-5747.01', '5747.01', 'Definitions'],
+    ['§ 5747.01 Definitions', 'sec-5747.01', '5747.01', 'Definitions'],
+    ['SEC. 1. SHORT TITLE', 'sec-1', '1', 'SHORT TITLE'],
+    ['SEC. 1 SHORT TITLE', 'sec-1', '1', 'SHORT TITLE'],
+    ['Section 3 Existing reference', 'sec-3', '3', 'Existing reference'],
     ['SECTION 2. Findings', 'sec-2', '2', 'Findings'],
     ['Sec. 101. Definitions', 'sec-101', '101', 'Definitions'],
     ['SEC. 2. Grants', 'sec-2', '2', 'Grants'],
@@ -252,7 +262,6 @@ describe('review layout regressions', () => {
     'SECTION 3 as enacted',
     'Sec. 3 to provide funding',
     'Section 3. of H.B. 1 as enacted',
-    'Section 3 Existing reference',
   ])('keeps wrapped cross-references inside Sec. 7: %s', (text) => {
     const sections = detectSections(lines('Sec. 7.', text));
     expect([...walkSections(sections)].map((section) => section.id)).toEqual([
@@ -262,6 +271,122 @@ describe('review layout regressions', () => {
       `Sec. 7.\n${text}`,
     );
   });
+
+  it.each(['Section 3', 'Sec 3', 'SEC. 3', '§ 1395x', '§ 5747.01'])(
+    'rejects connective references with and without a period after %s',
+    (prefix) => {
+      for (const separator of [' ', '. ']) {
+        for (const connective of [
+          'of',
+          'and',
+          'or',
+          'is',
+          'are',
+          'was',
+          'were',
+          'as',
+          'to',
+          'in',
+          'on',
+          'for',
+          'by',
+          'with',
+          'under',
+          'from',
+        ]) {
+          const text = `${prefix}${separator}${connective} H.B. 1`;
+          const sections = detectSections(lines('Sec. 7.', text));
+          expect(
+            [...walkSections(sections)].map((section) => section.id),
+          ).toEqual(['sec-7']);
+          expect(sectionText(sections[0]!, { includeDeleted: false })).toBe(
+            `Sec. 7.\n${text}`,
+          );
+        }
+      }
+    },
+  );
+
+  it.each([
+    ['(b) Under section 3. (c) is fine', 'b'],
+    ['(a) … the term (1) means x. (2) y', 'a'],
+    ['(a) The term (1) means x. (2) y', 'a'],
+    ['(a) First. (c) Third', 'a'],
+    ['(1) First. (3) Third', '1'],
+    ['(a) First. (b) are applicable', 'a'],
+    ['(a) First. (1) means x', 'a'],
+    ['(a) First. (b) shall apply', 'a'],
+    ['(a) First. (1) must apply', 'a'],
+    ['(2) First. (1) Earlier item', '2'],
+    ['(b) First. (a) Earlier division', 'b'],
+  ])('keeps implausible inline continuations as text: %s', (text, marker) => {
+    const sections = detectSections(lines('Sec. 4.', text));
+    const nodes = [...walkSections(sections)];
+    expect(nodes.map((section) => section.id)).toEqual([
+      'sec-4',
+      `sec-4/${marker}`,
+    ]);
+    expect(nodes[1]?.children).toEqual([]);
+    expect(sectionText(nodes[1]!, { includeDeleted: false })).toBe(text);
+    expect(nodes[1]?.heading).toBe(text.slice(marker.length + 2).trim());
+  });
+
+  it.each([
+    ['Sec. 4. (a) text', ['sec-4', 'sec-4/a']],
+    ['Sec. 4. (a)(1) text', ['sec-4', 'sec-4/a', 'sec-4/a/1']],
+    ['Sec. 4. (a) First. (b) Second', ['sec-4', 'sec-4/a', 'sec-4/b']],
+    [
+      'Sec. 4. (a)(1) First. (2) Second',
+      ['sec-4', 'sec-4/a', 'sec-4/a/1', 'sec-4/a/2'],
+    ],
+    ['Sec. 4. (1) First. (a) Child', ['sec-4', 'sec-4/1', 'sec-4/1/a']],
+    ['Sec. 4. (1) First. (A) Child', ['sec-4', 'sec-4/1', 'sec-4/1/a']],
+    [
+      'Sec. 4. (a) First. (i) Detail. (ii) Next',
+      ['sec-4', 'sec-4/a', 'sec-4/a/i', 'sec-4/a/ii'],
+    ],
+    [
+      'Sec. 4. (i) First. (I) Detail. (II) Next',
+      ['sec-4', 'sec-4/i', 'sec-4/i/i', 'sec-4/i/ii'],
+    ],
+  ])(
+    'splits plausible inline children and next siblings: %s',
+    (text, expectedIds) => {
+      const source = [{ text, page: 2, line: 7, x: 10 }];
+      const nodes = [...walkSections(detectSections(source))];
+      expect(nodes.map((section) => section.id)).toEqual(expectedIds);
+      expect(
+        nodes
+          .flatMap((section) => section.spans)
+          .map((span) => span.text)
+          .join(''),
+      ).toBe(text);
+      for (const node of nodes) {
+        expect(node).toMatchObject({
+          pageStart: 2,
+          pageEnd: 2,
+          lineStart: 7,
+          lineEnd: 7,
+        });
+      }
+    },
+  );
+
+  it.each([
+    ['(h) First. (i) Second. (j) Third', ['h', 'i', 'j']],
+    ['(z) First. (aa) Second', ['z', 'aa']],
+    ['(H) First. (I) Second', ['h', 'i']],
+    ['(ii) First. (iii) Second', ['ii', 'iii']],
+    ['(iv) First. (v) Second', ['iv', 'v']],
+  ])(
+    'keeps inline successors in the established alphabet: %s',
+    (text, markers) => {
+      expect(ids(lines('Sec. 4.', text))).toEqual([
+        'sec-4',
+        ...markers.map((marker) => `sec-4/${marker}`),
+      ]);
+    },
+  );
 
   it.each([
     'Text mentions subsection (a).',

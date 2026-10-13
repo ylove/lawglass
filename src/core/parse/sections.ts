@@ -22,12 +22,12 @@ export const DEFAULT_SECTION_PATTERNS: readonly SectionPattern[] = [
   {
     kind: 'section',
     regex:
-      /^(?:Section|SECTION|Sec\.|SEC\.)\s+(\d+(?:\.\d+)*[a-zA-Z]?(?:-[a-zA-Z0-9]+)*)(?!\.?\s+(?:of|and|is|as|to)\b)(?:\.(?=\s|$)|(?=\s*$|\s+That\b))/,
+      /^(?:Section|SECTION|Sec\.?|SEC\.?)\s+(\d+(?:\.\d+)*[a-zA-Z]?(?:-[a-zA-Z0-9]+)*)(?!\.?\s+(?:of|and|or|is|are|was|were|as|to|in|on|for|by|with|under|from)\b)(?:\.(?=\s|$)|(?=\s|$))/,
   },
   {
     kind: 'section',
     regex:
-      /^§\s*(\d+(?:\.\d+)*[a-zA-Z]?(?:-[a-zA-Z0-9]+)*)(?!\.?\s+(?:of|and|is|as|to)\b)(?:\.(?=\s|$)|(?=\s*$|\s+That\b))/,
+      /^§\s*(\d+(?:\.\d+)*[a-zA-Z]?(?:-[a-zA-Z0-9]+)*)(?!\.?\s+(?:of|and|or|is|are|was|were|as|to|in|on|for|by|with|under|from)\b)(?:\.(?=\s|$)|(?=\s|$))/,
   },
   {
     kind: 'article',
@@ -132,42 +132,117 @@ function matchHeading(
 interface LinePart {
   text: string;
   match?: Heading;
+  nested?: boolean;
 }
 
-/** Split only leading markers, optionally following a punctuation-delimited heading. */
+type MarkerContext = Pick<Frame<MarkerKind>, 'kind' | 'marker' | 'x'>;
+
+function romanOrdinal(marker: string): number {
+  const values: Record<string, number> = {
+    i: 1,
+    v: 5,
+    x: 10,
+    l: 50,
+    c: 100,
+    d: 500,
+    m: 1000,
+  };
+  const digits = Array.from(
+    marker.toLowerCase(),
+    (digit) => values[digit] ?? 0,
+  );
+  return digits.reduce(
+    (total, value, index) =>
+      total + (value < (digits[index + 1] ?? 0) ? -value : value),
+    0,
+  );
+}
+
+function isNextSibling(current: MarkerContext, next: string): boolean {
+  switch (current.kind) {
+    case 'number':
+      return /^\d+$/.test(next) && Number(next) === Number(current.marker) + 1;
+    case 'lower-letter':
+    case 'upper-letter':
+      return (
+        LETTER.test(next) &&
+        (next === next.toLowerCase()) === (current.kind === 'lower-letter') &&
+        letterOrdinal(next) === letterOrdinal(current.marker) + 1
+      );
+    case 'lower-roman':
+    case 'upper-roman':
+      return (
+        ROMAN.test(next) &&
+        (next === next.toLowerCase()) === (current.kind === 'lower-roman') &&
+        romanOrdinal(next) === romanOrdinal(current.marker) + 1
+      );
+  }
+}
+
+/** Split leading chains and plausible continuations at the first heading boundary. */
 function splitLine(
   text: string,
   patterns: readonly SectionPattern[],
+  stack: readonly MarkerContext[],
+  x: number | undefined,
+  nested = false,
 ): LinePart[] {
   const match = matchHeading(text, patterns);
   if (!match) return [{ text }];
+  const context = [...stack];
+  let current: MarkerContext | undefined;
+  if (match.kind === 'enumeration') {
+    const kind = markerKind(match.marker, x, context, nested);
+    if (!nested) context.length = enumerationDepth(kind, x, context);
+    current = { kind, marker: match.marker, x };
+    context.push(current);
+  } else {
+    context.length = 0;
+  }
   const body = text.slice(match.bodyStart);
   let nextStart = match.bodyStart + body.length - body.trimStart().length;
   let next = matchHeading(text.slice(nextStart), patterns);
+  const leadingChain = next?.kind === 'enumeration';
   if (next?.kind !== 'enumeration') {
     // Check the first heading boundary only: never scan sentences for references to (a).
     const label = /^[^.:…]*?(?:[.:](?:[—–-])?|…)\s*/.exec(body);
-    if (!label) return [{ text, match }];
+    if (!label) return [{ text, match, nested }];
     nextStart = match.bodyStart + label[0].length;
     next = matchHeading(text.slice(nextStart), patterns);
   }
-  if (next?.kind !== 'enumeration') return [{ text, match }];
+  if (next?.kind !== 'enumeration') return [{ text, match, nested }];
+  const sibling = current !== undefined && isNextSibling(current, next.marker);
+  const firstChild =
+    /^(?:1|a|A|i|I)$/.test(next.marker) &&
+    (!current ||
+      leadingChain ||
+      markerKind(next.marker, undefined, context, true) !== current.kind);
+  // An inline reference can follow punctuation too; only a next peer or a level's
+  // initial marker can open structure, and a following verb signals prose.
+  if (
+    (!sibling && !firstChild) ||
+    /^(?:is|are|was|were|be|been|being|means|mean|shall|must|may|can|will|has|have|had|does|do|did)\b/i.test(
+      next.heading,
+    )
+  )
+    return [{ text, match, nested }];
   return [
     {
       text: text.slice(0, nextStart),
+      nested,
       match: {
         ...match,
         heading: text.slice(match.bodyStart, nextStart).trim(),
       },
     },
-    ...splitLine(text.slice(nextStart), patterns),
+    ...splitLine(text.slice(nextStart), patterns, context, undefined, !sibling),
   ];
 }
 
 function markerKind(
   marker: string,
   x: number | undefined,
-  stack: readonly Frame<MarkerKind>[],
+  stack: readonly MarkerContext[],
   nested = false,
 ): MarkerKind {
   if (/^\d+$/.test(marker)) return 'number';
@@ -209,7 +284,7 @@ function markerKind(
 function enumerationDepth(
   kind: MarkerKind,
   x: number | undefined,
-  stack: readonly Frame<MarkerKind>[],
+  stack: readonly MarkerContext[],
 ): number {
   const previous = stack.at(-1);
   if (x !== undefined && previous?.x !== undefined) {
@@ -295,12 +370,11 @@ export function detectSections(
   }
 
   for (const [index, line] of lines.entries()) {
-    const parts = splitLine(line.text, patterns);
+    const parts = splitLine(line.text, patterns, enumerations, line.x);
     for (const [partIndex, part] of parts.entries()) {
       const match = part.match;
-      // Markers later on the same line explicitly open children, regardless of alphabet or indent.
-      const nested = partIndex > 0;
-      const x = nested ? undefined : line.x;
+      const nested = part.nested ?? false;
+      const x = partIndex > 0 ? undefined : line.x;
       if (match) {
         let parent: Section | undefined;
         let kind: HeadingKind | MarkerKind;
