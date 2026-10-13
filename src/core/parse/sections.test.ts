@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AppError,
   Section,
+  SectionId,
   sectionText,
   walkSections,
 } from '../model/index.js';
@@ -24,10 +25,16 @@ describe('section heading patterns', () => {
     ['SEC. 2. Grants', 'sec-2', '2', 'Grants'],
     ['Sec. 5747.01. Tax', 'sec-5747.01', '5747.01', 'Tax'],
     [
-      'Section 5747.01 of the Revised Code is amended to read as follows:',
-      'sec-5747.01',
-      '5747.01',
-      'of the Revised Code is amended to read as follows:',
+      'Section 1. That section 5747.01 be amended',
+      'sec-1',
+      '1',
+      'That section 5747.01 be amended',
+    ],
+    [
+      'Section 1 That section 5747.01 be amended',
+      'sec-1',
+      '1',
+      'That section 5747.01 be amended',
     ],
     ['§ 5747.01', 'sec-5747.01', '5747.01', undefined],
     ['§5747.01. Tax', 'sec-5747.01', '5747.01', 'Tax'],
@@ -81,6 +88,7 @@ describe('section heading patterns', () => {
     '(a)word',
     'Section 12abc.',
     '§ 5747.01abc',
+    'Section 5747.01 of the Revised Code is amended to read as follows:',
     'Chapterhouse 2.',
     'Article grants funding.',
   ])('keeps ordinary text as content: %s', (text) => {
@@ -138,6 +146,232 @@ describe('section heading patterns', () => {
       ).toThrow('must capture');
     },
   );
+});
+
+describe('review layout regressions', () => {
+  it('opens Ohio divisions on the section-heading line and returns to (B)', () => {
+    const sections = detectSections(
+      lines(
+        'Sec. 5747.01. (A) As used in this chapter:',
+        '(1) "Adjusted gross income" means…',
+        '(a) …',
+        '(i) …',
+        '(ii) …',
+        '(B) …',
+      ),
+    );
+    expect([...walkSections(sections)].map((section) => section.id)).toEqual([
+      'sec-5747.01',
+      'sec-5747.01/a',
+      'sec-5747.01/a/1',
+      'sec-5747.01/a/1/a',
+      'sec-5747.01/a/1/a/i',
+      'sec-5747.01/a/1/a/ii',
+      'sec-5747.01/b',
+    ]);
+    expect(sections[0]?.heading).toBeUndefined();
+    expect(sections[0]?.children[0]?.heading).toBe('As used in this chapter:');
+  });
+
+  it('separates federal heading text and inline enumerators while retaining source coordinates', () => {
+    const text = 'SEC. 2. DEFINITIONS. (a) In General.— (1) foo';
+    const source = [{ text, page: 2, line: 7, x: 10 }];
+    const sections = detectSections(source);
+    const nodes = [...walkSections(sections)];
+    expect(nodes.map((section) => section.id)).toEqual([
+      'sec-2',
+      'sec-2/a',
+      'sec-2/a/1',
+    ]);
+    expect(nodes.map((section) => section.heading)).toEqual([
+      'DEFINITIONS.',
+      'In General.—',
+      'foo',
+    ]);
+    expect(nodes.map((section) => section.level)).toEqual([1, 2, 3]);
+    expect(
+      nodes.map((section) => sectionText(section, { includeDeleted: false })),
+    ).toEqual(['SEC. 2. DEFINITIONS. ', '(a) In General.— ', '(1) foo']);
+    expect(
+      nodes
+        .flatMap((section) => section.spans)
+        .map((span) => span.text)
+        .join(''),
+    ).toBe(text);
+    for (const node of nodes) {
+      expect(node).toMatchObject({
+        pageStart: 2,
+        pageEnd: 2,
+        lineStart: 7,
+        lineEnd: 7,
+      });
+      expect(node.spans[0]).toMatchObject({
+        status: 'unchanged',
+        page: 2,
+        line: 7,
+      });
+    }
+    expect(source).toEqual([{ text, page: 2, line: 7, x: 10 }]);
+  });
+
+  it.each(['(a) … (1) foo', '(a)(1) text', '(a) (1) text'])(
+    'opens chained leading markers: %s',
+    (text) => {
+      expect(ids(lines('Sec. 2.', text))).toEqual([
+        'sec-2',
+        'sec-2/a',
+        'sec-2/a/1',
+      ]);
+    },
+  );
+
+  it('opens same-line markers as children even when their alphabet matches an ancestor', () => {
+    expect(ids(lines('Sec. 3.', '(h)(1)(i) text', '(j) Next item'))).toEqual([
+      'sec-3',
+      'sec-3/h',
+      'sec-3/h/1',
+      'sec-3/h/1/i',
+      'sec-3/j',
+    ]);
+    expect(ids(lines('Sec. 3. (a)(a) text'))).toEqual([
+      'sec-3',
+      'sec-3/a',
+      'sec-3/a/a',
+    ]);
+  });
+
+  it.each([
+    'section 5747.02 of the Revised Code and',
+    'Section 3 of H.B. 1 as enacted',
+    'Section 5747.01 of the Revised Code is amended to read as follows:',
+    'section 3.',
+    'sec. 3.',
+    'sEc. 3.',
+    'Section 3 and the following provisions',
+    'SEC. 3 is amended',
+    'SECTION 3 as enacted',
+    'Sec. 3 to provide funding',
+    'Section 3. of H.B. 1 as enacted',
+    'Section 3 Existing reference',
+  ])('keeps wrapped cross-references inside Sec. 7: %s', (text) => {
+    const sections = detectSections(lines('Sec. 7.', text));
+    expect([...walkSections(sections)].map((section) => section.id)).toEqual([
+      'sec-7',
+    ]);
+    expect(sectionText(sections[0]!, { includeDeleted: false })).toBe(
+      `Sec. 7.\n${text}`,
+    );
+  });
+
+  it.each([
+    'Text mentions subsection (a).',
+    '(a) Text mentions subsection (b) and paragraph (1).',
+    '(a) A sentence. See subsection (b).',
+    'SEC. 2. DEFINITIONS. Under subsection (a), a term is defined.',
+  ])('does not split mid-sentence references: %s', (text) => {
+    const expected = text.startsWith('(a)') ? ['sec-2', 'sec-2/a'] : ['sec-2'];
+    expect(
+      ids(lines(...(text.startsWith('SEC.') ? [text] : ['Sec. 2.', text]))),
+    ).toEqual(expected);
+  });
+
+  it.each([
+    ['h', 'i', 'j'],
+    ['u', 'v', 'w'],
+    ['w', 'x', 'y'],
+    ['H', 'I', 'J'],
+    ['U', 'V', 'W'],
+    ['W', 'X', 'Y'],
+  ])(
+    'continues the enclosing letter sequence after numbered children: %s, %s, %s',
+    (first, second, third) => {
+      const prefix = `sec-3/${first.toLowerCase()}`;
+      expect(
+        ids(
+          lines(
+            'Sec. 3.',
+            `(${first})`,
+            '(1)',
+            '(2)',
+            `(${second})`,
+            `(${third})`,
+          ),
+        ),
+      ).toEqual([
+        'sec-3',
+        prefix,
+        `${prefix}/1`,
+        `${prefix}/2`,
+        `sec-3/${second.toLowerCase()}`,
+        `sec-3/${third.toLowerCase()}`,
+      ]);
+    },
+  );
+
+  it.each(['abcdefghijklmnopqrstuvwxyz', 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'])(
+    'supports doubled letters throughout the %s sequence',
+    (alphabet) => {
+      const markers = [
+        'y',
+        'z',
+        ...Array.from(alphabet, (letter) => letter.repeat(2)),
+      ];
+      if (alphabet === alphabet.toUpperCase()) markers.splice(0, 2, 'Y', 'Z');
+      expect(
+        ids(
+          lines('Sec. 1.', ...markers.map((marker) => `(${marker}) Content`)),
+        ),
+      ).toEqual([
+        'sec-1',
+        ...markers.map((marker) => `sec-1/${marker.toLowerCase()}`),
+      ]);
+    },
+  );
+
+  it.each([
+    ['SEC. 101A.', 'sec-101a', '101A'],
+    ['Sec. 5747.01a.', 'sec-5747.01a', '5747.01a'],
+    ['§ 1395x', 'sec-1395x', '1395x'],
+    ['§ 1395x-1', 'sec-1395x-1', '1395x-1'],
+  ])(
+    'detects lettered section number %s with citation-safe collision ids',
+    (text, id, num) => {
+      const sections = detectSections(lines(text, '(a)', text, '(a)'));
+      const nodes = [...walkSections(sections)];
+      expect(nodes.map((section) => section.id)).toEqual([
+        id,
+        `${id}/a`,
+        `${id}~2`,
+        `${id}~2/a`,
+      ]);
+      expect(sections.map((section) => section.num)).toEqual([num, num]);
+      for (const section of nodes)
+        expect(SectionId.safeParse(section.id).success).toBe(true);
+    },
+  );
+
+  it('keeps recitals and NOW, THEREFORE in the preamble', () => {
+    expect(
+      ids(
+        lines(
+          'WHEREAS, Section 1. describes a need;',
+          'NOW, THEREFORE, be it enacted:',
+          'Section 1. That section 5747.01 be amended',
+        ),
+      ),
+    ).toEqual(['preamble', 'sec-1']);
+  });
+
+  it('preserves the flat (g)(h)(i)(j)(k) letter sequence across lines', () => {
+    expect(ids(lines('Sec. 3.', '(g)', '(h)', '(i)', '(j)', '(k)'))).toEqual([
+      'sec-3',
+      'sec-3/g',
+      'sec-3/h',
+      'sec-3/i',
+      'sec-3/j',
+      'sec-3/k',
+    ]);
+  });
 });
 
 describe('stack-based nesting', () => {

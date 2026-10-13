@@ -61,6 +61,49 @@ describe('parseText', () => {
     },
   );
 
+  it('parses inline markers and wrapped references together from CRLF input', () => {
+    const input = [
+      'SEC. 2. DEFINITIONS. (a) In General.— (1) foo',
+      'This includes subsection (b).',
+      'section 5747.02 of the Revised Code and',
+      'Section 3 of H.B. 1 as enacted',
+      '(b)(1) Another item',
+      '§ 1395x-1',
+      '(z) Last letter',
+      '(aa) Next letter',
+      '(bb) Next letter',
+    ].join('\r\n');
+    const doc = parseText(input, options);
+    const nodes = [...walkSections(doc.sections)];
+    expect(nodes.map((section) => section.id)).toEqual([
+      'sec-2',
+      'sec-2/a',
+      'sec-2/a/1',
+      'sec-2/b',
+      'sec-2/b/1',
+      'sec-1395x-1',
+      'sec-1395x-1/z',
+      'sec-1395x-1/aa',
+      'sec-1395x-1/bb',
+    ]);
+    expect(doc.sections[0]?.heading).toBe('DEFINITIONS.');
+    expect(
+      sectionText(doc.sections[0]!.children[0]!.children[0]!, {
+        includeDeleted: false,
+      }),
+    ).toBe(
+      '(1) foo\nThis includes subsection (b).\nsection 5747.02 of the Revised Code and\nSection 3 of H.B. 1 as enacted\n',
+    );
+    expect(
+      nodes
+        .flatMap((section) => section.spans)
+        .map((span) => span.text)
+        .join(''),
+    ).toBe(input.replaceAll('\r\n', '\n'));
+    expect(doc.docId).toBe(createHash('sha256').update(input).digest('hex'));
+    expect(NormalizedDoc.safeParse(doc).success).toBe(true);
+  });
+
   it('decodes UTF-8 including BOM and Unicode text without changing the raw-byte identity', () => {
     const bytes = new Uint8Array(
       Buffer.from('\uFEFF§ 5747.01\nCafé — eligibility.'),
