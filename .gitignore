@@ -1,0 +1,33 @@
+# dependencies and build output
+node_modules/
+dist/
+coverage/
+*.tgz
+.vite/
+playwright-report/
+test-results/
+
+# secrets: only .env.example is committed
+.env
+.env.*
+!.env.example
+
+# fixtures are never committed; scripts/fetch-fixtures.ts downloads them here
+fixtures/downloads/
+*.pdf
+!tests/synth/**/*.pdf
+
+# local runtime data and model caches
+.cache/
+.models/
+eval/runs/
+
+# session hand-off notes live outside the repo
+handoff/
+HANDOFF*.md
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json

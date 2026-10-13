@@ -1,0 +1,24 @@
+name: Task
+description: A unit of planned work (feature, chore, docs, test, CI)
+labels: []
+body:
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What this task delivers.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Checkboxes that define done.
+      value: "- [ ] "
+    validations:
+      required: true
+  - type: textarea
+    id: deps
+    attributes:
+      label: Dependencies
+      description: Issues that must land first (e.g. "Depends on #12").
