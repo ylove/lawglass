@@ -13,6 +13,7 @@ export default defineConfig({
           include: [
             'src/**/*.test.ts',
             'tests/**/*.test.ts',
+            'scripts/**/*.test.ts',
             'scripts/**/*.test.mjs',
           ],
           exclude: ['src/web/**', '**/*.live.test.ts'],
