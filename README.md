@@ -92,6 +92,15 @@ existing network guard. It is excluded from `npm run check`, which uses fake
 models. `.github/workflows/local-models.yml` caches the pinned models and runs
 the offline suite on Node 22 and 24.
 
+issue number and exit with code 2. No ingestion, retrieval or server features
+are implemented yet. The UI displays the working name and disclaimer only.
+
+The [LLM provider adapters](docs/llm-providers.md) implement streaming and validated
+structured output for Anthropic, OpenAI-compatible endpoints, Gemini, an opt-in
+local Claude CLI, and a deterministic mock. They are available to core callers;
+CLI command integration is still pending. Unit tests use offline HTTP/subprocess
+replays. Run `npm run test:live` separately for key-gated API contract tests.
+
 The [product spec](docs/spec.md) is the source of truth; its Amendments take
 precedence. [Decision records](docs/decisions/) explain the backend, provider,
 Claude CLI, and Node version choices. Shared contracts are reserved for a separate

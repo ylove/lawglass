@@ -15,17 +15,26 @@ test.each([
   'scripts/index.ts',
   'tests/synth/index.ts',
   'src/web/App.tsx',
-])('brand guard rejects string literals in %s', async (filePath) => {
-  const [result] = await eslint.lintText(
-    `export const label = '${BRAND.name}';`,
-    { filePath },
-  );
-  expect(result?.messages).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ ruleId: 'no-restricted-syntax', severity: 2 }),
-    ]),
-  );
-});
+])(
+  'brand guard rejects string literals in %s',
+  { timeout: 20_000 },
+  async (filePath) => {
+    // The first typed lint initializes the whole TypeScript project, including SDK types.
+    // Give that startup time without weakening any brand-rule assertions.
+    const [result] = await eslint.lintText(
+      `export const label = '${BRAND.name}';`,
+      { filePath },
+    );
+    expect(result?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          ruleId: 'no-restricted-syntax',
+          severity: 2,
+        }),
+      ]),
+    );
+  },
+);
 
 test('brand guard rejects template elements', async () => {
   const [result] = await eslint.lintText(
