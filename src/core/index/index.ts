@@ -1,2 +1,2 @@
-// Pinecone and built-in local retrieval backend adapters belong here.
-export {};
+export { LocalBackend, createLocalModels } from './local/index.js';
+export type { LocalBackendOptions, Embedder, Reranker } from './local/index.js';

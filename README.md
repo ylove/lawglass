@@ -38,8 +38,59 @@ and `npm run format:check` to verify formatting.
 
 Builds produce `dist/cli.js`, an empty server entrypoint at `dist/server.js`,
 and the React shell at `dist/web/`. CLI commands currently print their follow-up
-issue number and exit with code 2. No ingestion, retrieval, LLM, or server features
-are implemented yet. The UI displays the working name and disclaimer only.
+issue number and exit with code 2. The local retrieval backend is implemented;
+CLI ingestion, retrieval orchestration, LLM, and server wiring are still pending.
+The UI displays the working name and disclaimer only.
+
+## Local retrieval backend
+
+`LocalBackend` in `src/core/index/local/` implements the frozen `RetrievalBackend`
+port. It needs no Docker or account. Its constructor accepts `configDir` (defaults
+to the brand's directory under your home directory), a separate `root` for the
+document store, and injectable `Embedder`, `Reranker`, and download `logger`.
+
+Each document lives under `<config dir>/store/<docId>/` with `chunks.jsonl`,
+`dense.f32`, `bm25.json`, and `meta.json`. Dense rows are normalized 384-dimensional
+Float32 vectors, stored in little-endian row order. Metadata records model
+identities, revisions, dimensions, counts, and file hashes. Writes stage complete
+directories, rename temporary files, and publish metadata last. Replacement uses
+a recoverable backup; operations on a namespace are serialized across backend
+instances in the same process. Separate processes must not write the same store
+concurrently.
+
+Dense search uses quantized BGE with CLS pooling and its query instruction.
+Sparse search uses explicit BM25 (`k1=1.2`, `b=0.75`), with IDF per document,
+including exact statute numbers and normalized dollar amounts. Reranking scores
+query/document pairs with a quantized MiniLM cross-encoder. Embedding usage counts
+the tokenizer's actual non-padding tokens, including instructions and special
+tokens, after model truncation; rerank usage counts documents scored. An unchanged
+embedding text reuses its vector. A changed embedding model requires removing
+and re-ingesting an existing document.
+
+Models are lazily imported and downloaded from the immutable Hugging Face
+revisions in `models.lock.json`. The first download prints a single message
+(about 59 MB for both models). Preload them and run the offline integration suite:
+
+```sh
+npm run models:fetch
+npm run test:models
+```
+
+The fetch script accepts `--config-dir` and the brand's `CONFIG_DIR` environment
+variable. For an isolated development cache:
+
+```sh
+export LEGSUM_CONFIG_DIR="$PWD/.cache/local-backend"
+npm run models:fetch
+npm run test:models
+```
+
+`test:models` sets `LOCAL_MODELS=1`, disables remote models, and loads the exact
+cached revision directories. It runs the shared backend contract plus a dense
+appropriation paraphrase check and a cross-encoder relevance check under the
+existing network guard. It is excluded from `npm run check`, which uses fake
+models. `.github/workflows/local-models.yml` caches the pinned models and runs
+the offline suite on Node 22 and 24.
 
 The [product spec](docs/spec.md) is the source of truth; its Amendments take
 precedence. [Decision records](docs/decisions/) explain the backend, provider,

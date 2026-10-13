@@ -1,0 +1,44 @@
+name: Local models
+
+# Real on-device model tests for the local backend (embeddings, BM25 + cross-encoder rerank).
+# Models are pinned in models.lock.json, cached between runs, and the tests themselves run
+# offline (allowRemoteModels = false) after `npm run models:fetch`.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  local-models:
+    name: local-models (node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+    env:
+      LEGSUM_CONFIG_DIR: ${{ github.workspace }}/.cache/local-backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/local-backend/models
+          key: local-models-${{ runner.os }}-${{ hashFiles('models.lock.json') }}
+      - run: npm run models:fetch
+      - run: npm run test:models
