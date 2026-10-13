@@ -1,8 +1,14 @@
 import { ESLint } from 'eslint';
-import { expect, test } from 'vitest';
+import { beforeAll, expect, test } from 'vitest';
 import { BRAND } from '../src/core/brand.js';
 
 const eslint = new ESLint();
+
+// The first type-aware lint builds the TypeScript program (5-7 s on CI runners); do it once
+// up front with a generous timeout so individual tests measure only the rule.
+beforeAll(async () => {
+  await eslint.lintText('export {};', { filePath: 'src/core/config.ts' });
+}, 60_000);
 
 test.each([
   'src/core/config.ts',

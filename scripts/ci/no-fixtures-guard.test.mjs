@@ -49,6 +49,7 @@ test.each([
   '.env.production',
   'nested/.env',
   'nested/.env.test',
+  '.envrc',
 ])('rejects tracked environment file %s', (path) => {
   expect(findViolations([{ path, size: 0 }])).toEqual([
     expect.stringContaining('environment files'),
@@ -102,4 +103,21 @@ test('reports all violations, including paths with spaces or newlines', () => {
       { path: '.env', size: 1 },
     ]),
   ).toHaveLength(3);
+});
+
+test.each(['.env.sample', 'config/.env.template'])(
+  'allows empty env template %s',
+  (path) => {
+    expect(findViolations([{ path, size: 20, content: 'API_KEY=\n' }])).toEqual(
+      [],
+    );
+  },
+);
+
+test('rejects a populated .env.sample', () => {
+  expect(
+    findViolations([
+      { path: '.env.sample', size: 30, content: 'API_KEY=abc\n' },
+    ]),
+  ).toEqual([expect.stringContaining('.env.sample:1:')]);
 });

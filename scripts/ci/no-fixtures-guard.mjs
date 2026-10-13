@@ -3,6 +3,9 @@ import { readFileSync, statSync } from 'node:fs';
 import { basename, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+/** Committed env templates: allowed, but every value must be empty. */
+const ENV_TEMPLATES = new Set(['.env.example', '.env.sample', '.env.template']);
+
 /**
  * Inspect only tracked files; downloaded local fixtures are deliberately ignored.
  * @param {Array<{path: string, size: number, content?: string}>} files
@@ -30,13 +33,13 @@ export function findViolations(files) {
 
     const name = basename(file.path);
     if (
-      (name === '.env' || name.startsWith('.env.')) &&
-      name !== '.env.example'
+      (name === '.env' || name === '.envrc' || name.startsWith('.env.')) &&
+      !ENV_TEMPLATES.has(name)
     ) {
       violations.push(`${file.path}: environment files must never be tracked`);
     }
 
-    if (name !== '.env.example') continue;
+    if (!ENV_TEMPLATES.has(name)) continue;
     if (file.content === undefined) {
       violations.push(`${file.path}: example environment contents are missing`);
       continue;

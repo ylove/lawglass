@@ -17,15 +17,15 @@ jobs:
     name: pinecone-contract
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
-      LIVE_TESTS: pinecone
     steps:
       # Secrets are unavailable in job-level if expressions; gate every later step.
       - name: Check Pinecone credentials
         id: credentials
+        env:
+          # Only a boolean reaches this step; the secret value is never exposed here.
+          HAS_PINECONE_KEY: ${{ secrets.PINECONE_API_KEY != '' }}
         run: |
-          if [ -n "$PINECONE_API_KEY" ]; then
+          if [ "$HAS_PINECONE_KEY" = "true" ]; then
             echo "enabled=true" >> "$GITHUB_OUTPUT"
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
@@ -42,6 +42,9 @@ jobs:
           cache: npm
       - run: npm ci
         if: ${{ steps.credentials.outputs.enabled == 'true' }}
+      # The key is scoped to this step only (not visible to npm ci lifecycle scripts).
       - run: npm run test:live
         if: ${{ steps.credentials.outputs.enabled == 'true' }}
+        env:
+          PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
       # TODO(live-provider-ping): add a nightly provider ping when adapters exist.
