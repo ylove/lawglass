@@ -16,7 +16,14 @@ export default defineConfig({
             'scripts/**/*.test.ts',
             'scripts/**/*.test.mjs',
           ],
-          exclude: ['src/web/**', '**/*.live.test.ts'],
+          exclude: [
+            'src/web/**',
+            '**/*.live.test.ts',
+            // Real-model tests need downloaded models (npm run models:fetch); opt in.
+            ...(process.env.LOCAL_MODELS === '1'
+              ? []
+              : ['src/**/models.integration.test.ts']),
+          ],
           setupFiles: ['tests/setup.node.ts'],
         },
       },
@@ -50,6 +57,12 @@ export default defineConfig({
         functions: 75,
         branches: 75,
         statements: 75,
+        'src/core/index/local/**': {
+          lines: 75,
+          functions: 75,
+          branches: 75,
+          statements: 75,
+        },
         'src/core/fetch/**': {
           lines: 90,
           functions: 90,
