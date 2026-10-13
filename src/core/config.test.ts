@@ -1,0 +1,282 @@
+import { mkdtemp, mkdir, writeFile, readFile, stat, chmod, symlink, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { BRAND, envVar } from './brand.js';
+import { AppError } from './model/index.js';
+import { configFileSystem } from './config-files.js';
+import {
+  DEFAULT_MODELS, getConfigDir, hasClaudeOnPath, initConfig, providerConfig,
+  redact, resolveConfig, type ConfigOptions, type ConfigSettings, type SecretPrompt,
+} from './config.js';
+
+let home: string;
+let options: ConfigOptions;
+const secret = 'synthetic-secret-abcdef';
+
+beforeEach(async () => {
+  home = await mkdtemp(join(tmpdir(), 'config-test-'));
+  options = { homeDir: home, env: {}, isTTY: false, hasClaude: () => false };
+});
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await rm(home, { recursive: true, force: true });
+});
+async function file(value: unknown, mode = 0o600): Promise<void> {
+  await mkdir(getConfigDir(home), { recursive: true });
+  const path = join(getConfigDir(home), 'config.json');
+  await writeFile(path, JSON.stringify(value), { mode });
+  await chmod(path, mode);
+}
+const mockEnv = { [envVar('LLM_PROVIDER')]: 'mock' };
+
+it('uses BRAND for the config directory', () => {
+  expect(getConfigDir(home)).toBe(join(home, BRAND.configDirName));
+});
+
+it('resolves defaults without keys for an explicitly selected mock', async () => {
+  const config = await resolveConfig({ ...options, env: mockEnv });
+  expect(config).toMatchObject({
+    configDir: getConfigDir(home), backend: 'local', llmProvider: 'mock',
+    maxDocs: 5, retrievalMode: 'hybrid_rerank', port: 4317,
+    answerModel: DEFAULT_MODELS.mock.answer, extractModel: DEFAULT_MODELS.mock.extract,
+  });
+});
+
+it('resolves every environment setting before file values', async () => {
+  await file({ anthropicApiKey: 'file-anthropic', pineconeApiKey: 'file-pinecone',
+    openaiApiKey: 'file-openai', googleApiKey: 'file-google', openaiBaseUrl: 'https://file.example/v1',
+    llmProvider: 'anthropic', backend: 'local', maxDocs: 2, retrievalMode: 'dense',
+    answerModel: 'file-answer', extractModel: 'file-extract', rerankModel: 'file-rerank', port: 4320 });
+  const env = {
+    PINECONE_API_KEY: 'env-pinecone', ANTHROPIC_API_KEY: 'env-anthropic',
+    OPENAI_API_KEY: 'env-openai', GOOGLE_API_KEY: 'env-google', OPENAI_BASE_URL: 'http://localhost:1234/v1',
+    [envVar('LLM_PROVIDER')]: 'openai', [envVar('BACKEND')]: 'pinecone',
+    [envVar('MAX_DOCS')]: '7', [envVar('RETRIEVAL_MODE')]: 'sparse',
+    [envVar('ANSWER_MODEL')]: 'env-answer', [envVar('EXTRACT_MODEL')]: 'env-extract',
+    [envVar('RERANK_MODEL')]: 'env-rerank', [envVar('PORT')]: '5432',
+  };
+  expect(await resolveConfig({ ...options, env })).toMatchObject({
+    pineconeApiKey: 'env-pinecone', anthropicApiKey: 'env-anthropic', openaiApiKey: 'env-openai',
+    googleApiKey: 'env-google', openaiBaseUrl: 'http://localhost:1234/v1', llmProvider: 'openai',
+    backend: 'pinecone', maxDocs: 7, retrievalMode: 'sparse', answerModel: 'env-answer',
+    extractModel: 'env-extract', rerankModel: 'env-rerank', port: 5432,
+  });
+});
+
+it('blank environment values fall through to file settings, without prompting', async () => {
+  await file({ anthropicApiKey: secret, maxDocs: 3 });
+  const prompt = vi.fn();
+  expect(await resolveConfig({ ...options, env: { ANTHROPIC_API_KEY: '  ' }, isTTY: true, prompt })).toMatchObject({
+    anthropicApiKey: secret, llmProvider: 'anthropic', maxDocs: 3,
+  });
+  expect(prompt).not.toHaveBeenCalled();
+});
+
+it.each([
+  [{ ANTHROPIC_API_KEY: secret, OPENAI_API_KEY: secret, GOOGLE_API_KEY: secret }, 'anthropic'],
+  [{ OPENAI_API_KEY: secret, GOOGLE_API_KEY: secret }, 'openai'],
+  [{ GOOGLE_API_KEY: secret }, 'google'],
+] as const)('selects the first available API provider', async (env, provider) => {
+  const hasClaude = vi.fn(() => true);
+  const config = await resolveConfig({ ...options, env, hasClaude });
+  expect(config.llmProvider).toBe(provider);
+  expect(config.answerModel).toBe(DEFAULT_MODELS[provider].answer);
+  expect(hasClaude).not.toHaveBeenCalled();
+});
+
+it('explicit provider and CLI backend override auto-selection and file/env backends', async () => {
+  await file({ backend: 'pinecone', pineconeApiKey: secret, llmProvider: 'anthropic', anthropicApiKey: secret });
+  const config = await resolveConfig({ ...options, env: { ...mockEnv, [envVar('BACKEND')]: 'pinecone' }, backend: 'local' });
+  expect(config.backend).toBe('local');
+  expect(config.llmProvider).toBe('mock');
+});
+
+it('auto-selects Pinecone when its key resolves from a file', async () => {
+  await file({ pineconeApiKey: secret, llmProvider: 'mock' });
+  expect((await resolveConfig(options)).backend).toBe('pinecone');
+});
+
+it('auto-selects claude-cli with a note and without prompting', async () => {
+  const note = vi.fn();
+  const prompt = vi.fn();
+  expect((await resolveConfig({ ...options, hasClaude: () => true, note, prompt, isTTY: true })).llmProvider).toBe('claude-cli');
+  expect(note).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/local Claude Code login.*local development/));
+  expect(prompt).not.toHaveBeenCalled();
+});
+
+it('uses the default note for automatic claude-cli selection', async () => {
+  const output = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+  await resolveConfig({ ...options, hasClaude: () => true });
+  expect(output).toHaveBeenCalledOnce();
+});
+
+it('explicit claude-cli needs no keys, PATH check, or auto-selection note', async () => {
+  const note = vi.fn();
+  const hasClaude = vi.fn(() => false);
+  await resolveConfig({ ...options, env: { [envVar('LLM_PROVIDER')]: 'claude-cli' }, note, hasClaude });
+  expect(note).not.toHaveBeenCalled();
+  expect(hasClaude).not.toHaveBeenCalled();
+});
+
+it('noninteractive missing provider explains API keys, init, and local-dev options', async () => {
+  const prompt = vi.fn();
+  await expect(resolveConfig({ ...options, prompt })).rejects.toMatchObject({
+    code: 'MISSING_KEY', userMessage: expect.stringMatching(/ANTHROPIC_API_KEY.*OPENAI_API_KEY.*GOOGLE_API_KEY.*init.*Claude Code/) as unknown,
+  });
+  expect(prompt).not.toHaveBeenCalled();
+});
+
+it.each(['anthropic', 'openai', 'google'])('requires the explicit %s provider key instead of selecting another provider', async (provider) => {
+  await expect(resolveConfig({ ...options, env: { [envVar('LLM_PROVIDER')]: provider, PINECONE_API_KEY: secret } })).rejects.toMatchObject({ code: 'MISSING_KEY' });
+});
+
+it('TTY prompts only for missing required Pinecone and explicitly selected provider keys', async () => {
+  const prompt = vi.fn<SecretPrompt>().mockResolvedValueOnce('prompt-pinecone').mockResolvedValueOnce('prompt-google');
+  const config = await resolveConfig({ ...options, env: { [envVar('BACKEND')]: 'pinecone', [envVar('LLM_PROVIDER')]: 'google' }, isTTY: true, prompt });
+  expect(config).toMatchObject({ backend: 'pinecone', pineconeApiKey: 'prompt-pinecone', googleApiKey: 'prompt-google' });
+  expect(prompt.mock.calls.map(([request]) => request)).toEqual([
+    expect.objectContaining({ name: 'PINECONE_API_KEY', masked: true }),
+    expect.objectContaining({ name: 'GOOGLE_API_KEY', masked: true }),
+  ]);
+});
+
+it('TTY provider selection tries keys in priority order and stops when one is entered', async () => {
+  const prompt = vi.fn<SecretPrompt>().mockResolvedValueOnce(' ').mockResolvedValueOnce(secret);
+  expect((await resolveConfig({ ...options, isTTY: true, prompt })).llmProvider).toBe('openai');
+  expect(prompt).toHaveBeenCalledTimes(2);
+});
+
+it('declining every prompt raises MISSING_KEY without storing anything', async () => {
+  const prompt = vi.fn().mockResolvedValue(undefined);
+  await expect(resolveConfig({ ...options, isTTY: true, prompt })).rejects.toMatchObject({ code: 'MISSING_KEY' });
+  expect(prompt).toHaveBeenCalledTimes(3);
+  await expect(stat(getConfigDir(home))).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('missing Pinecone key fails in noninteractive mode', async () => {
+  await expect(resolveConfig({ ...options, backend: 'pinecone', env: mockEnv })).rejects.toMatchObject({ code: 'MISSING_KEY', message: expect.stringContaining('PINECONE_API_KEY') as unknown });
+});
+
+it.each([0o640, 0o604, 0o644, 0o620])('refuses an insecure config file (mode %s), warns, and falls back to env', async (mode) => {
+  await file({ anthropicApiKey: secret }, mode);
+  const warn = vi.fn();
+  const config = await resolveConfig({ ...options, env: mockEnv, warn });
+  expect(config.anthropicApiKey).toBeUndefined();
+  expect(warn).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/Refusing.*permissions.*0600/));
+  expect(JSON.stringify(warn.mock.calls)).not.toContain(secret);
+});
+
+it('uses a clear default warning for an insecure file', async () => {
+  await file({ anthropicApiKey: secret }, 0o644);
+  const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  await resolveConfig({ ...options, env: mockEnv });
+  expect(warning).toHaveBeenCalledExactlyOnceWith(expect.stringMatching(/Configuration warning: Refusing/));
+});
+
+it('init writes 0600 config inside a 0700 directory, even when replacing permissive paths', async () => {
+  await file({ llmProvider: 'google', googleApiKey: 'old-google' }, 0o644);
+  await chmod(getConfigDir(home), 0o755);
+  const prompt = vi.fn<SecretPrompt>().mockResolvedValueOnce(secret).mockResolvedValueOnce('anthropic-new')
+    .mockResolvedValueOnce('openai-new').mockResolvedValueOnce('google-new');
+  const result = await initConfig({ ...options, isTTY: true, prompt, warn: vi.fn() });
+  const path = join(getConfigDir(home), 'config.json');
+  expect((await stat(path)).mode & 0o777).toBe(0o600);
+  expect((await stat(getConfigDir(home))).mode & 0o777).toBe(0o700);
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual({ pineconeApiKey: secret,
+    anthropicApiKey: 'anthropic-new', openaiApiKey: 'openai-new', googleApiKey: 'google-new' });
+  expect(result.pineconeApiKey).toBe('sk-…cdef');
+  expect(JSON.stringify(result)).not.toContain(secret);
+  expect(prompt.mock.calls.map(([request]) => request.masked)).not.toContain(false);
+});
+
+it('init preserves existing private settings and keys when entries are skipped', async () => {
+  await file({ anthropicApiKey: secret, maxDocs: 8 });
+  await initConfig({ ...options, isTTY: true, prompt: vi.fn().mockResolvedValue('') });
+  expect(JSON.parse(await readFile(join(getConfigDir(home), 'config.json'), 'utf8'))).toEqual({ anthropicApiKey: secret, maxDocs: 8 });
+});
+
+it('init rejects noninteractive input without prompting or writing', async () => {
+  const prompt = vi.fn();
+  await expect(initConfig({ ...options, prompt })).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  expect(prompt).not.toHaveBeenCalled();
+});
+
+it('redact masks all keys, including short keys, and leaves the original untouched', () => {
+  const config: ConfigSettings = { pineconeApiKey: secret, anthropicApiKey: 'abcd', openaiApiKey: 'x', googleApiKey: secret, port: 1234 };
+  expect(redact(config)).toEqual({ pineconeApiKey: 'sk-…cdef', anthropicApiKey: 'sk-…', openaiApiKey: 'sk-…', googleApiKey: 'sk-…cdef', port: 1234 });
+  expect(config.pineconeApiKey).toBe(secret);
+});
+
+it.each(['anthropic', 'openai', 'google', 'claude-cli', 'mock'] as const)('adapter options for %s contain only its own key', async (provider) => {
+  const config = await resolveConfig({ ...options, env: {
+    [envVar('LLM_PROVIDER')]: provider, ANTHROPIC_API_KEY: 'a-own-key', OPENAI_API_KEY: 'o-own-key',
+    GOOGLE_API_KEY: 'g-own-key', PINECONE_API_KEY: 'p-own-key', OPENAI_BASE_URL: 'https://endpoint.example/v1',
+  } });
+  const selected = providerConfig(config);
+  expect(selected.apiKey).toBe(({ anthropic: 'a-own-key', openai: 'o-own-key', google: 'g-own-key', 'claude-cli': undefined, mock: undefined })[provider]);
+  expect(selected.baseURL).toBe(provider === 'openai' ? 'https://endpoint.example/v1' : undefined);
+  expect(providerConfig(config, 'extract').model).toBe(config.extractModel);
+});
+
+describe('validation and secret-safe failures', () => {
+  it.each([
+    ['MAX_DOCS', '0'], ['MAX_DOCS', '-1'], ['MAX_DOCS', 'NaN'], ['MAX_DOCS', '1.5'],
+    ['PORT', '0'], ['PORT', '65536'], ['PORT', 'abc'], ['BACKEND', secret],
+    ['LLM_PROVIDER', secret], ['RETRIEVAL_MODE', secret],
+  ])('rejects invalid %s without disclosing its value', async (suffix, value) => {
+    const error: unknown = await resolveConfig({ ...options, env: { ...mockEnv, [envVar(suffix)]: value } }).catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(AppError);
+    expect(error).toMatchObject({ code: 'INVALID_INPUT', cause: undefined });
+    expect(JSON.stringify(error)).not.toContain(secret);
+    expect(String(error)).not.toContain(secret);
+  });
+  it.each(['file:///tmp/api', 'ftp://example.com', `https://user:${secret}@example.com`, `https://example.com?key=${secret}`, `https://example.com/#${secret}`])('rejects unsafe base URL without leaking it', async (url) => {
+    await expect(resolveConfig({ ...options, env: { ...mockEnv, OPENAI_BASE_URL: url } })).rejects.toMatchObject({ code: 'INVALID_INPUT', cause: undefined });
+  });
+  it('invalid file schemas do not expose secrets or schema details', async () => {
+    await file({ llmProvider: secret, unknownField: secret });
+    await expect(resolveConfig(options)).rejects.toMatchObject({ code: 'INVALID_INPUT', cause: undefined });
+  });
+  it('invalid CLI backend is rejected', async () => {
+    await expect(resolveConfig({ ...options, env: mockEnv, backend: secret })).rejects.toMatchObject({ code: 'INVALID_INPUT', message: 'Invalid backend. Choose pinecone or local.' });
+  });
+  it('prompt errors never retain unsafe messages or causes', async () => {
+    const prompt = vi.fn().mockRejectedValue(new Error(secret));
+    const error: unknown = await initConfig({ ...options, isTTY: true, prompt }).catch((failure: unknown) => failure);
+    expect(String(error)).not.toContain(secret);
+    expect(error).toMatchObject({ code: 'INVALID_INPUT', cause: undefined });
+  });
+  it('successful config resolution and init never log keys', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await initConfig({ ...options, isTTY: true, prompt: vi.fn().mockResolvedValue(secret) });
+    await resolveConfig(options);
+    for (const output of [log, info, warn, error]) expect(output).not.toHaveBeenCalled();
+  });
+});
+
+it('PATH detection uses executable files and skips missing, non-executable, or directory candidates', async () => {
+  expect(await hasClaudeOnPath({}, configFileSystem)).toBe(false);
+  const first = join(home, 'first');
+  const second = join(home, 'second');
+  await mkdir(join(first, 'claude'), { recursive: true });
+  await mkdir(second);
+  const binary = join(second, process.platform === 'win32' ? 'claude.exe' : 'claude');
+  await writeFile(binary, '', { mode: 0o600 });
+  expect(await hasClaudeOnPath({ PATH: second })).toBe(false);
+  await chmod(binary, 0o700);
+  const delimiter = process.platform === 'win32' ? ';' : ':';
+  expect(await hasClaudeOnPath({ PATH: [join(home, 'missing'), first, second].join(delimiter) })).toBe(true);
+  expect((await resolveConfig({ ...options, hasClaude: undefined, env: { PATH: second }, note: vi.fn() })).llmProvider).toBe('claude-cli');
+});
+
+it('config refuses symlinks instead of following credentials to another file', async () => {
+  await mkdir(getConfigDir(home));
+  const target = join(home, 'target.json');
+  await writeFile(target, JSON.stringify({ anthropicApiKey: secret }), { mode: 0o600 });
+  await symlink(target, join(getConfigDir(home), 'config.json'));
+  await expect(resolveConfig(options)).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+});

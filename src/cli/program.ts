@@ -2,6 +2,8 @@
 import { Command } from 'commander';
 import packageJson from '../../package.json' with { type: 'json' };
 import { BRAND } from '../core/brand.js';
+import { initConfig } from '../core/config.js';
+import { promptSecret } from './secret-prompt.js';
 
 function notImplemented(issue: number): () => void {
   return () => {
@@ -10,7 +12,7 @@ function notImplemented(issue: number): () => void {
   };
 }
 
-export function createProgram(): Command {
+export function createProgram(dependencies: { init?: () => Promise<unknown> } = {}): Command {
   const program = new Command()
     .name(BRAND.name)
     .description('Ask plain-language questions about one legislation document.')
@@ -22,7 +24,10 @@ export function createProgram(): Command {
   program
     .command('init')
     .description('configure provider keys locally')
-    .action(notImplemented(27));
+    .action(async () => {
+      await (dependencies.init?.() ?? initConfig({ prompt: promptSecret }));
+      console.log('Configuration saved with private file permissions.');
+    });
   program
     .command('ingest <url>')
     .description('ingest a legislation document')

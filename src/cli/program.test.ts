@@ -52,7 +52,6 @@ test('--version prints the package version', () => {
 });
 
 test.each([
-  { args: ['init'], issue: 27 },
   {
     args: ['ingest', 'https://example.com/bill', '--name', 'sample'],
     issue: 28,
@@ -75,6 +74,14 @@ test.each([
     expect(process.exitCode).toBe(2);
   },
 );
+
+test('init awaits configuration without printing returned credentials', async () => {
+  const init = vi.fn().mockResolvedValue({ anthropicApiKey: 'synthetic-key-do-not-display' });
+  const output = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  await createProgram({ init }).parseAsync(['init'], { from: 'user' });
+  expect(init).toHaveBeenCalledOnce();
+  expect(output).toHaveBeenCalledExactlyOnceWith('Configuration saved with private file permissions.');
+});
 
 test.each([
   { command: 'ingest', option: '--name' },
