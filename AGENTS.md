@@ -22,7 +22,7 @@ A localhost-first legislation RAG tool: an `npx` CLI plus a local web UI. You gi
 5. **Never log API keys** or include them in errors. Keys only go to their own provider.
 6. **Tests come with the code.** Every module ships with vitest tests next to it (`*.test.ts`). Security-critical modules (`core/fetch`, citation validation) need ≥90% line coverage.
 7. **TypeScript strict, ESM, Node ≥ 22.** Prefer small pure functions and explicit types at module boundaries. Validate external data with zod. No `any` without a comment explaining why.
-8. **Keep it readable.** This repo is also a portfolio piece. Name things clearly, comment the *why* and not the *what*, and keep retrieval and chip strategies explicit rather than clever.
+8. **Keep it readable.** This repo is also a portfolio piece. Name things clearly, comment the _why_ and not the _what_, and keep retrieval and chip strategies explicit rather than clever.
 9. **Dependencies.** Check the current version with `npm view <pkg> version` before adding a dependency, and prefer well-maintained packages. Don't add a dependency for something that takes a few lines.
 
 ## Git

@@ -11,12 +11,14 @@ These override the original text below where they conflict. Rationale for each i
    - **`local`** (built in, no Docker, no account): on-device dense embeddings via transformers.js, explicit BM25 for sparse, and a local cross-encoder reranker.
 
    Pinecone is used when a key resolves; otherwise the local backend. `--backend` overrides the choice.
+
 2. **LLM providers.** §2's "Anthropic only" is replaced. An `LlmProvider` port has these adapters:
    - `anthropic`, `openai` and `google` (official SDKs). `openai` accepts a `baseURL`, which covers OpenRouter, Ollama, Groq, LM Studio and other OpenAI-compatible endpoints.
    - `claude-cli`: an opt-in local-dev provider that calls the user's installed `claude -p` and never touches credentials.
    - `mock`: deterministic, for CI.
 
    Embeddings never go through the LLM provider.
+
 3. **Node ≥ 22**, not 20. Node 20 reached end-of-life in April 2026. CI runs Node 22 and 24.
 4. **Hybrid merge** defaults to Reciprocal Rank Fusion (k=60). A weighted min-max variant is reported in eval.
 5. **Plain language.** Answers target roughly a 7th-grade reading level. Eval reports the Flesch-Kincaid grade, and adds two metrics: deleted-text leakage rate and decline rate.
@@ -91,16 +93,16 @@ Freeform `ask` is always allowed in the CLI (the user is paying with their own k
 
 Defined in one config file, `src/core/chips.ts`. Each chip = label + one or more query strings + optional metadata filter + optional answer template. The chip retrieval strategies are part of the showcase, so keep them explicit and readable.
 
-| id | Label | Retrieval strategy |
-|---|---|---|
-| `summary` | Summarize this bill | Use the structural outline (section headings) plus the first chunk of each top-level section; map-reduce for long docs, capped |
-| `what-changes` | What does it change? | Filter `amendment_status IN [inserted, deleted]`, group by section |
-| `who-affected` | Who does it affect? | Hybrid query + rerank |
-| `penalties` | Penalties and enforcement | Hybrid query, sparse-weighted terms (penalty, fine, violation, enforce) |
-| `effective-date` | When does it take effect? | Sparse-heavy query (effective, takes effect, operative date) |
-| `money` | Taxes, fees, and spending | Hybrid query + `chunk_type IN [appropriation, operative]` |
-| `definitions` | Key definitions | Filter `chunk_type = definition`, list terms |
-| `sponsors` | Who sponsored it? | Metadata only, no retrieval or LLM call |
+| id               | Label                     | Retrieval strategy                                                                                                             |
+| ---------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `summary`        | Summarize this bill       | Use the structural outline (section headings) plus the first chunk of each top-level section; map-reduce for long docs, capped |
+| `what-changes`   | What does it change?      | Filter `amendment_status IN [inserted, deleted]`, group by section                                                             |
+| `who-affected`   | Who does it affect?       | Hybrid query + rerank                                                                                                          |
+| `penalties`      | Penalties and enforcement | Hybrid query, sparse-weighted terms (penalty, fine, violation, enforce)                                                        |
+| `effective-date` | When does it take effect? | Sparse-heavy query (effective, takes effect, operative date)                                                                   |
+| `money`          | Taxes, fees, and spending | Hybrid query + `chunk_type IN [appropriation, operative]`                                                                      |
+| `definitions`    | Key definitions           | Filter `chunk_type = definition`, list terms                                                                                   |
+| `sponsors`       | Who sponsored it?         | Metadata only, no retrieval or LLM call                                                                                        |
 
 ## 4. Architecture
 
@@ -150,16 +152,16 @@ type NormalizedDoc = {
   docId: string;
   sourceUrl: string;
   format: 'xml' | 'html' | 'pdf' | 'text';
-  metadata: BillMetadata;          // all fields nullable
-  sections: Section[];             // tree
+  metadata: BillMetadata; // all fields nullable
+  sections: Section[]; // tree
   definitions: Definition[];
   externalRefs: ExternalRef[];
   warnings: string[];
 };
 
 type Section = {
-  id: string;                      // stable path, e.g. "sec-4/b/2"
-  num?: string;                    // as printed, e.g. "4(b)(2)" or "5747.01"
+  id: string; // stable path, e.g. "sec-4/b/2"
+  num?: string; // as printed, e.g. "4(b)(2)" or "5747.01"
   heading?: string;
   level: number;
   spans: Span[];
@@ -173,17 +175,20 @@ type Span = { text: string; status: 'unchanged' | 'inserted' | 'deleted' };
 ```
 
 **XML**
+
 - Support the U.S. Code USLM schema, the congressional bill XML on govinfo, and Akoma Ntoso if encountered.
 - Generic fallback: walk the tree; treat elements with number/heading children as sections.
 - Map whatever insertion/deletion markup the schema uses to `Span.status`. Inspect the fixtures to confirm element names rather than guessing.
 
 **HTML**
+
 - `cheerio`; strip nav, header, footer, scripts.
 - Sections from heading elements and section-number patterns.
 - `<s>`, `<strike>`, `<del>`, `text-decoration: line-through` => `deleted`.
 - `<u>`, `<ins>`, `text-decoration: underline` => `inserted`.
 
 **PDF** (`pdfjs-dist`)
+
 - Extract text items with positions.
 - **Line numbers:** detect numeric items in a consistent left-margin x band. Record them as `lineStart`/`lineEnd` for citations, then remove them from the text.
 - **Running headers/footers:** remove text repeated at the same y position across pages.
