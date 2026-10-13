@@ -208,3 +208,20 @@ test('the CLI exits nonzero with a clear message for an unknown fixture', () => 
   expect(result.status).toBe(1);
   expect(result.stderr).toContain('Unknown fixture: unknown-fixture');
 });
+
+test('writes atomically: no .part file remains after a download', async () => {
+  expect(await download()).toMatchObject([{ status: 'downloaded' }]);
+  expect(await readdir(directory)).toEqual(['sample-bill.txt']);
+});
+
+test('refuses a body whose Content-Length is far larger than expected', async () => {
+  fetcher.mockResolvedValue(
+    new Response(data, {
+      headers: { 'content-length': String(fixture.bytes * 10 + 5000) },
+    }),
+  );
+  const [result] = await download();
+  expect(result?.status).toBe('error');
+  expect(result?.message).toContain('far larger');
+  expect(await readdir(directory)).toEqual([]);
+});

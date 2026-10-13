@@ -1,18 +1,16 @@
 import { expect, test } from 'vitest';
 import { findViolations } from './no-fixtures-guard.mjs';
 
-test('accepts ordinary tracked files and small document samples', () => {
+test('accepts ordinary tracked files and small XML samples', () => {
   expect(
     findViolations([
       { path: 'src/example.ts', size: 10000 },
-      { path: 'docs/sample.pdf', size: 4096 },
-      { path: 'docs/sample.docx', size: 0 },
       { path: 'docs/sample.xml', size: 4095 },
     ]),
   ).toEqual([]);
 });
 
-test.each(['pdf', 'docx', 'xml', 'PDF', 'DOCX', 'XML'])(
+test.each(['xml', 'XML'])(
   'rejects oversized .%s documents outside tests/synth/',
   (extension) => {
     expect(
@@ -120,4 +118,22 @@ test('rejects a populated .env.sample', () => {
       { path: '.env.sample', size: 30, content: 'API_KEY=abc\n' },
     ]),
   ).toEqual([expect.stringContaining('.env.sample:1:')]);
+});
+
+test.each(['docs/tmp/bill.pdf', 'notes/a.docx', 'b.DOC', 'c.rtf'])(
+  'rejects a tracked binary document %s at any size',
+  (path) => {
+    expect(findViolations([{ path, size: 25 }])).toEqual([
+      expect.stringContaining('binary documents must not be tracked'),
+    ]);
+  },
+);
+
+test('allows small XML and synthetic test documents', () => {
+  expect(
+    findViolations([
+      { path: 'config/small.xml', size: 512 },
+      { path: 'tests/synth/sample.pdf', size: 90_000 },
+    ]),
+  ).toEqual([]);
 });

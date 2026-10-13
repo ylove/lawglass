@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { BRAND } from '../src/core/brand.js';
@@ -76,6 +76,14 @@ export async function fetchFixtures(options: {
         throw new Error(
           `HTTP ${String(response.status)} ${response.statusText}`,
         );
+      // Fixture sizes are known: refuse a body that announces itself as far larger, rather
+      // than buffering it. (Size and hash are verified again after download.)
+      const announced = Number(response.headers.get('content-length') ?? NaN);
+      if (Number.isFinite(announced) && announced > fixture.bytes * 2 + 1024) {
+        throw new Error(
+          `Content-Length ${String(announced)} is far larger than the expected ${String(fixture.bytes)} bytes`,
+        );
+      }
       const data = new Uint8Array(await response.arrayBuffer());
       const verification = verifyFixture(data, fixture);
       if (!verification.matches) {
@@ -89,7 +97,9 @@ export async function fetchFixtures(options: {
         });
         continue;
       }
-      await writeFile(path, data);
+      // Write then rename, so an interrupted run never leaves a truncated file at `path`.
+      await writeFile(`${path}.part`, data);
+      await rename(`${path}.part`, path);
       results.push({
         name: fixture.name,
         status: 'downloaded',
