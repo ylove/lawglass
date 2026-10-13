@@ -98,6 +98,7 @@ export class LocalBackend implements RetrievalBackend {
 
   async ensureReady(signal?: AbortSignal): Promise<void> {
     throwIfAborted(signal);
+    await this.store.ensureReady();
     await this.embedder.ensureReady(signal);
     await this.reranker.ensureReady(signal);
     throwIfAborted(signal);
@@ -148,16 +149,17 @@ export class LocalBackend implements RetrievalBackend {
       const previous = await this.store.load(docId);
       if (previous) this.compatible(previous);
       // Map insertion order is stable, so replacements keep their existing vector row.
-      const chunksById = new Map(
+      const previousChunksById = new Map(
         previous?.chunks.map((chunk) => [chunk.id, chunk]),
       );
+      const chunksById = new Map(previousChunksById);
       const vectorsById = new Map(
         previous?.chunks.map((chunk, row) => [chunk.id, previous.vectors[row]]),
       );
       const changed = new Map<string, Chunk>();
       for (const chunk of incoming) {
         chunksById.set(chunk.id, chunk);
-        const old = previous?.chunks.find((c) => c.id === chunk.id);
+        const old = previousChunksById.get(chunk.id);
         if (old?.embedText !== chunk.embedText) changed.set(chunk.id, chunk);
         else changed.delete(chunk.id);
       }

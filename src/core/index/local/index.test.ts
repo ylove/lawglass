@@ -1,4 +1,13 @@
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -39,6 +48,19 @@ describe('local backend', () => {
     vi.restoreAllMocks();
     await rm(root, { recursive: true, force: true });
   });
+
+  it.each(['ensureReady', 'hasDocument'] as const)(
+    'sweeps stale staging directories before %s completes',
+    async (initialize) => {
+      const stale = join(root, `${DOC_A}.${randomUUID()}.tmp`);
+      await mkdir(stale);
+      const modified = new Date(Date.now() - 2 * 60 * 60 * 1000);
+      await utimes(stale, modified, modified);
+      if (initialize === 'ensureReady') await backend.ensureReady();
+      else expect(await backend.hasDocument(DOC_A)).toBe(false);
+      expect(await readdir(root)).toEqual([]);
+    },
+  );
 
   it('persists all four files, normalized vectors, and round-trips through a new adapter', async () => {
     await backend.upsertChunks(DOC_A, CHUNKS_A);
@@ -113,6 +135,32 @@ describe('local backend', () => {
     });
     expect(hits).toHaveLength(CHUNKS_A.length);
     expect(hits[0]?.chunk.id).toBe(updated.id);
+  });
+
+  it('reuses the original vector when the last duplicate restores its embedding text', async () => {
+    await backend.upsertChunks(DOC_A, CHUNKS_A);
+    const original = CHUNKS_A[0]!;
+    const restored = { ...original, heading: 'Updated heading' };
+    const result = await backend.upsertChunks(DOC_A, [
+      { ...original, embedText: 'temporary replacement' },
+      restored,
+    ]);
+    expect(result.usage).toEqual(ZERO_USAGE);
+    expect(embedder.calls).toHaveLength(1);
+    expect(await backend.getChunks(DOC_A, [original.id])).toEqual([
+      expect.objectContaining({
+        heading: restored.heading,
+        text: original.text,
+      }),
+    ]);
+    const { hits } = await backend.search({
+      docId: DOC_A,
+      index: 'dense',
+      query: original.embedText,
+      topK: 1,
+    });
+    expect(hits[0]?.chunk.id).toBe(original.id);
+    expect(hits[0]?.score).toBeCloseTo(1);
   });
 
   it('serializes concurrent batches across instances without losing rows', async () => {

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -51,6 +51,56 @@ describe('atomic file store', () => {
   });
   const save = () => store.run(DOC_A, () => store.save(DOC_A, sample()));
   const load = () => store.run(DOC_A, () => store.load(DOC_A));
+
+  it('sweeps only staging directories older than one hour on initialization', async () => {
+    const now = new Date('2026-10-13T12:00:00Z');
+    vi.spyOn(Date, 'now').mockReturnValue(now.getTime());
+    const stale = `${DOC_A}.${randomUUID()}.tmp`;
+    const fresh = `${DOC_A}.${randomUUID()}.tmp`;
+    const boundary = `${DOC_A}.${randomUUID()}.tmp`;
+    const ordinaryFile = `${DOC_A}.${randomUUID()}.tmp`;
+    const untouched = [
+      fresh,
+      boundary,
+      DOC_A,
+      `${DOC_A}.previous`,
+      'other.tmp',
+    ];
+    for (const name of [stale, ...untouched]) {
+      await fs.mkdir(join(root, name));
+      await fs.writeFile(join(root, name, 'partial'), 'staged data');
+      const age =
+        name === fresh
+          ? 30 * 60 * 1000
+          : name === boundary
+            ? 60 * 60 * 1000
+            : 2 * 60 * 60 * 1000;
+      const modified = new Date(now.getTime() - age);
+      await fs.utimes(join(root, name), modified, modified);
+    }
+    await fs.writeFile(join(root, ordinaryFile), 'ordinary file');
+    await fs.utimes(join(root, ordinaryFile), new Date(0), new Date(0));
+
+    await store.ensureReady();
+
+    expect((await fs.readdir(root)).sort()).toEqual(
+      [...untouched, ordinaryFile].sort(),
+    );
+    expect(await fs.readFile(join(root, fresh, 'partial'), 'utf8')).toBe(
+      'staged data',
+    );
+  });
+
+  it('initializes an absent store and reports initialization failures with retry', async () => {
+    await new FileStore(join(root, 'missing')).ensureReady();
+    vi.spyOn(fs, 'readdir').mockRejectedValueOnce(
+      Object.assign(new Error('denied'), { code: 'EACCES' }),
+    );
+    await expect(store.ensureReady()).rejects.toMatchObject({
+      code: 'BACKEND_UNAVAILABLE',
+    });
+    await store.ensureReady();
+  });
 
   it('does not publish meta on a staging write failure and cleans temporary files', async () => {
     vi.spyOn(fs, 'writeFile').mockRejectedValueOnce(new Error('disk full'));

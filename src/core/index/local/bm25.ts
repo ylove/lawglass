@@ -9,8 +9,11 @@ const STOPWORDS = new Set(
 /** Preserve statute numbers and section signs; currency separators aren't meaningful terms. */
 export function tokenize(text: string): string[] {
   const normalized = text
+    .normalize('NFKC')
     .toLowerCase()
-    .replace(/\$?\d[\d,]*(?:\.\d+)?/g, (n) => n.replace(/[$,]/g, ''));
+    .normalize('NFD')
+    .replace(/\p{M}/gu, '')
+    .replace(/(?<!\d)\d{1,3}(?:,\d{3})+(?!\d)/g, (n) => n.replace(/,/g, ''));
   return (normalized.match(/[\p{L}\p{N}]+(?:\.\d+)*|§/gu) ?? []).filter(
     (term) => !STOPWORDS.has(term),
   );

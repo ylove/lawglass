@@ -33,11 +33,52 @@ const isMissing = (error: unknown): boolean =>
 // All adapters pointing at the same namespace share a queue, including readers.
 // This keeps chunk rows and vector rows together during a directory replacement.
 const queues = new Map<string, Promise<unknown>>();
+const TEMPORARY_MAX_AGE_MS = 60 * 60 * 1000;
+const TEMPORARY_DIRECTORY =
+  /^[a-zA-Z0-9][a-zA-Z0-9_-]*\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.tmp$/;
 
 export class FileStore {
   readonly root: string;
+  private initialization?: Promise<void>;
   constructor(root: string) {
     this.root = resolve(root);
+  }
+
+  ensureReady(): Promise<void> {
+    return (this.initialization ??= this.sweepTemporaryDirectories().catch(
+      (cause: unknown) => {
+        this.initialization = undefined;
+        throw new AppError(
+          'BACKEND_UNAVAILABLE',
+          'Could not initialize the local document store.',
+          { cause },
+        );
+      },
+    ));
+  }
+
+  private async sweepTemporaryDirectories(): Promise<void> {
+    let entries;
+    try {
+      entries = await fs.readdir(this.root, { withFileTypes: true });
+    } catch (error) {
+      if (isMissing(error)) return;
+      throw error;
+    }
+    const cutoff = Date.now() - TEMPORARY_MAX_AGE_MS;
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !TEMPORARY_DIRECTORY.test(entry.name))
+        continue;
+      const directory = join(this.root, entry.name);
+      try {
+        // Fresh staging directories may belong to another backend instance.
+        if ((await fs.stat(directory)).mtimeMs < cutoff)
+          await fs.rm(directory, { recursive: true, force: true });
+      } catch (error) {
+        // A concurrent writer or sweep may already have removed this entry.
+        if (!isMissing(error)) throw error;
+      }
+    }
   }
 
   private directory(docId: string): string {
@@ -56,6 +97,7 @@ export class FileStore {
     const pending = previous
       .catch(() => undefined)
       .then(async () => {
+        await this.ensureReady();
         // Recover an interrupted replacement before accessing any of its files.
         const backup = `${directory}.previous`;
         try {

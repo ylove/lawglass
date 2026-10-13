@@ -5,7 +5,7 @@ describe('legislation tokenizer', () => {
   it('preserves sections, decimals, currency amounts and Unicode words', () => {
     expect(
       tokenize('The § 5747.01 levy is $5,000; and $2,000,000. Café—GRANTS!'),
-    ).toEqual(['§', '5747.01', 'levy', '5000', '2000000', 'café', 'grants']);
+    ).toEqual(['§', '5747.01', 'levy', '5000', '2000000', 'cafe', 'grants']);
     expect(tokenize('42 U.S.C. 1983 (A)(2)')).toEqual([
       '42',
       'u',
@@ -15,6 +15,46 @@ describe('legislation tokenizer', () => {
       '2',
     ]);
     expect(tokenize('the AND of...')).toEqual([]);
+  });
+
+  it.each([
+    ['1,2', ['1', '2']],
+    ['$5,000', ['5000']],
+    ['1,000,000', ['1000000']],
+    ['3,4', ['3', '4']],
+    ['1234,5678', ['1234', '5678']],
+  ])('tokenizes %s without joining section lists', (text, expected) => {
+    expect(tokenize(text)).toEqual(expected);
+  });
+
+  it('retrieves bare section numbers from comma-separated lists', () => {
+    const index = buildBm25(['Sections 1,2 and 3,4']);
+    expect(tokenize('Sections 1,2 and 3,4')).toEqual([
+      'sections',
+      '1',
+      '2',
+      '3',
+      '4',
+    ]);
+    expect(scoreBm25(index, '3')[0]).toBeGreaterThan(0);
+  });
+
+  it('normalizes compatibility forms and accents while preserving section signs', () => {
+    expect(tokenize('CAFÉ cafe cafe\u0301 ｃａｆé §５７４７.０１')).toEqual([
+      'cafe',
+      'cafe',
+      'cafe',
+      'cafe',
+      '§',
+      '5747.01',
+    ]);
+    const forms = ['café', 'cafe', 'cafe\u0301', 'ｃａｆé'];
+    const index = buildBm25(forms);
+    for (const query of forms) {
+      const scores = scoreBm25(index, query);
+      expect(scores[0]).toBeGreaterThan(0);
+      expect(new Set(scores).size).toBe(1);
+    }
   });
 });
 
