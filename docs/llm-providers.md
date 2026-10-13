@@ -51,8 +51,13 @@ never reads credential files or forwards `ProviderConfig.apiKey` to it. There is
 no application login flow. The CLI API has no hard output-token flag; its own
 output limits apply, while the adapter enforces timeout, abort and one turn.
 
-Every invocation uses a fresh empty temporary cwd, sends the conversation on
-stdin, and disables built-in tools (`--tools ""`) and all inherited MCP servers
+Every invocation uses a fresh temporary cwd containing only a private system
+prompt file. `--system-prompt-file` replaces Claude Code's default system prompt;
+the conversation messages stay on stdin. The child receives only basic process
+settings (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `LC_*`,
+`TERM`) and the user's `CLAUDE_*` / `ANTHROPIC_*` environment configuration.
+Other providers' keys and application settings are excluded. The adapter
+disables built-in tools (`--tools ""`) and all inherited MCP servers
 (`--strict-mcp-config --mcp-config '{"mcpServers":{}}'`). It also uses safe mode,
 empty setting sources, disabled slash commands and no session persistence to
 prevent hooks, skills or project customizations from running. Each flag is

@@ -17,4 +17,12 @@ it('defines answer and extraction models for all providers', () => {
     answer: 'claude-sonnet-5-5',
     extract: 'claude-haiku-5-5',
   });
+  expect(DEFAULT_MODELS.openai).toEqual({
+    answer: 'gpt-6.1-sol',
+    extract: 'gpt-6-luna',
+  });
+  expect(DEFAULT_MODELS.google).toEqual({
+    answer: 'gemini-3.8-flash',
+    extract: 'gemini-3.5-flash-lite',
+  });
 });

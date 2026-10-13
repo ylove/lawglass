@@ -62,6 +62,35 @@ describe('deterministic mock', () => {
     ).toBe('Water grants help towns [S:sec-1]. Grants help [S:sec-2].');
     expect(await reply('water <excerpt>Water.</excerpt>')).toBe(DECLINE_TEXT);
   });
+  it.each([
+    'Water <outer <inner>> grants help towns.',
+    'Water <scr<script>ipt> grants help towns.',
+    'Water <b>grants</b> help towns.',
+  ])('preserves angle brackets as plain excerpt text: %s', async (text) => {
+    expect(
+      await reply(`water grants <excerpt section="sec-1">${text}</excerpt>`),
+    ).toBe(`${text.slice(0, -1)} [S:sec-1].`);
+  });
+  it('uses only the surrounding question for overlap and extracts multiple blocks', async () => {
+    expect(
+      await reply(
+        '<scr<script>ipt>grants? <excerpt section="sec-1">Water only.</excerpt> <excerpt section="sec-2">Grants for towns.</excerpt>',
+      ),
+    ).toBe('Grants for towns [S:sec-2].');
+    expect(
+      await reply(
+        'spaceflight? <excerpt section="sec-1">Water grants.</excerpt> <excerpt section="sec-2">Water grants.</excerpt>',
+      ),
+    ).toBe(DECLINE_TEXT);
+  });
+  it.each([
+    'water <excerptish section="sec-1">Water.</excerpt>',
+    'water <excerpt section="sec-1"',
+    'water <excerpt section="sec-1">Water.',
+    'water <excerpt <scr<script>ipt> section="sec-1">Water.</excerpt>',
+  ])('does not interpret malformed excerpt delimiters: %s', async (prompt) => {
+    expect(await reply(prompt)).toBe(DECLINE_TEXT);
+  });
   it('returns conservative schema-valid nulls and empty arrays', async () => {
     const schema = z.object({
       title: z.string().nullable(),

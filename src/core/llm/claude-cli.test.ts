@@ -1,10 +1,12 @@
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { inspect } from 'node:util';
 import { describe, expect, it, vi } from 'vitest';
 import { describeProviderContract } from '../../../tests/contracts/provider.contract.js';
 import { fakeCli, objectTranscript } from '../../../tests/llm/cli.js';
 import { asset, drain, textRequest } from '../../../tests/llm/http.js';
 import { objectRequest } from '../../../tests/llm/provider-tests.js';
+import { envVar } from '../brand.js';
 import { ClaudeCliProvider } from './claude-cli.js';
 
 const config = { provider: 'claude-cli', model: 'claude-sonnet-5-5' } as const;
@@ -13,15 +15,15 @@ describeProviderContract(
   () =>
     new ClaudeCliProvider(config, {
       spawn: fakeCli({
-        transcript: (prompt) =>
-          prompt.includes('Return only JSON')
+        transcript: (_prompt, systemPrompt) =>
+          systemPrompt.includes('Return only JSON')
             ? objectTranscript()
             : asset('claude-cli.jsonl'),
       }).spawn,
     }),
 );
 describe('Claude CLI isolation and lifecycle', () => {
-  it('sends the full conversation via stdin with no tools, isolated cwd and explicit model', async () => {
+  it('replays the recorded transcript with a real system prompt, stdin conversation and isolated cwd', async () => {
     const fake = fakeCli();
     const provider = new ClaudeCliProvider(
       { ...config, apiKey: 'ignored-provider-key' },
@@ -44,45 +46,131 @@ describe('Claude CLI isolation and lifecycle', () => {
     ]);
     const call = fake.calls[0]!;
     expect(call.command).toBe('claude');
-    for (const [flag, value] of [
-      ['--tools', ''],
-      ['--mcp-config', '{"mcpServers":{}}'],
-      ['--max-turns', '1'],
-      ['--model', config.model],
-      ['--setting-sources', ''],
-    ]) {
-      expect(call.args[call.args.indexOf(flag!) + 1]).toBe(value);
-    }
-    expect(call.args).toEqual(
-      expect.arrayContaining([
-        '--strict-mcp-config',
-        '--safe-mode',
-        '--disable-slash-commands',
-        '--no-session-persistence',
-      ]),
+    const systemPromptFile = join(
+      String(call.options.cwd),
+      'system-prompt.txt',
     );
+    expect(call.args).toEqual([
+      '-p',
+      '--output-format',
+      'stream-json',
+      '--verbose',
+      '--include-partial-messages',
+      '--tools',
+      '',
+      '--strict-mcp-config',
+      '--mcp-config',
+      '{"mcpServers":{}}',
+      '--max-turns',
+      '1',
+      '--model',
+      config.model,
+      '--system-prompt-file',
+      systemPromptFile,
+      '--safe-mode',
+      '--setting-sources',
+      '',
+      '--disable-slash-commands',
+      '--no-session-persistence',
+    ]);
     expect(call.args.join(' ')).not.toMatch(
       /bypass|dangerously|untrusted bill text|ignored-provider-key/,
     );
-    expect(JSON.parse(call.prompt)).toMatchObject({
+    expect(JSON.parse(call.prompt)).toEqual({
       messages: [
         { role: 'user', content: 'untrusted bill text' },
         { role: 'assistant', content: 'Prior' },
       ],
     });
-    expect(call.emptyCwd).toBe(true);
+    expect(call.systemPrompt).toBe(textRequest.system);
+    expect(call.systemPromptMode).toBe(0o600);
+    expect(call.cwdFiles).toEqual(['system-prompt.txt']);
     expect(call.options.shell).toBe(false);
+    expect(existsSync(systemPromptFile)).toBe(false);
     expect(existsSync(String(call.options.cwd))).toBe(false);
   });
+  it('writes long system prompts only to the temporary file', async () => {
+    const system = 'Follow these legislation instructions.\n'.repeat(10_000);
+    const fake = fakeCli();
+    await drain(new ClaudeCliProvider(config, fake), {
+      ...textRequest,
+      system,
+    });
+    const call = fake.calls[0]!;
+    expect(call.systemPrompt).toBe(system);
+    expect(call.args.join(' ')).not.toContain(
+      'Follow these legislation instructions',
+    );
+    expect(call.prompt).toBe(
+      JSON.stringify({ messages: textRequest.messages }),
+    );
+    expect(existsSync(String(call.options.cwd))).toBe(false);
+  });
+  it('allows only basic process settings and Claude/Anthropic configuration in the child env', async () => {
+    const permitted = {
+      PATH: '/test/bin',
+      HOME: '/test/home',
+      USER: 'test',
+      LOGNAME: 'test',
+      SHELL: '/bin/sh',
+      TMPDIR: process.env.TMPDIR ?? '/tmp',
+      LANG: 'en_US.UTF-8',
+      LC_ALL: 'C',
+      LC_MESSAGES: 'C',
+      TERM: 'xterm',
+      CLAUDE_CONFIG_DIR: '/test/claude',
+      CLAUDE_CODE_OAUTH_TOKEN: 'test-cli-token',
+      ANTHROPIC_API_KEY: 'test-cli-key',
+      ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
+    };
+    const excluded = [
+      'OPENAI_API_KEY',
+      'OPENAI_BASE_URL',
+      'GOOGLE_API_KEY',
+      'GOOGLE_APPLICATION_CREDENTIALS',
+      'GEMINI_API_KEY',
+      'PINECONE_API_KEY',
+      envVar('OPENAI_API_KEY'),
+      envVar('PROVIDER'),
+      'NODE_OPTIONS',
+      'UNRELATED_SECRET',
+    ];
+    try {
+      for (const [name, value] of Object.entries(permitted))
+        vi.stubEnv(name, value);
+      for (const name of excluded)
+        vi.stubEnv(name, 'test-other-provider-secret');
+      const fake = fakeCli();
+      await drain(new ClaudeCliProvider(config, fake));
+      const env = fake.calls[0]!.options.env!;
+      expect(env).toMatchObject(permitted);
+      for (const name of excluded) expect(env).not.toHaveProperty(name);
+      expect(
+        Object.keys(env).every(
+          (name) =>
+            Object.hasOwn(permitted, name) ||
+            name.startsWith('LC_') ||
+            name.startsWith('CLAUDE_') ||
+            name.startsWith('ANTHROPIC_'),
+        ),
+      ).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
   it('validates structured output', async () => {
+    const fake = fakeCli({ transcript: objectTranscript() });
     expect(
-      (
-        await new ClaudeCliProvider(
-          config,
-          fakeCli({ transcript: objectTranscript() }),
-        ).generateObject(objectRequest)
-      ).object,
+      (await new ClaudeCliProvider(config, fake).generateObject(objectRequest))
+        .object,
     ).toEqual({ billNumber: null, sponsors: null });
+    expect(fake.calls[0]!.systemPrompt).toContain(
+      'Return only JSON matching this schema:',
+    );
+    expect(fake.calls[0]!.systemPrompt).toContain('billNumber');
+    expect(JSON.parse(fake.calls[0]!.prompt)).toEqual({
+      messages: [{ role: 'user', content: objectRequest.prompt }],
+    });
     await expect(
       new ClaudeCliProvider(config, fakeCli()).generateObject(objectRequest),
     ).rejects.toMatchObject({ code: 'PROVIDER_BAD_OUTPUT' });

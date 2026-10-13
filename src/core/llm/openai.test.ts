@@ -22,6 +22,81 @@ const rejection = (format: string) => ({
   }),
 });
 describe('OpenAI compatibility', () => {
+  it('retries a 400 stream_options rejection once without the option and reports zero usage', async () => {
+    const replay = httpReplay([
+      {
+        status: 400,
+        body: JSON.stringify({
+          error: {
+            message: 'Unknown parameter: stream_options',
+            type: 'invalid_request_error',
+          },
+        }),
+      },
+      { body: asset('openai-stream.sse'), stream: true },
+    ]);
+    const events = await drain(
+      make(replay.fetch, {
+        baseURL: 'https://compatible.example/v1',
+      }),
+    );
+    expect(
+      events
+        .filter((e) => e.type === 'text')
+        .map((e) => e.text)
+        .join(''),
+    ).toBe('Hello world.');
+    expect(events.filter((e) => e.type === 'done')).toEqual([
+      {
+        type: 'done',
+        usage: { inputTokens: 0, outputTokens: 0 },
+        stopReason: 'stop',
+      },
+    ]);
+    expect(replay.requests).toHaveLength(2);
+    const first = (await replay.requests[0]!.json()) as Record<string, unknown>;
+    const second = (await replay.requests[1]!.json()) as Record<
+      string,
+      unknown
+    >;
+    expect(first.stream_options).toEqual({ include_usage: true });
+    expect(second).not.toHaveProperty('stream_options');
+    const { stream_options: _streamOptions, ...withoutOptions } = first;
+    expect(second).toEqual(withoutOptions);
+    expect(replay.requests[1]!.headers.get('authorization')).toBe(
+      `Bearer ${KEY}`,
+    );
+  });
+  it.each([
+    { status: 400, message: 'Invalid model' },
+    { status: 401, message: 'stream_options authentication failure' },
+    { status: 422, message: 'Unsupported stream_options' },
+  ])(
+    'does not retry unrelated streaming failures ($status: $message)',
+    async ({ status, message }) => {
+      const replay = httpReplay([
+        {
+          status,
+          body: JSON.stringify({ error: { message } }),
+        },
+      ]);
+      await expect(drain(make(replay.fetch))).rejects.toMatchObject({
+        code: 'PROVIDER_ERROR',
+      });
+      expect(replay.requests).toHaveLength(1);
+    },
+  );
+  it('does not retry again when the stream_options fallback fails', async () => {
+    const reply = {
+      status: 400,
+      body: '{"error":{"message":"Unsupported stream_options"}}',
+    };
+    const replay = httpReplay([reply, reply]);
+    await expect(drain(make(replay.fetch))).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+    });
+    expect(replay.requests).toHaveLength(2);
+  });
   it('falls back from JSON schema to JSON object then plain JSON, with validation', async () => {
     const replay = httpReplay([
       rejection('json_schema'),

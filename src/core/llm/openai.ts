@@ -1,5 +1,8 @@
 import OpenAI from 'openai';
-import type { ChatCompletionCreateParamsNonStreaming } from 'openai/resources/chat/completions';
+import type {
+  ChatCompletionCreateParamsNonStreaming,
+  ChatCompletionCreateParamsStreaming,
+} from 'openai/resources/chat/completions';
 import {
   AppError,
   type LlmProvider,
@@ -43,6 +46,14 @@ function rejectsFormat(error: unknown): boolean {
   );
 }
 
+function rejectsStreamOptions(error: unknown): boolean {
+  return (
+    error instanceof OpenAI.APIError &&
+    error.status === 400 &&
+    /stream_options/i.test(error.message)
+  );
+}
+
 export class OpenAIProvider implements LlmProvider {
   readonly id = 'openai' as const;
   readonly model: string;
@@ -82,27 +93,35 @@ export class OpenAIProvider implements LlmProvider {
       Awaited<ReturnType<OpenAI['chat']['completions']['create']>> | undefined;
     try {
       const signal = requestSignal(req.signal, this.config.timeoutMs);
-      const response = await this.client.chat.completions.create(
-        {
-          model: this.model,
-          messages: [{ role: 'system', content: req.system }, ...req.messages],
-          ...this.tokenLimit(req.maxTokens),
-          temperature: req.temperature,
-          stream: true,
-          stream_options: { include_usage: true },
-        },
-        { signal },
-      );
-      stream = response;
+      const params: ChatCompletionCreateParamsStreaming = {
+        model: this.model,
+        messages: [{ role: 'system', content: req.system }, ...req.messages],
+        ...this.tokenLimit(req.maxTokens),
+        temperature: req.temperature,
+        stream: true,
+        stream_options: { include_usage: true },
+      };
+      let includeUsage = true;
+      try {
+        stream = await this.client.chat.completions.create(params, { signal });
+      } catch (error) {
+        if (!rejectsStreamOptions(error)) throw error;
+        signal.throwIfAborted();
+        includeUsage = false;
+        const { stream_options: _streamOptions, ...compatibleParams } = params;
+        stream = await this.client.chat.completions.create(compatibleParams, {
+          signal,
+        });
+      }
       let usage = ZERO_LLM_USAGE;
       let stopReason: string | null = null;
-      for await (const chunk of response) {
+      for await (const chunk of stream) {
         signal.throwIfAborted();
         const choice = chunk.choices[0];
         if (choice?.delta.content)
           yield { type: 'text', text: choice.delta.content };
         if (choice?.finish_reason) stopReason = choice.finish_reason;
-        if (chunk.usage)
+        if (includeUsage && chunk.usage)
           usage = {
             inputTokens: chunk.usage.prompt_tokens,
             outputTokens: chunk.usage.completion_tokens,

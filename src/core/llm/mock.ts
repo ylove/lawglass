@@ -25,17 +25,48 @@ function checkAbort(signal?: AbortSignal): void {
   if (signal?.aborted) throw new AppError('PROVIDER_ERROR');
 }
 
+/** Recognize only our excerpt delimiters; all other angle brackets are plain text. */
+function parseExcerpts(prompt: string) {
+  const excerpts: { attributes: string; text: string }[] = [];
+  const question: string[] = [];
+  let searchFrom = 0;
+  let plainFrom = 0;
+  while (searchFrom < prompt.length) {
+    const start = prompt.indexOf('<excerpt', searchFrom);
+    if (start === -1) break;
+    const attributesFrom = start + '<excerpt'.length;
+    searchFrom = attributesFrom;
+    const boundary = prompt[attributesFrom];
+    if (boundary !== '>' && !boundary?.match(/\s/)) continue;
+    const openingEnd = prompt.indexOf('>', attributesFrom);
+    if (openingEnd === -1) break;
+    const attributes = prompt.slice(attributesFrom, openingEnd);
+    if (attributes.includes('<')) continue;
+    const closingStart = prompt.indexOf('</excerpt>', openingEnd + 1);
+    if (closingStart === -1) break;
+    question.push(prompt.slice(plainFrom, start));
+    excerpts.push({
+      attributes,
+      text: prompt.slice(openingEnd + 1, closingStart),
+    });
+    searchFrom = closingStart + '</excerpt>'.length;
+    plainFrom = searchFrom;
+  }
+  question.push(prompt.slice(plainFrom));
+  return { question: question.join('\n'), excerpts };
+}
+
 function answer(req: TextRequest): string {
   const prompt = req.messages
     .filter((m) => m.role === 'user')
     .map((m) => m.content)
     .join('\n');
-  const pattern = /<excerpt\b([^>]*)>([\s\S]*?)<\/excerpt>/g;
-  const question = words(prompt.replace(pattern, ''));
-  const excerpts = [...prompt.matchAll(pattern)]
-    .flatMap((match) => {
+  const parsed = parseExcerpts(prompt);
+  const question = words(parsed.question);
+  const excerpts = parsed.excerpts
+    .flatMap((excerpt) => {
       const section = /\bsection\s*=\s*["']([^"']+)["']/.exec(
-        match[1] ?? '',
+        excerpt.attributes,
       )?.[1];
       if (
         !section ||
@@ -45,10 +76,7 @@ function answer(req: TextRequest): string {
           .safeParse(section).success
       )
         return [];
-      const text = (match[2] ?? '')
-        .replace(/<[^>]+>/g, '')
-        .replace(/\s+/g, ' ')
-        .trim();
+      const text = excerpt.text.replace(/\s+/g, ' ').trim();
       const score = [...words(text)].filter((w) => question.has(w)).length;
       return text && score > 0 ? [{ section, text, score }] : [];
     })

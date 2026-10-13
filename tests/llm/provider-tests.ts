@@ -68,11 +68,11 @@ export function describeHttpProvider(
       });
       expect(events.filter((e) => e.type === 'done')).toHaveLength(1);
       const request = replay.requests[0]!;
-      expect(request.url).toMatch(
+      expect(new URL(request.url).hostname).toBe(
         {
-          anthropic: /api.anthropic.com/,
-          openai: /api.openai.com/,
-          google: /generativelanguage.googleapis.com/,
+          anthropic: 'api.anthropic.com',
+          openai: 'api.openai.com',
+          google: 'generativelanguage.googleapis.com',
         }[name],
       );
       expect(

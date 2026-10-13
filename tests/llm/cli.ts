@@ -4,7 +4,7 @@ import type {
   ChildProcessWithoutNullStreams,
   SpawnOptionsWithoutStdio,
 } from 'node:child_process';
-import { readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import type { CliSpawn } from '../../src/core/llm/claude-cli.js';
 import { asset } from './http.js';
 
@@ -29,7 +29,7 @@ export function objectTranscript() {
   );
 }
 export interface FakeCliOptions {
-  transcript?: string | ((prompt: string) => string);
+  transcript?: string | ((prompt: string, systemPrompt: string) => string);
   code?: number;
   stall?: boolean;
   error?: boolean;
@@ -41,7 +41,9 @@ export function fakeCli(options: FakeCliOptions = {}) {
     args: readonly string[];
     options: SpawnOptionsWithoutStdio;
     prompt: string;
-    emptyCwd: boolean;
+    cwdFiles: string[];
+    systemPrompt: string;
+    systemPromptMode: number;
   }[] = [];
   const children: FakeChild[] = [];
   class FakeChild extends EventEmitter {
@@ -64,12 +66,15 @@ export function fakeCli(options: FakeCliOptions = {}) {
   const spawn: CliSpawn = (command, args, opts) => {
     const child = new FakeChild();
     children.push(child);
+    const systemPromptFile = args[args.indexOf('--system-prompt-file') + 1]!;
     const call = {
       command,
       args,
       options: opts,
       prompt: '',
-      emptyCwd: readdirSync(String(opts.cwd)).length === 0,
+      cwdFiles: readdirSync(String(opts.cwd)),
+      systemPrompt: readFileSync(systemPromptFile, 'utf8'),
+      systemPromptMode: statSync(systemPromptFile).mode & 0o777,
     };
     calls.push(call);
     child.stdin.on('data', (chunk: Buffer) => {
@@ -87,7 +92,7 @@ export function fakeCli(options: FakeCliOptions = {}) {
         else {
           const transcript =
             typeof options.transcript === 'function'
-              ? options.transcript(call.prompt)
+              ? options.transcript(call.prompt, call.systemPrompt)
               : (options.transcript ?? asset('claude-cli.jsonl'));
           const bytes = Buffer.from(transcript);
           for (let i = 0; i < bytes.length; i += 11)

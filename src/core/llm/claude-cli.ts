@@ -3,7 +3,7 @@ import {
   type ChildProcessWithoutNullStreams,
   type SpawnOptionsWithoutStdio,
 } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
@@ -33,6 +33,29 @@ export type CliSpawn = (
 ) => ChildProcessWithoutNullStreams;
 const defaultSpawn: CliSpawn = (command, args, options) =>
   spawn(command, args, { ...options, stdio: 'pipe' });
+
+/** Preserve CLI login/config and basic process settings without other providers' secrets. */
+function cliEnvironment(): NodeJS.ProcessEnv {
+  const allowed = new Set([
+    'PATH',
+    'HOME',
+    'USER',
+    'LOGNAME',
+    'SHELL',
+    'TMPDIR',
+    'LANG',
+    'TERM',
+  ]);
+  return Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([name]) =>
+        allowed.has(name) ||
+        name.startsWith('LC_') ||
+        name.startsWith('CLAUDE_') ||
+        name.startsWith('ANTHROPIC_'),
+    ),
+  );
+}
 const TranscriptEvent = z.object({
   type: z.string(),
   subtype: z.string().optional(),
@@ -81,6 +104,11 @@ export class ClaudeCliProvider implements LlmProvider {
     try {
       signal = requestSignal(req.signal, this.config.timeoutMs);
       cwd = await mkdtemp(join(tmpdir(), 'llm-cli-'));
+      const systemPromptFile = join(cwd, 'system-prompt.txt');
+      await writeFile(systemPromptFile, req.system, {
+        encoding: 'utf8',
+        mode: 0o600,
+      });
       signal.throwIfAborted();
       // Confirmed against local `claude --help` on 2026-10-13:
       // -p: non-interactive; stream-json + verbose: NDJSON events; partial: text deltas.
@@ -89,7 +117,9 @@ export class ClaudeCliProvider implements LlmProvider {
       // safe-mode + empty setting-sources + disable-slash-commands: no user hooks,
       // plugins, project customizations or skills. No permission-bypass flag is used.
       // no-session-persistence: avoid writing prompts to saved conversations.
-      // Fresh empty cwd prevents bill text from accessing the project's files/settings.
+      // system-prompt-file replaces the CLI system prompt without argv length limits:
+      // https://code.claude.com/docs/en/cli-reference (verified 2026-10-13).
+      // Fresh cwd contains only our prompt file, isolating project files/settings.
       child = this.spawnChild(
         'claude',
         [
@@ -107,13 +137,15 @@ export class ClaudeCliProvider implements LlmProvider {
           '1',
           '--model',
           this.model,
+          '--system-prompt-file',
+          systemPromptFile,
           '--safe-mode',
           '--setting-sources',
           '',
           '--disable-slash-commands',
           '--no-session-persistence',
         ],
-        { cwd, shell: false },
+        { cwd, shell: false, env: cliEnvironment() },
       );
       const running = child;
       const status = { failed: false };
@@ -139,9 +171,7 @@ export class ClaudeCliProvider implements LlmProvider {
       };
       signal.addEventListener('abort', kill, { once: true });
       signal.throwIfAborted();
-      child.stdin.end(
-        JSON.stringify({ system: req.system, messages: req.messages }),
-      );
+      child.stdin.end(JSON.stringify({ messages: req.messages }));
       let result: z.infer<typeof TranscriptEvent> | undefined;
       let emittedText = false;
       for await (const line of lines) {
