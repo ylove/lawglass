@@ -7,5 +7,10 @@
     "jsx": "react-jsx",
     "types": ["vite/client"]
   },
-  "include": ["**/*.ts", "**/*.tsx", "../core/brand.ts"]
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    "../core/brand.ts",
+    "../core/model/**/*.ts"
+  ]
 }
