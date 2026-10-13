@@ -1,0 +1,338 @@
+import {
+  sectionText,
+  walkSections,
+  type ExternalRef,
+  type Section,
+} from '../model/index.js';
+import {
+  ancestry,
+  enclosingSection,
+  normalizeDesignator,
+  normalizeSectionNum,
+  type SectionIndex,
+} from './section-index.js';
+
+// ---------------------------------------------------------------------------------------
+// External references: law outside this document. Listed as "referenced, not loaded".
+// ---------------------------------------------------------------------------------------
+
+export interface ExternalMatch {
+  start: number;
+  end: number;
+  text: string;
+  citation: string;
+  kind: ExternalRef['kind'];
+  /** Set for a single Revised Code section, so a document that contains it can link inward. */
+  sectionNum?: string;
+}
+
+const PAREN = String.raw`\([A-Za-z0-9]+\)`;
+const PAREN_LIST = String.raw`(?:${PAREN})+(?:\s*(?:,|and|or)\s*(?:${PAREN})+)*`;
+// "division (A)(2) of " before "section 5747.01 of the Revised Code".
+const DIVISION_PREFIX = String.raw`(?:(?:divisions?|subdivisions?|subsections?|paragraphs?|clauses?)\s+${PAREN_LIST}\s+(?:of|in)\s+)?`;
+const RC_ITEM = String.raw`\d+\.\d+(?:\.\d+)?(?:${PAREN})*`;
+const RC_SECTIONS = new RegExp(
+  String.raw`${DIVISION_PREFIX}sections?\s+(${RC_ITEM}(?:\s*(?:,\s*(?:and\s+|or\s+)?|\s+(?:and|or|to|through)\s+)${RC_ITEM})*)\s+of\s+the\s+(?:Ohio\s+)?Revised\s+Code`,
+  'gi',
+);
+const RC_CHAPTERS =
+  /\bchapters?\s+(\d+(?:\.\d+)?)\.?\s+of\s+the\s+(?:Ohio\s+)?Revised\s+Code/gi;
+const USC_TITLE_FIRST =
+  /\b(\d{1,2})\s+(?:U\.\s?S\.\s?C\.?|USC)(?:\s+(?:§§?|secs?\.|sections?))?\s*(\d+[A-Za-z0-9]*(?:-\d+[A-Za-z0-9]*)?)/g;
+const USC_SECTION_FIRST =
+  /\bsections?\s+(\d+[A-Za-z0-9]*)(?:\([A-Za-z0-9]+\))*\s+of\s+title\s+(\d{1,2})\s*,?\s+(?:United\s+States\s+Code|U\.\s?S\.\s+Code|U\.\s?S\.\s?C\.)/gi;
+const IRC =
+  /\bsections?\s+(\d+[A-Za-z]?)(?:\([A-Za-z0-9]+\))*\s+of\s+the\s+Internal\s+Revenue\s+Code(?:\s+of\s+19\d\d)?/gi;
+// Case-sensitive on purpose: "of the Social Security Act", never "of this act".
+const NAMED_ACT =
+  /\bsections?\s+(\d+[A-Za-z]?)(?:\([A-Za-z0-9]+\))*\s+of\s+the\s+((?:[A-Z][A-Za-z'’-]*\s+){1,6}Act(?:\s+of\s+\d{4})?)/g;
+const PUBLIC_LAW =
+  /\b(?:Public\s+Law|Pub\.\s*L\.|P\.\s*L\.)\s*(?:No\.\s*)?(\d{1,3})\s*[-–]\s*(\d{1,4})/gi;
+const CFR =
+  /\b(\d{1,2})\s+C\.?\s?F\.?\s?R\.?\s*(?:(?:parts?|§§?|sections?)\s*)?(\d+(?:\.\d+)?)/gi;
+
+function rcCitations(
+  list: string,
+): { citation: string; sectionNum?: string }[] {
+  const items = [
+    ...list.matchAll(new RegExp(`(\\d+\\.\\d+(?:\\.\\d+)?)(?:${PAREN})*`, 'g')),
+  ];
+  const out: { citation: string; sectionNum?: string }[] = [];
+  let rangeFrom: number | undefined;
+  items.forEach((item, i) => {
+    const num = item[1] ?? '';
+    const before =
+      i === 0
+        ? ''
+        : list.slice(
+            (items[i - 1]?.index ?? 0) + (items[i - 1]?.[0].length ?? 0),
+            item.index,
+          );
+    if (rangeFrom !== undefined && /\b(?:to|through)\b/i.test(before)) {
+      const from = out[rangeFrom];
+      if (from) {
+        out[rangeFrom] = { citation: `${from.citation} to ${num}` };
+        return;
+      }
+    }
+    rangeFrom = out.length;
+    out.push({ citation: `R.C. ${num}`, sectionNum: num });
+  });
+  return out;
+}
+
+/** Every external citation in `text`, left to right, longest match winning on overlap. */
+export function findExternalMatches(text: string): ExternalMatch[] {
+  const found: ExternalMatch[] = [];
+  const add = (
+    m: RegExpMatchArray,
+    citation: string,
+    kind: ExternalRef['kind'],
+    sectionNum?: string,
+  ): void =>
+    void found.push({
+      start: m.index ?? 0,
+      end: (m.index ?? 0) + m[0].length,
+      text: m[0],
+      citation,
+      kind,
+      ...(sectionNum === undefined ? {} : { sectionNum }),
+    });
+
+  for (const m of text.matchAll(RC_SECTIONS))
+    for (const { citation, sectionNum } of rcCitations(m[1] ?? ''))
+      add(m, citation, 'state_code', sectionNum);
+  for (const m of text.matchAll(RC_CHAPTERS))
+    add(m, `R.C. Chapter ${m[1] ?? ''}`, 'state_code');
+  for (const m of text.matchAll(USC_TITLE_FIRST))
+    add(m, `${m[1] ?? ''} U.S.C. ${(m[2] ?? '').replace(/-$/, '')}`, 'us_code');
+  for (const m of text.matchAll(USC_SECTION_FIRST))
+    add(m, `${m[2] ?? ''} U.S.C. ${m[1] ?? ''}`, 'us_code');
+  for (const m of text.matchAll(IRC))
+    add(m, `26 U.S.C. ${m[1] ?? ''}`, 'us_code');
+  for (const m of text.matchAll(NAMED_ACT))
+    add(m, `${(m[2] ?? '').trim()} § ${m[1] ?? ''}`, 'other');
+  for (const m of text.matchAll(PUBLIC_LAW))
+    add(m, `Public Law ${m[1] ?? ''}-${m[2] ?? ''}`, 'public_law');
+  for (const m of text.matchAll(CFR))
+    add(m, `${m[1] ?? ''} CFR ${m[2] ?? ''}`, 'cfr');
+
+  // A span claimed by an earlier/longer pattern is not re-reported (e.g. "section 3 of the
+  // Internal Revenue Code" would otherwise also look like a named Act). Multi-citation
+  // matches share a span, so they are kept together.
+  found.sort((a, b) => a.start - b.start || b.end - a.end);
+  const kept: ExternalMatch[] = [];
+  let claimed: { start: number; end: number } | undefined;
+  for (const match of found) {
+    const sameSpan =
+      claimed?.start === match.start && claimed.end === match.end;
+    if (claimed && !sameSpan && match.start < claimed.end) continue;
+    if (!sameSpan) claimed = { start: match.start, end: match.end };
+    kept.push(match);
+  }
+  return kept;
+}
+
+/**
+ * External refs for the whole document, deduped by citation. A Revised Code section that is
+ * itself part of this document (an amending bill reprints it) is loaded, so it becomes an
+ * internal ref instead.
+ */
+export function collectExternalRefs(
+  sections: readonly Section[],
+  index: SectionIndex,
+  existing: readonly ExternalRef[] = [],
+): ExternalRef[] {
+  const byCitation = new Map<string, ExternalRef>();
+  const addRef = (ref: ExternalRef): void => {
+    const current = byCitation.get(ref.citation);
+    if (!current) {
+      byCitation.set(ref.citation, { ...ref, sectionIds: [...ref.sectionIds] });
+      return;
+    }
+    for (const id of ref.sectionIds)
+      if (!current.sectionIds.includes(id)) current.sectionIds.push(id);
+  };
+  existing.forEach(addRef);
+  for (const section of walkSections(sections)) {
+    const text = sectionText(section, { includeDeleted: false });
+    for (const match of findExternalMatches(text)) {
+      if (
+        match.sectionNum !== undefined &&
+        index.bySectionNum.has(match.sectionNum)
+      )
+        continue;
+      addRef({
+        text: match.text,
+        citation: match.citation,
+        kind: match.kind,
+        sectionIds: [section.id],
+      });
+    }
+  }
+  return [...byCitation.values()];
+}
+
+// ---------------------------------------------------------------------------------------
+// Internal references: resolved to section ids of this document.
+// ---------------------------------------------------------------------------------------
+
+const NUM_ITEM = String.raw`\d+(?:\.\d+)*(?:${PAREN})*`;
+const SEP = String.raw`(?:\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or|to|through)\s+)`;
+const SECTION_REF = new RegExp(
+  String.raw`\bsections?\s+(${NUM_ITEM}(?:${SEP}${NUM_ITEM})*)`,
+  'gi',
+);
+const SUB_REF = new RegExp(
+  String.raw`\b(?:subsections?|paragraphs?|subparagraphs?|divisions?|subdivisions?|clauses?)\s+((?:${PAREN})+(?:${SEP}(?:${PAREN})+)*)`,
+  'gi',
+);
+// What a reference points into, read from the words after it.
+const TAIL = new RegExp(
+  String.raw`^\s*(?:of|in)\s+(?:(this)\s+([a-z]+)|(the\s+\S+)|sections?\s+(${NUM_ITEM}))`,
+  'i',
+);
+
+function mask(
+  text: string,
+  spans: readonly { start: number; end: number }[],
+): string {
+  let out = text;
+  for (const { start, end } of spans)
+    out = out.slice(0, start) + ' '.repeat(end - start) + out.slice(end);
+  return out;
+}
+
+function child(section: Section, token: string): Section | undefined {
+  return section.children.find(
+    (c) =>
+      (c.num !== undefined && normalizeDesignator(c.num) === token) ||
+      (c.num === undefined && c.id.split('/').at(-1) === token),
+  );
+}
+
+/** Follows designator tokens down from `from`; returns the deepest section reached. */
+function descend(
+  from: Section,
+  tokens: readonly string[],
+): Section | undefined {
+  let node = from;
+  let moved = false;
+  for (const token of tokens) {
+    const next = child(node, token);
+    if (!next) break;
+    node = next;
+    moved = true;
+  }
+  return moved ? node : undefined;
+}
+
+function designators(text: string): string[] {
+  return [...text.matchAll(/\(([A-Za-z0-9]+)\)/g)].map((m) => m[1] ?? '');
+}
+
+function listItems(list: string): string[] {
+  return list
+    .split(new RegExp(SEP, 'i'))
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function resolveSectionItem(
+  index: SectionIndex,
+  item: string,
+): string | undefined {
+  const head = /^\d+(?:\.\d+)*/.exec(item)?.[0] ?? '';
+  const key = normalizeSectionNum(head);
+  const id =
+    key === undefined
+      ? undefined
+      : (index.bySectionNum.get(key) ??
+        (index.byId.has(`sec-${key}`) ? `sec-${key}` : undefined));
+  const root = id === undefined ? undefined : index.byId.get(id);
+  if (!root) return undefined;
+  return (descend(root, designators(item)) ?? root).id;
+}
+
+function resolveSubItem(
+  index: SectionIndex,
+  item: string,
+  scopes: readonly Section[],
+): string | undefined {
+  const tokens = designators(item);
+  for (const scope of scopes) {
+    const hit = descend(scope, tokens);
+    if (hit) return hit.id;
+  }
+  return undefined;
+}
+
+/**
+ * Internal references in `text` (a chunk's text, written in `fromSectionId`), as section ids
+ * in order of appearance. Self-references are dropped. Unresolvable ones are ignored rather
+ * than guessed.
+ */
+export function findInternalRefs(
+  text: string,
+  fromSectionId: string,
+  index: SectionIndex,
+): string[] {
+  const external = findExternalMatches(text);
+  const ids: string[] = [];
+  const push = (id: string | undefined): void => {
+    if (id !== undefined && id !== fromSectionId && !ids.includes(id))
+      ids.push(id);
+  };
+  // Revised Code sections that this document itself contains are internal links.
+  for (const match of external)
+    if (match.sectionNum !== undefined) {
+      const id = index.bySectionNum.get(match.sectionNum);
+      if (id !== undefined) push(id);
+    }
+  const scrubbed = mask(text, external);
+  const chain = ancestry(index, fromSectionId);
+  const enclosing = enclosingSection(index, fromSectionId);
+  const nearestFirst = [...chain].reverse();
+
+  const found: { at: number; ids: (string | undefined)[] }[] = [];
+  // "division (A) of section 3": the section is the scope of the division, not a separate ref.
+  const scopeSpans: { start: number; end: number }[] = [];
+  for (const m of scrubbed.matchAll(SUB_REF)) {
+    const after = m.index + m[0].length;
+    const tail = TAIL.exec(scrubbed.slice(after));
+    if (tail?.[3]) continue;
+    let scopes: Section[] = nearestFirst;
+    if (tail?.[4]) {
+      scopeSpans.push({ start: after, end: after + tail[0].length });
+      const target = resolveSectionItem(index, tail[4]);
+      const section = target === undefined ? undefined : index.byId.get(target);
+      scopes = section ? [section] : [];
+    } else if (tail?.[1]) {
+      const unit = (tail[2] ?? '').toLowerCase();
+      if (unit === 'section') scopes = enclosing ? [enclosing] : [];
+      else if (['act', 'chapter', 'title', 'bill'].includes(unit))
+        scopes = [...index.byId.values()].filter(
+          (s) => index.parentOf.get(s.id) === undefined,
+        );
+      // "of this subsection/paragraph/division": nearest-first search already starts there.
+    }
+    found.push({
+      at: m.index,
+      ids: listItems(m[1] ?? '').map((item) =>
+        resolveSubItem(index, item, scopes),
+      ),
+    });
+  }
+  const sectionsOnly = mask(scrubbed, scopeSpans);
+  for (const m of sectionsOnly.matchAll(SECTION_REF)) {
+    const tail = TAIL.exec(sectionsOnly.slice(m.index + m[0].length));
+    // "of the Internal Revenue Code" etc.: someone else's section, not ours.
+    if (tail?.[3]) continue;
+    found.push({
+      at: m.index,
+      ids: listItems(m[1] ?? '').map((item) => resolveSectionItem(index, item)),
+    });
+  }
+  for (const hit of found.sort((a, b) => a.at - b.at)) hit.ids.forEach(push);
+  return ids;
+}
