@@ -1,0 +1,78 @@
+/**
+ * Chunks: the unit that is embedded, indexed, retrieved and cited.
+ * Produced by core/chunk from a NormalizedDoc, enriched by core/enrich.
+ */
+import { z } from 'zod';
+import { SourceLocation } from './doc.js';
+
+/** Heuristic classification used by chip filters (spec §5.4). */
+export const ChunkType = z.enum([
+  'definition',
+  'operative',
+  'findings',
+  'appropriation',
+  'penalty',
+  'effective_date',
+  'other',
+]);
+export type ChunkType = z.infer<typeof ChunkType>;
+
+/**
+ * Amendment status of a chunk.
+ * - `deleted`: the chunk holds only struck text (emitted separately so it is never mistaken
+ *   for current law, but `what-changes` can still find it).
+ * - `inserted`: a normal chunk that contains newly added text.
+ * - `unchanged`: no amendment markup.
+ */
+export const AmendmentStatus = z.enum(['unchanged', 'inserted', 'deleted']);
+export type AmendmentStatus = z.infer<typeof AmendmentStatus>;
+
+export const Chunk = SourceLocation.extend({
+  /** Deterministic: `${docId}:${sectionId}:${n}`, so re-ingest is an idempotent upsert. */
+  id: z.string().min(1),
+  docId: z.string().min(1),
+  sectionId: z.string().min(1),
+  sectionNum: z.string().optional(),
+  heading: z.string().optional(),
+  /** Human-readable path, e.g. "Sec. 4 > (b) > (2) Eligibility". */
+  breadcrumb: z.string(),
+  chunkType: ChunkType,
+  amendmentStatus: AmendmentStatus,
+  /** Raw text for display and for the answer prompt (no breadcrumb). */
+  text: z.string().min(1),
+  /** What gets embedded: breadcrumb prefix + text (contextual retrieval). */
+  embedText: z.string().min(1),
+  /** Defined terms (from this document) that appear in the text. Used for definition injection. */
+  definedTermsUsed: z.array(z.string()),
+  /** Internal cross-references resolved to section ids. */
+  refs: z.array(z.string()),
+  /** For `chunkType: 'definition'` chunks, the term defined. */
+  definesTerm: z.string().optional(),
+  tokenCount: z.number().int().nonnegative(),
+});
+export type Chunk = z.infer<typeof Chunk>;
+
+/** What a backend returns for a hit: the chunk without the embedding-only field. */
+export const StoredChunk = Chunk.omit({ embedText: true });
+export type StoredChunk = z.infer<typeof StoredChunk>;
+
+export function makeChunkId(
+  docId: string,
+  sectionId: string,
+  n: number,
+): string {
+  return `${docId}:${sectionId}:${String(n)}`;
+}
+
+/**
+ * Typed metadata filter. Backends translate it (Pinecone: `$in` filters; local: in-process).
+ * All present fields must match (AND); values within a field are OR'd.
+ */
+export const ChunkFilter = z.object({
+  chunkType: z.array(ChunkType).nonempty().optional(),
+  amendmentStatus: z.array(AmendmentStatus).nonempty().optional(),
+  sectionIds: z.array(z.string()).nonempty().optional(),
+  /** Match chunks that define any of these terms. */
+  definesTerm: z.array(z.string()).nonempty().optional(),
+});
+export type ChunkFilter = z.infer<typeof ChunkFilter>;

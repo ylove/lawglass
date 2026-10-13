@@ -1,0 +1,100 @@
+/**
+ * Answers and chips. An answer is generated only from retrieved excerpts, cites every claim as
+ * `[S:<sectionId>]`, and is validated against the retrieved set before it is shown.
+ */
+import { z } from 'zod';
+import { ChunkFilter } from './chunk.js';
+import { SourceLocation } from './doc.js';
+
+/** Matches one citation marker in answer text, e.g. `[S:sec-4/b/2]`. Global: use with matchAll. */
+export const CITATION_PATTERN = /\[S:([^\]\s]+)\]/g;
+
+export const Citation = z.object({
+  sectionId: z.string(),
+  /** True when the section is in the retrieved set given to the model. */
+  valid: z.boolean(),
+  /** Retrieved chunks from that section (for the excerpt drawer). */
+  chunkIds: z.array(z.string()),
+  breadcrumb: z.string().optional(),
+  location: SourceLocation.optional(),
+});
+export type Citation = z.infer<typeof Citation>;
+
+export const AnswerWarning = z.enum([
+  /** No valid citations and the answer is not a "not addressed" decline. */
+  'NO_VALID_CITATIONS',
+  /** One or more citations pointed outside the retrieved set and were removed. */
+  'INVALID_CITATIONS_REMOVED',
+  /** Retrieval found nothing relevant. */
+  'NO_RELEVANT_EXCERPTS',
+]);
+export type AnswerWarning = z.infer<typeof AnswerWarning>;
+
+export const AnswerResult = z.object({
+  /** Final text with invalid citation markers removed. */
+  text: z.string(),
+  citations: z.array(Citation),
+  invalidCitations: z.array(z.string()),
+  warnings: z.array(AnswerWarning),
+  /** The model said the document doesn't address the question. */
+  declined: z.boolean(),
+  /** Flesch-Kincaid grade level of `text` (citation markers stripped). */
+  readingGrade: z.number().nullable(),
+  provider: z.string(),
+  model: z.string(),
+  usage: z.object({ inputTokens: z.number(), outputTokens: z.number() }),
+});
+export type AnswerResult = z.infer<typeof AnswerResult>;
+
+/** The exact sentence the model must use to decline (also detected to set `declined`). */
+export const DECLINE_TEXT = "This document doesn't address that question.";
+
+// ---------------------------------------------------------------------------------------------
+// Chips (spec §3.3). Definitions live in src/core/chips.ts; this is their shape.
+// ---------------------------------------------------------------------------------------------
+
+export const ChipId = z.enum([
+  'summary',
+  'what-changes',
+  'who-affected',
+  'penalties',
+  'effective-date',
+  'money',
+  'definitions',
+  'sponsors',
+]);
+export type ChipId = z.infer<typeof ChipId>;
+
+export const ChipStrategy = z.enum([
+  /** Retrieve with the chip's queries/filters, then answer. */
+  'retrieve',
+  /** Structural outline + first chunk of each top-level section; capped map-reduce for long docs. */
+  'outline',
+  /** List definition chunks; no free retrieval. */
+  'definitions',
+  /** Answer from document metadata only; no retrieval and no LLM call. */
+  'metadata',
+]);
+export type ChipStrategy = z.infer<typeof ChipStrategy>;
+
+export const ChipDefinition = z.object({
+  id: ChipId,
+  label: z.string(),
+  strategy: ChipStrategy,
+  /** One or more retrieval queries; results are merged. */
+  queries: z.array(z.string()),
+  filter: ChunkFilter.optional(),
+  retrieval: z
+    .object({
+      mode: z.enum(['dense', 'sparse', 'hybrid', 'hybrid_rerank']).optional(),
+      /** 0..1 weight on sparse results for weighted fusion (e.g. penalties, effective-date). */
+      sparseWeight: z.number().min(0).max(1).optional(),
+      topK: z.number().int().positive().optional(),
+      /** Include struck-text chunks (what-changes). */
+      includeDeleted: z.boolean().optional(),
+    })
+    .optional(),
+  /** Extra instruction appended to the user prompt for this chip. */
+  answerInstruction: z.string().optional(),
+});
+export type ChipDefinition = z.infer<typeof ChipDefinition>;

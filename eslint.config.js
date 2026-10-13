@@ -26,6 +26,25 @@ export default defineConfig(
     },
   },
   {
+    files: ['**/*.{ts,tsx}'],
+    rules: {
+      // Allow intentionally unused bindings (e.g. omitting a field via rest destructuring).
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          ignoreRestSiblings: true,
+        },
+      ],
+    },
+  },
+  {
+    // Tests index into known fixtures; non-null assertions there are clearer than guards.
+    files: ['tests/**/*.{ts,tsx}', '**/*.test.{ts,tsx}'],
+    rules: { '@typescript-eslint/no-non-null-assertion': 'off' },
+  },
+  {
     files: ['src/web/**/*.{ts,tsx}'],
     extends: [reactHooks.configs.flat.recommended],
   },
