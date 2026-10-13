@@ -1,5 +1,6 @@
 # dependencies and build output
 node_modules/
+.worktrees/
 dist/
 coverage/
 *.tgz

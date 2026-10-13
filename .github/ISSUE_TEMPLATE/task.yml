@@ -14,7 +14,7 @@ body:
     attributes:
       label: Acceptance criteria
       description: Checkboxes that define done.
-      value: "- [ ] "
+      value: '- [ ] '
     validations:
       required: true
   - type: textarea

@@ -1,0 +1,6 @@
+node_modules/
+dist/
+coverage/
+fixtures/downloads/
+.worktrees/
+package-lock.json
