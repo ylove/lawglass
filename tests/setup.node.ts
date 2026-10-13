@@ -1,6 +1,7 @@
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
+import tls from 'node:tls';
 import { syncBuiltinESMExports } from 'node:module';
 import { afterAll } from 'vitest';
 import './setup.fetch.js';
@@ -51,6 +52,7 @@ const httpsRequest = https.request;
 const httpsGet = https.get;
 const netConnect = net.connect;
 const netCreateConnection = net.createConnection;
+const tlsConnect = tls.connect;
 
 // Direct wrappers survive vi.restoreAllMocks(). The tuple assertions only help
 // Reflect.apply type overloaded builtins; every original argument is forwarded.
@@ -90,6 +92,15 @@ net.createConnection = (...args: unknown[]) => {
     args as Parameters<typeof netCreateConnection>,
   );
 };
+tls.connect = (...args: unknown[]) => {
+  assertSocketDestination(args);
+  // In TLS's port/host/options overload, explicit options take precedence.
+  for (const options of args.slice(1)) {
+    if (options && typeof options === 'object')
+      assertSocketDestination([options]);
+  }
+  return Reflect.apply(tlsConnect, tls, args as Parameters<typeof tlsConnect>);
+};
 
 // CJS builtin mutations alone do not update ESM named imports. Synchronizing
 // their live bindings makes import { request } as safe as import http.
@@ -102,5 +113,6 @@ afterAll(() => {
   https.get = httpsGet;
   net.connect = netConnect;
   net.createConnection = netCreateConnection;
+  tls.connect = tlsConnect;
   syncBuiltinESMExports();
 });

@@ -1,6 +1,8 @@
 import http, { get as httpGet, request as httpRequest } from 'node:http';
 import https, { get as httpsGet, request as httpsRequest } from 'node:https';
 import net, { connect, createConnection } from 'node:net';
+import tls, { connect as tlsConnect } from 'node:tls';
+import { Agent, fetch as undiciFetch } from 'undici';
 import { expect, test, vi } from 'vitest';
 
 test('native fetch refuses accidental outbound HTTP', async () => {
@@ -16,6 +18,9 @@ test('builtin guards survive restoring test mocks', () => {
       'Network access is blocked in unit tests (example.com)',
     );
   }
+  expect(() => tlsConnect(443, 'example.com')).toThrow(
+    'Network access is blocked in unit tests (example.com)',
+  );
 });
 
 test.each([
@@ -29,6 +34,12 @@ test.each([
   ['https.request named', () => httpsRequest(new URL('https://example.com'))],
   ['net.connect default', () => net.connect(80, 'example.com')],
   ['net.connect named', () => connect({ port: 80, host: 'example.com' })],
+  ['tls.connect default', () => tls.connect(443, 'example.com')],
+  ['tls.connect named', () => tlsConnect({ port: 443, host: 'example.com' })],
+  [
+    'TLS options override',
+    () => tls.connect(443, 'localhost', { host: 'example.com' }),
+  ],
   [
     'net.createConnection default',
     () => net.createConnection({ port: 80, host: 'example.com' }),
@@ -46,6 +57,21 @@ test.each([
   expect(request).toThrow(
     'Network access is blocked in unit tests (example.com)',
   );
+});
+
+test('an explicit undici HTTPS Agent cannot bypass the TLS network guard', async () => {
+  const agent = new Agent();
+  try {
+    await expect(
+      undiciFetch('https://example.com', { dispatcher: agent }),
+    ).rejects.toMatchObject({
+      cause: {
+        message: 'Network access is blocked in unit tests (example.com)',
+      },
+    });
+  } finally {
+    await agent.destroy();
+  }
 });
 
 test('fetch, HTTP and TCP can reach a loopback server on an ephemeral port', async () => {
@@ -77,12 +103,18 @@ test('fetch, HTTP and TCP can reach a loopback server on an ephemeral port', asy
       });
     }
 
-    for (const connectSocket of [
+    const connectSockets: ((options: {
+      port: number;
+      host: string;
+    }) => net.Socket)[] = [
       net.connect,
       connect,
       net.createConnection,
       createConnection,
-    ]) {
+      tls.connect,
+      tlsConnect,
+    ];
+    for (const connectSocket of connectSockets) {
       await new Promise<void>((resolve, reject) => {
         const socket = connectSocket({ port: address.port, host: '127.0.0.1' });
         socket.once('error', reject);
