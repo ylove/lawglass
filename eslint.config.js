@@ -40,11 +40,15 @@ export default defineConfig(
       'no-restricted-syntax': [
         'error',
         {
-          selector: 'Literal[value=/legislation-summary/]',
+          selector: 'Literal[value=/legislation-summary/i]',
           message: 'Use BRAND from src/core/brand.ts for the product name.',
         },
         {
-          selector: 'TemplateElement[value.cooked=/legislation-summary/]',
+          selector: 'TemplateElement[value.cooked=/legislation-summary/i]',
+          message: 'Use BRAND from src/core/brand.ts for the product name.',
+        },
+        {
+          selector: 'JSXText[value=/legislation-summary/i]',
           message: 'Use BRAND from src/core/brand.ts for the product name.',
         },
       ],

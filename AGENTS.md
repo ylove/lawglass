@@ -18,7 +18,7 @@ A localhost-first legislation RAG tool: an `npx` CLI plus a local web UI. You gi
 1. **Contracts are frozen.** Shared types and zod schemas live in `src/core/model/`. Do not change them in a feature PR. If you need a change, stop and say so; it needs its own `contract-change` issue.
 2. **The product name lives only in `src/core/brand.ts`.** The name is not final. Use `BRAND.*` everywhere: CLI name, env-var prefix, config dir, index prefix, UI title. A lint rule enforces this.
 3. **Never commit fixtures, secrets or `.env`.** Real legislation files are downloaded to the gitignored `fixtures/downloads/` by `scripts/fetch-fixtures.ts` and used only in local tests. Those tests skip when the files are absent. CI uses generated synthetic samples from `tests/synth/`.
-4. **No network in unit tests.** The test setup blocks outbound connections. Inject fetchers, resolvers and SDK clients so tests can fake them.
+4. **No network in unit tests.** Both projects guard fetch; Node tests also guard `node:http`/`node:https` `request`/`get` and `node:net` `connect`/`createConnection`. Loopback connections are allowed. Builtin patches use `syncBuiltinESMExports()` to cover ESM named imports as well as default imports. Inject fetchers, resolvers and SDK clients so tests can fake them.
 5. **Never log API keys** or include them in errors. Keys only go to their own provider.
 6. **Tests come with the code.** Every module ships with vitest tests next to it (`*.test.ts`). Security-critical modules (`core/fetch`, citation validation) need ≥90% line coverage.
 7. **TypeScript strict, ESM, Node ≥ 22.** Prefer small pure functions and explicit types at module boundaries. Validate external data with zod. No `any` without a comment explaining why.

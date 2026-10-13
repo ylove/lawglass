@@ -106,7 +106,7 @@ Defined in one config file, `src/core/chips.ts`. Each chip = label + one or more
 
 ## 4. Architecture
 
-Single TypeScript package, Node >= 20, ESM.
+Single TypeScript package, Node >= 22, ESM.
 
 ```
 src/
@@ -122,6 +122,7 @@ src/
     index/        Pinecone wrapper (dense index, sparse index, rerank)
     retrieve/     retrieval modes, merge, rerank, definition injection
     answer/       prompt assembly, Anthropic call, citation validation
+    llm/          LLM provider adapters (anthropic, openai-compatible, google, claude-cli, mock)
     chips.ts
     config.ts
   eval/           harness, golden sets, results writer

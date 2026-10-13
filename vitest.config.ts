@@ -19,6 +19,7 @@ export default defineConfig({
           name: 'web',
           environment: 'happy-dom',
           include: ['src/web/**/*.test.tsx'],
+          setupFiles: ['tests/setup.web.ts'],
         },
       },
     ],
@@ -32,7 +33,18 @@ export default defineConfig({
         functions: 75,
         branches: 75,
         statements: 75,
-        // Later: 'src/core/fetch/**': { lines: 90 }, plus citation validation.
+        'src/core/fetch/**': {
+          lines: 90,
+          functions: 90,
+          branches: 85,
+          statements: 90,
+        },
+        'src/core/answer/citations*.ts': {
+          lines: 90,
+          functions: 90,
+          branches: 85,
+          statements: 90,
+        },
       },
     },
   },

@@ -35,6 +35,37 @@ test('brand guard rejects template elements', async () => {
   );
 });
 
+test.each([
+  ['import specifier', `import '${BRAND.name}';`],
+  ['JSX text', `export const label = <div>${BRAND.name}</div>;`],
+  ['JSX attribute', `export const label = <div title="${BRAND.name}" />;`],
+  [
+    'mixed-case literal',
+    `export const label = '${BRAND.name.replace('legislation', 'LeGiSlAtIoN')}';`,
+  ],
+  [
+    'mixed-case template',
+    'export const label = `' + BRAND.name.toUpperCase() + '-${1}`;',
+  ],
+  [
+    'mixed-case JSX text',
+    `export const label = <div>${BRAND.name.toUpperCase()}</div>;`,
+  ],
+  [
+    'mixed-case JSX attribute',
+    `export const label = <div title="${BRAND.name.toUpperCase()}" />;`,
+  ],
+])('brand guard rejects %s', async (_name, source) => {
+  const [result] = await eslint.lintText(source, {
+    filePath: 'src/web/App.tsx',
+  });
+  expect(result?.messages).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ ruleId: 'no-restricted-syntax', severity: 2 }),
+    ]),
+  );
+});
+
 test('brand definition is exempt', async () => {
   const [result] = await eslint.lintText(
     `export const label = '${BRAND.name}';`,
