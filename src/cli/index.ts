@@ -6,6 +6,10 @@ import { AppError } from '../core/model/index.js';
 try {
   await createProgram().parseAsync();
 } catch (error) {
-  console.error(error instanceof AppError ? error.userMessage : 'The command could not be completed.');
+  console.error(
+    error instanceof AppError
+      ? error.userMessage
+      : 'The command could not be completed.',
+  );
   process.exitCode = 1;
 }

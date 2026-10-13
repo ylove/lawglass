@@ -1,18 +1,40 @@
+import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
-import { promptSecret, type PromptInput } from './secret-prompt.js';
+import {
+  promptChoice,
+  promptSecret,
+  type PromptInput,
+} from './secret-prompt.js';
 
-type Listener = (text: string | undefined, key: { name?: string; ctrl?: boolean; meta?: boolean }) => void;
-function fakeInput(isTTY = true): PromptInput & { press: Listener; raw: boolean[]; listeners: number } {
+type Listener = (
+  text: string | undefined,
+  key: { name?: string; ctrl?: boolean; meta?: boolean },
+) => void;
+function fakeInput(
+  isTTY = true,
+): PromptInput & { press: Listener; raw: boolean[]; listeners: number } {
   let listener: Listener | undefined;
   const raw: boolean[] = [];
   return {
-    isTTY, raw,
-    get listeners() { return listener ? 1 : 0; },
-    setRawMode: (m) => { raw.push(m); },
-    resume: () => undefined, pause: () => undefined,
-    on: (_e, l) => { listener = l; },
-    off: () => { listener = undefined; },
-    press: (t, k) => { listener?.(t, k); },
+    isTTY,
+    raw,
+    get listeners() {
+      return listener ? 1 : 0;
+    },
+    setRawMode: (m) => {
+      raw.push(m);
+    },
+    resume: () => undefined,
+    pause: () => undefined,
+    on: (_e, l) => {
+      listener = l;
+    },
+    off: () => {
+      listener = undefined;
+    },
+    press: (t, k) => {
+      listener?.(t, k);
+    },
   };
 }
 const request = { name: 'X_KEY', message: 'Key: ', masked: true } as const;
@@ -21,7 +43,11 @@ describe('promptSecret', () => {
   it('masks typed characters, honours backspace, and never writes the secret', async () => {
     const input = fakeInput();
     const written: string[] = [];
-    const result = promptSecret(request, input, { write: (t) => { written.push(t); } });
+    const result = promptSecret(request, input, {
+      write: (t) => {
+        written.push(t);
+      },
+    });
     for (const c of ['a', 'b', 'c']) input.press(c, { name: c });
     input.press(undefined, { name: 'backspace' });
     input.press('\u001b', { name: 'escape' });
@@ -46,6 +72,27 @@ describe('promptSecret', () => {
   });
 
   it('rejects without a TTY', async () => {
-    await expect(promptSecret(request, fakeInput(false), { write: () => undefined })).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    await expect(
+      promptSecret(request, fakeInput(false), { write: () => undefined }),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  });
+});
+
+describe('promptChoice', () => {
+  it('returns the trimmed answer, or undefined when blank', async () => {
+    for (const [line, expected] of [
+      ['  openai \n', 'openai'],
+      ['\n', undefined],
+    ] as const) {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      const result = promptChoice(
+        { message: 'Which?', choices: ['a', 'b'] },
+        input,
+        output,
+      );
+      input.write(line);
+      expect(await result).toBe(expected);
+    }
   });
 });

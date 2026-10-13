@@ -76,14 +76,28 @@ test.each([
 );
 
 test('init awaits configuration without printing returned credentials', async () => {
-  const init = vi.fn().mockResolvedValue({ anthropicApiKey: 'synthetic-key-do-not-display' });
+  const init = vi
+    .fn()
+    .mockResolvedValue({ anthropicApiKey: 'synthetic-key-do-not-display' });
   const output = vi.spyOn(console, 'log').mockImplementation(() => undefined);
   await createProgram({ init }).parseAsync(['init'], { from: 'user' });
   expect(init).toHaveBeenCalledOnce();
-  expect(output).toHaveBeenCalledExactlyOnceWith('Configuration saved with private file permissions.');
+  expect(output).toHaveBeenCalledExactlyOnceWith(
+    'Configuration saved with private file permissions.',
+  );
+});
+
+test('init passes --force through', async () => {
+  const init = vi.fn().mockResolvedValue({});
+  vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  await createProgram({ init }).parseAsync(['init', '--force'], {
+    from: 'user',
+  });
+  expect(init).toHaveBeenCalledWith({ force: true });
 });
 
 test.each([
+  { command: 'init', option: '--force' },
   { command: 'ingest', option: '--name' },
   { command: 'ask', option: '--chip' },
   { command: 'serve', option: '--port' },
