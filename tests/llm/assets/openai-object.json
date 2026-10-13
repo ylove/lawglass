@@ -1,0 +1,22 @@
+{
+  "id": "chatcmpl_recorded",
+  "object": "chat.completion",
+  "created": 0,
+  "model": "recorded",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "{\"billNumber\":null,\"sponsors\":null}",
+        "refusal": null
+      },
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 10,
+    "completion_tokens": 8,
+    "total_tokens": 18
+  }
+}
