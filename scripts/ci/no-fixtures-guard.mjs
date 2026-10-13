@@ -21,10 +21,17 @@ export function findViolations(files) {
       );
     }
 
-    if (
-      /\.(pdf|docx|xml)$/i.test(file.path) &&
+    // Binary documents are never legitimate source files here: reject them at any size.
+    // XML can be legitimate config/test data, so only large XML (a likely bill) is rejected.
+    const outsideSynth = !file.path.startsWith('tests/synth/');
+    if (/\.(pdf|docx|doc|rtf)$/i.test(file.path) && outsideSynth) {
+      violations.push(
+        `${file.path}: binary documents must not be tracked outside tests/synth/`,
+      );
+    } else if (
+      /\.xml$/i.test(file.path) &&
       file.size > 4 * 1024 &&
-      !file.path.startsWith('tests/synth/')
+      outsideSynth
     ) {
       violations.push(
         `${file.path}: document exceeds 4 KB outside tests/synth/`,

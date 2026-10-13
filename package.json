@@ -29,6 +29,7 @@
     "build": "tsup && vite build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "fixtures:fetch": "tsx scripts/fetch-fixtures.ts",
     "check": "npm run lint && npm run typecheck && npm run test:coverage"
   },
   "dependencies": {
@@ -50,6 +51,7 @@
     "happy-dom": "21.0.1",
     "prettier": "3.9.10",
     "tsup": "8.5.1",
+    "tsx": "4.23.15",
     "typescript": "6.0.3",
     "typescript-eslint": "8.71.2",
     "undici": "8.11.2",
