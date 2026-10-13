@@ -1,6 +1,6 @@
 import dns from 'node:dns/promises';
 import { isIP, type LookupFunction } from 'node:net';
-import { Agent } from 'undici';
+import { Agent, buildConnector } from 'undici';
 import { AppError } from '../model/index.js';
 import { isBlockedAddress } from './ip.js';
 
@@ -47,7 +47,7 @@ export async function resolvePublicAddress(
   url: URL,
   resolver: Resolver = defaultResolver,
   signal?: AbortSignal,
-): Promise<ResolvedAddress> {
+): Promise<readonly ResolvedAddress[]> {
   signal?.throwIfAborted();
   const hostname = url.hostname.replace(/^\[|\]$/g, '');
   const family = isIP(hostname);
@@ -65,9 +65,7 @@ export async function resolvePublicAddress(
     throw new AppError('SSRF_BLOCKED');
   }
   // Copy so the resolver cannot mutate the pinned answer after validation.
-  const first = addresses[0];
-  if (!first) throw new AppError('FETCH_FAILED');
-  return { ...first };
+  return addresses.map((address) => ({ ...address }));
 }
 
 /** This lookup never consults DNS, even if Node requests all addresses. */
@@ -79,20 +77,43 @@ export function createPinnedLookup(address: ResolvedAddress): LookupFunction {
   };
 }
 
-export function createPinnedDispatcher(
+export function createPinnedConnector(
   url: URL,
-  address: ResolvedAddress,
-): Agent {
+  addresses: readonly ResolvedAddress[],
+  connectorFactory: typeof buildConnector = buildConnector,
+): buildConnector.connector {
+  if (!addresses.length)
+    throw new AppError('FETCH_FAILED', 'No pinned addresses.');
   // The request URL retains Host; TLS retains the hostname for SNI and certificate checks.
-  return new Agent({
-    connect: {
+  const connectors = addresses.map((address) =>
+    connectorFactory({
       // safeFetch's single deadline covers DNS, redirects, and the entire body.
       timeout: 0,
       lookup: createPinnedLookup(address),
+      family: address.family,
       servername: isIP(url.hostname.replace(/^\[|\]$/g, ''))
         ? undefined
         : url.hostname,
       autoSelectFamily: false,
-    },
-  });
+    }),
+  );
+  return (options, callback) => {
+    let next = 1;
+    const attempt: buildConnector.Callback = (error, socket) => {
+      const connect = connectors[next++];
+      if (error && connect) connect(options, attempt);
+      else if (error) callback(error, null);
+      else callback(null, socket);
+    };
+    const first = connectors[0];
+    if (!first) throw new AppError('SSRF_BLOCKED');
+    first(options, attempt);
+  };
+}
+
+export function createPinnedDispatcher(
+  url: URL,
+  addresses: readonly ResolvedAddress[],
+): Agent {
+  return new Agent({ connect: createPinnedConnector(url, addresses) });
 }

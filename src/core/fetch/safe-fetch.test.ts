@@ -67,10 +67,9 @@ describe('safeFetch', () => {
       format: 'xml',
       fromCache: false,
     });
-    expect(factory).toHaveBeenCalledWith(
-      new URL(`${origin}/bill`),
+    expect(factory).toHaveBeenCalledWith(new URL(`${origin}/bill`), [
       publicAddress,
-    );
+    ]);
     const metadata = JSON.parse(
       await readFile(join(cacheDir, `${fetched.docId}.json`), 'utf8'),
     ) as unknown;
@@ -135,10 +134,113 @@ describe('safeFetch', () => {
     { timeoutMs: 0x1_0000_0000 },
     { maxRedirects: -1 },
     { maxRedirects: 1.5 },
+    { allowedPorts: [0] },
+    { allowedPorts: [65536] },
+    { allowedPorts: [443.5] },
+    { allowedPorts: [NaN] },
   ])('rejects invalid limits %j', async (limits) => {
     await expect(
       safeFetch(origin, { ...opts, ...limits }),
     ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  });
+  it.each([
+    'http://example.gov',
+    'https://example.gov',
+    'http://example.gov:80',
+    'https://example.gov:443',
+    'http://example.gov:8080',
+    'https://example.gov:8443',
+  ])('allows the default document ports at %s', async (url) => {
+    agent
+      .get(new URL(url).origin)
+      .intercept({ path: '/' })
+      .reply(200, 'bill text');
+    expect((await safeFetch(url, opts)).fromCache).toBe(false);
+    agent.assertNoPendingInterceptors();
+  });
+  it.each([22, 3000, 8000, 9000])(
+    'blocks port %s before DNS or dispatch',
+    async (port) => {
+      const resolver = vi.fn<Resolver>();
+      const factory = vi.fn(() => agent);
+      await expect(
+        safeFetch(`${origin}:${String(port)}`, {
+          ...opts,
+          resolver,
+          dispatcherFactory: factory,
+        }),
+      ).rejects.toMatchObject({
+        code: 'SSRF_BLOCKED',
+        message: `Port ${String(port)} is not allowed for document downloads.`,
+      });
+      expect(resolver).not.toHaveBeenCalled();
+      expect(factory).not.toHaveBeenCalled();
+    },
+  );
+  it('uses allowedPorts as an override, including default ports and an empty allowlist', async () => {
+    const url = `${origin}:9000`;
+    agent.get(url).intercept({ path: '/' }).reply(200, 'bill text');
+    expect(
+      (await safeFetch(url, { ...opts, allowedPorts: [9000] })).fromCache,
+    ).toBe(false);
+    await expect(
+      safeFetch(origin, { ...opts, allowedPorts: [9000] }),
+    ).rejects.toMatchObject({ code: 'SSRF_BLOCKED' });
+    await expect(
+      safeFetch(origin, { ...opts, allowedPorts: [] }),
+    ).rejects.toMatchObject({ code: 'SSRF_BLOCKED' });
+  });
+  it('blocks a redirect to a disallowed port before resolving or dispatching that hop', async () => {
+    agent
+      .get(origin)
+      .intercept({ path: '/' })
+      .reply(302, '', { headers: { location: `${origin}:9000/bill` } });
+    const resolver = vi.fn<Resolver>().mockResolvedValue([publicAddress]);
+    const factory = vi.fn(() => agent);
+    await expect(
+      safeFetch(origin, { ...opts, resolver, dispatcherFactory: factory }),
+    ).rejects.toMatchObject({
+      code: 'SSRF_BLOCKED',
+      message: 'Port 9000 is not allowed for document downloads.',
+    });
+    expect(resolver).toHaveBeenCalledTimes(1);
+    expect(factory).toHaveBeenCalledTimes(1);
+    agent.assertNoPendingInterceptors();
+  });
+  it('rechecks port restrictions on cached final URLs', async () => {
+    await writeCache(
+      new TextEncoder().encode('bill text'),
+      {
+        url: `${origin}/`,
+        finalUrl: `${origin}:9000/bill`,
+        contentType: 'text/plain',
+        fetchedAt: fixedNow().toISOString(),
+      },
+      cacheDir,
+    );
+    await expect(safeFetch(origin, opts)).rejects.toMatchObject({
+      code: 'SSRF_BLOCKED',
+    });
+    expect(
+      (await safeFetch(origin, { ...opts, allowedPorts: [443, 9000] }))
+        .fromCache,
+    ).toBe(true);
+  });
+  it('keeps an HTML fragment in HTML format and accepts a one-section bill with a PDF link', async () => {
+    agent
+      .get(origin)
+      .intercept({ path: '/fragment' })
+      .reply(200, '<p>hi', { headers: { 'content-type': 'text/html' } });
+    expect((await safeFetch(`${origin}/fragment`, opts)).format).toBe('html');
+    agent
+      .get(origin)
+      .intercept({ path: '/bill' })
+      .reply(
+        200,
+        '<h2>SECTION 1.</h2><p>(a) Grants.</p><p>(1) Eligibility.</p><a href="bill.pdf">Bill Text (PDF)</a>',
+        { headers: { 'content-type': 'text/html' } },
+      );
+    expect((await safeFetch(`${origin}/bill`, opts)).format).toBe('html');
   });
   it('rejects mixed records and a hostname that rebinds on a redirect', async () => {
     await expect(

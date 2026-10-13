@@ -20,7 +20,12 @@ import { findCandidateLinks, isLikelyWrapper } from './wrapper.js';
 export interface SafeFetchOptions {
   resolver?: Resolver;
   /** Injected dispatchers belong to the caller; default agents are destroyed after each hop. */
-  dispatcherFactory?: (url: URL, address: ResolvedAddress) => Dispatcher;
+  dispatcherFactory?: (
+    url: URL,
+    addresses: readonly ResolvedAddress[],
+  ) => Dispatcher;
+  /** Programmatic override; every hop must use one of these ports. */
+  allowedPorts?: readonly number[];
   maxBytes?: number;
   timeoutMs?: number;
   maxRedirects?: number;
@@ -37,7 +42,11 @@ export interface SafeFetchResult {
   fromCache: boolean;
 }
 
-function validateUrl(input: string, base?: URL): URL {
+function validateUrl(
+  input: string,
+  allowedPorts: readonly number[],
+  base?: URL,
+): URL {
   let url: URL;
   try {
     url = new URL(input, base);
@@ -47,6 +56,16 @@ function validateUrl(input: string, base?: URL): URL {
   if (!['http:', 'https:'].includes(url.protocol))
     throw new AppError('SSRF_BLOCKED');
   if (url.username || url.password) throw new AppError('INVALID_INPUT');
+  const port = url.port
+    ? Number(url.port)
+    : url.protocol === 'https:'
+      ? 443
+      : 80;
+  if (!allowedPorts.includes(port))
+    throw new AppError(
+      'SSRF_BLOCKED',
+      `Port ${String(port)} is not allowed for document downloads.`,
+    );
   url.hash = '';
   return url;
 }
@@ -121,6 +140,7 @@ export async function safeFetch(
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const maxRedirects = opts.maxRedirects ?? 5;
+  const allowedPorts = [...(opts.allowedPorts ?? [80, 443, 8080, 8443])];
   if (
     !Number.isSafeInteger(maxBytes) ||
     maxBytes <= 0 ||
@@ -128,7 +148,10 @@ export async function safeFetch(
     timeoutMs <= 0 ||
     timeoutMs > 0xffff_ffff ||
     !Number.isSafeInteger(maxRedirects) ||
-    maxRedirects < 0
+    maxRedirects < 0 ||
+    allowedPorts.some(
+      (port) => !Number.isInteger(port) || port < 1 || port > 65535,
+    )
   ) {
     throw new AppError('INVALID_INPUT');
   }
@@ -138,12 +161,12 @@ export async function safeFetch(
   const resolver = opts.resolver ?? defaultResolver;
   const cacheDir = opts.cacheDir ?? defaultCacheDir();
   try {
-    const original = validateUrl(input);
+    const original = validateUrl(input, allowedPorts);
     let url = original;
     let address = await resolvePublicAddress(url, resolver, signal);
     const cached = await readCache(original.href, cacheDir, maxBytes);
     if (cached) {
-      const final = validateUrl(cached.finalUrl);
+      const final = validateUrl(cached.finalUrl, allowedPorts);
       if (final.href !== original.href)
         await resolvePublicAddress(final, resolver, signal);
       signal.throwIfAborted();
@@ -168,7 +191,7 @@ export async function safeFetch(
             throw new AppError('FETCH_FAILED', 'Redirect has no destination.');
           if (redirects >= maxRedirects)
             throw new AppError('TOO_MANY_REDIRECTS');
-          url = validateUrl(location, url);
+          url = validateUrl(location, allowedPorts, url);
           address = await resolvePublicAddress(url, resolver, signal);
           continue;
         }

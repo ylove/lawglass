@@ -1,13 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import {
-  mkdir,
-  readFile,
-  readdir,
-  rename,
-  rm,
-  stat,
-  writeFile,
-} from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -20,6 +12,9 @@ const CacheMetadata = z.object({
   contentType: z.string(),
   fetchedAt: z.iso.datetime(),
 });
+const SHA256 = /^[a-f0-9]{64}$/;
+const CacheIndex = z.record(z.url(), z.string().regex(SHA256));
+const indexUpdates = new Map<string, Promise<void>>();
 export type CacheMetadata = z.infer<typeof CacheMetadata>;
 export interface CachedDocument extends CacheMetadata {
   docId: string;
@@ -36,42 +31,54 @@ export function documentId(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
-/** URL lookup uses sidecars; the content hash remains the only raw-byte filename. */
+function isCacheMiss(error: unknown): boolean {
+  return (
+    error instanceof SyntaxError ||
+    (error instanceof Error && 'code' in error && error.code === 'ENOENT')
+  );
+}
+
+async function readIndex(cacheDir: string): Promise<Record<string, string>> {
+  try {
+    const parsed = CacheIndex.safeParse(
+      JSON.parse(
+        await readFile(join(cacheDir, 'index.json'), 'utf8'),
+      ) as unknown,
+    );
+    return parsed.success ? parsed.data : {};
+  } catch (error) {
+    if (isCacheMiss(error)) return {};
+    throw error;
+  }
+}
+
+/** Entries never expire in the RC; URL lookups use the index, docIds go directly to disk. */
 export async function readCache(
-  url: string,
+  urlOrDocId: string,
   cacheDir: string,
   maxBytes = DEFAULT_MAX_BYTES,
 ): Promise<CachedDocument | undefined> {
-  let files: string[];
+  const docId = SHA256.test(urlOrDocId)
+    ? urlOrDocId
+    : (await readIndex(cacheDir))[urlOrDocId];
+  if (!docId) return undefined;
   try {
-    files = await readdir(cacheDir);
+    const metadata = CacheMetadata.safeParse(
+      JSON.parse(
+        await readFile(join(cacheDir, `${docId}.json`), 'utf8'),
+      ) as unknown,
+    );
+    if (!metadata.success) return undefined;
+    const path = join(cacheDir, docId);
+    if ((await stat(path)).size > maxBytes) throw new AppError('TOO_LARGE');
+    const bytes = await readFile(path);
+    if (bytes.length > maxBytes) throw new AppError('TOO_LARGE');
+    if (documentId(bytes) !== docId) return undefined;
+    return { ...metadata.data, docId, bytes };
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
-      return undefined;
+    if (isCacheMiss(error)) return undefined;
     throw error;
   }
-  for (const file of files.sort()) {
-    if (!/^[a-f0-9]{64}\.json$/.test(file)) continue;
-    try {
-      const metadata = CacheMetadata.safeParse(
-        JSON.parse(await readFile(join(cacheDir, file), 'utf8')) as unknown,
-      );
-      if (!metadata.success || metadata.data.url !== url) continue;
-      const docId = file.slice(0, -5);
-      const path = join(cacheDir, docId);
-      if ((await stat(path)).size > maxBytes) throw new AppError('TOO_LARGE');
-      const bytes = await readFile(path);
-      if (bytes.length > maxBytes) throw new AppError('TOO_LARGE');
-      if (documentId(bytes) !== docId) continue;
-      return { ...metadata.data, docId, bytes };
-    } catch (error) {
-      if (error instanceof SyntaxError) continue;
-      if (error instanceof Error && 'code' in error && error.code === 'ENOENT')
-        continue;
-      throw error;
-    }
-  }
-  return undefined;
 }
 
 async function atomicWrite(
@@ -97,5 +104,20 @@ export async function writeCache(
   await mkdir(cacheDir, { recursive: true, mode: 0o700 });
   await atomicWrite(join(cacheDir, docId), bytes);
   await atomicWrite(join(cacheDir, `${docId}.json`), JSON.stringify(validated));
+  // Serialize read-modify-write within this process so concurrent downloads retain every URL.
+  const previous = indexUpdates.get(cacheDir) ?? Promise.resolve();
+  const update = previous
+    .catch(() => undefined)
+    .then(async () => {
+      const index = await readIndex(cacheDir);
+      index[validated.url] = docId;
+      await atomicWrite(join(cacheDir, 'index.json'), JSON.stringify(index));
+    });
+  indexUpdates.set(cacheDir, update);
+  try {
+    await update;
+  } finally {
+    if (indexUpdates.get(cacheDir) === update) indexUpdates.delete(cacheDir);
+  }
   return docId;
 }

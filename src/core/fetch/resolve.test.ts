@@ -1,6 +1,9 @@
 import dns from 'node:dns/promises';
+import { Socket } from 'node:net';
+import { buildConnector } from 'undici';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
+  createPinnedConnector,
   createPinnedDispatcher,
   createPinnedLookup,
   defaultResolver,
@@ -48,7 +51,7 @@ describe('resolution and pinning', () => {
       ),
     ).rejects.toMatchObject({ code: 'FETCH_FAILED' });
   });
-  it('pins the first public answer without a second resolution', async () => {
+  it('pins validated answers without a second resolution', async () => {
     const resolver = vi
       .fn<Resolver>()
       .mockResolvedValueOnce([publicAddress])
@@ -57,8 +60,8 @@ describe('resolution and pinning', () => {
       new URL('https://example.gov'),
       resolver,
     );
-    const lookup = createPinnedLookup(selected);
-    selected.address = '10.0.0.1';
+    const lookup = createPinnedLookup(selected[0]!);
+    selected[0]!.address = '10.0.0.1';
     await new Promise<void>((resolve) => {
       lookup('example.gov', {}, (error, address, family) => {
         expect(error).toBeNull();
@@ -96,17 +99,105 @@ describe('resolution and pinning', () => {
       () => Promise.resolve([mutable]),
     );
     mutable.address = '127.0.0.1';
-    expect(selected).toEqual(publicAddress);
+    expect(selected).toEqual([publicAddress]);
     expect(
       await resolvePublicAddress(new URL('https://[2606:4700::1111]/')),
-    ).toEqual({ address: '2606:4700::1111', family: 6 });
+    ).toEqual([{ address: '2606:4700::1111', family: 6 }]);
   });
   it('constructs agents for hostname and literal URLs without connecting', async () => {
     for (const url of ['https://example.gov', 'https://8.8.8.8']) {
-      const agent = createPinnedDispatcher(new URL(url), publicAddress);
+      const agent = createPinnedDispatcher(new URL(url), [publicAddress]);
       expect(agent.destroyed).toBe(false);
       await agent.destroy();
     }
+  });
+  it('falls back from validated IPv6 to IPv4 in order, preserving the TLS hostname', async () => {
+    const ipv6 = { address: '2606:4700::1111', family: 6 as const };
+    const answers = [
+      ipv6,
+      { ...publicAddress },
+      { address: '1.1.1.1', family: 4 as const },
+    ];
+    const resolver = vi.fn<Resolver>().mockResolvedValue(answers);
+    const selected = await resolvePublicAddress(
+      new URL('https://example.gov'),
+      resolver,
+    );
+    const socket = new Socket();
+    const failed = vi.fn<buildConnector.connector>((_options, callback) => {
+      callback(new Error('IPv6 unavailable'), null);
+    });
+    const succeeded = vi.fn<buildConnector.connector>((_options, callback) => {
+      callback(null, socket);
+    });
+    const factory = vi
+      .fn<typeof buildConnector>()
+      .mockReturnValueOnce(failed)
+      .mockReturnValueOnce(succeeded)
+      .mockReturnValueOnce(vi.fn());
+    const connect = createPinnedConnector(
+      new URL('https://example.gov'),
+      selected,
+      factory,
+    );
+    answers[0]!.address = '::1';
+    selected[1]!.address = '127.0.0.1';
+    const options = {
+      hostname: 'example.gov',
+      protocol: 'https:',
+      port: '443',
+    };
+    const callback = vi.fn<buildConnector.Callback>();
+    connect(options, callback);
+    expect(callback).toHaveBeenCalledExactlyOnceWith(null, socket);
+    expect(failed).toHaveBeenCalledWith(options, expect.any(Function));
+    expect(succeeded).toHaveBeenCalledWith(options, expect.any(Function));
+    expect(failed.mock.invocationCallOrder[0]).toBeLessThan(
+      succeeded.mock.invocationCallOrder[0]!,
+    );
+    expect(factory.mock.results[2]!.value).not.toHaveBeenCalled();
+    for (const [index, address] of [
+      { address: '2606:4700::1111', family: 6 },
+      publicAddress,
+      { address: '1.1.1.1', family: 4 },
+    ].entries()) {
+      const config = factory.mock.calls[index]![0];
+      expect(config).toMatchObject({
+        family: address.family,
+        servername: 'example.gov',
+        autoSelectFamily: false,
+      });
+      if (!config || !('lookup' in config) || !config.lookup)
+        throw new Error('Missing pinned lookup');
+      config.lookup('attacker.invalid', { all: true }, (error, pinned) => {
+        expect(error).toBeNull();
+        expect(pinned).toEqual([address]);
+      });
+    }
+    expect(resolver).toHaveBeenCalledTimes(1);
+    socket.destroy();
+  });
+  it('reports failure only after exhausting pinned addresses and rejects an empty list', () => {
+    const error = new Error('unreachable');
+    const attempt = vi.fn<buildConnector.connector>((_options, callback) => {
+      callback(error, null);
+    });
+    const factory = vi.fn<typeof buildConnector>().mockReturnValue(attempt);
+    const connect = createPinnedConnector(
+      new URL('http://example.gov'),
+      [publicAddress, { address: '1.1.1.1', family: 4 }],
+      factory,
+    );
+    const callback = vi.fn<buildConnector.Callback>();
+    connect(
+      { hostname: 'example.gov', protocol: 'http:', port: '80' },
+      callback,
+    );
+    expect(attempt).toHaveBeenCalledTimes(2);
+    expect(callback).toHaveBeenCalledExactlyOnceWith(error, null);
+    expect(() =>
+      createPinnedConnector(new URL('http://example.gov'), []),
+    ).toThrow('No pinned addresses.');
   });
   it('bounds hanging DNS and handles already aborted signals', async () => {
     const controller = new AbortController();

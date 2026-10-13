@@ -10,6 +10,7 @@ const IPV4_BLOCKS = [
   '172.16.0.0/12',
   '192.0.0.0/24',
   '192.0.2.0/24',
+  '192.88.99.0/24',
   '192.168.0.0/16',
   '198.18.0.0/15',
   '198.51.100.0/24',
@@ -21,8 +22,12 @@ const IPV4_BLOCKS = [
 const IPV6_BLOCKS = [
   '::/128',
   '::1/128',
+  '100::/64',
+  // Block Teredo outright, including its XOR-obfuscated client IPv4.
+  '2001::/32',
   'fc00::/7',
   'fe80::/10',
+  'fec0::/10',
   'ff00::/8',
   '2001:db8::/32',
 ].map((cidr) => ipaddr.IPv6.parseCIDR(cidr));
@@ -30,6 +35,7 @@ const EMBEDDED_IPV4 = [
   '::ffff:0:0/96',
   '::/96',
   '64:ff9b::/96',
+  '64:ff9b:1::/48',
   '2002::/16',
 ].map((cidr) => ipaddr.IPv6.parseCIDR(cidr));
 
@@ -47,8 +53,13 @@ export function isBlockedAddress(ip: string): boolean {
   );
   if (embedding) {
     const octets = address.toByteArray();
+    // RFC 6052's /48 layout splits IPv4 around the reserved byte at offset 8.
     const embedded =
-      embedding[1] === 16 ? octets.slice(2, 6) : octets.slice(12);
+      embedding[1] === 16
+        ? octets.slice(2, 6)
+        : embedding[1] === 48
+          ? [...octets.slice(6, 8), ...octets.slice(9, 11)]
+          : octets.slice(12);
     return isBlockedAddress(embedded.join('.'));
   }
   return false;
