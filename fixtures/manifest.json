@@ -1,0 +1,60 @@
+{
+  "$comment": "Public source documents for local integration tests and eval. Files are downloaded by scripts/fetch-fixtures.ts into fixtures/downloads/ and are never committed.",
+  "fixtures": [
+    {
+      "name": "us-s202-119-is",
+      "description": "Helping Small Businesses THRIVE Act, introduced Senate bill (XML).",
+      "format": "xml",
+      "url": "https://www.govinfo.gov/content/pkg/BILLS-119s202is/xml/BILLS-119s202is.xml",
+      "sha256": "59c7021fd41f24989365353a0f97f54842db3bebeb546163206816412c6da439",
+      "bytes": 34663,
+      "retrievedAt": "2026-10-13",
+      "jurisdiction": "US Congress",
+      "notes": "119th Congress S. 202, Introduced in Senate (Helping Small Businesses THRIVE Act). Small federal bill, congressional bill DTD."
+    },
+    {
+      "name": "us-s202-119-is-html",
+      "description": "Helping Small Businesses THRIVE Act, introduced Senate bill (HTML).",
+      "format": "html",
+      "url": "https://www.govinfo.gov/content/pkg/BILLS-119s202is/html/BILLS-119s202is.htm",
+      "sha256": "ae708a6e6d04dab0a328d9f74407514e1e784a3f18fd55b110d4d56373c5cd02",
+      "bytes": 22739,
+      "retrievedAt": "2026-10-13",
+      "jurisdiction": "US Congress",
+      "notes": "Same bill as HTML (govinfo pre-formatted text); optional HTML fixture."
+    },
+    {
+      "name": "oh-sb113-136-in",
+      "description": "Ohio SB 113, as introduced in the 136th General Assembly.",
+      "format": "pdf",
+      "url": "https://search-prod.lis.state.oh.us/api/v2/general_assembly_136/legislation/sb113/00_IN/pdf/",
+      "sha256": "99728c881e1f5abc6988163a044ce2c904871ff4f509d2928bb2a126e71614f5",
+      "bytes": 98270,
+      "retrievedAt": "2026-10-13",
+      "jurisdiction": "Ohio",
+      "notes": "Ohio 136th General Assembly SB 113, As Introduced. Line-numbered PDF amending the Revised Code (strikethrough and underline)."
+    },
+    {
+      "name": "oh-sb203-133-in",
+      "description": "Ohio SB 203, as introduced in the 133rd General Assembly.",
+      "format": "pdf",
+      "url": "https://search-prod.lis.state.oh.us/api/v2/general_assembly_133/legislation/sb203/00_IN/pdf/",
+      "sha256": "eb7e5fc8ba668c6869312963753f93a32df35d0cf188c7b7141540e4a288b71d",
+      "bytes": 104819,
+      "retrievedAt": "2026-10-13",
+      "jurisdiction": "Ohio",
+      "notes": "Ohio 133rd General Assembly SB 203, As Introduced. Line-numbered PDF amending the Revised Code."
+    },
+    {
+      "name": "us-hr5009-118-enr",
+      "description": "National Defense Authorization Act for FY2025, enrolled House bill (large XML).",
+      "format": "xml",
+      "url": "https://www.govinfo.gov/content/pkg/BILLS-118hr5009enr/xml/BILLS-118hr5009enr.xml",
+      "sha256": "6c6f5b1185a229db8d9448bc614ed4e591668d61b66c074ecedc67c130a26684",
+      "bytes": 5685176,
+      "retrievedAt": "2026-10-13",
+      "jurisdiction": "US Congress",
+      "notes": "118th Congress H.R. 5009 enrolled: National Defense Authorization Act for FY2025 (about 430k tokens). The LARGE fixture for the retrieval vs. context-stuffing comparison."
+    }
+  ]
+}
