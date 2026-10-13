@@ -22,6 +22,7 @@ export {
   extractDefinitions,
   segmentDefinitions,
 } from './definitions.js';
+export * from './metadata.js';
 export {
   collectExternalRefs,
   findExternalMatches,
