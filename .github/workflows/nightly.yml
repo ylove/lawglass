@@ -1,0 +1,47 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: '41 5 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  pinecone-contract:
+    name: pinecone-contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PINECONE_API_KEY: ${{ secrets.PINECONE_API_KEY }}
+      LIVE_TESTS: pinecone
+    steps:
+      # Secrets are unavailable in job-level if expressions; gate every later step.
+      - name: Check Pinecone credentials
+        id: credentials
+        run: |
+          if [ -n "$PINECONE_API_KEY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Pinecone contract tests skipped: PINECONE_API_KEY is not configured." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: ${{ steps.credentials.outputs.enabled == 'true' }}
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: ${{ steps.credentials.outputs.enabled == 'true' }}
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+        if: ${{ steps.credentials.outputs.enabled == 'true' }}
+      - run: npm run test:live
+        if: ${{ steps.credentials.outputs.enabled == 'true' }}
+      # TODO(live-provider-ping): add a nightly provider ping when adapters exist.
