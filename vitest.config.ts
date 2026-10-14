@@ -32,6 +32,7 @@ export default defineConfig({
         // `npm run test:live` (nightly workflow), never in `npm run check`.
         test: {
           name: 'live',
+          hookTimeout: 300_000,
           environment: 'node',
           include: ['src/**/*.live.test.ts', 'tests/**/*.live.test.ts'],
           testTimeout: 120_000,
