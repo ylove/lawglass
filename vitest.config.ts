@@ -77,6 +77,10 @@ export default defineConfig({
           branches: 85,
           statements: 90,
         },
+        'src/core/scenario/validate.ts': {
+          lines: 90,
+          statements: 90,
+        },
       },
     },
   },
