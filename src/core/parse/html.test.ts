@@ -485,4 +485,114 @@ describe('parseHtml review fixes', () => {
       'Section 1. A.\nThe rate is seven percent and more.',
     );
   });
+
+  describe('charset prescan', () => {
+    const body = '<h3>Section 1. T.</h3><p>caf\xe9 \xa7</p>';
+    const textOf = (doc: NormalizedDoc) =>
+      sectionText(doc.sections[0]!, { includeDeleted: true });
+
+    it('ignores a commented-out meta and uses the real one', () => {
+      const doc = parse(
+        Buffer.from(
+          `<html><head><!-- <meta charset="windows-1252"> --><meta charset="utf-8"></head><body><h3>Section 1. T.</h3><p>café “q” §</p></body></html>`,
+        ),
+      );
+      expect(textOf(doc)).toContain('café “q” §');
+    });
+
+    it('ignores a meta inside a script string', () => {
+      const doc = parse(
+        Buffer.from(
+          `<html><head><script>var s="<meta charset=utf-16le>";</script><meta charset="windows-1252"></head><body>${body}</body></html>`,
+          'latin1',
+        ),
+      );
+      expect(textOf(doc)).toContain('café §');
+    });
+
+    it('ignores charset= text in a description content attribute', () => {
+      const doc = parse(
+        Buffer.from(
+          `<html><head><meta name="description" content="a charset=windows-1252 guide"></head><body><h3>Section 1. T.</h3><p>café §</p></body></html>`,
+        ),
+      );
+      expect(textOf(doc)).toContain('café §');
+      expect(doc.warnings).toEqual([]);
+    });
+
+    it('prefers valid multibyte UTF-8 over a wrong meta label, with a warning', () => {
+      const doc = parse(
+        Buffer.from(
+          `<meta charset="windows-1252"><h3>Section 1. T.</h3><p>café §</p>`,
+        ),
+      );
+      expect(textOf(doc)).toContain('café §');
+      expect(doc.warnings.join()).toMatch(/valid UTF-8/);
+    });
+
+    it('treats a meta-declared UTF-16 as UTF-8', () => {
+      const doc = parse(
+        Buffer.from(`<meta charset="utf-16"><h3>Section 1. T.</h3><p>café</p>`),
+      );
+      expect(textOf(doc)).toContain('café');
+    });
+
+    it('honours an honest windows-1252 page', () => {
+      const doc = parse(
+        Buffer.from(
+          `<html><head><meta charset="windows-1252"></head><body>${body}</body></html>`,
+          'latin1',
+        ),
+      );
+      expect(textOf(doc)).toContain('café §');
+      expect(doc.warnings).toEqual([]);
+    });
+  });
+
+  describe('ids follow the refined num', () => {
+    it('renumbers the id with the visible num, and its descendants', () => {
+      const doc = parse(
+        page(
+          '<pre>Section <del>2</del><ins>3</ins>. Rate.\n  (a) First.\n    (1) Deep.\n</pre>',
+        ),
+      );
+      const sec = doc.sections[0]!;
+      expect(sec.num).toBe('3');
+      expect(sec.id).toBe('sec-3');
+      expect(sec.children[0]?.id).toBe('sec-3/a');
+      expect(sec.children[0]?.children[0]?.id).toBe('sec-3/a/1');
+    });
+
+    it('keeps the original id for a fully struck section', () => {
+      const sec = parse(
+        page('<h3><del>Section 3. Gone.</del></h3><p>Body.</p>'),
+      ).sections[0]!;
+      expect(sec.num).toBeUndefined();
+      expect(sec.id).toBe('sec-3');
+    });
+
+    it('disambiguates a refined id that collides with an existing one', () => {
+      const doc = parse(
+        page(
+          '<h3>Section 3. Kept.</h3><p>a</p><h3>Section <del>2</del><ins>3</ins>. Replacement.</h3><p>b</p>',
+        ),
+      );
+      const ids = doc.sections.map((s) => s.id);
+      expect(ids).toEqual(['sec-3', 'sec-3~2']);
+      expect(
+        new Set([...walkSections(doc.sections)].map((s) => s.id)).size,
+      ).toBe(2);
+    });
+  });
+
+  it('does not leave kept text ending a line with spaces', () => {
+    const doc = parse(
+      page('<pre>SEC. 1. A.\nrate and <strike>5</strike>\nmore</pre>'),
+    );
+    const kept = doc.sections[0]!.spans.filter((s) => s.status !== 'deleted');
+    expect(kept.map((s) => s.text).join('')).not.toMatch(/[ \t]\n/);
+    expect(sectionText(doc.sections[0]!, { includeDeleted: true })).toBe(
+      'SEC. 1. A.\nrate and 5\nmore',
+    );
+  });
 });

@@ -290,24 +290,143 @@ function charsetOf(value: string | undefined): string | undefined {
   return /charset\s*=\s*["']?\s*([\w:.-]+)/i.exec(value ?? '')?.[1];
 }
 
+/** WHATWG "extract a character encoding from a meta element" for an `http-equiv` content value. */
+function charsetFromContent(content: string): string | undefined {
+  const match =
+    /charset[\t\n\f\r ]*=[\t\n\f\r ]*(?:"([^"]*)"|'([^']*)'|([^\t\n\f\r ;]*))/i.exec(
+      content,
+    );
+  const value = (match?.[1] ?? match?.[2] ?? match?.[3] ?? '').trim();
+  return value === '' ? undefined : value;
+}
+
+const SPACE = /[\t\n\f\r ]/;
+
+/** WHATWG "get an attribute": names are lowercased, the first of a duplicated name wins. */
+function readAttributes(
+  text: string,
+  start: number,
+): { attrs: Map<string, string>; end: number } {
+  const attrs = new Map<string, string>();
+  let at = start;
+  while (at < text.length) {
+    while (
+      at < text.length &&
+      (SPACE.test(text.charAt(at)) || text[at] === '/')
+    )
+      at++;
+    if (at >= text.length || text[at] === '>') break;
+    const nameStart = at;
+    while (
+      at < text.length &&
+      !SPACE.test(text.charAt(at)) &&
+      !'/>='.includes(text.charAt(at))
+    )
+      at++;
+    const name = text.slice(nameStart, at).toLowerCase();
+    while (at < text.length && SPACE.test(text.charAt(at))) at++;
+    let value = '';
+    if (text[at] === '=') {
+      at++;
+      while (at < text.length && SPACE.test(text.charAt(at))) at++;
+      const quote = text[at];
+      if (quote === '"' || quote === "'") {
+        const close = text.indexOf(quote, at + 1);
+        const stop = close < 0 ? text.length : close;
+        value = text.slice(at + 1, stop);
+        at = stop + 1;
+      } else {
+        const valueStart = at;
+        while (
+          at < text.length &&
+          !SPACE.test(text.charAt(at)) &&
+          text[at] !== '>'
+        )
+          at++;
+        value = text.slice(valueStart, at);
+      }
+    }
+    if (name && !attrs.has(name)) attrs.set(name, value);
+  }
+  return { attrs, end: at };
+}
+
 /**
- * Decode with the declared charset: BOM, then the HTTP `Content-Type` charset, then a
- * `<meta charset>` / `<meta http-equiv>` sniff of the first 4 KiB. With no declaration the
- * bytes must be valid UTF-8. An unknown charset label is an error, never a silent guess.
+ * Minimal WHATWG "prescan a byte stream to determine its encoding" over the bytes read as
+ * latin1 (a lossless byte-to-char map). Comments, `<script>`/`<style>` bodies and every tag
+ * other than `<meta>` are skipped, so only a real `<meta charset>` or
+ * `<meta http-equiv="content-type" content="...charset=...">` can declare the encoding.
+ * (The spec itself would also look inside script text; skipping it is stricter on purpose.)
  */
-function decodeHtml(bytes: Uint8Array, options: HtmlParseOptions): string {
+function prescanCharset(bytes: Uint8Array): string | undefined {
+  const text = Buffer.from(bytes.subarray(0, 4096)).toString('latin1');
+  let at = 0;
+  while (at < text.length) {
+    const lt = text.indexOf('<', at);
+    if (lt < 0) return undefined;
+    at = lt;
+    if (text.startsWith('<!--', at)) {
+      const close = text.indexOf('-->', at + 2);
+      if (close < 0) return undefined;
+      at = close + 3;
+      continue;
+    }
+    const tag = /^<(\/?)([a-z][^\t\n\f\r />]*)/i.exec(text.slice(at, at + 64));
+    if (!tag) {
+      // `<!doctype>`, `<?pi>`, `</ >` and stray `<` are skipped.
+      const gt = /^<[!?/]/.test(text.slice(at, at + 2))
+        ? text.indexOf('>', at)
+        : at;
+      if (gt < 0) return undefined;
+      at = gt + 1;
+      continue;
+    }
+    const name = (tag[2] ?? '').toLowerCase();
+    const { attrs, end } = readAttributes(text, at + tag[0].length);
+    at = end + 1;
+    if (tag[1]) continue;
+    if (name === 'script' || name === 'style') {
+      const close = text.toLowerCase().indexOf(`</${name}`, at);
+      if (close < 0) return undefined;
+      at = close;
+      continue;
+    }
+    if (name !== 'meta') continue;
+    const charset = attrs.get('charset');
+    if (charset !== undefined) return charset.trim() || undefined;
+    const content = attrs.get('content');
+    if (attrs.get('http-equiv')?.toLowerCase() === 'content-type' && content) {
+      const declared = charsetFromContent(content);
+      if (declared) return declared;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Decode with the declared charset: BOM, then the HTTP `Content-Type` charset, then the
+ * `<meta>` prescan. With no declaration the bytes must be valid UTF-8. An unknown label is an
+ * error, never a silent guess. A meta-declared UTF-16/32 is read as UTF-8 (WHATWG: the page
+ * is evidently ASCII-compatible). Safety net for a wrong meta label: if the label is not
+ * UTF-8 but the bytes are valid UTF-8 with multibyte sequences, trust the bytes and warn.
+ */
+function decodeHtml(
+  bytes: Uint8Array,
+  options: HtmlParseOptions,
+): { html: string; warnings: string[] } {
+  const warnings: string[] = [];
   let label: string | undefined;
+  let fromMeta = false;
   if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
     label = 'utf-8';
   else if (bytes[0] === 0xff && bytes[1] === 0xfe) label = 'utf-16le';
   else if (bytes[0] === 0xfe && bytes[1] === 0xff) label = 'utf-16be';
   else {
-    const head = Buffer.from(bytes.subarray(0, 4096)).toString('latin1');
-    const meta = /<meta\b[^>]*>/gi;
     label = charsetOf(options.contentType);
-    for (const [tag = ''] of head.matchAll(meta)) {
-      if (label) break;
-      label = charsetOf(tag);
+    if (!label) {
+      label = prescanCharset(bytes);
+      fromMeta = label !== undefined;
+      if (label && /^utf-?(?:16|32)/i.test(label)) label = 'utf-8';
     }
   }
   let decoder: InstanceType<typeof TextDecoder>;
@@ -320,8 +439,23 @@ function decodeHtml(bytes: Uint8Array, options: HtmlParseOptions): string {
       { cause },
     );
   }
+  if (
+    fromMeta &&
+    decoder.encoding !== 'utf-8' &&
+    bytes.some((b) => b >= 0x80)
+  ) {
+    try {
+      const html = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      warnings.push(
+        `The HTML document declares charset ${label ?? ''} but its bytes are valid UTF-8; decoded as UTF-8.`,
+      );
+      return { html, warnings };
+    } catch {
+      // Not UTF-8 after all: the declaration is plausible.
+    }
+  }
   try {
-    return decoder.decode(bytes);
+    return { html: decoder.decode(bytes), warnings };
   } catch (cause) {
     throw new AppError(
       'PARSE_FAILED',
@@ -367,7 +501,7 @@ function removeNoise($: CheerioAPI): string[] {
  * `detectSections` derives `heading`/`num` from the raw line, struck text included. Recompute
  * them from the non-deleted text so deleted words never reach breadcrumbs or embeddings.
  */
-function refineHeading(section: Section): void {
+function refineHeading(section: Section): boolean {
   const line: { char: string; deleted: boolean }[] = [];
   collect: for (const span of section.spans) {
     for (const char of span.text) {
@@ -376,9 +510,10 @@ function refineHeading(section: Section): void {
     }
   }
   while (/\s/.test(line.at(-1)?.char ?? 'x')) line.pop();
+  const before = section.num;
   const heading = section.heading ?? '';
   const raw = line.map((c) => c.char).join('');
-  if (!raw.endsWith(heading)) return;
+  if (!raw.endsWith(heading)) return false;
   const split = line.length - heading.length;
   const visible = (part: typeof line) =>
     part
@@ -406,6 +541,53 @@ function refineHeading(section: Section): void {
       section.num = section.num?.startsWith('(') ? `(${found})` : found;
     else delete section.num;
   }
+  return section.num !== before && section.num !== undefined;
+}
+
+/** Rewrite `from/` to `to/` at the start of every descendant id. */
+function reprefix(section: Section, from: string, to: string): void {
+  for (const child of section.children) {
+    child.id = to + child.id.slice(from.length);
+    reprefix(child, from, to);
+  }
+}
+
+/**
+ * Refine headings, then keep ids consistent with the refined `num`: an id is
+ * `<parent id>/<sec|chapter|article>-<marker>` (or `<parent id>/<marker>` for an
+ * enumeration), the same shape `sections.ts` builds, with the same `~n` suffix on collision.
+ * A section whose number is entirely struck keeps its original id: that id is the stable
+ * position-derived name (nothing visible is left to derive one from).
+ */
+function refineIds(roots: Section[]): void {
+  const used = new Set<string>();
+  for (const section of walkSections(roots)) used.add(section.id);
+  const visit = (section: Section, parentId: string | undefined): void => {
+    if (refineHeading(section) && section.num) {
+      const old = section.id;
+      const segment = old.slice(old.lastIndexOf('/') + 1).replace(/~\d+$/, '');
+      const kind = /^(sec|chapter|article)-/.exec(segment)?.[1];
+      const marker = section.num.replace(/^\((.*)\)$/, '$1').toLowerCase();
+      const base = `${parentId ? `${parentId}/` : ''}${kind ? `${kind}-` : ''}${marker}`;
+      used.delete(old);
+      let id = base;
+      for (let count = 2; used.has(id); count++)
+        id = `${base}~${String(count)}`;
+      used.add(id);
+      if (id !== old) {
+        for (const child of walkSections(section.children))
+          used.delete(child.id);
+        section.id = id;
+        reprefix(section, old, id);
+        // Descendant ids moved with the parent.
+        for (const child of walkSections(section.children)) {
+          used.add(child.id);
+        }
+      }
+    }
+    for (const child of section.children) visit(child, section.id);
+  };
+  for (const root of roots) visit(root, undefined);
 }
 
 /** Dropping a deleted span can leave "a  b": collapse the gap it leaves in the kept text. */
@@ -434,6 +616,20 @@ function collapseGaps(section: Section): void {
     previous = text;
     afterDeleted = false;
   }
+  // Kept text must not end a line with spaces ("and \n."): hand them to the struck text
+  // that follows, so the full text with deleted spans is unchanged.
+  for (const [index, span] of spans.entries()) {
+    if (span.status === 'deleted') continue;
+    const trailing = /[ \t]+$/.exec(span.text)?.[0];
+    if (!trailing || trailing === span.text) continue;
+    let next = index + 1;
+    while (spans[next]?.status === 'deleted') next++;
+    const struck = spans[index + 1];
+    if (next > index + 1 && struck && spans[next]?.text.startsWith('\n')) {
+      span.text = span.text.slice(0, -trailing.length);
+      struck.text = trailing + struck.text;
+    }
+  }
   section.spans = spans;
 }
 
@@ -453,12 +649,16 @@ export function parseHtml(
     );
   }
   const bytes = typeof input === 'string' ? Buffer.from(input, 'utf8') : input;
-  const html = typeof input === 'string' ? input : decodeHtml(input, options);
+  const decoded =
+    typeof input === 'string'
+      ? { html: input, warnings: [] }
+      : decodeHtml(input, options);
+  const html = decoded.html;
   const $: CheerioAPI = load(html);
   const rules = $('style')
     .toArray()
     .flatMap((style) => readClassRules($(style).text()));
-  const warnings = removeNoise($);
+  const warnings = [...decoded.warnings, ...removeNoise($)];
   $('style').remove();
 
   const builder = new LineBuilder();
@@ -493,10 +693,8 @@ export function parseHtml(
       'Could not align amendment markup with the detected sections.',
     );
   }
-  for (const section of walkSections(sections)) {
-    refineHeading(section);
-    collapseGaps(section);
-  }
+  refineIds(sections);
+  for (const section of walkSections(sections)) collapseGaps(section);
   return NormalizedDoc.parse({
     docId: createHash('sha256').update(bytes).digest('hex'),
     sourceUrl: options.sourceUrl,
