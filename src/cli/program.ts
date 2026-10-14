@@ -8,6 +8,7 @@ import { AppError, ChipId, type LlmProvider } from '../core/model/index.js';
 import { ask, ingest } from '../core/pipeline/index.js';
 import { runEvalCommand } from '../eval/command.js';
 import { runCompareCommand, type CompareOptions } from '../eval/compare.js';
+import { unescapeRecordText } from '../core/chip-history.js';
 import { safeText } from './sanitize.js';
 import { formatAskFooter, formatIngest, formatList } from './format.js';
 import {
@@ -208,7 +209,6 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
           options.chip === undefined
             ? undefined
             : ChipId.safeParse(options.chip);
-        // `history` parses as a ChipId but is not implemented yet (#128).
         const served = CHIPS.map((c) => c.id as string);
         if (chip && (!chip.success || !served.includes(chip.data)))
           throw new AppError('INVALID_INPUT', 'Unknown chip.', {
@@ -222,6 +222,7 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
             ? lazyProvider(() => runtime.answerProvider)
             : runtime.answerProvider;
         const entry = await runtime.registry.findByLabelOrPrefix(doc);
+        const isHistoryChip = chip?.success === true && chip.data === 'history';
         const result = await ask(
           entry.docId,
           chip?.success ? { chipId: chip.data } : { question: question ?? '' },
@@ -234,7 +235,8 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
           },
           {
             onToken: (text) => {
-              write(safeText(text));
+              // Only the history chip's text was escaped by our code; model text prints unchanged.
+              write(safeText(isHistoryChip ? unescapeRecordText(text) : text));
             },
           },
         );

@@ -21,3 +21,7 @@ sup {
 .sources ol {
   padding-left: 1.25rem;
 }
+
+.answer-body {
+  overflow-wrap: anywhere;
+}

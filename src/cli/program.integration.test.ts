@@ -10,6 +10,7 @@ import {
   stubPdfParser,
   type PipelineEnv,
 } from '../../tests/support/pipeline-env.js';
+import { writeHistory } from '../core/history/history-store.js';
 import { AppError } from '../core/model/index.js';
 import { createProgram, type CliDependencies } from './program.js';
 
@@ -118,6 +119,22 @@ test('ask validates its arguments and chips', async () => {
   output = '';
   await run(['ask', 'g', '--chip', 'sponsors']);
   expect(output).toMatch(/sponsor/i);
+  // history is served too; this document has no sidecar, so it says so without a model call.
+  output = '';
+  await run(['ask', 'g', '--chip', 'history']);
+  expect(output).toContain("Legislative history isn't available");
+  // Record text is escaped for the web renderer; the terminal shows it literally.
+  const [gEntry] = await env.registry.list();
+  await writeHistory(env.registry.configDir, String(gEntry?.docId), {
+    versions: [],
+    actions: [{ date: '2026-01-02', text: 'Cut *limit* [S:x] a\\b' }],
+    amendments: [],
+    sources: [],
+  });
+  output = '';
+  await run(['ask', 'g', '--chip', 'history']);
+  expect(output).toContain('Cut *limit* [S:x] a\\b');
+  expect(output).not.toContain('\\*');
   await expect(run(['ask', 'missing', 'q'])).rejects.toMatchObject({
     code: 'DOC_NOT_FOUND',
   });
@@ -239,6 +256,50 @@ test.each([
     serve: () => Promise.resolve(),
   }).parseAsync(args, { from: 'user' });
   expect(seen).toEqual(['local']);
+});
+
+test('ask prints text from other chips and the model unchanged (no unescaping)', async () => {
+  await run(['ingest', 'https://example.gov/gardens.txt', '--name', 'g']);
+  const modelish = {
+    ...env.runtime,
+    chips: (
+      _chip: unknown,
+      _docId: unknown,
+      _ctx: unknown,
+      opts: { onToken?: ((t: string) => void) | undefined },
+    ) => {
+      opts.onToken?.('Saved to C:\\*.txt');
+      return Promise.resolve({
+        answer: {
+          text: 'Saved to C:\\*.txt',
+          citations: [],
+          invalidCitations: [],
+          warnings: [],
+          declined: false,
+          readingGrade: null,
+          provider: 'mock' as const,
+          model: 'm',
+          usage: { inputTokens: 0, outputTokens: 0 },
+        },
+        hits: [],
+        backendUsage: {
+          embedTokens: 0,
+          rerankUnits: 0,
+          readUnits: 0,
+          writeUnits: 0,
+        },
+        mode: 'none' as const,
+      });
+    },
+  };
+  output = '';
+  await createProgram({
+    runtime: () => Promise.resolve(modelish),
+    write: (t) => {
+      output += t;
+    },
+  }).parseAsync(['ask', 'g', '--chip', 'summary'], { from: 'user' });
+  expect(output).toContain('Saved to C:\\*.txt');
 });
 
 test('ask --chip does not require an LLM key until a model call is made', async () => {

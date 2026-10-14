@@ -25,6 +25,12 @@ function answer(text: string, sources = citations) {
 }
 
 describe('answer markdown', () => {
+  test('an escaped bracket is literal text, not a citation', () => {
+    const { container } = answer('See \\[S:sec-2] and \\[x] here.');
+    expect(container.textContent).toBe('See [S:sec-2] and [x] here.');
+    expect(screen.queryByRole('button')).toBeNull();
+  });
+
   test('renders the Sonnet example as a bold-led paragraph with a source button', () => {
     const { container } = answer(example);
     expect(container.querySelector('p strong')?.textContent).toBe(

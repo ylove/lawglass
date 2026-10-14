@@ -1,5 +1,5 @@
 /**
- * Question chips (spec §3.3): the eight one-click questions, each with its own explicit
+ * Question chips (spec §3.3): the nine one-click questions, each with its own explicit
  * retrieval strategy. This file is the showcase of "retrieval is a per-question decision":
  *
  *   sparse-heavy   effective-date, penalties   exact words ("shall take effect", "fine") matter
@@ -9,8 +9,8 @@
  *   reranked       who-affected                the question is vague, so a cross-encoder
  *                                              re-orders the candidates
  *   structural     summary                     no query at all: walk the outline instead
- *   no model       sponsors                    the answer is a metadata field, so no retrieval
- *                                              and no LLM call
+ *   no model       sponsors,                   the answer is a stored record, so no retrieval
+ *                  history                     and no LLM call
  *
  * The shape is the frozen `ChipDefinition` contract. The executor that runs a chip lives in
  * ./chip-runner.ts (re-exported here), so this file stays plain, readable configuration.
@@ -174,11 +174,24 @@ const sponsors = defineChip({
   queries: [],
 });
 
+/**
+ * How did it get here?
+ * Built in code from the stored `BillHistory` (chip-history.ts). No retrieval, no LLM call: it
+ * is about who did what, so a model could only invent an attribution.
+ */
+const history = defineChip({
+  id: 'history',
+  label: 'How did it get here?',
+  strategy: 'metadata',
+  queries: [],
+});
+
 /** Every chip in display order. Frozen. */
 export const CHIPS: readonly ChipDefinition[] = Object.freeze([
   summary,
   whatChanges,
   whoAffected,
+  history,
   penalties,
   effectiveDate,
   money,
@@ -186,10 +199,7 @@ export const CHIPS: readonly ChipDefinition[] = Object.freeze([
   sponsors,
 ]);
 
-/**
- * The chip with this id. Every served chip has one (enforced by a test). `history` is in the
- * `ChipId` contract but has no definition until #128, so asking for it is a clear refusal.
- */
+/** The chip with this id. Every `ChipId` has one (enforced by a test). */
 export function getChip(id: ChipId): ChipDefinition {
   const chip = CHIPS.find((c) => c.id === id);
   if (!chip)

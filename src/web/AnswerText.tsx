@@ -78,7 +78,7 @@ function inline(
     );
   };
   // Recognize citations before emphasis so stars inside section ids stay opaque.
-  const tokens = new RegExp(`${MARKER.source}|\\\\[\\\\*]|\\*+|\\n`, 'g');
+  const tokens = new RegExp(`${MARKER.source}|\\\\[\\\\*\\[]|\\*+|\\n`, 'g');
   let last = 0;
   for (const m of line.matchAll(tokens)) {
     if (m.index > last) current().text.push(line.slice(last, m.index));

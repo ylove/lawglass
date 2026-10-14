@@ -5,6 +5,7 @@
 import type {
   AnswerResult,
   BackendUsage,
+  BillHistory,
   BillMetadata,
   Citation,
   Definition,
@@ -23,6 +24,8 @@ export interface ChipDoc {
   sections: readonly Section[];
   /** When given, `definitions` lists document-wide definitions before section-limited ones. */
   definitions?: readonly Definition[] | undefined;
+  /** The stored official record, read by `history`. Absent when none was fetched. */
+  history?: BillHistory | undefined;
 }
 
 export interface ChipDeps {
