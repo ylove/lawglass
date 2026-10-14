@@ -77,7 +77,7 @@ export const SUMMARY_PROMPT_VERSION = promptVersion(
  * A real section can also have no text of its own (all its text in subsections), so section
  * ids (`sec-101`, `section-5`) are never treated as containers.
  */
-function isContainer(s: Section): boolean {
+export function isContainer(s: Section): boolean {
   if (s.children.length === 0) return false;
   const lastSegment = s.id.split('/').at(-1) ?? s.id;
   if (/^sec(tion)?[-_.\d]/i.test(lastSegment)) return false;
