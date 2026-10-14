@@ -4,6 +4,7 @@ import { ScriptedProvider } from '../../../tests/contracts/scripted-provider.js'
 import {
   ExtractedMetadata,
   extractMetadata,
+  inferDocKind,
   MAX_METADATA_CHARS,
 } from './metadata.js';
 
@@ -311,5 +312,82 @@ describe('ExtractedMetadata', () => {
     expect(
       ExtractedMetadata.safeParse({ ...NULLS, sponsorProfiles: [] }).success,
     ).toBe(false);
+  });
+});
+
+describe('local measures and docKind', () => {
+  const LOCAL = `Franklin County Board of Elections\nISSUE 8\nTo amend the City Charter of the City of Columbus.\nSec. 3. - Powers.`;
+
+  it('keeps a local jurisdiction and number and sets charter_amendment', async () => {
+    const r = await extractMetadata(
+      { metadata: EMPTY_METADATA, sourceUrl: 'https://example.com/x' },
+      {
+        provider: scripted({
+          jurisdiction: 'City of Columbus',
+          billNumber: 'Issue 8',
+        }),
+        text: LOCAL,
+      },
+    );
+    expect(r.metadata.jurisdiction).toBe('City of Columbus');
+    expect(r.metadata.billNumber).toBe('Issue 8');
+    expect(r.metadata.docKind).toBe('charter_amendment');
+  });
+
+  it('accepts a jurisdiction from the source host', async () => {
+    const r = await extractMetadata(
+      {
+        metadata: EMPTY_METADATA,
+        sourceUrl: 'https://vote.franklincountyohio.gov/a.pdf',
+      },
+      {
+        provider: scripted({ jurisdiction: 'Franklin County, Ohio' }),
+        text: 'x',
+      },
+    );
+    expect(r.metadata.jurisdiction).toBe('Franklin County, Ohio');
+  });
+
+  it('discards a local jurisdiction that is not supported', async () => {
+    const r = await extractMetadata(
+      { metadata: EMPTY_METADATA },
+      { provider: scripted({ jurisdiction: 'City of Dayton' }), text: LOCAL },
+    );
+    expect(r.metadata.jurisdiction).toBeNull();
+    expect(r.warnings.join()).toContain('City of Dayton');
+  });
+
+  it('infers other kinds deterministically', async () => {
+    const kind = async (billNumber: string, text: string) =>
+      (
+        await extractMetadata(
+          { metadata: { ...EMPTY_METADATA, billNumber, title: null } },
+          { provider: scripted({}), text },
+        )
+      ).metadata.docKind;
+    expect(await kind('Issue 8', 'Shall the county levy a tax?')).toBe(
+      'ballot_issue',
+    );
+    expect(await kind('Ordinance No. 1-2026', 'An ordinance on parking')).toBe(
+      'ordinance',
+    );
+    expect(await kind('Resolution No. 5', 'Honoring Jane')).toBe('resolution');
+    expect(await kind('S. B. No. 113', 'To amend section 1.')).toBe('bill');
+    expect(await kind('', 'A plain document')).toBeUndefined();
+    expect(
+      await kind(
+        'H.B. 9',
+        'To amend the Revised Code regarding charter schools',
+      ),
+    ).toBe('bill');
+  });
+
+  it('keeps an existing docKind', () => {
+    expect(
+      inferDocKind(
+        { ...EMPTY_METADATA, docKind: 'other' },
+        'charter amendment',
+      ),
+    ).toBe('other');
   });
 });

@@ -60,11 +60,36 @@ function billPairs(tokens: string[]): string[] {
   return pairs;
 }
 
+/**
+ * Local-measure forms: "Issue 8", "Ordinance No. 1234-2026", "Resolution No. 12R-2026",
+ * "Proposed Charter Amendment No. 2". A charter amendment may be unnumbered; the rest need
+ * a number. Anything else (free text) is rejected.
+ */
+const LOCAL_NUMBER =
+  /^(?:proposed\s+)?(issue|ordinance|resolution|charter\s+amendment)(?:\s+(?:no\.?|number|#))?\s*([a-z0-9][a-z0-9.-]*)?$/i;
+
+function localNumberTokens(s: string): string[] | null {
+  const m = LOCAL_NUMBER.exec(s.trim());
+  if (!m?.[1]) return null;
+  const kind = words(m[1]);
+  const number = m[2] === undefined ? [] : words(m[2]);
+  if (number.length === 0 && kind[0] !== 'charter') return null;
+  return [...kind, ...number];
+}
+
+/** The kind word and number must appear together as whole tokens ("no" and "proposed" ignored). */
+function verifyLocalNumber(value: string, text: string): boolean {
+  const claimed = localNumberTokens(value);
+  if (claimed === null) return false;
+  const source = words(text).filter((w) => w !== 'no' && w !== 'proposed');
+  return containsSequence(source, claimed);
+}
+
 /** Chamber token and exact number must both appear, adjacent, as whole tokens. */
 export function verifyBillNumber(value: string, text: string): boolean {
   const claimed = billTokens(value);
   const pairs = billPairs(claimed);
-  if (pairs.length === 0) return false; // no chamber, or no number: cannot be verified
+  if (pairs.length === 0) return verifyLocalNumber(value, text); // else cannot be verified
   const source = billTokens(text);
   const sourcePairs = new Set(billPairs(source));
   const sourceNums = new Set(source.filter((t) => /^\d+$/.test(t)));
@@ -238,12 +263,98 @@ function stateMarker(state: string): RegExp {
   );
 }
 
+/** Small host table: a page on one of these hosts is a document of that local government. */
+const LOCAL_HOSTS: Readonly<Record<string, string>> = {
+  'vote.franklincountyohio.gov': 'Franklin County, Ohio',
+  'franklincountyohio.gov': 'Franklin County, Ohio',
+  'columbus.gov': 'City of Columbus, Ohio',
+};
+
+function localPlaceForHost(sourceUrl: string | undefined): string | undefined {
+  if (sourceUrl === undefined) return undefined;
+  let host: string;
+  try {
+    host = new URL(sourceUrl).hostname.toLowerCase();
+  } catch {
+    return undefined;
+  }
+  return Object.entries(LOCAL_HOSTS).find(
+    ([known]) => host === known || host.endsWith(`.${known}`),
+  )?.[1];
+}
+
+interface LocalPlace {
+  /** "city of columbus" or "franklin county" as lowercase tokens, plus alternates. */
+  phrases: string[][];
+  /** Lowercase state name, when the claim carried one. */
+  state: string | undefined;
+}
+
+/** Parses "City of Columbus, Ohio", "Franklin County" etc.; null for anything else. */
+function parseLocalPlace(value: string): LocalPlace | null {
+  const parts = value.split(',').map((p) => p.trim());
+  if (parts.length > 2 || !parts[0]) return null;
+  let state: string | undefined;
+  if (parts[1] !== undefined) {
+    const named = STATES.find(
+      (s) => words(s).join(' ') === words(parts[1] ?? '').join(' '),
+    );
+    if (named === undefined) return null;
+    state = words(named).join(' ');
+  }
+  const place = words(parts[0]);
+  const prefixed = /^(city|town|village|township|county)$/.exec(place[0] ?? '');
+  if (prefixed && place[1] === 'of' && place.length > 2) {
+    const name = place.slice(2);
+    return { phrases: [place, [...name, prefixed[1] ?? '']], state };
+  }
+  const last = place.at(-1);
+  if (
+    place.length > 1 &&
+    (last === 'county' || last === 'city' || last === 'township')
+  ) {
+    const name = place.slice(0, -1);
+    return { phrases: [place, [last, 'of', ...name]], state };
+  }
+  return null;
+}
+
+/**
+ * A local jurisdiction is kept only when the document names it (the full "City of X" or
+ * "X County" phrase, as whole tokens) or the source host belongs to it.
+ */
+function verifyLocalJurisdiction(
+  value: string,
+  text: string,
+  sourceUrl: string | undefined,
+): string | null {
+  const claim = parseLocalPlace(value);
+  if (claim === null) return null;
+  const hostPlace = localPlaceForHost(sourceUrl);
+  const hostClaim = hostPlace === undefined ? null : parseLocalPlace(hostPlace);
+  if (
+    hostPlace !== undefined &&
+    hostClaim !== null &&
+    hostClaim.phrases[0]?.join(' ') === claim.phrases[0]?.join(' ') &&
+    (claim.state === undefined || claim.state === hostClaim.state)
+  )
+    return hostPlace;
+  const source = words(text);
+  if (!claim.phrases.some((p) => containsSequence(source, p))) return null;
+  return value.trim().replace(/\s+/g, ' ');
+}
+
 /**
  * Returns the canonical jurisdiction if the value is a state or federal name AND the text
- * carries an explicit marker for it; otherwise null. A state mentioned in passing (or
- * inferred from "Revised Code") is not a marker.
+ * carries an explicit marker for it, or a local jurisdiction named in the text or matching
+ * the source host; otherwise null. A state mentioned in passing (or inferred from "Revised
+ * Code") is not a marker.
  */
-export function verifyJurisdiction(value: string, text: string): string | null {
+export function verifyJurisdiction(
+  value: string,
+  text: string,
+  sourceUrl?: string,
+): string | null {
   const norm = words(value.replace(/^\s*(?:the\s+)?state\s+of\s+/i, '')).join(
     ' ',
   );
@@ -251,7 +362,8 @@ export function verifyJurisdiction(value: string, text: string): string | null {
     return FEDERAL_MARKER.test(text) ? FEDERAL : null;
   }
   const state = STATES.find((s) => words(s).join(' ') === norm);
-  if (state === undefined) return null;
+  if (state === undefined)
+    return verifyLocalJurisdiction(value, text, sourceUrl);
   return stateMarker(state).test(text) ? state : null;
 }
 

@@ -205,3 +205,92 @@ describe('sourceFor', () => {
     expect(sourceFor(EMPTY_METADATA, 1)).toBe('extracted');
   });
 });
+
+describe('local measures', () => {
+  const CHARTER = `City of Columbus\nISSUE 8\nTo amend the City Charter.\nProposed Charter Amendment No. 2\nOrdinance No. 1234-2026\nResolution No. 12R-2026\nFranklin County Board of Elections`;
+
+  it.each([
+    'Issue 8',
+    'Ordinance No. 1234-2026',
+    'Resolution No. 12R-2026',
+    'Proposed Charter Amendment No. 2',
+    'Charter Amendment',
+  ])('accepts %s', (v) => {
+    expect(verifyBillNumber(v, CHARTER)).toBe(true);
+  });
+
+  it.each([
+    'Issue 9',
+    'Issue 80',
+    'Ordinance 99',
+    'Issue',
+    'Ordinance',
+    'the thing about issue 8',
+    'Charter Amendment No. 7',
+  ])('rejects %s', (v) => {
+    expect(verifyBillNumber(v, CHARTER)).toBe(false);
+  });
+
+  it('does not let Issue 80 verify Issue 8', () => {
+    expect(verifyBillNumber('Issue 8', 'Issue 80 on the ballot')).toBe(false);
+  });
+
+  it('accepts a local jurisdiction named in the text', () => {
+    expect(verifyJurisdiction('City of Columbus, Ohio', CHARTER)).toBe(
+      'City of Columbus, Ohio',
+    );
+    expect(verifyJurisdiction('Franklin County', CHARTER)).toBe(
+      'Franklin County',
+    );
+    expect(verifyJurisdiction('Columbus City', CHARTER)).toBe('Columbus City');
+  });
+
+  it('rejects a local jurisdiction absent from the text and host', () => {
+    expect(verifyJurisdiction('City of Dayton, Ohio', CHARTER)).toBeNull();
+    expect(
+      verifyJurisdiction('City of Dayton', CHARTER, 'https://example.com/x'),
+    ).toBeNull();
+    expect(verifyJurisdiction('Nowhere', CHARTER)).toBeNull();
+    expect(verifyJurisdiction('City of Columbus, Mars', CHARTER)).toBeNull();
+    expect(verifyJurisdiction('A, B, C', CHARTER)).toBeNull();
+  });
+
+  it('accepts a local jurisdiction matching the source host', () => {
+    expect(
+      verifyJurisdiction(
+        'Franklin County, Ohio',
+        'no place named',
+        'https://vote.franklincountyohio.gov/x.pdf',
+      ),
+    ).toBe('Franklin County, Ohio');
+    expect(
+      verifyJurisdiction(
+        'City of Columbus',
+        'nothing',
+        'https://www.columbus.gov/a',
+      ),
+    ).toBe('City of Columbus, Ohio');
+  });
+
+  it('does not let a host vouch for a different place or a different state', () => {
+    expect(
+      verifyJurisdiction(
+        'City of Dayton',
+        'nothing',
+        'https://vote.franklincountyohio.gov/x',
+      ),
+    ).toBeNull();
+    expect(
+      verifyJurisdiction(
+        'City of Columbus, Georgia',
+        'nothing',
+        'https://columbus.gov/x',
+      ),
+    ).toBeNull();
+    expect(verifyJurisdiction('City of Columbus', 'x', 'not a url')).toBeNull();
+  });
+
+  it('leaves state and federal behavior unchanged', () => {
+    expect(verifyJurisdiction('Ohio', 'City of Columbus')).toBeNull();
+  });
+});

@@ -23,15 +23,21 @@ export function compact(text: string): string {
 
 /** Extract front matter only; an operative clause beginning "To" is not the bill's purpose. */
 function purpose(text: string): string | undefined {
-  const match = /(?:^|\n)[ \t]*(?:A\s+BILL\s+)?(To\s+\S[\s\S]*)/i.exec(text);
+  const match =
+    /(?:^|\n)[ \t]*(?:A\s+BILL\s+)?(To\s+\S[\s\S]*|Shall\s+the\s+(?:[A-Za-z]+\s+){0,3}?Charter\b[\s\S]*)/i.exec(
+      text,
+    );
   if (!match?.[1]) return undefined;
   // Enacting text is the main stop. Keep wrapped lowercase and decimal code references
   // intact; only a capitalized operative section marker or federal boilerplate ends them.
   const beforeEnactment = match[1].split(/\bBe\s+it\s+enacted\b/i)[0] ?? '';
-  const clause =
+  const clause = (
     beforeEnactment.split(
-      /_{3,}|\n[ \t]*(?:(?:Section|Sec\.)[ \t]+\d+\.(?=\s|$)|IN THE (?:SENATE|HOUSE)\b|\d+(?:st|nd|rd|th) CONGRESS\b)/,
-    )[0] ?? '';
+      /_{3,}|\n[ \t]*(?:(?:Section|Sec\.)[ \t]+\d+(?:-\d+)*\.(?=[\s-]|$)|IN THE (?:SENATE|HOUSE)\b|\d+(?:st|nd|rd|th) CONGRESS\b)/,
+    )[0] ?? ''
+  )
+    // A ballot question ("Shall the Charter ... be amended ...?") ends at its question mark.
+    .replace(/^(Shall\b[^?]*\?)[\s\S]*$/i, '$1');
   return compact(clause) || undefined;
 }
 

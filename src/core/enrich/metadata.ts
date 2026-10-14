@@ -10,6 +10,7 @@ import { z } from 'zod';
 import {
   AppError,
   type BillMetadata,
+  type DocKind,
   type LlmProvider,
   type NormalizedDoc,
 } from '../model/index.js';
@@ -48,9 +49,9 @@ const SYSTEM_PROMPT = [
   'Return null for any field unless its value is explicitly printed in the text. Never guess or infer from context or general knowledge, and never use your own knowledge of real bills, members or states.',
   '',
   'Fields (copy values as printed, do not reformat):',
-  '- title: the official or short title as printed, e.g. "Helping Small Businesses THRIVE Act", or the "To amend ..." purpose clause. Null if neither is printed.',
-  '- billNumber: the bill number exactly as printed, e.g. "S. 202", "H.R. 5009", "S. B. No. 113".',
-  '- jurisdiction: "United States" only if the text says it is the U.S. Senate/House/Congress; a state name only if the text names it as the enacting body, e.g. "General Assembly of the State of Ohio" gives "Ohio". Do not infer a state from code names such as "Revised Code".',
+  '- title: the official or short title as printed, e.g. "Helping Small Businesses THRIVE Act", or the "To amend ..." purpose clause (or a ballot question). Null if neither is printed.',
+  '- billNumber: the bill number exactly as printed, e.g. "S. 202", "H.R. 5009", "S. B. No. 113"; for local measures "Issue 8", "Ordinance No. 1234-2026", "Resolution No. 12R-2026" or "Charter Amendment No. 2".',
+  '- jurisdiction: "United States" only if the text says it is the U.S. Senate/House/Congress; a state name only if the text names it as the enacting body, e.g. "General Assembly of the State of Ohio" gives "Ohio". Do not infer a state from code names such as "Revised Code". A local measure may name a city or county as printed, e.g. "City of Columbus, Ohio" or "Franklin County, Ohio".',
   '- session: the session as printed, e.g. "119th Congress, 1st Session" or "136th General Assembly, Regular Session 2025-2026".',
   '- version: the stage as printed, e.g. "As Introduced", "Introduced in Senate", "Enrolled".',
   '- sponsors: names of the sponsor(s) printed on the bill, e.g. ["Mrs. Shaheen"] (federal: "Mrs. Shaheen (for herself and Mr. Cassidy)") or ["Senator Brenner"] (Ohio). Cosponsors listed under "Cosponsors:" are NOT sponsors. Never add a first name, title or chamber that is not printed. Null if none are printed.',
@@ -79,12 +80,49 @@ export interface ExtractMetadataOptions {
   signal?: AbortSignal | undefined;
 }
 
+const HEAD_CHARS = 500;
+const CHARTER =
+  /\bcharter\s+amendment\b|\bamend(?:ing)?\s+(?:the\s+)?(?:[a-z]+\s+){0,3}?charter\b(?!\s+schools?)/i;
+const CHAMBER_NUMBER = /^(?:s|h)\.?\s*(?:b|r|j|con|res|\d)/i;
+
 /**
- * Fill still-null metadata fields. Never throws on extraction problems; returns warnings.
- * Only a caller-initiated abort propagates.
+ * Classify the document from its own title, number and opening text; no model involved.
+ * Returns undefined when nothing is clear (a plain title with no tell-tale words).
+ */
+export function inferDocKind(
+  metadata: BillMetadata,
+  text: string,
+): DocKind | undefined {
+  if (metadata.docKind !== undefined) return metadata.docKind;
+  const number = metadata.billNumber ?? '';
+  const head = `${metadata.title ?? ''}\n${number}\n${text.slice(0, HEAD_CHARS)}`;
+  if (CHARTER.test(head)) return 'charter_amendment';
+  if (/\bordinance\b/i.test(head)) return 'ordinance';
+  if (/^\s*issue\b/i.test(number) || /^\s*issue\s+\d/im.test(head))
+    return 'ballot_issue';
+  if (/\bresolution\b/i.test(number) && !CHAMBER_NUMBER.test(number))
+    return 'resolution';
+  if (CHAMBER_NUMBER.test(number)) return 'bill';
+  return undefined;
+}
+
+/**
+ * Fill still-null metadata fields and classify the document. Never throws on extraction
+ * problems; returns warnings. Only a caller-initiated abort propagates.
  */
 export async function extractMetadata(
-  doc: Pick<NormalizedDoc, 'metadata'>,
+  doc: Pick<NormalizedDoc, 'metadata'> & { sourceUrl?: string },
+  opts: ExtractMetadataOptions,
+): Promise<MetadataResult> {
+  const result = await fillMetadata(doc, opts);
+  const docKind = inferDocKind(result.metadata, opts.text);
+  if (docKind === undefined || result.metadata.docKind === docKind)
+    return result;
+  return { ...result, metadata: { ...result.metadata, docKind } };
+}
+
+async function fillMetadata(
+  doc: Pick<NormalizedDoc, 'metadata'> & { sourceUrl?: string },
   opts: ExtractMetadataOptions,
 ): Promise<MetadataResult> {
   const existing = doc.metadata;
@@ -152,7 +190,7 @@ export async function extractMetadata(
 
   const jurisdiction = extracted.jurisdiction;
   if (merged.jurisdiction === null && nonEmpty(jurisdiction)) {
-    const verified = verifyJurisdiction(jurisdiction, text);
+    const verified = verifyJurisdiction(jurisdiction, text, doc.sourceUrl);
     if (verified !== null) {
       merged.jurisdiction = verified;
       extractedCount++;
@@ -160,7 +198,7 @@ export async function extractMetadata(
       discard(
         'jurisdiction',
         jurisdiction,
-        'no explicit state or federal marker in the document text',
+        'no explicit state, federal or local marker in the document text',
       );
   }
 
