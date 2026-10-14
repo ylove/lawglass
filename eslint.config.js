@@ -2,6 +2,38 @@ import { defineConfig } from 'eslint/config';
 import tseslint from 'typescript-eslint';
 import reactHooks from 'eslint-plugin-react-hooks';
 
+const BRAND_MESSAGE = 'Use BRAND from src/core/brand.ts for the product name.';
+
+/**
+ * The product name is not final, so it must live only in src/core/brand.ts. Exported so the
+ * brand-guard test can exercise this exact rule without a slow type-aware lint.
+ */
+export const brandGuard = {
+  files: [
+    'src/**/*.{js,jsx,ts,tsx}',
+    'scripts/**/*.{js,jsx,ts,tsx}',
+    'tests/**/*.{js,jsx,ts,tsx}',
+  ],
+  ignores: ['src/core/brand.ts'],
+  rules: {
+    'no-restricted-syntax': [
+      'error',
+      {
+        selector: 'Literal[value=/legislation-summary/i]',
+        message: BRAND_MESSAGE,
+      },
+      {
+        selector: 'TemplateElement[value.cooked=/legislation-summary/i]',
+        message: BRAND_MESSAGE,
+      },
+      {
+        selector: 'JSXText[value=/legislation-summary/i]',
+        message: BRAND_MESSAGE,
+      },
+    ],
+  },
+};
+
 export default defineConfig(
   {
     ignores: [
@@ -48,29 +80,5 @@ export default defineConfig(
     files: ['src/web/**/*.{ts,tsx}'],
     extends: [reactHooks.configs.flat.recommended],
   },
-  {
-    files: [
-      'src/**/*.{js,jsx,ts,tsx}',
-      'scripts/**/*.{js,jsx,ts,tsx}',
-      'tests/**/*.{js,jsx,ts,tsx}',
-    ],
-    ignores: ['src/core/brand.ts'],
-    rules: {
-      'no-restricted-syntax': [
-        'error',
-        {
-          selector: 'Literal[value=/legislation-summary/i]',
-          message: 'Use BRAND from src/core/brand.ts for the product name.',
-        },
-        {
-          selector: 'TemplateElement[value.cooked=/legislation-summary/i]',
-          message: 'Use BRAND from src/core/brand.ts for the product name.',
-        },
-        {
-          selector: 'JSXText[value=/legislation-summary/i]',
-          message: 'Use BRAND from src/core/brand.ts for the product name.',
-        },
-      ],
-    },
-  },
+  brandGuard,
 );

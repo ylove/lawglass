@@ -35,15 +35,16 @@
     "check": "npm run lint && npm run typecheck && npm run format:check && npm run test:coverage"
   },
   "dependencies": {
-    "@huggingface/transformers": "4.3.1",
     "@anthropic-ai/sdk": "0.133.0",
     "@google/genai": "2.29.1",
-    "commander": "15.0.0",
-    "openai": "7.32.0",
+    "@huggingface/transformers": "4.3.1",
     "cheerio": "1.2.0",
+    "commander": "15.0.0",
     "ipaddr.js": "2.5.0",
+    "openai": "7.32.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "saxes": "6.0.0",
     "undici": "8.11.2",
     "zod": "4.6.7"
   },

@@ -34,14 +34,43 @@ function textRun(spans: readonly Span[]): TextRun {
   return { text, ranges };
 }
 
+/** Printed label for a level, keyed by the prefix parsers put on the level's last id segment. */
+const LEVEL_LABELS: Readonly<Record<string, string>> = {
+  sec: 'Sec.',
+  division: 'Division',
+  title: 'Title',
+  subtitle: 'Subtitle',
+  chapter: 'Chapter',
+  subchapter: 'Subchapter',
+  part: 'Part',
+  subpart: 'Subpart',
+  article: 'Article',
+};
+
+/** True when the printed number already carries its own label ("Sec. 4", "§ 4", "Division A"). */
+const ALREADY_LABELLED =
+  /^(?:sec(?:tion)?\.?(?:\s|$)|§|\(|(?:division|title|subtitle|chapter|subchapter|part|subpart|article)\b)/i;
+
+/**
+ * Labels a level by its id prefix, so a section nested inside a division and title still reads
+ * "Sec. 142" and a division reads "Division A". Enumerated children such as "(b)" have no
+ * recognised prefix and stay as printed.
+ */
+function levelNum(section: Section): string {
+  const num = section.num ?? '';
+  if (!num || ALREADY_LABELLED.test(num)) return num;
+  const prefix = /^([a-z]+)-/.exec(section.id.split('/').at(-1) ?? '')?.[1];
+  const label = prefix === undefined ? undefined : LEVEL_LABELS[prefix];
+  return label ? `${label} ${num}` : num;
+}
+
 function breadcrumb(path: readonly Section[]): string {
   return path
-    .map((section, index) => {
-      let num = section.num ?? '';
-      if (index === 0 && num && !/^(?:sec(?:tion)?\.?\s|§|\()/i.test(num))
-        num = `Sec. ${num}`;
-      return [num, section.heading].filter(Boolean).join(' ') || section.id;
-    })
+    .map(
+      (section) =>
+        [levelNum(section), section.heading].filter(Boolean).join(' ') ||
+        section.id,
+    )
     .join(' > ');
 }
 
