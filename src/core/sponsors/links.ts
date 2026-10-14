@@ -76,7 +76,7 @@ export function enrichSponsorLinks(
           true,
         ),
       );
-    } else {
+    } else if (!profile.links.some((existing) => existing.kind !== 'search')) {
       added.push(...searchLinks(profile.name, jurisdiction));
     }
     const seen = new Set(profile.links.map((existing) => existing.url));

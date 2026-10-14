@@ -287,10 +287,16 @@ describe('runChip: sponsors (metadata only)', () => {
     );
   });
 
-  it('treats an empty official profile list as having no named sponsors', async () => {
+  it('falls back to legacy sponsor names when the official profile list is empty', async () => {
     deps.doc.metadata = { ...SPONSORS, sponsorProfiles: [] };
-    const run = await runChip(getChip('sponsors'), DOC, deps);
-    expect(run.answer.text).toBe("This document doesn't say who sponsored it.");
+    const tokens: string[] = [];
+    const run = await runChip(getChip('sponsors'), DOC, deps, {
+      onToken: (text) => tokens.push(text),
+    });
+    expect(run.answer.text).toBe(
+      'Sponsored by Rep. Ada Lovelace, Sen. Grace Hopper. Cosponsors, if any, are not included.',
+    );
+    expect(tokens.join('')).toBe(run.answer.text);
   });
 
   it.each([null, [], ['  ']])('says so when sponsors are %j', async (value) => {

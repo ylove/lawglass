@@ -133,11 +133,8 @@ describe('enrichSponsorLinks', () => {
       chamber: 'house',
     });
     const once = enrichSponsorLinks([input], directory, 'Ohio');
-    expect(once[0]!.links[0]).toEqual(anchor);
-    expect(once[0]).toMatchObject({
-      ...input,
-      links: [anchor, ...once[0]!.links.slice(1)],
-    });
+    expect(once[0]!.links).toEqual([anchor]);
+    expect(once[0]).toEqual(input);
     expect(enrichSponsorLinks(once, directory, 'Ohio')).toEqual(once);
     expect(input.links).toEqual([anchor]);
   });

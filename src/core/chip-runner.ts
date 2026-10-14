@@ -76,7 +76,7 @@ function runMetadataChip(
     names.length === 0
       ? "This document doesn't say who sponsored it."
       : `Sponsored by ${names.join(', ')}. Cosponsors, if any, are not included.`;
-  if (metadata.sponsorProfiles !== undefined) {
+  if (metadata.sponsorProfiles && metadata.sponsorProfiles.length > 0) {
     const sponsors = metadata.sponsorProfiles.filter(
       (p) => p.role === 'sponsor',
     );
