@@ -30,6 +30,11 @@
     flex: 1 1 100%;
   }
 }
+@media (max-width: 1040px) {
+  .doc-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 @media (prefers-reduced-motion: no-preference) {
   .btn,
   .chip {

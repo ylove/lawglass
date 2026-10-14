@@ -228,7 +228,9 @@ describe('document flow', () => {
     render(<App api={mock()} />);
     await ready();
     expect(screen.getAllByText('HB 214').length).toBeGreaterThan(0);
-    expect(screen.getByText('Rep. A. Rivera, Rep. J. Chen')).toBeTruthy();
+    // Sponsors are now profile links (see features.test.tsx for the labels and the cosponsor disclosure).
+    expect(screen.getByRole('link', { name: /Rep. A. Rivera/ })).toBeTruthy();
+    expect(screen.getByText('and 1 cosponsor')).toBeTruthy();
     const refs = screen.getByRole('region', { name: 'Referenced, not loaded' });
     expect(within(refs).getByText('42 U.S.C. 300g-1')).toBeTruthy();
     expect(within(refs).getByText(/mentioned in 2 sections/)).toBeTruthy();
@@ -780,13 +782,15 @@ describe('sidebar and shell', () => {
     });
   });
 
-  test('a server that cannot be reached is explained in plain words', async () => {
+  test('a server-side failure is shown as a plain alert', async () => {
     const api = mock();
     api.getConfig = () =>
-      Promise.reject(new ApiError('NETWORK', 'Could not reach the server.'));
+      Promise.reject(
+        new ApiError('HTTP_ERROR', 'The server reported a problem.'),
+      );
     render(<App api={api} />);
     expect((await screen.findByRole('alert')).textContent).toBe(
-      'Could not reach the server.',
+      'The server reported a problem.',
     );
   });
 

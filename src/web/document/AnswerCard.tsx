@@ -2,6 +2,7 @@ import type { AnswerWarning } from '../../core/model/index.js';
 import { AnswerBodyBoundary } from '../AnswerBodyBoundary.js';
 import { AnswerText, stripMarkers } from '../AnswerText.js';
 import { describeLocation } from '../CitationDrawer.js';
+import { ScenarioStrip } from './ScenarioStrip.js';
 import type { Phase, Turn } from './types.js';
 
 const WARNING_TEXT: Record<AnswerWarning, string> = {
@@ -84,6 +85,12 @@ export function AnswerCard({
               {WARNING_TEXT[w]}
             </p>
           ))}
+          {turn.phase === 'done' && turn.scenario && (
+            <ScenarioStrip
+              scenario={turn.scenario}
+              onOpenSection={onOpenSection}
+            />
+          )}
           {turn.phase === 'done' && citations.length > 0 && (
             <div className="sources">
               <h4>Sources</h4>

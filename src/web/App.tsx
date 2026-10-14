@@ -7,11 +7,13 @@ import type {
   IngestStats,
 } from '../core/model/index.js';
 import { selectApi, type ApiClient } from './api.js';
+import { ServerDownCard } from './document/ServerDownCard.js';
 import { BILL_TITLE_ID } from './document/MetadataHeader.js';
 import { DocumentView } from './DocumentView.js';
 import { errorMessage } from './errors.js';
 import { Ingest } from './Ingest.js';
 import { Sidebar } from './Sidebar.js';
+import { ApiError } from './sse.js';
 
 export function App({ api: provided }: { api?: ApiClient }) {
   const api = useMemo(
@@ -28,6 +30,9 @@ export function App({ api: provided }: { api?: ApiClient }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [problem, setProblem] = useState<string | null>(null);
+  // True when the first requests could not reach the server at all (not a server-side error).
+  const [serverDown, setServerDown] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   // Where the bill view puts its title and byline: inside the masthead band.
   const [mastheadSlot, setMastheadSlot] = useState<HTMLElement | null>(null);
@@ -42,7 +47,9 @@ export function App({ api: provided }: { api?: ApiClient }) {
         setSelected(list[0]?.docId ?? null);
       })
       .catch((e: unknown) => {
-        if (live) setProblem(errorMessage(e));
+        if (!live) return;
+        if (e instanceof ApiError && e.code === 'NETWORK') setServerDown(true);
+        else setProblem(errorMessage(e));
       })
       .finally(() => {
         if (live) setLoading(false);
@@ -50,7 +57,7 @@ export function App({ api: provided }: { api?: ApiClient }) {
     return () => {
       live = false;
     };
-  }, [api]);
+  }, [api, attempt]);
 
   const productName = config?.productName ?? BRAND.displayName;
   useEffect(() => {
@@ -135,6 +142,16 @@ export function App({ api: provided }: { api?: ApiClient }) {
           tabIndex={-1}
           aria-labelledby={selected !== null ? BILL_TITLE_ID : undefined}
         >
+          {serverDown && (
+            <ServerDownCard
+              onRetry={() => {
+                setLoading(true);
+                setServerDown(false);
+                setProblem(null);
+                setAttempt((n) => n + 1);
+              }}
+            />
+          )}
           {problem && (
             <p role="alert" className="error">
               {problem}

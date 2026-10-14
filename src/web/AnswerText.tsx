@@ -35,6 +35,7 @@ function inline(
   numbers: Map<string, number>,
   open: OpenCitation,
   keyPrefix: string,
+  citationLabel: string,
 ): ReactNode[] {
   interface Frame {
     marker: string;
@@ -132,7 +133,7 @@ function inline(
         <button
           type="button"
           className="cite"
-          aria-label={`Source ${String(n)}`}
+          aria-label={`${citationLabel} ${String(n)}`}
           aria-haspopup="dialog"
           onClick={(e) => {
             open(id, e.currentTarget);
@@ -185,10 +186,13 @@ export function AnswerText({
   text,
   citations,
   onOpenCitation,
+  citationLabel = 'Source',
 }: {
   text: string;
   citations: readonly Citation[];
   onOpenCitation: OpenCitation;
+  /** Accessible name prefix for the numbered buttons; a second block on a page needs its own. */
+  citationLabel?: string;
 }) {
   const numbers = numberCitations(text, citations);
   return (
@@ -198,7 +202,13 @@ export function AnswerText({
         if (block.kind !== 'p') {
           const List = block.kind;
           const items = block.lines.map((line, li) =>
-            inline(line, numbers, onOpenCitation, `${key}-${String(li)}`),
+            inline(
+              line,
+              numbers,
+              onOpenCitation,
+              `${key}-${String(li)}`,
+              citationLabel,
+            ),
           );
           const nonempty = items.map((children, li) =>
             children.some(
@@ -219,7 +229,13 @@ export function AnswerText({
         }
         return (
           <p key={key}>
-            {inline(block.lines.join('\n'), numbers, onOpenCitation, key)}
+            {inline(
+              block.lines.join('\n'),
+              numbers,
+              onOpenCitation,
+              key,
+              citationLabel,
+            )}
           </p>
         );
       })}

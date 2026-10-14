@@ -1,4 +1,4 @@
-import type { AnswerResult } from '../../core/model/index.js';
+import type { AnswerResult, Scenario } from '../../core/model/index.js';
 
 export type Phase = 'searching' | 'writing' | 'done' | 'error';
 
@@ -10,4 +10,6 @@ export interface Turn {
   text: string;
   result: AnswerResult | null;
   error: string | null;
+  /** The example that follows an answer; it arrives after `done`. */
+  scenario?: Scenario;
 }
