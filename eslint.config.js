@@ -20,15 +20,15 @@ export const brandGuard = {
     'no-restricted-syntax': [
       'error',
       {
-        selector: 'Literal[value=/legislation-summary/i]',
+        selector: 'Literal[value=/lawglass/i]',
         message: BRAND_MESSAGE,
       },
       {
-        selector: 'TemplateElement[value.cooked=/legislation-summary/i]',
+        selector: 'TemplateElement[value.cooked=/lawglass/i]',
         message: BRAND_MESSAGE,
       },
       {
-        selector: 'JSXText[value=/legislation-summary/i]',
+        selector: 'JSXText[value=/lawglass/i]',
         message: BRAND_MESSAGE,
       },
     ],

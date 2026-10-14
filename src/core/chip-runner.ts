@@ -12,6 +12,7 @@
  */
 import { answer, fleschKincaidGrade } from './answer/index.js';
 import { runChangesChip } from './chip-changes.js';
+import { runHistoryChip } from './chip-history.js';
 import { runOutlineChip } from './chip-summary.js';
 import {
   appendNote,
@@ -47,6 +48,13 @@ export async function runChip(
 ): Promise<ChipRun> {
   switch (chip.strategy) {
     case 'metadata':
+      if (chip.id === 'history')
+        return runHistoryChip(
+          chip,
+          deps.doc.history,
+          deps.doc.sections,
+          options.onToken,
+        );
       return runMetadataChip(chip, deps.doc.metadata, options.onToken);
     case 'outline':
       return runOutlineChip(chip, docId, deps, options);

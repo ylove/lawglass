@@ -1,10 +1,10 @@
-# legislation-summary (working title)
+# Lawglass
 
-[![CI](https://github.com/ylove/legislation-summary/actions/workflows/ci.yml/badge.svg)](https://github.com/ylove/legislation-summary/actions/workflows/ci.yml)
+[![CI](https://github.com/ylove/lawglass/actions/workflows/ci.yml/badge.svg)](https://github.com/ylove/lawglass/actions/workflows/ci.yml)
 
 > Paste a link to one bill. Get a plain-language answer to "what does this say, and how does it affect me?", with citations to the sections it drew on, each checked against the text the model was shown.
 
-The product name is not final and this repository will be renamed. The name lives in one file, [`src/core/brand.ts`](src/core/brand.ts).
+The project was called `legislation-summary` until rc.2. If you used the RC, move `~/.legislation-summary` to `~/.lawglass` to keep your saved keys and documents, and rename any `LEGSUM_*` environment variables to `LAWGLASS_*`. The product name lives in one file, [`src/core/brand.ts`](src/core/brand.ts).
 
 **What it does**
 
@@ -24,18 +24,18 @@ _Ohio HB 62 (135th General Assembly, as introduced), answered by Claude Sonnet 5
 
 Requires Node.js 22.13 or newer (CI runs 22 and 24).
 
-> Not on npm yet (publishing waits on #7). Until then, download the tarball attached to the [`v0.1.0-rc.1` release](https://github.com/ylove/legislation-summary/releases) (or build your own with `npm pack`) and replace `npx legislation-summary` below with `npx --package ./<tarball>.tgz legislation-summary`.
+> Not on npm yet (publishing waits on #7). Until then, download the tarball attached to the [`v0.1.0-rc.1` release](https://github.com/ylove/lawglass/releases) (or build your own with `npm pack`) and replace `npx lawglass` below with `npx --package ./<tarball>.tgz legislation-summary` (the rc.1 tarball still uses the old command name).
 
 ```sh
-npx legislation-summary init                       # save provider keys (file mode 0600)
-npx legislation-summary <url>                      # ingest, then serve and open the document
-npx legislation-summary ingest <url> --name hb62   # ingest only, with a label
-npx legislation-summary ingest ./bill.pdf          # a local file works too (CLI only)
-npx legislation-summary ask hb62 "When does this take effect?"
-npx legislation-summary ask hb62 --chip what-changes
-npx legislation-summary list
-npx legislation-summary remove hb62
-npx legislation-summary serve --port 4317          # local web UI; --public allows chips only
+npx lawglass init                       # save provider keys (file mode 0600)
+npx lawglass <url>                      # ingest, then serve and open the document
+npx lawglass ingest <url> --name hb62   # ingest only, with a label
+npx lawglass ingest ./bill.pdf          # a local file works too (CLI only)
+npx lawglass ask hb62 "When does this take effect?"
+npx lawglass ask hb62 --chip what-changes
+npx lawglass list
+npx lawglass remove hb62
+npx lawglass serve --port 4317          # local web UI; --public allows chips only
 ```
 
 `<doc>` is a label or a doc-id prefix. Flags are defined in [`src/cli/program.ts`](src/cli/program.ts).
@@ -48,17 +48,17 @@ npx legislation-summary serve --port 4317          # local web UI; --public allo
 
 ### Keys and providers
 
-`init` writes `~/.legislation-summary/config.json`. Environment variables win over the file. `init --non-interactive` copies the provider settings and keys currently in your environment into that file (mode 0600) without prompting, which is meant for scripted setups; it prints no keys. Without a configured provider, `ask` and `ingest` fail with a message listing the options. List, remove and the `sponsors` chip work without any key.
+`init` writes `~/.lawglass/config.json`. Environment variables win over the file. `init --non-interactive` copies the provider settings and keys currently in your environment into that file (mode 0600) without prompting, which is meant for scripted setups; it prints no keys. Without a configured provider, `ask` and `ingest` fail with a message listing the options. List, remove and the `sponsors` chip work without any key.
 
-| Provider     | Key                 | Notes                                                                                    |
-| ------------ | ------------------- | ---------------------------------------------------------------------------------------- |
-| `anthropic`  | `ANTHROPIC_API_KEY` | Defaults `claude-sonnet-5-5` (answers) and `claude-haiku-5-5` (metadata extraction)      |
-| `openai`     | `OPENAI_API_KEY`    | `OPENAI_BASE_URL` points it at any OpenAI-compatible endpoint (OpenRouter, Ollama, Groq) |
-| `google`     | `GOOGLE_API_KEY`    | Official Google GenAI SDK                                                                |
-| `claude-cli` | none                | Opt-in, local development only: `LEGSUM_LLM_PROVIDER=claude-cli`. Uses your own `claude` |
-| `mock`       | none                | Deterministic, used by tests and CI                                                      |
+| Provider     | Key                 | Notes                                                                                      |
+| ------------ | ------------------- | ------------------------------------------------------------------------------------------ |
+| `anthropic`  | `ANTHROPIC_API_KEY` | Defaults `claude-sonnet-5-5` (answers) and `claude-haiku-5-5` (metadata extraction)        |
+| `openai`     | `OPENAI_API_KEY`    | `OPENAI_BASE_URL` points it at any OpenAI-compatible endpoint (OpenRouter, Ollama, Groq)   |
+| `google`     | `GOOGLE_API_KEY`    | Official Google GenAI SDK                                                                  |
+| `claude-cli` | none                | Opt-in, local development only: `LAWGLASS_LLM_PROVIDER=claude-cli`. Uses your own `claude` |
+| `mock`       | none                | Deterministic, used by tests and CI                                                        |
 
-Keyless HTTP endpoints are accepted only on `localhost`, `127.0.0.1` or `[::1]`. The `claude-cli` provider never reads or forwards credentials and is never chosen automatically ([decision 0003](docs/decisions/0003-claude-cli-provider.md), [provider details](docs/llm-providers.md)). Override models with `LEGSUM_ANSWER_MODEL` and `LEGSUM_EXTRACT_MODEL`.
+Keyless HTTP endpoints are accepted only on `localhost`, `127.0.0.1` or `[::1]`. The `claude-cli` provider never reads or forwards credentials and is never chosen automatically ([decision 0003](docs/decisions/0003-claude-cli-provider.md), [provider details](docs/llm-providers.md)). Override models with `LAWGLASS_ANSWER_MODEL` and `LAWGLASS_EXTRACT_MODEL`.
 
 ### Backends
 
