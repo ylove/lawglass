@@ -1,4 +1,4 @@
-import { readdir } from 'node:fs/promises';
+import { readdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -8,6 +8,7 @@ import {
 } from '../../tests/support/pipeline-env.js';
 import { scenarioProvider } from '../../tests/support/scenario-provider.js';
 import { makeSectionedText } from '../../tests/synth/index.js';
+import { exampleScenario } from '../../tests/synth/scenario.js';
 import { IngestEvent, SummaryResponse } from '../core/model/index.js';
 import type {
   AnswerResult,
@@ -137,7 +138,8 @@ describe('GET /api/docs/:docId/summary', () => {
     expect(provider.state.calls).toBe(calls);
     // The file is private: it holds answers derived from the user's document.
     const dir = join(env.registry.configDir, 'cache', 'answers', docId);
-    expect(await readdir(dir)).toHaveLength(1);
+    // The summary and the default scenario's own entry (here a cached `none`).
+    expect(await readdir(dir)).toHaveLength(2);
   });
 
   test('concurrent requests share one run', async () => {
@@ -166,7 +168,7 @@ describe('GET /api/docs/:docId/summary', () => {
     expect(chips).toHaveBeenCalledTimes(1);
   });
 
-  test('a single-subject bill caches its scenario with the summary', async () => {
+  test('the default scenario is its own call: pending with the summary, then cached with it', async () => {
     const provider = scenarioProvider(env.provider);
     Object.assign(env.runtime, { answerProvider: provider });
     const a = app();
@@ -176,9 +178,109 @@ describe('GET /api/docs/:docId/summary', () => {
     expect(done.status).toBe('cached');
     expect(provider.scenarioCalls).toBe(1);
     expect(done.answer?.scenario?.frames.length).toBeGreaterThanOrEqual(3);
-    // And the cached copy keeps it, with no second scenario call.
+    // The summary entry itself holds no scenario; it is composed from the scenario's own entry.
+    const cache = new AnswerCache({
+      dir: join(env.registry.configDir, 'cache', 'answers'),
+    });
+    const stored = await cache.get({
+      docId,
+      chipId: 'summary',
+      provider: provider.id,
+      model: provider.model,
+      promptVersion: SUMMARY_CACHE_VERSION,
+    });
+    expect(stored?.scenario).toBeUndefined();
+    // Later polls and a fresh server make no second scenario call.
     expect((await summary(a, docId)).answer?.scenario).toBeDefined();
+    expect((await summary(app(), docId)).answer?.scenario).toBeDefined();
     expect(provider.scenarioCalls).toBe(1);
+  });
+
+  test('while the scenario is being made the summary is served as pending with its answer', async () => {
+    const provider = scenarioProvider(env.provider);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const inner = provider.generateObject.bind(provider);
+    provider.generateObject = async (req) => {
+      if (req.schemaName === 'scenario') await gate;
+      return inner(req);
+    };
+    Object.assign(env.runtime, { answerProvider: provider });
+    const a = app();
+    const docId = await ingestDoc(a);
+    await summary(a, docId);
+    const midway = await vi.waitFor(
+      async () => {
+        const r = await summary(a, docId);
+        expect(r.answer).toBeDefined();
+        return r;
+      },
+      { timeout: 5000 },
+    );
+    expect(midway.status).toBe('pending');
+    expect(midway.answer?.scenario).toBeUndefined();
+    release();
+    expect((await settled(a, docId)).answer?.scenario).toBeDefined();
+  });
+
+  test('a scenario that fails validation shows no strip and no error, and is not retried per poll', async () => {
+    const provider = scenarioProvider(env.provider);
+    // Frames that cite nothing are dropped by the validator, so the result is `none`.
+    provider.behavior = () =>
+      Promise.resolve({
+        object: { ...exampleScenario(), frames: [] },
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }) as never;
+    Object.assign(env.runtime, { answerProvider: provider });
+    const a = app();
+    const docId = await ingestDoc(a);
+    await summary(a, docId);
+    const done = await settled(a, docId);
+    expect(done.status).toBe('cached');
+    expect(done.answer?.text).toBeTruthy();
+    expect(done.answer?.scenario).toBeUndefined();
+    const calls = provider.scenarioCalls;
+    for (let i = 0; i < 3; i++)
+      expect((await summary(a, docId)).status).toBe('cached');
+    expect(provider.scenarioCalls).toBe(calls);
+  });
+
+  test('a scenario call that throws leaves the summary alone and is not retried inside the cool-down', async () => {
+    const now = Date.UTC(2026, 9, 14);
+    const provider = scenarioProvider(env.provider);
+    provider.behavior = () => Promise.reject(new Error('boom'));
+    Object.assign(env.runtime, { answerProvider: provider });
+    const a = app({ now: () => now });
+    const docId = await ingestDoc(a);
+    await summary(a, docId);
+    const done = await settled(a, docId);
+    expect(done.status).toBe('cached');
+    expect(done.answer?.scenario).toBeUndefined();
+    const calls = provider.scenarioCalls;
+    for (let i = 0; i < 3; i++) await summary(a, docId);
+    expect(provider.scenarioCalls).toBe(calls);
+  });
+
+  test('a summary cached before this change gets a default scenario without regenerating', async () => {
+    const provider = scenarioProvider(env.provider);
+    Object.assign(env.runtime, { answerProvider: provider });
+    const a = app();
+    const docId = await ingestDoc(a);
+    await summary(a, docId);
+    await settled(a, docId);
+    const summaryCalls = provider.scenarioCalls;
+    // Drop only the scenario entry, as if the summary had been cached on its own earlier.
+    const dir = join(env.registry.configDir, 'cache', 'answers', docId);
+    for (const file of await readdir(dir))
+      if (file.startsWith('scenario-')) await rm(join(dir, file));
+    const chips = vi.fn<ChipRunner>(defaultChipRunner);
+    Object.assign(env.runtime, { chips });
+    expect((await summary(a, docId)).status).toBe('pending');
+    expect((await settled(a, docId)).answer?.scenario).toBeDefined();
+    expect(chips).not.toHaveBeenCalled();
+    expect(provider.scenarioCalls).toBe(summaryCalls + 1);
   });
 
   test('the cache key covers the scenario prompt: a changed version is a miss', async () => {
@@ -323,6 +425,27 @@ describe('public mode', () => {
     const done = await settled(owner, docId);
     const pub = app({ publicMode: true });
     expect(await summary(pub, docId)).toEqual(done);
+  });
+
+  test('serves the cached default scenario but never generates one', async () => {
+    const provider = scenarioProvider(env.provider);
+    Object.assign(env.runtime, { answerProvider: provider });
+    const owner = app();
+    const docId = await ingestDoc(owner);
+    await summary(owner, docId);
+    const done = await settled(owner, docId);
+    expect(done.answer?.scenario).toBeDefined();
+    const calls = provider.scenarioCalls;
+    expect(await summary(app({ publicMode: true }), docId)).toEqual(done);
+    // Remove the scenario entry: public mode serves the bare summary and starts nothing.
+    const dir = join(env.registry.configDir, 'cache', 'answers', docId);
+    for (const file of await readdir(dir))
+      if (file.startsWith('scenario-')) await rm(join(dir, file));
+    const bare = await summary(app({ publicMode: true }), docId);
+    expect(bare.status).toBe('cached');
+    expect(bare.answer?.scenario).toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(provider.scenarioCalls).toBe(calls);
   });
 
   test('is never rate limited or bot-checked, because it cannot spend anything', async () => {
