@@ -83,3 +83,43 @@ it('records complete token boundaries without allowing identifiers to hide neigh
     { value: 777, unit: 'usd', start: 11, end: 15 },
   ]);
 });
+
+describe('fail-closed caption numbers', () => {
+  it.each([
+    'The fee is a hundred dollars.',
+    'The fee is a thousand dollars.',
+    'The fee is a million dollars.',
+    'The fee is a billion dollars.',
+    'The fee is a grand.',
+    'The fee is hundreds of dollars.',
+    'Thousands of residents pay.',
+    'A hundred percent of income.',
+    'The tax is tenfold.',
+    'A two-fold increase.',
+    'One-half of income.',
+    'A one half share.',
+    '2x the tax.',
+    '2× the tax.',
+    'Three score years.',
+    'A gross of forms.',
+    'Dozens of forms.',
+    'The fee is ١١٠٠ dollars.',
+    'The fee is ११००.',
+    'The fee is ১১০০.',
+    'The fee is $٥٠٠.',
+    'The rate is ٥٪.',
+    'The fee is Ⅻ dollars.',
+    'The fee is ⅷ dollars.',
+  ])('reports an undeclared number in %s', (caption) => {
+    expect(numberTokens(caption).length).toBeGreaterThan(0);
+  });
+  it('keeps ordinary prose number-free', () => {
+    expect(numberTokens('The manifold forms are crossed out.')).toEqual([]);
+    expect(numberTokens('Alex files a form.')).toEqual([]);
+  });
+  it('does not double count a scale already inside a numeral phrase', () => {
+    expect(textNumbers('one thousand dollars')).toEqual([
+      { value: 1000, unit: 'usd' },
+    ]);
+  });
+});

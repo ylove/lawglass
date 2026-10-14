@@ -95,3 +95,25 @@ it('does not mistake a sign for a calculation', () => {
     ]),
   ).toBe(false);
 });
+
+describe('percent conversion anywhere in a product', () => {
+  const figures = [{ source: 'bill' as const, value: 4, unit: 'percent' }];
+  it.each(['income / 100 * 4', 'income * bill_0 * 0.01', 'income * 0.01 * 4'])(
+    'accepts %s',
+    (expr) => {
+      expect(grounded(expr, 2000, 'USD', '4 percent', figures)).toBe(true);
+    },
+  );
+  it.each([
+    ['income * 4', 200000],
+    ['income * 100 * 0.04', 200000],
+    ['income * bill_0', 200000],
+    ['income / 100 * 4 * 4', 8000],
+    ['income / 100 + 4', 504],
+    ['income / 100 / 4', 125],
+    ['income * 0.01', 500],
+    ['income * 0.01 * 0.01', 5],
+  ])('still rejects %s', (expr, value) => {
+    expect(grounded(expr, value, 'USD', '4 percent', figures)).toBe(false);
+  });
+});

@@ -100,27 +100,60 @@ export function computedIsGrounded(
       ).values(),
     ];
   }
-  function convertPercent(node: ArithmeticNode): Quantity[] {
-    // In the left-associative income * 4 / 100, only the rightmost factor is converted.
-    if (node.kind === 'binary' && node.operator === '*')
-      return combine('*', infer(node.left), convertPercent(node.right));
-    return leaf(node, true).map(() => ({
-      value: 0,
-      unit: 'ratio',
-      bill: true,
-    }));
+  interface Product {
+    factors: ArithmeticNode[];
+    /** Count of "/ 100" or "* 0.01" steps; exactly one converts a cited percent. */
+    hundredths: number;
   }
-  function infer(node: ArithmeticNode): Quantity[] {
-    if (node.kind === 'unary') return infer(node.operand);
-    if (node.kind !== 'binary') return leaf(node);
+  function flatten(node: ArithmeticNode): Product {
+    if (node.kind === 'binary' && node.operator === '*') {
+      const left = flatten(node.left);
+      const right = flatten(node.right);
+      return {
+        factors: [...left.factors, ...right.factors],
+        hundredths: left.hundredths + right.hundredths,
+      };
+    }
     if (
+      node.kind === 'binary' &&
       node.operator === '/' &&
       node.right.kind === 'literal' &&
       node.right.value === 100
     ) {
-      const converted = convertPercent(node.left);
-      if (converted.length) return converted;
+      const left = flatten(node.left);
+      return { ...left, hundredths: left.hundredths + 1 };
     }
+    if (node.kind === 'literal' && node.value === 0.01)
+      return { factors: [], hundredths: 1 };
+    return { factors: [node], hundredths: 0 };
+  }
+  /**
+   * A cited percent may be converted by one /100 (or *0.01) at any position in a
+   * product. Every other factor must still be dimensionally valid on its own.
+   */
+  function convertedProduct(node: ArithmeticNode): Quantity[] {
+    const { factors, hundredths } = flatten(node);
+    if (hundredths !== 1 || factors.length < 2) return [];
+    const results: Quantity[] = [];
+    factors.forEach((factor, converted) => {
+      if (!leaf(factor, true).length) return;
+      let acc: Quantity[] | undefined;
+      factors.forEach((other, index) => {
+        const quantities =
+          index === converted
+            ? [{ value: 0, unit: 'ratio', bill: true }]
+            : infer(other);
+        acc = acc ? combine('*', acc, quantities) : quantities;
+      });
+      results.push(...(acc ?? []));
+    });
+    return results;
+  }
+  function infer(node: ArithmeticNode): Quantity[] {
+    if (node.kind === 'unary') return infer(node.operand);
+    if (node.kind !== 'binary') return leaf(node);
+    const converted = convertedProduct(node);
+    if (converted.length) return converted;
     return combine(node.operator, infer(node.left), infer(node.right));
   }
   return infer(result.tree).some(

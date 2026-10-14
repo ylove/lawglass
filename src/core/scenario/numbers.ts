@@ -28,6 +28,24 @@ const HUNDREDS = `(?:${BASE}(?: +hundred(?: +and)?(?: +${BASE})?)?)`;
 const SPELLED = `${HUNDREDS}(?: +(?:thousand|million|billion)(?: +and)?(?: +${HUNDREDS})?)*`;
 const DIGITS = '(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?|\\.\\d+';
 
+/**
+ * Quantities with no numeral to parse ("a grand", "tenfold", "2x", non-Latin digits).
+ * They are reported as NaN so they can never equal a declared figure: fail closed.
+ */
+const UNPARSEABLE_QUANTITY = new RegExp(
+  [
+    '\\b(?:hundreds?|thousands?|millions?|billions?|grand|scores?|gross|dozens?)\\b',
+    `\\b(?:${[...SMALL, ...TENS, 'hundred', 'thousand', 'million', 'billion'].join('|')}|\\d+)-?fold\\b`,
+    '\\b\\d+(?:\\.\\d+)?\\s*[x\u00d7](?!\\w)',
+    '\\b(?:one|two|three|four|five|a|an)[ -](?:half|third|quarter|fourth|fifth|tenth)s?\\b',
+    '\\b(?:halves|thirds|quarters|fourths|fifths|sixths|eighths|tenths)\\b',
+  ].join('|'),
+  'gi',
+);
+// Digits from other scripts and Roman-numeral glyphs; NFKC folds some of them to ASCII.
+const FOREIGN_DIGIT = /(?![0-9])\p{Nd}/u;
+const ROMAN_GLYPH = /[\u2160-\u2188]/;
+
 export function normalizeUnit(unit: string): string {
   const lower = unit.toLowerCase().trim();
   if (['$', 'usd', 'dollar', 'dollars'].includes(lower)) return 'usd';
@@ -71,6 +89,8 @@ export function numberTokens(text: string): NumberToken[] {
     'gi',
   );
   const numbers: NumberToken[] = [];
+  if (FOREIGN_DIGIT.test(normalized) || ROMAN_GLYPH.test(text))
+    numbers.push({ value: NaN, unit: '', start: 0, end: 0 });
   for (const match of normalized.matchAll(pattern)) {
     const { amount = '', currency, unit, scale } = match.groups ?? {};
     // Ordinary pronouns/adjectives ("no one", "one-time") are qualitative.
@@ -89,7 +109,13 @@ export function numberTokens(text: string): NumberToken[] {
       end: match.index + match[0].length,
     });
   }
-  return numbers;
+  for (const match of normalized.matchAll(UNPARSEABLE_QUANTITY)) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (numbers.some((n) => n.start < end && start < n.end)) continue;
+    numbers.push({ value: NaN, unit: '', start, end });
+  }
+  return numbers.sort((a, b) => a.start - b.start);
 }
 
 export function textNumbers(text: string): TextNumber[] {

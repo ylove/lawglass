@@ -672,3 +672,19 @@ it('does not permit an assumption unit to author a setup claim', () => {
     { frameIndex: -1, reason: 'profile' },
   ]);
 });
+
+describe('fail-closed caption numbers in frames', () => {
+  it.each([
+    'The fee is a hundred dollars.',
+    'The fee is a grand.',
+    'Hundreds of dollars are owed.',
+    'The tax is tenfold.',
+    'One-half of income is owed.',
+    'Example 2x the tax is owed.',
+    'The fee is ١١٠٠ dollars.',
+    'The fee is $٥٠٠.',
+    'The fee is Ⅻ dollars.',
+  ])('drops %s as a figure', (caption) => {
+    rejectedFrame({ caption, figures: undefined }, 'figure');
+  });
+});

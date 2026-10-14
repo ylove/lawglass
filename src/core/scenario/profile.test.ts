@@ -72,3 +72,31 @@ it('accepts known unit aliases while rejecting claim-bearing units', () => {
   for (const unit of ['abolishes all tax', 'ban', '', 'unknown'])
     expect(validAssumptionUnit(unit)).toBe(false);
 });
+
+describe('setup assumption cap', () => {
+  function crowded(count: number, label = 'annual income') {
+    const scenario = exampleScenario();
+    scenario.profile.assumptions = Array.from({ length: count }, (_, i) => ({
+      key: `k${'abcdef'[i]!}`,
+      label,
+      value: 1000 + i,
+      unit: 'USD',
+    }));
+    return scenario;
+  }
+  it('composes at most three assumptions and keeps the scenario', () => {
+    const composed = composeSetupFrames(crowded(5, 'x'));
+    expect(composed.frames[0]!.figures).toHaveLength(3);
+    expect(composed.profile.assumptions).toHaveLength(5);
+    expect(composed.frames[0]!.caption).not.toContain('$1,003');
+  });
+  it('drops further assumptions when three would exceed 200 characters', () => {
+    const label = 'a'.repeat(52);
+    const scenario = crowded(3, `Example ${label}`.slice(0, 60));
+    const caption = setupCaption(scenario.profile);
+    expect(caption.length).toBeLessThanOrEqual(200);
+    expect(
+      composeSetupFrames(scenario).frames[0]!.figures!.length,
+    ).toBeLessThan(3);
+  });
+});

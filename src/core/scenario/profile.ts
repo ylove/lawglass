@@ -33,9 +33,12 @@ export function validProfileLabel(label: string): boolean {
   );
 }
 
-/** One closed template: model labels can describe a persona, never author its setup. */
-export function setupCaption(profile: Scenario['profile']): string {
-  const assumptions = profile.assumptions.map((a) => {
+/** The contract caps a caption at 200 characters; at most this many assumptions are composed. */
+export const MAX_SETUP_ASSUMPTIONS = 3;
+const MAX_CAPTION_LENGTH = 200;
+
+function renderSetup(profile: Scenario['profile'], count: number): string {
+  const assumptions = profile.assumptions.slice(0, count).map((a) => {
     const value = new Intl.NumberFormat('en-US', {
       maximumFractionDigits: 20,
     }).format(a.value);
@@ -48,6 +51,19 @@ export function setupCaption(profile: Scenario['profile']): string {
   );
 }
 
+/** How many assumptions fit: at most three, fewer if the caption would be too long. */
+export function setupAssumptionCount(profile: Scenario['profile']): number {
+  let count = Math.min(profile.assumptions.length, MAX_SETUP_ASSUMPTIONS);
+  while (count > 0 && renderSetup(profile, count).length > MAX_CAPTION_LENGTH)
+    count -= 1;
+  return count;
+}
+
+/** One closed template: model labels can describe a persona, never author its setup. */
+export function setupCaption(profile: Scenario['profile']): string {
+  return renderSetup(profile, setupAssumptionCount(profile));
+}
+
 export function composeSetupFrames(scenario: Scenario): Scenario {
   return {
     ...scenario,
@@ -56,11 +72,13 @@ export function composeSetupFrames(scenario: Scenario): Scenario {
         ? {
             ...frame,
             caption: setupCaption(scenario.profile),
-            figures: scenario.profile.assumptions.map((a) => ({
-              source: 'assumption' as const,
-              value: a.value,
-              unit: a.unit,
-            })),
+            figures: scenario.profile.assumptions
+              .slice(0, setupAssumptionCount(scenario.profile))
+              .map((a) => ({
+                source: 'assumption' as const,
+                value: a.value,
+                unit: a.unit,
+              })),
           }
         : frame,
     ),
