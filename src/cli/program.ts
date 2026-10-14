@@ -6,6 +6,7 @@ import { initConfig } from '../core/config.js';
 import { AppError, ChipId, type LlmProvider } from '../core/model/index.js';
 import { ask, ingest } from '../core/pipeline/index.js';
 import { runEvalCommand } from '../eval/command.js';
+import { runCompareCommand, type CompareOptions } from '../eval/compare.js';
 import { safeText } from './sanitize.js';
 import { formatAskFooter, formatIngest, formatList } from './format.js';
 import {
@@ -280,7 +281,7 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
         });
       },
     );
-  program
+  const evalCommand = program
     .command('eval')
     .description('evaluate retrieval on fixtures')
     .option('--fixture <name>', 'fixture to evaluate')
@@ -309,6 +310,16 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
         });
       },
     );
+
+  evalCommand
+    .command('compare <run.json>')
+    .description('list questions where top-5 relevance differs between modes')
+    .requiredOption('--a <mode>', 'first mode (e.g. dense or hybrid/weighted)')
+    .requiredOption('--b <mode>', 'second mode (e.g. hybrid_rerank)')
+    .option('--fixture <name>', 'compare only this fixture')
+    .action(async (file: string, options: CompareOptions) => {
+      await runCompareCommand(file, options, write);
+    });
 
   return program;
 }

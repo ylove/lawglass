@@ -16,6 +16,9 @@ import {
   type RunEvalInput,
 } from './run.js';
 import type { GoldenQuestion, GoldenSet } from '../core/model/index.js';
+import { DetailedEvalRun, firstRelevantRank } from './details.js';
+import { mean, recallAtK, reciprocalRank } from './metrics.js';
+import { MemoryBackend } from '../../tests/contracts/memory-backend.js';
 
 let env: PipelineEnv;
 beforeEach(async () => {
@@ -281,7 +284,42 @@ test('runs retrieval for every variant, leaves the backend clean and never fetch
     expect(row.retrieval.recallAt10).toBeGreaterThanOrEqual(
       row.retrieval.recallAt5,
     );
+    expect(row.questions.map((q) => q.id)).toEqual(
+      golden.questions
+        .filter((q) => q.kind !== 'unanswerable')
+        .map((q) => q.id),
+    );
+    expect(
+      mean(
+        row.questions.map((q) => recallAtK(q.top10, q.expectedSectionIds, 5)),
+      ),
+    ).toBe(row.retrieval.recallAt5);
+    expect(
+      mean(
+        row.questions.map((q) => recallAtK(q.top10, q.expectedSectionIds, 10)),
+      ),
+    ).toBe(row.retrieval.recallAt10);
+    expect(
+      mean(
+        row.questions.map((q) => reciprocalRank(q.top10, q.expectedSectionIds)),
+      ),
+    ).toBe(row.retrieval.mrr);
+    for (const q of row.questions) {
+      expect(q.firstRelevantRank).toBe(
+        firstRelevantRank(q.top10, q.expectedSectionIds),
+      );
+      expect(q.top10.length).toBeLessThanOrEqual(10);
+      for (const hit of q.top10) {
+        expect(Number.isFinite(hit.score)).toBe(true);
+        expect(hit.breadcrumb).toBeTypeOf('string');
+        expect(hit).not.toHaveProperty('text');
+        expect(hit).not.toHaveProperty('embedText');
+      }
+    }
   }
+  expect(DetailedEvalRun.parse(JSON.parse(JSON.stringify(result.run)))).toEqual(
+    result.run,
+  );
   const rerank = result.run.rows.at(-1);
   expect(rerank?.retrieval.rerankUnits).toBeGreaterThan(0);
   expect(result.run.rows[1]?.retrieval.embedTokens).toBe(0);
@@ -289,6 +327,22 @@ test('runs retrieval for every variant, leaves the backend clean and never fetch
   expect(messages.length).toBeGreaterThan(0);
   const docId = (await env.registry.list())[0]?.docId ?? '';
   expect(await env.backend.hasDocument(docId)).toBe(false);
+});
+
+test('details work with the shared MemoryBackend double', async () => {
+  const backend = new MemoryBackend();
+  const golden = await syntheticGolden();
+  const { run } = await runEval({
+    ...baseInput([golden]),
+    backends: [{ kind: 'local', backend, registry: env.registry }],
+  });
+  expect(run.rows).toHaveLength(5);
+  for (const row of run.rows)
+    expect(
+      mean(
+        row.questions.map((q) => recallAtK(q.top10, q.expectedSectionIds, 5)),
+      ),
+    ).toBe(row.retrieval.recallAt5);
 });
 
 test('keeps a document that was already indexed before the run', async () => {

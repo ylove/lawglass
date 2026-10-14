@@ -58,6 +58,9 @@ environment settings in the private config file without terminal prompts. It
 preserves existing settings and follows the same `--force` permission checks as
 interactive `init`.
 
+See [Eval run details](docs/eval.md) for per-question retrieval JSON and the offline
+`eval compare` command, which shows where modes gain or lose relevant top-five hits.
+
 The CLI accepts a local PDF, XML, HTML, or text file as well as an HTTP(S) URL:
 
 ```sh
