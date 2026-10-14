@@ -7,12 +7,16 @@ import {
   NormalizedDoc,
   type Section,
   type Span,
+  walkSections,
   type SpanStatus,
 } from '../model/index.js';
 import { detectSections } from './sections.js';
 import type { TextParseOptions } from './text.js';
 
-export type HtmlParseOptions = TextParseOptions;
+export type HtmlParseOptions = TextParseOptions & {
+  /** HTTP `Content-Type` header value, when the fetch layer has one. Its charset wins over `<meta>`. */
+  contentType?: string;
+};
 
 // domhandler is cheerio's own dependency; derive its node types rather than depend on it.
 type AnyNode = ReturnType<CheerioAPI['root']>[number]['children'][number];
@@ -20,8 +24,19 @@ type Element = Extract<AnyNode, { attribs: Record<string, string> }>;
 
 const context = z.object({ sourceUrl: z.url(), fetchedAt: z.iso.datetime() });
 
-/** Page chrome, never legislation text. `<style>` is read for class rules, then removed. */
-const NOISE_SELECTOR = 'nav, header, footer, script, noscript, template, head';
+/** Never legislation text. `<style>` is read for class rules, then removed. */
+const NOISE_SELECTOR = 'script, noscript, template, head';
+/**
+ * Page-level chrome. State pages put the bill's own title block and effective-date section in
+ * `<header>`/`<footer>` inside `<article>`/`<main>`, so only those outside such a container go.
+ */
+const CHROME_SELECTOR = 'nav, header, footer';
+const CONTENT_CONTAINER = 'article, main';
+/** Sidebars and content hidden from readers: retrieval noise, removed wherever they sit. */
+const HIDDEN_SELECTOR = 'aside, [hidden], [aria-hidden="true"]';
+const DISPLAY_NONE = /(?:^|;)\s*display\s*:\s*none\b/i;
+/** Removed text that looks like this is probably bill content: say so instead of dropping it silently. */
+const SECTION_LIKE = /(?:\bsec(?:tion|\.)?|§)\s*\d/i;
 
 const BLOCK_TAGS = new Set(
   (
@@ -74,13 +89,46 @@ interface ClassRule {
 }
 
 /**
+ * At-rules are handled conservatively: the contents of `@media screen` / `@media all` (the
+ * rendering a reader sees) are kept as ordinary rules; every other at-rule (`@media print`,
+ * `@supports`, `@page`, `@font-face`, ...) is ignored, so a print-only style never marks text.
+ */
+function flattenAtRules(css: string): string {
+  let out = '';
+  let at = 0;
+  while (at < css.length) {
+    const start = css.indexOf('@', at);
+    if (start < 0) return out + css.slice(at);
+    out += css.slice(at, start);
+    const open = css.indexOf('{', start);
+    const semi = css.indexOf(';', start);
+    if (open < 0 || (semi >= 0 && semi < open)) {
+      // Statement at-rule (`@import ...;`): nothing to read.
+      at = semi < 0 ? css.length : semi + 1;
+      continue;
+    }
+    let depth = 0;
+    let end = open;
+    for (; end < css.length; end++) {
+      if (css[end] === '{') depth++;
+      else if (css[end] === '}' && --depth === 0) break;
+    }
+    const prelude = css.slice(start, open).trim().toLowerCase();
+    if (/^@media\s+(?:only\s+)?(?:screen|all)\s*$/.test(prelude))
+      out += flattenAtRules(css.slice(open + 1, end));
+    at = end + 1;
+  }
+  return out;
+}
+
+/**
  * Only `.class` and `tag.class` selectors are understood: amendment markup is applied through
  * classes. Tag-only rules (e.g. `a { text-decoration: underline }`) are ignored on purpose, or
  * every link would read as inserted text.
  */
 function readClassRules(css: string): ClassRule[] {
   const rules: ClassRule[] = [];
-  const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const stripped = flattenAtRules(css.replace(/\/\*[\s\S]*?\*\//g, ''));
   for (const [, selectors = '', body = ''] of stripped.matchAll(
     /([^{}]+)\{([^{}]*)\}/g,
   )) {
@@ -99,20 +147,21 @@ function readClassRules(css: string): ClassRule[] {
   return rules;
 }
 
+/** Headings and links are underlined by site styling; a class rule never makes them amendments. */
+const STYLED_NOT_AMENDED = /^(?:h[1-6]|a)$/;
+
 /** Inline style beats stylesheet classes, which beat the tag's own meaning. */
 function ownStatus(element: Element, rules: readonly ClassRule[]): Decoration {
   const inline = decorationFromDeclarations(element.attribs.style ?? '');
   if (inline) return inline;
   const classes = new Set((element.attribs.class ?? '').split(/\s+/));
+  const name = element.name.toLowerCase();
   let fromClass: Decoration;
-  for (const rule of rules) {
-    if (
-      classes.has(rule.className) &&
-      (!rule.tag || rule.tag === element.name.toLowerCase())
-    )
+  for (const rule of STYLED_NOT_AMENDED.test(name) ? [] : rules) {
+    if (classes.has(rule.className) && (!rule.tag || rule.tag === name))
       fromClass = rule.status;
   }
-  return fromClass ?? TAG_STATUS[element.name.toLowerCase()];
+  return fromClass ?? TAG_STATUS[name];
 }
 
 /** Text decorations propagate to descendants, so a strike anywhere above wins. */
@@ -237,6 +286,157 @@ function applyStatuses(
   return state.aligned && cursor === text.length;
 }
 
+function charsetOf(value: string | undefined): string | undefined {
+  return /charset\s*=\s*["']?\s*([\w:.-]+)/i.exec(value ?? '')?.[1];
+}
+
+/**
+ * Decode with the declared charset: BOM, then the HTTP `Content-Type` charset, then a
+ * `<meta charset>` / `<meta http-equiv>` sniff of the first 4 KiB. With no declaration the
+ * bytes must be valid UTF-8. An unknown charset label is an error, never a silent guess.
+ */
+function decodeHtml(bytes: Uint8Array, options: HtmlParseOptions): string {
+  let label: string | undefined;
+  if (bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf)
+    label = 'utf-8';
+  else if (bytes[0] === 0xff && bytes[1] === 0xfe) label = 'utf-16le';
+  else if (bytes[0] === 0xfe && bytes[1] === 0xff) label = 'utf-16be';
+  else {
+    const head = Buffer.from(bytes.subarray(0, 4096)).toString('latin1');
+    const meta = /<meta\b[^>]*>/gi;
+    label = charsetOf(options.contentType);
+    for (const [tag = ''] of head.matchAll(meta)) {
+      if (label) break;
+      label = charsetOf(tag);
+    }
+  }
+  let decoder: InstanceType<typeof TextDecoder>;
+  try {
+    decoder = new TextDecoder(label ?? 'utf-8', { fatal: true });
+  } catch (cause) {
+    throw new AppError(
+      'PARSE_FAILED',
+      `The HTML document declares an unsupported charset: ${label ?? 'unknown'}.`,
+      { cause },
+    );
+  }
+  try {
+    return decoder.decode(bytes);
+  } catch (cause) {
+    throw new AppError(
+      'PARSE_FAILED',
+      `The HTML document is not valid ${decoder.encoding}.`,
+      { cause },
+    );
+  }
+}
+
+function isInside(node: AnyNode, removed: ReadonlySet<AnyNode>): boolean {
+  for (let up = node.parent; up; up = up.parent)
+    if (removed.has(up)) return true;
+  return false;
+}
+
+/** Strip non-content elements; returns a warning for each removal that looks like bill text. */
+function removeNoise($: CheerioAPI): string[] {
+  const warnings: string[] = [];
+  const removable = [
+    ...$(CHROME_SELECTOR)
+      .toArray()
+      .filter((el) => $(el).closest(CONTENT_CONTAINER).length === 0),
+    ...$(HIDDEN_SELECTOR).toArray(),
+    ...$('[style]')
+      .toArray()
+      .filter((el) => DISPLAY_NONE.test(el.attribs.style ?? '')),
+  ];
+  const removed = new Set<AnyNode>(removable);
+  for (const el of removable) {
+    if (isInside(el, removed)) continue;
+    const text = $(el).text().replace(/\s+/g, ' ').trim();
+    if (SECTION_LIKE.test(text))
+      warnings.push(
+        `Removed <${el.name}> content that looks like a section: "${text.slice(0, 80)}"`,
+      );
+  }
+  for (const el of removable) $(el).remove();
+  $(NOISE_SELECTOR).remove();
+  return warnings;
+}
+
+/**
+ * `detectSections` derives `heading`/`num` from the raw line, struck text included. Recompute
+ * them from the non-deleted text so deleted words never reach breadcrumbs or embeddings.
+ */
+function refineHeading(section: Section): void {
+  const line: { char: string; deleted: boolean }[] = [];
+  collect: for (const span of section.spans) {
+    for (const char of span.text) {
+      if (char === '\n') break collect;
+      line.push({ char, deleted: span.status === 'deleted' });
+    }
+  }
+  while (/\s/.test(line.at(-1)?.char ?? 'x')) line.pop();
+  const heading = section.heading ?? '';
+  const raw = line.map((c) => c.char).join('');
+  if (!raw.endsWith(heading)) return;
+  const split = line.length - heading.length;
+  const visible = (part: typeof line) =>
+    part
+      .filter((c) => !c.deleted)
+      .map((c) => c.char)
+      .join('');
+
+  if (line.slice(split).some((c) => c.deleted)) {
+    const cleaned = visible(line.slice(split))
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^[.:]\s*/, '');
+    if (cleaned) section.heading = cleaned;
+    else delete section.heading;
+  }
+  const prefix = line.slice(0, split);
+  if (prefix.some((c) => c.deleted)) {
+    const text = visible(prefix);
+    const found = section.num?.startsWith('(')
+      ? /\(([^)\s]+)\)/.exec(text)?.[1]
+      : /^\s*(?:(?:section|sec|article|art|chapter|ch)\b\.?|§)?\s*([a-z0-9]+(?:[.-][a-z0-9]+)*)[.:\s]*$/i.exec(
+          text,
+        )?.[1];
+    if (found)
+      section.num = section.num?.startsWith('(') ? `(${found})` : found;
+    else delete section.num;
+  }
+}
+
+/** Dropping a deleted span can leave "a  b": collapse the gap it leaves in the kept text. */
+function collapseGaps(section: Section): void {
+  const spans: Span[] = [];
+  let previous = '\n';
+  let afterDeleted = false;
+  for (const span of section.spans) {
+    if (span.status === 'deleted') {
+      spans.push(span);
+      afterDeleted = true;
+      continue;
+    }
+    let text = span.text;
+    if (afterDeleted && /[ \t\n]$/.test(previous)) {
+      const gap = /^[ \t]+/.exec(text)?.[0] ?? '';
+      if (gap) {
+        text = text.slice(gap.length);
+        // The whitespace moves into the struck text, so the full (deleted-included) text is intact.
+        const struck = spans.findLast((s) => s.status === 'deleted');
+        if (struck) struck.text += gap;
+      }
+    }
+    if (text === '') continue;
+    spans.push(text === span.text ? span : { ...span, text });
+    previous = text;
+    afterDeleted = false;
+  }
+  section.spans = spans;
+}
+
 /**
  * HTML bill pages: strip page chrome, flow the body into lines (keeping `<pre>` layout),
  * let `detectSections` find the structure, then map strike/underline markup (tags, inline
@@ -253,23 +453,12 @@ export function parseHtml(
     );
   }
   const bytes = typeof input === 'string' ? Buffer.from(input, 'utf8') : input;
-  let html: string;
-  try {
-    html = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  } catch (cause) {
-    throw new AppError(
-      'PARSE_FAILED',
-      'The HTML document is not valid UTF-8.',
-      {
-        cause,
-      },
-    );
-  }
+  const html = typeof input === 'string' ? input : decodeHtml(input, options);
   const $: CheerioAPI = load(html);
   const rules = $('style')
     .toArray()
     .flatMap((style) => readClassRules($(style).text()));
-  $(NOISE_SELECTOR).remove();
+  const warnings = removeNoise($);
   $('style').remove();
 
   const builder = new LineBuilder();
@@ -289,8 +478,9 @@ export function parseHtml(
   const fullText = lineTexts.join('\n');
   const statuses: SpanStatus[] = [];
   for (const [index, line] of lines.entries()) {
+    // A loop, not push(...array): spreading a long block overflows the call stack.
     for (const chunk of line)
-      statuses.push(...Array<SpanStatus>(chunk.text.length).fill(chunk.status));
+      for (const _unit of chunk.text.split('')) statuses.push(chunk.status);
     // The joining newline is structure, not amendment text.
     if (index < lines.length - 1) statuses.push('unchanged');
   }
@@ -303,6 +493,10 @@ export function parseHtml(
       'Could not align amendment markup with the detected sections.',
     );
   }
+  for (const section of walkSections(sections)) {
+    refineHeading(section);
+    collapseGaps(section);
+  }
   return NormalizedDoc.parse({
     docId: createHash('sha256').update(bytes).digest('hex'),
     sourceUrl: options.sourceUrl,
@@ -312,6 +506,6 @@ export function parseHtml(
     sections,
     definitions: [],
     externalRefs: [],
-    warnings: [],
+    warnings,
   });
 }

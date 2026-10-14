@@ -18,6 +18,7 @@ import {
   describeWithFixture,
   fixturePath,
 } from '../../../tests/support/fixtures.js';
+import { chunkDocument } from '../chunk/index.js';
 import { parseHtml } from './html.js';
 
 const options = {
@@ -29,10 +30,13 @@ const parse = (html: string | Uint8Array) => parseHtml(html, options);
 const page = (body: string, head = '') =>
   `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;
 
-/** Text of every span with this status, across the whole tree, in document order. */
+/**
+ * Text of every span with this status, across the whole tree, in document order. Edge
+ * whitespace is trimmed: collapsing the gap a deleted span leaves moves it into the struck text.
+ */
 function textWithStatus(sections: Section[], status: SpanStatus): string[] {
   return [...walkSections(sections)].flatMap((section) =>
-    section.spans.filter((s) => s.status === status).map((s) => s.text),
+    section.spans.filter((s) => s.status === status).map((s) => s.text.trim()),
   );
 }
 
@@ -59,10 +63,10 @@ describe.each([
 
     it('maps every strike and underline variant to span status', () => {
       expect(textWithStatus(doc.sections, 'deleted')).toEqual(
-        groundTruth.deletedStrings,
+        groundTruth.deletedStrings.map((t) => t.trim()),
       );
       expect(textWithStatus(doc.sections, 'inserted')).toEqual(
-        groundTruth.insertedStrings,
+        groundTruth.insertedStrings.map((t) => t.trim()),
       );
     });
 
@@ -182,7 +186,7 @@ describe('parseHtml amendment markup', () => {
       page('<p>a <u>b <s>c</s> <b>d</b></u> <del><ins>e</ins></del></p>'),
     );
     expect(textWithStatus(sections, 'deleted')).toEqual(['c', 'e']);
-    expect(textWithStatus(sections, 'inserted')).toEqual(['b ', ' d']);
+    expect(textWithStatus(sections, 'inserted')).toEqual(['b', 'd']);
   });
 
   it('keeps marks that straddle a line break in <pre> on both lines', () => {
@@ -285,6 +289,15 @@ describe('parseHtml failures', () => {
     expect(code(() => parse(new Uint8Array([0xff, 0xfe, 0x3c])))).toBe(
       'PARSE_FAILED',
     );
+    expect(code(() => parse(new Uint8Array([0x3c, 0xc3, 0x28])))).toBe(
+      'PARSE_FAILED',
+    );
+  });
+
+  it('rejects an unsupported declared charset', () => {
+    expect(
+      code(() => parse(Buffer.from('<meta charset="klingon-9"><p>x</p>'))),
+    ).toBe('PARSE_FAILED');
   });
 
   it.each([
@@ -313,5 +326,163 @@ describeWithFixture('us-s202-119-is-html', () => {
     expect(sectionText(preamble, { includeDeleted: true })).toContain('<DOC>');
     expect(textWithStatus(doc.sections, 'deleted')).toEqual([]);
     expect(textWithStatus(doc.sections, 'inserted')).toEqual([]);
+  });
+});
+
+describe('parseHtml review fixes', () => {
+  /** Deleted words must not reach any non-deleted chunk's heading, breadcrumb or embedText. */
+  function expectNoDeletedLeak(html: string, deleted: string[]): void {
+    const doc = parse(html);
+    expect(textWithStatus(doc.sections, 'deleted').join(' ')).toBeTruthy();
+    const chunks = chunkDocument(doc).filter(
+      (c) => c.amendmentStatus !== 'deleted',
+    );
+    expect(chunks.length).toBeGreaterThan(0);
+    for (const chunk of chunks) {
+      for (const word of deleted) {
+        expect(chunk.heading ?? '').not.toContain(word);
+        expect(chunk.breadcrumb).not.toContain(word);
+        expect(chunk.embedText).not.toContain(word);
+      }
+    }
+  }
+
+  it('keeps deleted heading text out of heading, breadcrumb and embedText', () => {
+    expectNoDeletedLeak(
+      page(
+        '<h3>Section 2. <strike>Old rate.</strike> <u>New rate.</u></h3><p>The rate is seven percent.</p>',
+      ),
+      ['Old rate'],
+    );
+    const doc = parse(
+      page(
+        '<h3>Section 2. <strike>Old rate.</strike> <u>New rate.</u></h3><p>x</p>',
+      ),
+    );
+    expect(doc.sections[0]?.heading).toBe('New rate.');
+  });
+
+  it('drops the heading and num when the whole heading line is struck', () => {
+    const html = page(
+      '<h3><del>Section 3. Repealed heading.</del></h3><p>Body text.</p>',
+    );
+    expectNoDeletedLeak(html, ['Repealed', 'Sec. 3']);
+    const sec = parse(html).sections[0]!;
+    expect(sec.heading).toBeUndefined();
+    expect(sec.num).toBeUndefined();
+  });
+
+  it('drops a struck subsection marker and heading from num and heading', () => {
+    const html = page(
+      '<pre>SEC. 1. TAX.\n  <strike>(a) Zebra rate.</strike>\n  (b) Kept rate.\n</pre>',
+    );
+    const [a, b] = parse(html).sections[0]!.children;
+    expect(a?.num).toBeUndefined();
+    expect(a?.heading).toBeUndefined();
+    expect(b?.num).toBe('(b)');
+    expectNoDeletedLeak(html, ['Zebra']);
+  });
+
+  it('keeps bill content in <header>/<footer> inside <article> or <main>', () => {
+    const doc = parse(
+      page(`<header><h1>State Legislature</h1></header><nav>Home</nav>
+<aside><h3>Related</h3><p>Sponsor info</p></aside>
+<article><header><h2>HOUSE BILL 12</h2><p>AN ACT relating to taxes.</p></header>
+<h3>Section 1. Rate.</h3><p>Seven percent.</p>
+<footer><p>Section 3. Effective date. This act takes effect July 1.</p></footer></article>
+<h3>Section 4. Money.</h3><footer>Copyright State</footer>`),
+    );
+    const all = [...walkSections(doc.sections)]
+      .map((s) => sectionText(s, { includeDeleted: true }))
+      .join('\n');
+    expect(all).toContain('HOUSE BILL 12');
+    expect(all).toContain('AN ACT relating to taxes.');
+    expect(doc.sections.map((s) => s.id)).toEqual(
+      expect.arrayContaining(['sec-1', 'sec-3', 'sec-4']),
+    );
+    expect(all).not.toMatch(/State Legislature|Home|Related|Copyright/);
+    expect(doc.warnings).toEqual([]);
+  });
+
+  it('warns when stripped chrome looks like a section', () => {
+    const doc = parse(
+      page(
+        '<h3>Section 1. A.</h3><p>x</p><footer>Section 9. Effective date.</footer><div hidden>Sec. 7 hidden</div>',
+      ),
+    );
+    expect(doc.warnings).toHaveLength(2);
+    expect(doc.warnings[0]).toContain('Section 9');
+  });
+
+  it('decodes the declared charset (windows-1252, iso-8859-1)', () => {
+    const text = '<p>Section 1. \x93Rate\x94 \xa7 5 \x97 end.</p>';
+    const latin = (head: string) =>
+      new Uint8Array(Buffer.from(`${head}${text}`, 'latin1'));
+    const expected = 'Section 1. \u201cRate\u201d \u00a7 5 \u2014 end.';
+    for (const head of [
+      '<meta charset="windows-1252">',
+      '<meta http-equiv="Content-Type" content="text/html; charset=windows-1252">',
+    ]) {
+      const doc = parse(latin(head));
+      expect(sectionText(doc.sections[0]!, { includeDeleted: true })).toContain(
+        expected,
+      );
+    }
+    const viaHeader = parseHtml(latin(''), {
+      ...options,
+      contentType: 'text/html; charset=iso-8859-1',
+    });
+    expect(
+      sectionText(viaHeader.sections[0]!, { includeDeleted: true }),
+    ).toContain('\u00a7 5');
+    const utf8 = parse(
+      new Uint8Array(
+        Buffer.from('<meta charset="utf-8"><p>Section 1. \u00a7 5</p>'),
+      ),
+    );
+    expect(sectionText(utf8.sections[0]!, { includeDeleted: true })).toContain(
+      '\u00a7 5',
+    );
+  });
+
+  it('does not overflow the stack on a 500k-character block', () => {
+    const doc = parse(`<p>${'x'.repeat(500_000)}</p>`);
+    expect(
+      sectionText(doc.sections[0]!, { includeDeleted: true }),
+    ).toHaveLength(500_000);
+  });
+
+  it('ignores underline classes on headings and links, and print-only rules', () => {
+    const doc = parse(
+      page(
+        '<h2 class="t">SECTION 1. SHORT TITLE.</h2><p>See <a class="link" href="x">page</a>, <span class="hide">print</span>, <span class="ins">new</span>.</p>',
+        `<style>h2.t, .link{text-decoration:underline}
+@media print{.hide{text-decoration:underline}}
+@media screen{.ins{text-decoration:underline}}</style>`,
+      ),
+    );
+    expect(textWithStatus(doc.sections, 'inserted')).toEqual(['new']);
+  });
+
+  it('strips aside, hidden, aria-hidden and display:none content', () => {
+    const doc = parse(
+      page(
+        '<h3>Section 1. A.</h3><p>keep</p><aside>side</aside><p hidden>h</p><p aria-hidden="true">ah</p><div style="color:red; display : none">dn</div>',
+      ),
+    );
+    expect(sectionText(doc.sections[0]!, { includeDeleted: true })).toBe(
+      'Section 1. A.\nkeep',
+    );
+  });
+
+  it('collapses the gap a deleted span leaves in kept text', () => {
+    const doc = parse(
+      page(
+        '<h3>Section 1. A.</h3><p>The rate is <s>five</s> seven percent and <s>x</s> <s>y</s> more.</p>',
+      ),
+    );
+    expect(sectionText(doc.sections[0]!, { includeDeleted: false })).toBe(
+      'Section 1. A.\nThe rate is seven percent and more.',
+    );
   });
 });
