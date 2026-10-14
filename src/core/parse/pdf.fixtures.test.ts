@@ -123,6 +123,18 @@ describeWithFixture('oh-sb113-136-in', () => {
     ]);
   });
 
+  it('keeps body clauses out of the top-level code section headings and breadcrumbs', () => {
+    const ids = ['sec-3314.03', 'sec-3326.11', 'sec-3328.24'];
+    const chunks = chunkDocument(doc());
+    for (const id of ids) {
+      const s = section(doc(), id);
+      expect(s.heading, id).toBeUndefined();
+      const chunk = chunks.find((c) => c.sectionId === id)!;
+      expect(chunk.breadcrumb).toBe(`Sec. ${s.num!}`);
+      expect(chunk.text).toContain(`Sec. ${s.num!}.`);
+    }
+  });
+
   it('spot check 1: the enacting clause, Section 1, is unchanged (p. 1, lines 5-7)', () => {
     const s = section(doc(), 'sec-1');
     expect(s).toMatchObject({ pageStart: 1, lineStart: 5, lineEnd: 7 });

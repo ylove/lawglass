@@ -77,6 +77,91 @@ describe('issue #69 HTML subdivisions', () => {
   });
 });
 
+describe('issue #85 printed headings', () => {
+  it.each(['pre', 'p'])(
+    'recognizes ASCII dash headings in <%s> without duplicating lead-ins',
+    (tag) => {
+      const lead =
+        '(1) Administrator.--The term administrator means the board.';
+      const doc = parse(page(`<p>Sec. 4.</p><${tag}>${lead}</${tag}>`));
+      const [root, child] = [...walkSections(doc.sections)];
+      expect([root!.id, child!.id]).toEqual(['sec-4', 'sec-4/1']);
+      expect(child!.heading).toBe('Administrator.--');
+      expect(sectionText(child!, { includeDeleted: true })).toBe(lead);
+      const [chunk] = chunkDocument(doc).filter(
+        (c) => c.sectionId === child!.id,
+      );
+      expect(chunk!.breadcrumb).toBe('Sec. 4 > (1) Administrator.--');
+      expect(chunk!.text).toBe(lead);
+    },
+  );
+
+  it('uses amended heading words before an ASCII dash with adjacent body text', () => {
+    const doc = parse(
+      page(
+        '<p>Sec. 4.</p><p>(a) <del>Old</del> <ins>New</ins> rules.--Residents shall comply.</p>',
+      ),
+    );
+    const child = doc.sections[0]!.children[0]!;
+    expect(child.id).toBe('sec-4/a');
+    expect(child.heading).toBe('New rules.--');
+    expect(sectionText(child, { includeDeleted: false })).toBe(
+      '(a) New rules.--Residents shall comply.',
+    );
+    expect(
+      chunkDocument(doc).find(
+        (c) => c.sectionId === child.id && c.amendmentStatus !== 'deleted',
+      )?.breadcrumb,
+    ).toBe('Sec. 4 > (a) New rules.--');
+  });
+
+  it.each([
+    'Administrator.-The term means the board.',
+    'The term administrator -- subject to review -- means the board.',
+  ])(
+    'keeps prose without a dash heading signal out of breadcrumbs: %s',
+    (body) => {
+      const doc = parse(page(`<p>Sec. 4.</p><p>(1) ${body}</p>`));
+      expect(doc.sections[0]!.children[0]!.heading).toBeUndefined();
+      expect(chunkDocument(doc).at(-1)!.breadcrumb).toBe('Sec. 4 > (1)');
+    },
+  );
+
+  it('keeps body text out of code section headings and retains printed short titles', () => {
+    const doc = parse(
+      page(
+        '<p>Sec. 3314.03.</p><p>A copy of every contract must be filed.</p><p>Sec. 3326.11. Each school shall comply.</p><h2>Sec. 3328.24. The board</h2><p>Section 5747.01 Short title</p>',
+      ),
+    );
+    expect(doc.sections.map((s) => [s.id, s.heading])).toEqual([
+      ['sec-3314.03', undefined],
+      ['sec-3326.11', undefined],
+      ['sec-3328.24', 'The board'],
+      ['sec-5747.01', 'Short title'],
+    ]);
+    expect(
+      chunkDocument(doc).find((c) => c.sectionId === 'sec-3314.03')!.breadcrumb,
+    ).toBe('Sec. 3314.03');
+  });
+
+  it('recognizes a code section body opener after removing struck words', () => {
+    const doc = parse(
+      page(
+        '<p>Sec. 3326.11. <del>Obsolete</del> <ins>Each</ins> school shall comply.</p>',
+      ),
+    );
+    expect(doc.sections[0]!.id).toBe('sec-3326.11');
+    expect(doc.sections[0]!.heading).toBeUndefined();
+    expect(sectionText(doc.sections[0]!, { includeDeleted: false })).toBe(
+      'Sec. 3326.11. Each school shall comply.',
+    );
+    expect(
+      chunkDocument(doc).find((c) => c.amendmentStatus !== 'deleted')!
+        .breadcrumb,
+    ).toBe('Sec. 3326.11');
+  });
+});
+
 /**
  * Text of every span with this status, across the whole tree, in document order. Edge
  * whitespace is trimmed: collapsing the gap a deleted span leaves moves it into the struck text.

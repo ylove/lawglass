@@ -25,6 +25,25 @@ describe('section heading patterns', () => {
       'Short title.—',
     ],
     ['(a) In general.— The board shall report.', 'In general.—'],
+    [
+      '(1) Administrator.--The term means the administrator.',
+      'Administrator.--',
+    ],
+    [
+      '(1) Administrator.-- The term means the administrator.',
+      'Administrator.--',
+    ],
+    ['(1) Administrator.--', 'Administrator.--'],
+    ['(a) In general.—The board shall report.', 'In general.—'],
+    ['(a) In general.–The board shall report.', 'In general.–'],
+    [
+      '(a) Cost-effective measures.--The board shall report.',
+      'Cost-effective measures.--',
+    ],
+    ['(a) Administrator.- The term means the administrator.', undefined],
+    ['(a) Administrator.--- The term means the administrator.', undefined],
+    ['(a) The board -- subject to review -- shall report.', undefined],
+    ['(a) The board shall report. -- Subject to review.', undefined],
     ['(a) IN GENERAL.', 'IN GENERAL.'],
     ['(a) Except as otherwise provided in division (H)(2) of', undefined],
     ['(3) "Gun show promoter" means a person who organizes or', undefined],
@@ -41,6 +60,34 @@ describe('section heading patterns', () => {
     expect(child.heading).toBe(heading);
     expect(sectionText(child, { includeDeleted: true })).toBe(text);
   });
+
+  it.each([
+    'Sec. 3314.03.',
+    'Sec. 3314.03. A copy of every contract entered into under',
+    'Sec. 3326.11. Each science, technology, engineering, and',
+    'Sec. 3328.24. A college-preparatory boarding school',
+    'Section 5747.01. The board shall report.',
+    'Sec. 3314.03. a copy of every contract must be filed.',
+  ])('does not name a code section from body prose: %s', (text) => {
+    const [section] = detectSections(lines(text, 'The next body line.'));
+    expect(section!.heading).toBeUndefined();
+    expect(sectionText(section!, { includeDeleted: true })).toBe(
+      `${text}\nThe next body line.`,
+    );
+  });
+
+  it.each([
+    ['Section 5747.01 Short title', false, 'Short title'],
+    ['Sec. 3314.03. The board.—Duties follow.', false, 'The board.—'],
+    ['Sec. 3314.03. THE BOARD.', false, 'THE BOARD.'],
+    ['Sec. 3314.03. The board', true, 'The board'],
+  ])(
+    'retains a printed code section title: %s',
+    (text, printedHeading, heading) => {
+      const [section] = detectSections([{ text, printedHeading }]);
+      expect(section!.heading).toBe(heading);
+    },
+  );
 
   it.each([
     ['Section 1. Short title', 'sec-1', '1', 'Short title'],

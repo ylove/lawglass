@@ -449,11 +449,31 @@ export function subdivisionHeading(
 ): string | undefined {
   const text = body.trim();
   if (!text) return undefined;
-  const dashed = /^([^.—–\n]+\.[—–])(?:\s|$)/.exec(text);
+  const dashed = /^([^.—–\n]+\.(?:[—–]|--(?!-)))/.exec(text);
   if (dashed) return dashed[1];
   if (printedHeading || (/[A-Z]/.test(text) && text === text.toUpperCase()))
     return text;
   return undefined;
+}
+
+/**
+ * Ohio-style code sections often put the first body clause after the number on the same
+ * line. A prose opener is not a title; explicit typography still wins ("The board.—").
+ * Keep ordinary short titles, including "Section 5747.01 Short title".
+ */
+export function sectionHeading(
+  body: string,
+  marker: string | undefined,
+  printedHeading = false,
+): string | undefined {
+  if (
+    marker?.includes('.') &&
+    /^(?:A|An|The|Each|Any|Every|No|If|When|Unless|Except|As|Notwithstanding|Subject|That)\b/i.test(
+      body,
+    )
+  )
+    return subdivisionHeading(body, printedHeading);
+  return body || undefined;
 }
 
 /**
@@ -572,7 +592,9 @@ export function detectSections(
         const heading =
           match.kind === 'enumeration'
             ? subdivisionHeading(match.heading, line.printedHeading)
-            : match.heading;
+            : match.kind === 'section'
+              ? sectionHeading(match.heading, match.marker, line.printedHeading)
+              : match.heading;
         current = {
           id: uniqueId(base),
           num:
