@@ -21,12 +21,12 @@ export function exampleScenario(name = 'Alex'): Scenario {
     subject: 'Tax filing',
     profile: {
       name,
-      label: 'Example annual income of $50,000',
+      label: 'Example employee',
       illustrative: true,
       assumptions: [
         {
           key: 'income',
-          label: 'Example annual income',
+          label: 'annual income',
           value: 50000,
           unit: 'USD',
         },
@@ -37,7 +37,7 @@ export function exampleScenario(name = 'Alex'): Scenario {
         kind: 'setup',
         avatar: 'person-a',
         icon: 'job',
-        caption: `This is ${name}. Example annual income of $50,000.`,
+        caption: `This is ${name}. Example employee. Example: annual income $50,000.`,
         citations: [],
         figures: [{ value: 50000, unit: 'USD', source: 'assumption' }],
       },

@@ -90,3 +90,30 @@ describe('scenario generation', () => {
     ).rejects.toMatchObject({ name: 'AbortError' });
   });
 });
+
+it('composes every setup caption and assumption figure after parsing model output', async () => {
+  const excerpts = scenarioExcerpts();
+  const scenario = exampleScenario(personaName(excerpts));
+  scenario.profile.label = 'Example employee';
+  scenario.profile.assumptions[0]!.label = 'earns a year';
+  scenario.profile.assumptions[0]!.value = 52000;
+  const expected = `This is ${scenario.profile.name}. Example employee. Example: earns a year $52,000.`;
+  scenario.frames[0]!.caption = 'The tax office abolishes all tax.';
+  scenario.frames[2] = {
+    ...scenario.frames[0]!,
+    caption: 'The office waives tax.',
+  };
+  const result = await generateScenario({
+    provider: new ScriptedProvider({ objects: { scenario } }),
+    excerpts,
+  });
+  expect(
+    result.frames
+      .filter((frame) => frame.kind === 'setup')
+      .map((frame) => frame.caption),
+  ).toEqual([expected, expected]);
+  expect(result.frames[0]!.figures).toEqual([
+    { source: 'assumption', value: 52000, unit: 'USD' },
+  ]);
+  expect(scenario.frames[0]!.caption).toBe('The tax office abolishes all tax.');
+});

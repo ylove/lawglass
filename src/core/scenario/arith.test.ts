@@ -18,7 +18,9 @@ describe('safe arithmetic', () => {
   });
 
   it('records input provenance separately from the result', () => {
-    expect(evaluateArithmetic('income * 4 / 100', { income: 50000 })).toEqual({
+    expect(
+      evaluateArithmetic('income * 4 / 100', { income: 50000 }),
+    ).toMatchObject({
       value: 2000,
       names: ['income'],
       literals: [4, 100],

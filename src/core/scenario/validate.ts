@@ -5,8 +5,13 @@ import {
   type ScenarioFigure,
   type SearchHit,
 } from '../model/index.js';
-import { evaluateArithmetic } from './arith.js';
-import { billContains, normalizeUnit, textNumbers } from './numbers.js';
+import { computedIsGrounded } from './grounding.js';
+import {
+  setupCaption,
+  validProfileLabel,
+  validAssumptionUnit,
+} from './profile.js';
+import { billContains, normalizeUnit, numberTokens } from './numbers.js';
 
 export const PERSONA_NAMES = [
   'Alex',
@@ -33,12 +38,24 @@ export interface ScenarioValidation {
   dropped: { frameIndex: number; reason: DropReason }[];
 }
 
+/** Captions are plain text. The UI must render them as text nodes, never HTML/Markdown. */
 const MARKUP =
-  /[<>`]|&(?:[a-z][a-z\d]*|#\d+|#x[\da-f]+);|!\[|\]\(|\*\*|__|^\s*#/i;
+  /[<>`]|&(?:[a-z][a-z\d]*|#\d+|#x[\da-f]+);|!\[|\]\(|\*\*|__|^\s*#|:\/\/|javascript:|data:|www\./im;
 const EVALUATIVE =
-  /\b(?:good|bad|unfair|fair|harmful|helpful|great|terrible|awful|wonderful|beneficial|disastrous|relief|burdens?|giveaway)\b/i;
-const BILL_CLAIM =
-  /\b(?:bill|law|act|requires?|must|shall|would|will|eligible|eligibility|pays?|owes?|receives?|increases?|decreases?|reduces?)\b/i;
+  /\b(?:good|bad|unfair|fair|harm\w*|helpful|great|terrible|awful|wonderful|benefit\w*|beneficial|disastrous|relie\w+|burden\w*|giveaway|unjust\w*|punish\w*|windfall\w*|loophole\w*|handout\w*|crushing|fairness)\b/i;
+const LEGAL_PHRASES =
+  /\b(?:good cause|fair market value|fair use|fair housing|burden of proof|in good standing|bad faith|good faith|benefits? (?:plans?|eligibility|amount|payments?|recipients?)|(?:receives?|claims?|pays?|provides?) benefits?|eligible for benefits?|applies for benefits?|employee benefits?|social security benefits?|unemployment benefits?)\b/gi;
+
+function evaluative(text: string): boolean {
+  // Proper act names can contain otherwise evaluative terms, e.g. Tax Relief Act.
+  const neutral = text
+    .replace(/\b(?:[A-Z][A-Za-z'-]* +)+Act\b/g, '')
+    .replace(LEGAL_PHRASES, '');
+  return EVALUATIVE.test(neutral);
+}
+function markup(text: string): boolean {
+  return MARKUP.test(text.normalize('NFKC'));
+}
 
 function matchesAssumption(
   figure: Pick<ScenarioFigure, 'value' | 'unit'>,
@@ -51,87 +68,24 @@ function matchesAssumption(
   );
 }
 
-function setupOnlyStatesProfile(
-  frame: ScenarioFrame,
-  scenario: Scenario,
-): boolean {
-  if (!/\bexample\b/i.test(frame.caption) || BILL_CLAIM.test(frame.caption))
-    return false;
-  const vocabulary = new Set([
-    ...(`${scenario.profile.name} ${scenario.profile.label} ${scenario.profile.assumptions.map((a) => a.label).join(' ')}`
-      .toLowerCase()
-      .match(/[a-z]+/g) ?? []),
-    ...'this is example has with a an and of annual income home value usd dollars percent days years months bedrooms'.split(
-      ' ',
-    ),
-  ]);
-  return (frame.caption.toLowerCase().match(/[a-z]+/g) ?? []).every((word) =>
-    vocabulary.has(word),
-  );
-}
-
-function computedIsGrounded(
-  figure: ScenarioFigure,
-  frame: ScenarioFrame,
-  scenario: Scenario,
-  citedText: string,
-): boolean {
-  const expression = figure.expr ?? '';
-  // The calculation must actually be shown; a hidden expression cannot explain the effect.
-  if (!frame.caption.includes(expression)) return false;
-  const inputs: Record<string, number> = Object.create(null) as Record<
-    string,
-    number
-  >;
-  for (const assumption of scenario.profile.assumptions)
-    inputs[assumption.key] = assumption.value;
-  const billFigures = (frame.figures ?? []).filter((f) => f.source === 'bill');
-  billFigures.forEach((f, index) => {
-    inputs[`bill_${String(index)}`] = f.value;
-  });
-  const result = evaluateArithmetic(expression, inputs);
-  if (
-    !result ||
-    Math.abs(result.value - figure.value) >
-      1e-9 * Math.max(1, Math.abs(figure.value))
-  )
-    return false;
-  const billNumbers = textNumbers(citedText).filter((number) => number.unit);
-  const billInputs = new Set(
-    billNumbers.flatMap((number) =>
-      number.unit === 'percent'
-        ? [number.value, number.value / 100]
-        : [number.value],
-    ),
-  );
-  const allowed = new Set([
-    ...scenario.profile.assumptions.map((a) => a.value),
-    ...billNumbers.flatMap((n) =>
-      n.unit === 'percent' ? [n.value, n.value / 100] : [n.value],
-    ),
-  ]);
-  // 100 is a unit conversion, permitted only when a cited percentage is being used.
-  if (billNumbers.some((n) => n.unit === 'percent')) allowed.add(100);
-  return (
-    result.literals.every((value) => allowed.has(value)) &&
-    (result.literals.some((value) => billInputs.has(value)) ||
-      result.names.some((name) => name.startsWith('bill_')))
-  );
-}
-
 function frameReason(
   frame: ScenarioFrame,
   scenario: Scenario,
   excerpts: readonly SearchHit[],
-): DropReason | undefined {
+):
+  | { reason: DropReason; frame?: never }
+  | { reason?: never; frame: ScenarioFrame } {
   if (
-    MARKUP.test(frame.caption) ||
-    (frame.figures ?? []).some((f) => MARKUP.test(f.unit))
+    markup(frame.caption) ||
+    (frame.figures ?? []).some((f) => markup(f.unit))
   )
-    return 'markup';
-  if (EVALUATIVE.test(frame.caption)) return 'language';
-  if (frame.kind === 'setup' && !setupOnlyStatesProfile(frame, scenario))
-    return 'setup-claim';
+    return { reason: 'markup' };
+  if (evaluative(frame.caption)) return { reason: 'language' };
+  if (
+    frame.kind === 'setup' &&
+    frame.caption !== setupCaption(scenario.profile)
+  )
+    return { reason: 'setup-claim' };
   const chunks = excerpts.map((hit) => hit.chunk);
   // Contract citations are bare ids; [S:id] is only the prompt notation, never array markup.
   const citations = validateCitations(
@@ -140,48 +94,57 @@ function frameReason(
     chunks,
   );
   const valid = citations.citations.filter((citation) => citation.valid);
-  if (frame.kind !== 'setup' && !valid.length) return 'citation';
+  if (frame.kind !== 'setup' && !valid.length) return { reason: 'citation' };
   const chunkIds = new Set(valid.flatMap((citation) => citation.chunkIds));
   const citedText = chunks
-    .filter((chunk) => chunkIds.has(chunk.id))
+    .filter(
+      (chunk) => chunkIds.has(chunk.id) && chunk.amendmentStatus !== 'deleted',
+    )
     .map((chunk) => chunk.text)
     .join('\n');
   const figures = frame.figures ?? [];
   for (const figure of figures) {
     if (frame.kind === 'setup' && figure.source !== 'assumption')
-      return 'figure';
+      return { reason: 'figure' };
     if (
       figure.source === 'bill' &&
       !billContains(figure.value, figure.unit, citedText)
     )
-      return 'figure';
+      return { reason: 'figure' };
     if (figure.source === 'assumption' && !matchesAssumption(figure, scenario))
-      return 'figure';
+      return { reason: 'figure' };
     if (figure.source === 'assumption' && !/\bexample\b/i.test(frame.caption))
-      return 'figure';
+      return { reason: 'figure' };
     if (
       figure.source === 'computed' &&
-      !computedIsGrounded(figure, frame, scenario, citedText)
+      !computedIsGrounded(
+        figure,
+        figures,
+        scenario.profile.assumptions,
+        citedText,
+      )
     )
-      return 'figure';
+      return { reason: 'figure' };
   }
-  // Audit caption numbers too: leaving figures[] empty is not a grounding bypass.
-  let caption = frame.caption;
-  for (const figure of figures)
-    if (figure.source === 'computed' && figure.expr)
-      caption = caption.replaceAll(figure.expr, '');
+  // No expression removal: every complete caption token must equal a declared value.
+  const numbers = numberTokens(frame.caption);
+  const matches = (figure: ScenarioFigure, number: (typeof numbers)[number]) =>
+    figure.value === number.value &&
+    (!number.unit || normalizeUnit(figure.unit) === number.unit);
   if (
-    textNumbers(caption).some(
-      (number) =>
-        !figures.some(
-          (figure) =>
-            figure.value === number.value &&
-            (!number.unit || normalizeUnit(figure.unit) === number.unit),
-        ),
+    numbers.some(
+      (number) => !figures.some((figure) => matches(figure, number)),
+    ) ||
+    figures.some(
+      (figure) =>
+        figure.source === 'computed' &&
+        !numbers.some((number) => matches(figure, number)),
     )
   )
-    return 'figure';
-  return undefined;
+    return { reason: 'figure' };
+  return {
+    frame: { ...frame, citations: valid.map((citation) => citation.sectionId) },
+  };
 }
 
 /** Pure, conservative validation. Failed frames are dropped intact, never rewritten. */
@@ -200,9 +163,9 @@ export function validateScenario(
     profile.label,
     ...profile.assumptions.flatMap((a) => [a.key, a.label, a.unit]),
   ];
-  if (labels.some((label) => MARKUP.test(label)))
+  if (labels.some(markup))
     return { dropped: [{ frameIndex: -1, reason: 'markup' }] };
-  if (labels.some((label) => EVALUATIVE.test(label)))
+  if (labels.some(evaluative))
     return { dropped: [{ frameIndex: -1, reason: 'language' }] };
   const keys = profile.assumptions.map((a) => a.key);
   if (
@@ -212,18 +175,21 @@ export function validateScenario(
     keys.some(
       (key) => !/^[A-Za-z_][A-Za-z_0-9]*$/.test(key) || key.startsWith('bill_'),
     ) ||
-    textNumbers(profile.label).some(
-      (number) => !matchesAssumption(number, scenario),
+    profile.assumptions.some((a) => !validAssumptionUnit(a.unit)) ||
+    ![profile.label, ...profile.assumptions.map((a) => a.label)].every(
+      validProfileLabel,
     )
   )
     return { dropped: [{ frameIndex: -1, reason: 'profile' }] };
   const dropped: ScenarioValidation['dropped'] = [];
-  const frames = scenario.frames.filter((frame, frameIndex) => {
-    const reason = frameReason(frame, scenario, excerpts);
-    if (reason) dropped.push({ frameIndex, reason });
-    return reason === undefined;
+  const frames: ScenarioFrame[] = [];
+  scenario.frames.forEach((frame, frameIndex) => {
+    const result = frameReason(frame, scenario, excerpts);
+    if (result.reason !== undefined)
+      dropped.push({ frameIndex, reason: result.reason });
+    else frames.push(result.frame);
   });
-  return frames.length >= 3
+  return frames.length >= 3 && frames.some((frame) => frame.kind !== 'setup')
     ? { scenario: { ...scenario, frames }, dropped }
     : { dropped };
 }

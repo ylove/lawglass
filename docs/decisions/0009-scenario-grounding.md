@@ -18,7 +18,7 @@ A scenario is a short illustrated story: a made-up person, 3 to 4 frames, each w
 **Validator rules.** Parsing comes first, then a validator runs on every scenario before it is shown.
 
 - A scenario that fails schema parsing is dropped whole. This covers an unknown avatar or icon (closed lists, so the model never produces markup) and the wrong number of frames.
-- A `setup` frame may have no citations, but may state only the labeled profile, never a claim about the bill.
+- A `setup` frame may have no citations, but may state only the labeled profile, never a claim about the bill. Setup captions are composed in code after parsing: `This is <name>. <label>.` followed by code-rendered, explicitly labeled example assumptions. The validator requires an exact template match; profile and assumption labels are limited to short descriptive text without numbers or claim verbs.
 - Every `rule` or `effect` frame needs at least one valid citation, resolved against the retrieved sections as in §5.7. A frame with no valid citation is dropped.
 - Every figure in a `rule` or `effect` caption must appear in the cited text, or in a displayed calculation whose inputs are cited figures or labeled assumptions. The arithmetic is recomputed. A frame whose figure fails is dropped, because its caption embeds the number.
 - Failed frames are never rewritten. Stripping a citation or a figure from a caption would leave the claim standing without support. A frame is qualitative only if it was generated without figures.
