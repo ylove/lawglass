@@ -5,6 +5,7 @@
  * Keeping rules and data in separate channels is the first defense against prompt injection;
  * escaping the data so it cannot forge our tags is the second.
  */
+import { createHash } from 'node:crypto';
 import {
   DECLINE_TEXT,
   type BillMetadata,
@@ -59,6 +60,15 @@ ${DECLINE_TEXT}
 
 Format
 Write plain sentences or a short list. No headings, no tables, no code blocks. Keep it brief. Do not repeat the question.`;
+
+/** Stable cache version for chip prompt text, including the shared answer rules. */
+export function promptVersion(...promptText: string[]): string {
+  // JSON preserves component boundaries, even if prompt text contains separators.
+  return createHash('sha256')
+    .update(JSON.stringify([SYSTEM_PROMPT, ...promptText]))
+    .digest('hex')
+    .slice(0, 12);
+}
 
 /** Escape element text so it cannot close or forge a tag. Quotes are left alone. */
 export function escapeText(text: string): string {

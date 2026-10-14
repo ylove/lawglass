@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { DECLINE_TEXT } from '../model/index.js';
 import { INJECTION_SAMPLES, hit } from './fixtures.js';
@@ -7,6 +8,7 @@ import {
   escapeXml,
   formatExcerpt,
   mergeContext,
+  promptVersion,
 } from './prompt.js';
 
 describe('SYSTEM_PROMPT', () => {
@@ -32,6 +34,25 @@ describe('SYSTEM_PROMPT', () => {
   it('is itself readable at a modest grade (rough sanity bound)', async () => {
     const { fleschKincaidGrade } = await import('./readability.js');
     expect(fleschKincaidGrade(SYSTEM_PROMPT)!).toBeLessThan(12);
+  });
+});
+
+describe('promptVersion', () => {
+  it('hashes the shared system rules and every supplied prompt component', () => {
+    const expected = createHash('sha256')
+      .update(JSON.stringify([SYSTEM_PROMPT, 'question', 'instruction']))
+      .digest('hex')
+      .slice(0, 12);
+    expect(promptVersion('question', 'instruction')).toBe(expected);
+    expect(promptVersion('question', 'instruction')).toMatch(/^[a-f0-9]{12}$/);
+    expect(promptVersion('edited question', 'instruction')).not.toBe(expected);
+    expect(promptVersion('question', 'edited instruction')).not.toBe(expected);
+    expect(promptVersion('instruction', 'question')).not.toBe(expected);
+  });
+
+  it('keeps prompt component boundaries unambiguous', () => {
+    expect(promptVersion('a|b', 'c')).not.toBe(promptVersion('a', 'b|c'));
+    expect(promptVersion('a', 'bc')).not.toBe(promptVersion('ab', 'c'));
   });
 });
 

@@ -13,10 +13,15 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AnswerCache, type AnswerCacheKey } from './answer-cache.js';
 import { BRAND } from './brand.js';
 import { Registry } from './registry.js';
-import { EMPTY_METADATA, type NormalizedDoc } from './model/index.js';
+import {
+  EMPTY_METADATA,
+  type AnswerResult,
+  type NormalizedDoc,
+} from './model/index.js';
 
 let dir: string;
 beforeEach(async () => {
@@ -145,6 +150,53 @@ describe('Registry', () => {
     await expect(r.getDocument(id('a'))).rejects.toMatchObject({
       code: 'DOC_NOT_FOUND',
     });
+  });
+
+  it('remove evicts on-disk answers and preserves answers for other documents', async () => {
+    const registry = new Registry(dir);
+    const cache = new AnswerCache({ dir: join(dir, 'cache', 'answers') });
+    const key: AnswerCacheKey = {
+      docId: id('a'),
+      chipId: 'summary',
+      provider: 'mock',
+      model: 'test',
+      promptVersion: '1',
+    };
+    const answer: AnswerResult = {
+      text: 'Grants are funded [S:sec-1].',
+      citations: [{ sectionId: 'sec-1', valid: true, chunkIds: [] }],
+      invalidCitations: [],
+      warnings: [],
+      declined: false,
+      readingGrade: 5,
+      provider: key.provider,
+      model: key.model,
+      usage: { inputTokens: 1, outputTokens: 1 },
+    };
+    await registry.add(doc(id('a')), { label: 'a', backend: 'local' });
+    await registry.add(doc(id('b')), { label: 'b', backend: 'local' });
+    await cache.set(key, answer);
+    await cache.set({ ...key, docId: id('b') }, answer);
+    await registry.remove(id('a'));
+    expect(await cache.get(key)).toBeUndefined();
+    expect(await cache.get({ ...key, docId: id('b') })).toEqual(answer);
+    expect((await registry.list()).map((entry) => entry.docId)).toEqual([
+      id('b'),
+    ]);
+  });
+
+  it('keeps the document registered if answer eviction fails, allowing removal to retry', async () => {
+    const evictDocument = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('cache failure'))
+      .mockResolvedValue(undefined);
+    const registry = new Registry(dir, { answerCache: { evictDocument } });
+    await registry.add(doc(id('a')), { label: 'a', backend: 'local' });
+    await expect(registry.remove(id('a'))).rejects.toThrow('cache failure');
+    expect(await registry.getDocument(id('a'))).toEqual(doc(id('a')));
+    await registry.remove(id('a'));
+    expect(await registry.list()).toEqual([]);
+    expect(evictDocument).toHaveBeenCalledTimes(2);
   });
 
   it('findByLabelOrPrefix matches label, unique prefix, and rejects ambiguity', async () => {

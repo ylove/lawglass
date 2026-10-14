@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { join } from 'node:path';
+import { AnswerCache, type AnswerCacheKey } from '../answer-cache.js';
 import {
   makeAmendmentHtml,
   makeAmendingBillPdf,
@@ -12,7 +14,7 @@ import {
   stubPdfParser,
   type PipelineEnv,
 } from '../../../tests/support/pipeline-env.js';
-import { AppError } from '../model/index.js';
+import { AppError, type AnswerResult } from '../model/index.js';
 import { ingest, type IngestDeps, type IngestProgress } from './ingest.js';
 
 let env: PipelineEnv;
@@ -219,7 +221,28 @@ test('an unusable label leaves no half-indexed namespace behind', async () => {
   expect(env.fetches).toContain('https://other.gov/b.txt');
 });
 
-test('evicts the least recently used documents beyond the cap, from index and registry', async () => {
+test('evicts the least recently used documents beyond the cap, from index, registry and answers', async () => {
+  const cache = new AnswerCache({
+    dir: join(env.registry.configDir, 'cache', 'answers'),
+  });
+  const key = (docId: string): AnswerCacheKey => ({
+    docId,
+    chipId: 'summary',
+    provider: 'mock',
+    model: 'test',
+    promptVersion: '1',
+  });
+  const answer: AnswerResult = {
+    text: 'Grants are funded [S:sec-1].',
+    citations: [{ sectionId: 'sec-1', valid: true, chunkIds: [] }],
+    invalidCitations: [],
+    warnings: [],
+    declined: false,
+    readingGrade: 5,
+    provider: 'mock',
+    model: 'test',
+    usage: { inputTokens: 1, outputTokens: 1 },
+  };
   const urls = ['one', 'two', 'three'].map(
     (n) => `https://example.gov/${n}.txt`,
   );
@@ -234,7 +257,9 @@ test('evicts the least recently used documents beyond the cap, from index and re
       },
       'text/plain',
     );
-    ids.push((await ingest(url, deps({ maxDocs: 2 }))).doc.docId);
+    const docId = (await ingest(url, deps({ maxDocs: 2 }))).doc.docId;
+    ids.push(docId);
+    await cache.set(key(docId), answer);
   }
   const remaining = (await env.registry.list()).map((e) => e.docId);
   expect(remaining.sort()).toEqual([ids[1], ids[2]].sort());
@@ -242,6 +267,9 @@ test('evicts the least recently used documents beyond the cap, from index and re
   await expect(env.registry.getDocument(ids[0] ?? '')).rejects.toMatchObject({
     code: 'DOC_NOT_FOUND',
   });
+  expect(await cache.get(key(ids[0]!))).toBeUndefined();
+  expect(await cache.get(key(ids[1]!))).toEqual(answer);
+  expect(await cache.get(key(ids[2]!))).toEqual(answer);
 });
 
 test('a wrapper page propagates with its candidate links', async () => {

@@ -13,7 +13,7 @@ rc.2 runs the plain-language summary automatically when a document opens. Withou
 - **Eviction.** An entry is removed with its document (`remove`, and LRU eviction under the document cap). Nothing outlives the document it describes.
 - **Invalidation.** Bumping the prompt version changes every key, so old entries are never read again. They are swept when their document is evicted or on the next cache cleanup.
 - **De-duplication.** Concurrent requests for one key share one in-flight call, and all of them get its result.
-- **Failures are not cached.** An error, a refusal or an answer that failed citation validation is never stored.
+- **Failures are not cached.** An error, a refusal or an answer with `NO_VALID_CITATIONS`, `TRUNCATED` or `NO_RELEVANT_EXCERPTS` is never stored, and any such answer already on disk is treated as a miss.
 - **Public mode is cache-only.** It serves a hit and never starts generation for an anonymous visitor. On a miss it shows the instant purpose clause or title, with no summary.
 
 ## Consequences
