@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/ylove/legislation-summary/actions/workflows/ci.yml/badge.svg)](https://github.com/ylove/legislation-summary/actions/workflows/ci.yml)
 
-> Paste a link to one bill. Get a plain-language answer to "what does this say, and how does it affect me?", with every claim cited to the section it came from.
+> Paste a link to one bill. Get a plain-language answer to "what does this say, and how does it affect me?", with citations to the sections it drew on, each checked against the text the model was shown.
 
 The product name is not final and this repository will be renamed. The name lives in one file, [`src/core/brand.ts`](src/core/brand.ts).
 
@@ -24,7 +24,7 @@ _Ohio HB 62 (135th General Assembly, as introduced), answered by Claude Sonnet 5
 
 Requires Node.js 22.13 or newer (CI runs 22 and 24).
 
-> Not on npm yet (publishing waits on #7). Until then, use the release tarball from [Releases](https://github.com/ylove/legislation-summary/releases) or build one with `npm pack`, and replace `npx legislation-summary` below with `npx --package ./legislation-summary-0.1.0-rc.1.tgz legislation-summary`.
+> Not on npm yet (publishing waits on #7). Until then, download the tarball attached to the [`v0.1.0-rc.1` release](https://github.com/ylove/legislation-summary/releases) (or build your own with `npm pack`) and replace `npx legislation-summary` below with `npx --package ./<tarball>.tgz legislation-summary`.
 
 ```sh
 npx legislation-summary init                       # save provider keys (file mode 0600)
@@ -117,12 +117,12 @@ Everything below `NormalizedDoc` is format-agnostic. The CLI, server and eval al
 
 Measured on the largest fixture, the FY2025 NDAA (8,618 sections), against Claude Sonnet 5.5's 1M-token window ([full write-up](docs/eval-analysis.md#retrieval-or-the-whole-bill-in-the-prompt)):
 
-|                                   | Retrieval (`hybrid_rerank`) | Whole bill in the prompt                                                   |
-| --------------------------------- | --------------------------- | -------------------------------------------------------------------------- |
-| Input tokens per question         | about 4,500                 | about 936,000 (compact form; the structured form is 2.2M and does not fit) |
-| Cost per question at list price   | about $0.01                 | $1.87 uncached; about $0.09 to $0.19 with the bill cached                  |
-| Correct on 5 pre-chosen questions | 4                           | 5                                                                          |
-| Answer time after the first call  | 4 to 9 s                    | 3 to 5 s (35 s for the first)                                              |
+|                                            | Retrieval (`hybrid_rerank`) | Whole bill in the prompt                                                                                                              |
+| ------------------------------------------ | --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| Input tokens per question                  | about 4,500                 | about 936,000 (compact form; the structured form is 2.2M and does not fit)                                                            |
+| Cost per question at list price (computed) | about $0.01                 | $1.87 uncached; about $0.09 to $0.19 with the bill cached; $3.74 as measured through Claude Code, which wrote a fresh cache each call |
+| Correct on 5 pre-chosen questions          | 4                           | 5                                                                                                                                     |
+| Answer time after the first call           | 4 to 9 s                    | 3 to 5 s (35 s for the first)                                                                                                         |
 
 On this small sample the whole bill was at least as accurate: retrieval missed _"What is the full short title of this Act?"_ because the NDAA has dozens of "may be cited as" sections. Retrieval's case is cost (about 200 times fewer tokens), bills that do not fit at all (the NDAA compact form already fills 94% of the window), and what a pipeline can do that a flat prompt cannot: keep struck text out unless the question is about changes, add the definitions a passage depends on, cite page and line, and pick a strategy per question.
 
@@ -144,27 +144,27 @@ The real Ohio HB 62 fixture (135th General Assembly, as introduced) parses to 26
 
 ## Retrieval quality
 
-Retrieval quality is measured, not asserted. Five golden sets are frozen in [`src/eval/golden/`](src/eval/golden/), 21 to 28 questions each, for Ohio SB 113, SB 203 and HB 62, federal S. 202 and federal H.R. 5009 (the FY2025 NDAA, about 450k tokens). Each question names its expected `section_id`s and has a kind: exact citation lookup, paraphrase, definition-dependent, "what does it remove" (struck text), or unanswerable (three per set, which should be declined). The sets were frozen at commit `7639f18` before the first run and have not been edited since.
+Retrieval quality is measured, not asserted. Five golden sets are frozen in [`src/eval/golden/`](src/eval/golden/), 21 to 28 questions each, for Ohio SB 113, SB 203 and HB 62, federal S. 202 and federal H.R. 5009 (the FY2025 NDAA, about 1.8 million characters). Each question names its expected `section_id`s and has a kind: exact citation lookup, paraphrase, definition-dependent, "what does it remove" (struck text), or unanswerable (three per set, which should be declined). The sets were frozen at commit `7639f18` before the first run and have not been edited since.
 
-Local backend (`bge-small-en-v1.5` embeddings, BM25, `ms-marco-MiniLM-L-6-v2` reranker), recall@5 / MRR, from [`eval/results.md`](eval/results.md):
+Local backend (`bge-small-en-v1.5` embeddings, BM25, `ms-marco-MiniLM-L-6-v2` reranker), recall@5 / MRR, from [`eval/results.md`](eval/results.md); `hybrid_rerank` is the default:
 
-| Fixture                  | dense           | sparse      | hybrid (RRF) | hybrid (weighted) | **hybrid_rerank** (default) |
-| ------------------------ | --------------- | ----------- | ------------ | ----------------- | --------------------------- |
-| Ohio HB 62               | 0.95 / 0.79     | 0.90 / 0.72 | 1.00 / 0.85  | 0.95 / 0.80       | 0.95 / **0.87**             |
-| Ohio SB 113              | 1.00 / 0.81     | 0.83 / 0.76 | 0.89 / 0.84  | 0.94 / 0.84       | **1.00 / 0.90**             |
-| Ohio SB 203              | 0.71 / 0.63     | 0.76 / 0.63 | 0.86 / 0.66  | 0.86 / 0.66       | **0.95 / 0.74**             |
-| Federal S. 202           | **0.90** / 0.70 | 0.68 / 0.62 | 0.80 / 0.71  | 0.85 / 0.71       | 0.85 / **0.83**             |
-| Federal H.R. 5009 (NDAA) | **0.96** / 0.89 | 0.82 / 0.68 | 0.92 / 0.81  | **0.96 / 0.92**   | 0.88 / 0.86                 |
+| Fixture                  | dense       | sparse      | hybrid (RRF) | hybrid (weighted) | hybrid_rerank (default) |
+| ------------------------ | ----------- | ----------- | ------------ | ----------------- | ----------------------- |
+| Ohio HB 62               | 0.95 / 0.79 | 0.90 / 0.72 | 1.00 / 0.85  | 0.95 / 0.80       | 0.95 / 0.87             |
+| Ohio SB 113              | 1.00 / 0.81 | 0.83 / 0.76 | 0.89 / 0.84  | 0.94 / 0.84       | 1.00 / 0.90             |
+| Ohio SB 203              | 0.71 / 0.63 | 0.76 / 0.63 | 0.86 / 0.66  | 0.86 / 0.66       | 0.95 / 0.74             |
+| Federal S. 202           | 0.90 / 0.70 | 0.68 / 0.62 | 0.80 / 0.71  | 0.85 / 0.71       | 0.85 / 0.83             |
+| Federal H.R. 5009 (NDAA) | 0.96 / 0.89 | 0.82 / 0.68 | 0.92 / 0.81  | 0.96 / 0.92       | 0.88 / 0.86             |
 
 What this shows, plainly:
 
 - **The default mode ranks best on four of five bills** (highest MRR), and finds more of the right sections than dense alone on SB 203. It ties dense on two bills and **loses to dense on two**: S. 202 by one question (17 of 20 in the top 5, against 18) and the NDAA by two (22 of 25, against 24).
 - **Where each mode wins** (share of questions with a relevant section in the top 5, all bills pooled): `hybrid_rerank` leads on exact lookups (0.97 vs 0.90 for dense) and definitions (0.84 vs 0.79); dense leads on paraphrases (0.95 vs 0.93) and on "what does it remove" (1.00 vs 0.91).
-- **Dense misses, hybrid finds it.** SB 203, _"Does trading one gun for another count as a 'transfer'?"_ Dense retrieval ranks the definitions division that answers it 8th, behind seven other passages of the same section (2923.27), and BM25 alone does not surface it at all. Because both lists feed one candidate pool, the cross-encoder gets to read the question against that division directly and ranks it first.
-- **Where the reranker hurts.** On the NDAA, _"Does the military now have to buy American-made forks, spoons, and dishes?"_ Dense ranks Sec. 842, "Domestic production of stainless steel flatware and dinnerware", first; the small cross-encoder (22M parameters, trained on web search) does not connect _forks and spoons_ to _flatware_ and pushes it out of the top 10. The NDAA's very long heading paths (Division > Title > Subtitle > Sec.) also crowd its 512-token window. A stronger reranker, such as the `bge-reranker-v2-m3` that Pinecone hosts, is the obvious next step; weighted fusion without rerank is the best local mode on the NDAA.
-- **Two fixes came from this eval**, both reported with before and after numbers in the [analysis](docs/eval-analysis.md). The reranker originally scored chunk text without its heading path, while the embedder saw both; giving it the same context (#97) raised MRR on four of five bills (average 0.797 to 0.841) and cost S. 202 two borderline questions. And questions in everyday words ("what does the bill _cross out_", "does it _get rid of_ the rule") were not recognised as questions about changes, so the struck text never reached the model (#101).
+- **Dense misses, the reranked hybrid finds it.** SB 203, _"Does trading one gun for another count as a 'transfer'?"_ Dense retrieval ranks the definitions division that answers it 8th, behind seven other passages of the same section (2923.27), and BM25 alone does not put it in its top 10. Plain fusion does not fix it either. Because both lists feed one candidate pool, the cross-encoder gets to read the question against that division directly and ranks it first: the win is the reranker's.
+- **Where the reranker hurts.** On the NDAA, _"Does the military now have to buy American-made forks, spoons, and dishes?"_ Dense ranks Sec. 842, "Domestic production of stainless steel flatware and dinnerware", first; after reranking it is not in the top 10. Our reading, not yet tested: the small cross-encoder (22M parameters, trained on web search) does not connect _forks and spoons_ to _flatware_, and the NDAA's very long heading paths (Division > Title > Subtitle > Sec.) may crowd its 512-token window. A stronger reranker, such as the `bge-reranker-v2-m3` that Pinecone hosts, is the obvious next step; weighted fusion without rerank is the best local mode on the NDAA.
+- **Two fixes came from this eval**, both reported with before and after numbers in the [analysis](docs/eval-analysis.md). The reranker originally scored chunk text without its heading path, while the embedder saw both; giving it the same context (#97) raised MRR on four of five bills (average 0.797 to 0.841) while average recall@5 stayed flat (0.924 to 0.926), because S. 202 lost two borderline questions. And questions in everyday words ("what does the bill _cross out_", "does it _get rid of_ the rule") were not recognised as questions about changes, so the struck text never reached the model (#101).
 
-**Answers** (all 119 questions, Claude Sonnet 5.5, [`eval/results-answers.md`](eval/results-answers.md)): every citation pointed at a section the model was shown, on all five bills. 13 of 15 unanswerable questions got the exact decline sentence; the other two said the bill does not cover the question and then described what it does cover. On HB 62, the only bill with struck text, no answer stated repealed text as current law (the two answers the leakage check flagged were read and are false positives). Mean reading grade is 8.5 to 10.2, above the grade-7 target. The full analysis, including what changed because of it, is in [docs/eval-analysis.md](docs/eval-analysis.md). Pinecone rows are pending until the nightly job runs with a key. Each table records the commit, models and golden-set freeze it came from. Per-question ranks for every mode are written to `eval/runs/*.json`, and `eval compare` lists the questions where two modes disagree ([details](docs/eval.md)).
+**Answers** (all 119 questions, Claude Sonnet 5.5, [`eval/results-answers.md`](eval/results-answers.md)): every citation pointed at a section the model was shown, on all five bills. 13 of 15 unanswerable questions got the exact decline sentence; the other two said the bill does not cover the question and then described what it does cover. On HB 62, the only bill with struck text, no answer stated repealed text as current law (the final run's leakage check flagged one answer; answers are not stored, so the questions were asked again and every flagged answer was read: all were false positives). Mean reading grade is 8.5 to 10.2, above the grade-7 target. The full analysis, including what changed because of it, is in [docs/eval-analysis.md](docs/eval-analysis.md). Pinecone rows are pending until the nightly job runs with a key. Each table records the commit, models and golden-set freeze it came from. Per-question ranks for every mode are written to `eval/runs/*.json`, and `eval compare` lists the questions where two modes disagree ([details](docs/eval.md)).
 
 Caveats: 21 to 28 questions per bill means one question moves recall@5 by about 0.05. Ranks are chunk ranks (the first chunk whose section, or an ancestor or descendant, is expected). Two questions name their section numbers outright (hb62-03, sb203-08), and some paraphrases reuse rare words from the text, which makes them easier for BM25.
 
@@ -177,9 +177,9 @@ Caveats: 21 to 28 questions per bill means one question moves recall@5 by about 
   - Each redirect is re-resolved and re-validated, up to 5. Credentials in URLs are refused, as are ports outside 80, 443, 8080 and 8443.
   - Bodies are capped at 50 MB, with a 30 s timeout.
 - **Prompt injection** ([`src/core/answer/`](src/core/answer/)). Bill text is hostile data. Excerpt text and the user's question are XML-escaped, so neither can close an excerpt tag or forge a new source. The system prompt states that excerpts are data, not instructions. Citations are validated: every `[S:id]` must be a section that was in the prompt; invalid markers are stripped and reported, and an answer with no valid citation (other than the exact decline sentence) carries a warning. Synthetic injection samples live in [`tests/synth/injection.ts`](tests/synth/injection.ts). Citation validation is held to 90% line coverage along with the fetch layer.
-- **Local server** (`serve`). Binds to `127.0.0.1` by default. Unless public mode is on, requests whose `Host` or `Origin` is not the loopback address it serves are refused, which blocks DNS-rebinding attacks from web pages you visit. Cancelling a question or an ingest in the UI aborts the work, including the download.
+- **Local server** (`serve`). Binds to `127.0.0.1` by default. Outside public mode, a request whose `Host` is not a loopback name is refused, which blocks DNS-rebinding attacks from web pages you visit; in every mode, an API request whose `Origin` does not match its `Host` is refused. Cancelling a question or an ingest in the UI aborts the work, including the download.
 - **Public mode** (`serve --public`). Chips only (no free-form questions), per-IP limits of 20 questions and 3 ingests per hour, a 200-page ingest cap, a global document cap that refuses new documents instead of evicting someone else's, and a Cloudflare Turnstile stub.
-- **Bring your own keys.** `init` writes the config file with mode 0600, and a config file that is group- or world-readable is ignored with a warning, and `init --force` replaces it. Keys are read from the environment first, then that file, then a masked prompt on a TTY. Keys go only to their own provider, are not inferred from another provider's variables, and are never logged or put in error messages; SDK diagnostic logging is off. `.env` and fixtures are ignored by git, and CI runs Gitleaks over the full history.
+- **Bring your own keys.** `init` writes the config file with mode 0600. A config file that other users can read is refused: commands skip it with a warning, and `init` stops unless `--force` replaces it. Keys are read from the environment first, then that file, then a masked prompt on a TTY. Keys go only to their own provider, are not inferred from another provider's variables, and are never logged or put in error messages; SDK diagnostic logging is off. `.env` and fixtures are ignored by git, and CI runs Gitleaks over the full history.
 - **`claude-cli` sandboxing.** Each call runs in a fresh temporary directory holding only the system prompt file, with built-in tools disabled (`--tools ""`), all MCP servers disabled, one turn, slash commands, hooks and settings sources off, no session persistence, and no permission-bypass flag. The child sees only basic process variables plus `CLAUDE_*` and `ANTHROPIC_*`, so other providers' keys and app settings are excluded. It refuses to run for real in CI.
 
 ## Development
@@ -208,7 +208,7 @@ CI ([`ci.yml`](.github/workflows/ci.yml)) runs these jobs:
 | `build`             | Production build and a `--help` smoke check                                                                         |
 | `no-fixtures-guard` | Fails if real legislation files are committed                                                                       |
 | `secrets`           | Gitleaks over full history                                                                                          |
-| `dependency-review` | Blocks high-severity and GPL-family dependencies on pull requests                                                   |
+| `dependency-review` | Blocks high-severity vulnerabilities and GPL-3.0/AGPL-3.0 licences on pull requests                                 |
 | `eval-smoke`        | Synthetic golden set end to end; fails if `hybrid_rerank` < `dense`                                                 |
 | `package-smoke`     | Packs the tarball (allowlisted contents), installs it in a clean dir, runs `init`, `ingest`, `ask`, `list`, `serve` |
 | `e2e`               | Chromium against the packed build: chip streaming, citation drawer, SSRF block, remove                              |
