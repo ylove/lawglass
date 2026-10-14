@@ -119,12 +119,19 @@ it('reports command output when an installed command fails', async () => {
 it('starts a loopback server on an OS-assigned port and validates its health', async () => {
   const { dir, script, env } = await temporaryScript(`
     import { createServer } from 'node:http';
-    const server = createServer((req, res) => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ ok: true, version: 'test' })); });
-    server.listen(0, '127.0.0.1', () => console.log('Serving at http://127.0.0.1:' + server.address().port));
+    const server = createServer((req, res) => {
+      if (req.url === '/?k=test-token') {
+        res.writeHead(302, { 'set-cookie': 'test_session=test-token; HttpOnly; SameSite=Strict; Path=/', location: '/' });
+        res.end();
+      } else if (req.url === '/api/health' && req.headers.cookie === 'test_session=test-token') {
+        res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ ok: true, version: 'test' }));
+      } else { res.writeHead(401); res.end(); }
+    });
+    server.listen(0, '127.0.0.1', () => console.log('Serving at http://127.0.0.1:' + server.address().port + '/?k=test-token'));
     process.on('SIGTERM', () => { server.close(); });
   `);
   const server = await startPackedServer(script, dir, env);
-  expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+  expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/\?k=test-token$/);
   await server.stop();
   await server.stop();
 });
@@ -173,4 +180,17 @@ it('rejects test sources embedded in otherwise innocuous production maps', () =>
   expect(() => {
     assertPackageMap({ sources: 'invalid' }, 'cli.js.map');
   }).toThrow();
+});
+
+it('redacts the launch token from startup diagnostics', async () => {
+  const { dir, script, env } = await temporaryScript(
+    "console.error('startup failed: http://127.0.0.1:1/?k=secret-launch-token'); process.exit(1);",
+  );
+  const error: unknown = await startPackedServer(script, dir, env).catch(
+    (cause: unknown) => cause,
+  );
+  expect(error).toBeInstanceOf(Error);
+  expect((error as Error).message).toContain('startup failed');
+  expect((error as Error).message).toContain('k=[redacted]');
+  expect((error as Error).message).not.toContain('secret-launch-token');
 });

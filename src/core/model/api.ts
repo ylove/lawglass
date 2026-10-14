@@ -12,6 +12,7 @@
  *   GET    /api/docs/:docId/sections/:sectionId     -> SectionExcerpt   (sectionId URL-encoded)
  *   GET    /api/docs/:docId/summary                 -> SummaryResponse (future)
  *   POST   /api/docs/:docId/ask   AskRequest        -> SSE stream of AskEvent
+ *   POST   /api/docs/:docId/scenario ScenarioRequest -> ScenarioResponse
  */
 import { z } from 'zod';
 import { AnswerResult, ChipId } from './answer.js';
@@ -21,6 +22,7 @@ import { Scenario } from './scenario.js';
 import {
   BillMetadata,
   DocFormat,
+  ScanStatus,
   ExternalRef,
   SectionId,
   SourceLocation,
@@ -39,6 +41,13 @@ export const ClientConfig = z.object({
   provider: z.string(),
   model: z.string(),
   chips: z.array(z.object({ id: ChipId, label: z.string() })),
+  /**
+   * False in public mode, where scenarios are not offered. Defaults to false so a config
+   * response from an older server (no field) still parses and hides the feature.
+   */
+  scenariosEnabled: z.boolean().default(false),
+  /** Public-mode bot-check site key (Turnstile); absent when not configured. */
+  turnstileSiteKey: z.string().optional(),
 });
 export type ClientConfig = z.infer<typeof ClientConfig>;
 
@@ -137,6 +146,10 @@ export const DocDetail = z.object({
       sectionId: SectionId.optional(),
     })
     .optional(),
+  /** Per-page read quality for scanned PDFs. */
+  scan: ScanStatus.optional(),
+  /** Suggested subjects for the scenario picker. */
+  scenarioPersonas: z.array(z.string()).optional(),
 });
 export type DocDetail = z.infer<typeof DocDetail>;
 
@@ -161,6 +174,18 @@ export const AskRequest = z
     message: 'Provide exactly one of chipId or question',
   });
 export type AskRequest = z.infer<typeof AskRequest>;
+
+/** `POST /api/docs/:docId/scenario`: an illustrated example for one subject. */
+export const ScenarioRequest = z.object({
+  subject: z.string().trim().min(1).max(80),
+});
+export type ScenarioRequest = z.infer<typeof ScenarioRequest>;
+
+export const ScenarioResponse = z.object({
+  status: z.enum(['ok', 'none', 'disabled']),
+  scenario: Scenario.optional(),
+});
+export type ScenarioResponse = z.infer<typeof ScenarioResponse>;
 
 export const RetrievedRef = z.object({
   chunkId: z.string(),

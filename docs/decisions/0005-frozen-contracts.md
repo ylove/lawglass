@@ -33,3 +33,12 @@ The rc.2 round grew the contracts. Every change is additive and every new field 
 - **`scenario.ts` (new):** `Scenario` with closed `AvatarId` and `IconId` enums, so the model picks ids and can never emit SVG or HTML. A `computed` figure must carry its `expr`, `illustrative` is always `true`, and a scenario has 3 to 4 frames.
 - **`answer.ts` / `api.ts`:** `AnswerResult.scenario?`, an `AskEvent` `scenario` variant, `DocDetail.history?` and `DocDetail.preview?`, `SummaryResponse` (for a future `GET /api/docs/:id/summary`), and the `history` `ChipId`.
 - **`history` chip is not served yet.** It is in the enum so #128 needs no second contract change, but the served chip list stays at 8 and `getChip('history')` refuses until #128 lands. The web client ignores `scenario` events until #131.
+
+## Amendment 2026-10-14 (#199)
+
+The rc.3 round grows the contracts again. Every change is additive and every new field is optional (except the response-only `ClientConfig.scenariosEnabled`), so rc.2 registries, doc stores and answers still parse (pinned by `src/core/model/rc3.test.ts`).
+
+- **`answer.ts`:** `ChipId` gains `delegations` and `ChipStrategy` gains `extract`. Enum only. The chip is not served yet (#202 serves it): the served list stays at 8 chips, `getChip('delegations')` refuses, and `runChip` throws for the `extract` strategy.
+- **`doc.ts`:** `BillMetadata.docKind?` (`DocKind`) and `BillMetadata.amends?` (`AmendsTarget`: name, optional jurisdiction, sections). `ExternalRef.kind` is unchanged so an rc.2 binary sharing `~/.lawglass` still parses; charter refs use `kind: 'other'` plus the new optional `category` (`charter | local_code | general_law`). `NormalizedDoc.scan?` (`ScanStatus`: per-page `read | uncertain | not-read`).
+- **`api.ts`:** `DocDetail.scan?` and `DocDetail.scenarioPersonas?`, `ClientConfig.scenariosEnabled` (required) and `ClientConfig.turnstileSiteKey?` (for #180), and `ScenarioRequest` / `ScenarioResponse` for `POST /api/docs/:docId/scenario`, reusing `Scenario`.
+- **Not touched:** `Span`, `ChunkType`, `ERROR_CODES`, `DocSummary` / `RegistryEntry` (strict), `ConfigSettings` (strict).

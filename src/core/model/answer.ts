@@ -80,6 +80,8 @@ export const ChipId = z.enum([
   'sponsors',
   /** Bill history from official sources. Not served until #128 implements it. */
   'history',
+  /** "Who decides later": delegated decisions and outside dependencies. Not served until #202. */
+  'delegations',
 ]);
 export type ChipId = z.infer<typeof ChipId>;
 
@@ -92,6 +94,8 @@ export const ChipStrategy = z.enum([
   'definitions',
   /** Answer from document metadata only; no retrieval and no LLM call. */
   'metadata',
+  /** Structured extraction over the whole document (delegations). Not served until #202. */
+  'extract',
 ]);
 export type ChipStrategy = z.infer<typeof ChipStrategy>;
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { isBlockedAddress } from './ip.js';
+import { isBlockedAddress, isLoopbackAddress } from './ip.js';
 
 // Each policy CIDR has a representative plus edge cases for the narrower prefixes.
 const blocked = [
@@ -85,5 +85,55 @@ describe('address policy', () => {
   });
   it.each(publicAddresses)('allows %s', (ip) => {
     expect(isBlockedAddress(ip)).toBe(false);
+  });
+});
+
+describe('loopback addresses', () => {
+  it.each([
+    '127.0.0.0',
+    '127.0.0.1',
+    '127.0.0.2',
+    '127.255.255.255',
+    '::1',
+    '0:0:0:0:0:0:0:1',
+    '0000:0000:0000:0000:0000:0000:0000:0001',
+    '::ffff:127.0.0.1',
+    '::ffff:127.0.0.2',
+    '::ffff:127.255.255.255',
+    '::FFFF:7f00:1',
+    '0:0:0:0:0:ffff:7fff:ffff',
+  ])('recognizes %s', (address) => {
+    expect(isLoopbackAddress(address)).toBe(true);
+  });
+  it.each([
+    '',
+    'localhost',
+    '[::1]',
+    'bad address',
+    '127.1',
+    '2130706433',
+    '127.0.0.1:80',
+    '127.0.0.1%en0',
+    '::1%lo0',
+    '126.255.255.255',
+    '128.0.0.0',
+    '0.0.0.0',
+    '::',
+    '::2',
+    '10.0.0.1',
+    '172.16.0.1',
+    '192.168.0.1',
+    '169.254.169.254',
+    'fc00::1',
+    'fe80::1',
+    '8.8.8.8',
+    '2001:db8::1',
+    '::ffff:128.0.0.1',
+    '::ffff:10.0.0.1',
+    '::127.0.0.1',
+    '64:ff9b::127.0.0.1',
+    '2002:7f00:1::',
+  ])('rejects %s', (address) => {
+    expect(isLoopbackAddress(address)).toBe(false);
   });
 });
