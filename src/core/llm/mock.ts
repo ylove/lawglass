@@ -121,11 +121,14 @@ function emptyValue(schema: unknown): unknown {
   if (node.type === 'array') return [];
   if (node.type === 'object') {
     const properties = node.properties as Record<string, unknown> | undefined;
+    // Optional fields are left out: their empty defaults can break refinements (min(1)).
+    const required = new Set(
+      Array.isArray(node.required) ? (node.required as string[]) : [],
+    );
     return Object.fromEntries(
-      Object.entries(properties ?? {}).map(([key, value]) => [
-        key,
-        emptyValue(value),
-      ]),
+      Object.entries(properties ?? {})
+        .filter(([key]) => required.has(key))
+        .map(([key, value]) => [key, emptyValue(value)]),
     );
   }
   if (node.type === 'string') return '';
