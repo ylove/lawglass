@@ -9,7 +9,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import type { RuntimeFactory } from '../cli/runtime.js';
+import { pineconeConfig } from '../core/config.js';
 import { MODEL_LOCK } from '../core/index/local/models.js';
+import { PineconeBackend } from '../core/index/pinecone/index.js';
 import { MockProvider } from '../core/llm/mock.js';
 import {
   AppError,
@@ -148,6 +150,7 @@ export async function runEvalCommand(
   const scratch = await mkdtemp(join(tmpdir(), 'eval-'));
   try {
     const backends: EvalBackendInput[] = [];
+    const retrievalModels = new Map<BackendKind, string>();
     const pending: PendingBackend[] = [];
     let answerProvider: LlmProvider | undefined;
     for (const kind of kinds) {
@@ -166,6 +169,21 @@ export async function runEvalCommand(
           backend: runtime.backend,
           registry: new Registry(join(scratch, kind)),
         });
+        if (kind === 'pinecone') {
+          const config =
+            runtime.backend instanceof PineconeBackend
+              ? runtime.backend.config
+              : pineconeConfig();
+          retrievalModels.set(
+            kind,
+            `pinecone backend: ${config.denseModel} (dense), ${config.sparseModel} (sparse), ${config.rerankModel} (reranker)`,
+          );
+        } else {
+          retrievalModels.set(
+            kind,
+            `local backend: ${MODEL_LOCK.embedding.id} (embedding), ${MODEL_LOCK.reranker.id} (reranker)`,
+          );
+        }
       } catch (error) {
         if (
           !(error instanceof AppError) ||
@@ -210,7 +228,10 @@ export async function runEvalCommand(
       pending,
       skipped: result.skipped,
       golden,
-      retrievalModels: `local backend: ${MODEL_LOCK.embedding.id} (embedding), ${MODEL_LOCK.reranker.id} (reranker)`,
+      retrievalModels:
+        [...new Set(result.run.rows.map((row) => row.backend))]
+          .map((kind) => retrievalModels.get(kind))
+          .join('; ') || 'none ran',
     });
     const out = resolve(cwd, options.out ?? 'eval/results.md');
     await mkdir(dirname(out), { recursive: true });

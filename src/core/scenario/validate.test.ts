@@ -129,6 +129,20 @@ describe('scenario validation', () => {
     rejectedFrame({ caption: `This is ${word}.` }, 'language');
   });
 
+  it.each([
+    'Harmony Office',
+    'bank teller',
+    'benefice',
+    'Burdock Road',
+    'The bill relies on income',
+    'Tax rule relied on',
+    'Reliever pitcher',
+  ])('does not treat %s as evaluative', (text) => {
+    const scenario = exampleScenario();
+    scenario.subject = text;
+    expect(validateScenario(scenario, scenarioExcerpts()).dropped).toEqual([]);
+  });
+
   it('rejects evaluative titles and profiles, but not substrings', () => {
     const scenario = exampleScenario();
     scenario.subject = 'Great tax bill';
@@ -507,6 +521,16 @@ describe('PR 143 grounding regressions', () => {
     'burdensome',
     'burdened',
     'relieves',
+    'relieved',
+    'relieving',
+    'unjustified',
+    'unjustifiable',
+    'unjustly',
+    'harmfully',
+    'harmless',
+    'burdensomely',
+    'punishable',
+    'punishment',
     'unjust',
     'harm',
     'benefits',

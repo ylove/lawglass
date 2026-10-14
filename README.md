@@ -12,7 +12,7 @@ The project was called `legislation-summary` until rc.2. If you used the RC, mov
 - **Retrieves, then answers with citations.** Hybrid retrieval (dense, sparse, rerank) picks the excerpts. The model may use only those, and every `[S:<section>]` citation is checked against what was retrieved.
 - **Runs on your machine.** An `npx` CLI and a local web UI. A built-in local backend needs no account. You bring your own keys.
 
-> **Status: release candidate.** Everything in the [status table](#status) is on `main` and tested. The Pinecone backend is built and unit-tested against a fake, but has not yet been run against a live index (that needs a key).
+> **Status: release candidate.** Everything in the [status table](#status) is on `main` and tested. The Pinecone backend passed its live contract suite and a full five-bill eval on a Starter-tier index (2026-10-14).
 
 ## Demo
 
@@ -63,19 +63,21 @@ Keyless HTTP endpoints are accepted only on `localhost`, `127.0.0.1` or `[::1]`.
 ### Backends
 
 - **local** (default): no Docker, no account. Dense vectors from quantized `bge-small-en-v1.5` (384 dimensions) via transformers.js, sparse search with an explicit BM25 (`k1=1.2`, `b=0.75`), and a quantized MiniLM cross-encoder as reranker. About 59 MB of models download once, from revisions pinned in [`models.lock.json`](models.lock.json). Code: [`src/core/index/local/`](src/core/index/local/).
-- **pinecone**: selected when `PINECONE_API_KEY` resolves; integrated-inference dense and sparse indexes plus hosted rerank ([decision 0001](docs/decisions/0001-pinecone-plus-local-backend.md)). Each document is a namespace. A document counts as indexed only after a completion marker is written once every batch has landed in both indexes, so a half-finished ingest is never mistaken for a finished one. Code: [`src/core/index/pinecone/`](src/core/index/pinecone/). Its live contract suite runs nightly when a key is configured; it has not run yet.
+- **pinecone**: selected when `PINECONE_API_KEY` resolves; integrated-inference dense and sparse indexes plus hosted rerank ([decision 0001](docs/decisions/0001-pinecone-plus-local-backend.md)). Each document is a namespace. A document counts as indexed only after a completion marker is written once every batch has landed in both indexes, so a half-finished ingest is never mistaken for a finished one. Code: [`src/core/index/pinecone/`](src/core/index/pinecone/). Its live contract suite runs nightly when a key is configured. It passed 21 of 21 on 2026-10-14; a later run hit one eventual-consistency flake, a search issued right after a delete that still returned the deleted record ([#163](https://github.com/ylove/lawglass/issues/163)).
 
 Embeddings never go through the LLM provider.
 
+Pinecone retries 429 responses with jittered exponential backoff, honors exposed `Retry-After` values, and supports cancellation. Each write request (including the completion marker) has a 10-minute budget; searches and reranking have a 60-second budget. Set `LAWGLASS_PINECONE_UPSERT_RETRY_BUDGET_MS` or `LAWGLASS_PINECONE_QUERY_RETRY_BUDGET_MS` to override these budgets. Optional `LAWGLASS_PINECONE_UPSERT_BATCH_DELAY_MS` pacing waits between chunk batches after both indexes have accepted the previous batch. It defaults to zero and never delays a single-batch bill. Chunk batches hold at most 96 records and at most `LAWGLASS_PINECONE_UPSERT_MAX_BATCH_TOKENS` estimated embedding tokens (default 20,000), because Starter's per-minute embedding-token limit ([limits](https://docs.pinecone.io/reference/api/database-limits)) makes an over-large request fail with 429 forever. If a batch still gets three consecutive 429s or 60 seconds of them, it is halved and the halves are retried, down to one record; only then does the 10-minute budget apply. The smaller size is kept for the rest of that ingest. Only 429 is retried; 5xx and 402 (quota) errors fail immediately. A first ingest clears the document's namespaces before writing, so a late write from an earlier failed attempt cannot leave orphans. These environment names use the prefix from [`BRAND.envPrefix`](src/core/brand.ts).
+
 ### Status
 
-| Piece                                                                   | State on `main`                                                           |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| Fetch, parse, enrich, chunk, local backend, retrieval, answer, chips    | Implemented and tested                                                    |
-| CLI `init`, `ingest`, `ask`, `list`, `remove`, `serve`, `eval`, `<url>` | Implemented and tested; e2e and package smoke run in CI                   |
-| Server: REST, SSE, public mode, web UI                                  | Implemented and tested                                                    |
-| Eval harness and golden sets                                            | Implemented; results in [`eval/results.md`](eval/results.md)              |
-| Pinecone adapter and CLI runtime                                        | Wired into all commands and tested against a fake; live run pending a key |
+| Piece                                                                   | State on `main`                                                                             |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Fetch, parse, enrich, chunk, local backend, retrieval, answer, chips    | Implemented and tested                                                                      |
+| CLI `init`, `ingest`, `ask`, `list`, `remove`, `serve`, `eval`, `<url>` | Implemented and tested; e2e and package smoke run in CI                                     |
+| Server: REST, SSE, public mode, web UI                                  | Implemented and tested                                                                      |
+| Eval harness and golden sets                                            | Implemented; results in [`eval/results.md`](eval/results.md)                                |
+| Pinecone adapter and CLI runtime                                        | Wired into all commands; live contract suite and five-bill eval run on Starter (2026-10-14) |
 
 ## Architecture
 
@@ -156,15 +158,28 @@ Local backend (`bge-small-en-v1.5` embeddings, BM25, `ms-marco-MiniLM-L-6-v2` re
 | Federal S. 202           | 0.90 / 0.70 | 0.68 / 0.62 | 0.80 / 0.71  | 0.85 / 0.71       | 0.85 / 0.83             |
 | Federal H.R. 5009 (NDAA) | 0.96 / 0.89 | 0.82 / 0.68 | 0.92 / 0.81  | 0.96 / 0.92       | 0.88 / 0.86             |
 
+Pinecone backend (`llama-text-embed-v2`, `pinecone-sparse-english-v0`, `bge-reranker-v2-m3`), `hybrid_rerank` only, recall@5 / MRR, from [`eval/results-pinecone.md`](eval/results-pinecone.md) (Starter tier, commit `3a0851a`, 2026-10-14), next to the local numbers above. The two backends differ in embedder, sparse model and reranker, and the runs came from different commits (local `a651f35`, Pinecone `3a0851a`), so the comparison is indicative, not controlled:
+
+| Fixture                  | local hybrid_rerank | Pinecone hybrid_rerank |
+| ------------------------ | ------------------- | ---------------------- |
+| Ohio HB 62               | 0.95 / 0.87         | 1.00 / 0.98            |
+| Ohio SB 113              | 1.00 / 0.90         | 0.94 / 0.95            |
+| Ohio SB 203              | 0.95 / 0.74         | 0.88 / 0.91            |
+| Federal S. 202           | 0.85 / 0.83         | 0.90 / 0.90            |
+| Federal H.R. 5009 (NDAA) | 0.88 / 0.86         | 0.96 / 0.94            |
+| Average                  | 0.93 / 0.84         | 0.94 / 0.94            |
+
+Pinecone ranks better on all five bills (higher MRR). It is not uniformly better at recall@5: it is lower on SB 113 (17 of 18 expected sections in the top 5, against 18) and SB 203 (37 of 42, against 40). One question moves recall@5 by about 0.05, so treat the recall differences as small. The other modes' Pinecone rows are in the results file.
+
 What this shows, plainly:
 
 - **The default mode ranks best on four of five bills** (highest MRR), and finds more of the right sections than dense alone on SB 203. It ties dense on two bills and **loses to dense on two**: S. 202 by one question (17 of 20 in the top 5, against 18) and the NDAA by two (22 of 25, against 24).
 - **Where each mode wins** (share of questions with a relevant section in the top 5, all bills pooled): `hybrid_rerank` leads on exact lookups (0.97 vs 0.90 for dense) and definitions (0.84 vs 0.79); dense leads on paraphrases (0.95 vs 0.93) and on "what does it remove" (1.00 vs 0.91).
 - **Dense misses, the reranked hybrid finds it.** SB 203, _"Does trading one gun for another count as a 'transfer'?"_ Dense retrieval ranks the definitions division that answers it 8th, behind seven other passages of the same section (2923.27), and BM25 alone does not put it in its top 10. Plain fusion does not fix it either. Because both lists feed one candidate pool, the cross-encoder gets to read the question against that division directly and ranks it first: the win is the reranker's.
-- **Where the reranker hurts.** On the NDAA, _"Does the military now have to buy American-made forks, spoons, and dishes?"_ Dense ranks Sec. 842, "Domestic production of stainless steel flatware and dinnerware", first; after reranking it is not in the top 10. Our reading, not yet tested: the small cross-encoder (22M parameters, trained on web search) does not connect _forks and spoons_ to _flatware_, and the NDAA's very long heading paths (Division > Title > Subtitle > Sec.) may crowd its 512-token window. A stronger reranker, such as the `bge-reranker-v2-m3` that Pinecone hosts, is the obvious next step; weighted fusion without rerank is the best local mode on the NDAA.
+- **Where the reranker hurts.** On the NDAA, _"Does the military now have to buy American-made forks, spoons, and dishes?"_ Dense ranks Sec. 842, "Domestic production of stainless steel flatware and dinnerware", first; after reranking it is not in the top 10. Our reading, not yet tested: the small cross-encoder (22M parameters, trained on web search) does not connect _forks and spoons_ to _flatware_, and the NDAA's very long heading paths (Division > Title > Subtitle > Sec.) may crowd its 512-token window. We then tried the stronger reranker, `bge-reranker-v2-m3` on Pinecone, and **it did not fix this miss**: Sec. 842 is still not in the top 10 (it puts Sec. 844 and Sec. 845 first), even though Pinecone's dense search ranks 842 first and its RRF hybrid fourth. So a stronger reranker is not the answer for this question; the heading-path hypothesis is still untested. Weighted fusion without rerank is the best local mode on the NDAA.
 - **Two fixes came from this eval**, both reported with before and after numbers in the [analysis](docs/eval-analysis.md). The reranker originally scored chunk text without its heading path, while the embedder saw both; giving it the same context (#97) raised MRR on four of five bills (average 0.797 to 0.841) while average recall@5 stayed flat (0.924 to 0.926), because S. 202 lost two borderline questions. And questions in everyday words ("what does the bill _cross out_", "does it _get rid of_ the rule") were not recognised as questions about changes, so the struck text never reached the model (#101).
 
-**Answers** (all 119 questions, Claude Sonnet 5.5, [`eval/results-answers.md`](eval/results-answers.md)): every citation pointed at a section the model was shown, on all five bills. 13 of 15 unanswerable questions got the exact decline sentence; the other two said the bill does not cover the question and then described what it does cover. On HB 62, the only bill with struck text, no answer stated repealed text as current law (the final run's leakage check flagged one answer; answers are not stored, so the questions were asked again and every flagged answer was read: all were false positives). Mean reading grade is 8.5 to 10.2, above the grade-7 target. The full analysis, including what changed because of it, is in [docs/eval-analysis.md](docs/eval-analysis.md). Pinecone rows are pending until the nightly job runs with a key. Each table records the commit, models and golden-set freeze it came from. Per-question ranks for every mode are written to `eval/runs/*.json`, and `eval compare` lists the questions where two modes disagree ([details](docs/eval.md)).
+**Answers** (all 119 questions, Claude Sonnet 5.5, [`eval/results-answers.md`](eval/results-answers.md)): every citation pointed at a section the model was shown, on all five bills. 13 of 15 unanswerable questions got the exact decline sentence; the other two said the bill does not cover the question and then described what it does cover. On HB 62, the only bill with struck text, no answer stated repealed text as current law (the final run's leakage check flagged one answer; answers are not stored, so the questions were asked again and every flagged answer was read: all were false positives). Mean reading grade is 8.5 to 10.2, above the grade-7 target. The full analysis, including what changed because of it, is in [docs/eval-analysis.md](docs/eval-analysis.md). Pinecone `hybrid_rerank` rows are in the table above; the full Pinecone table is in [`eval/results-pinecone.md`](eval/results-pinecone.md). Each table records the commit, models and golden-set freeze it came from. Per-question ranks for every mode are written to `eval/runs/*.json`, and `eval compare` lists the questions where two modes disagree ([details](docs/eval.md)).
 
 Caveats: 21 to 28 questions per bill means one question moves recall@5 by about 0.05. Ranks are chunk ranks (the first chunk whose section, or an ancestor or descendant, is expected). Two questions name their section numbers outright (hb62-03, sb203-08), and some paraphrases reuse rare words from the text, which makes them easier for BM25.
 
@@ -225,7 +240,7 @@ Conventions are in [`AGENTS.md`](AGENTS.md): the frozen contracts in `src/core/m
 - **v2:** allowlisted official secondary sources only (fiscal notes, nonpartisan analyses). News articles are never used.
 - Fetch statutes that a bill references, which are listed as "referenced, not loaded" today.
 - Akoma Ntoso export of the normalized document.
-- **Known gaps from the eval:** a stronger reranker for large bills (the local one misses synonyms such as _forks_ and _flatware_); a sturdier signal than phrase lists for "is this question about what changed" (#104); before-and-after excerpts for one-word strikes in free-form questions (#102); consistent declines (#109); answers closer to a 7th-grade reading level.
+- **Known gaps from the eval:** the forks/flatware miss on large bills (both the local and the Pinecone reranker drop Sec. 842; a stronger reranker did not fix it); a sturdier signal than phrase lists for "is this question about what changed" (#104); before-and-after excerpts for one-word strikes in free-form questions (#102); consistent declines (#109); answers closer to a 7th-grade reading level.
 - Not planned for the RC: OCR for scanned PDFs, hosted deployment.
 
 ## Disclaimer
