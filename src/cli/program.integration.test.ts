@@ -169,3 +169,123 @@ test('the bare URL form explains how to continue without a server', async () => 
     /web UI is not available yet.*ask [0-9a-f]{12} "<question>"/s,
   );
 });
+
+test.each([
+  [
+    'ingest',
+    ['ingest', 'https://example.gov/gardens.txt', '--backend', 'local'],
+  ],
+  ['ask', ['ask', 'g', 'garden grants', '--backend', 'local']],
+  ['list', ['list', '--backend', 'local']],
+  ['remove', ['remove', 'g', '--backend', 'local']],
+  ['bare url', ['https://example.gov/gardens.txt', '--backend', 'local']],
+])('%s passes --backend to the runtime', async (_name, args) => {
+  const seen: unknown[] = [];
+  await createProgram({
+    runtime: (options) => {
+      seen.push(options.backend);
+      return Promise.resolve(env.runtime);
+    },
+    write: () => undefined,
+  }).parseAsync(['ingest', 'https://example.gov/gardens.txt', '--name', 'g'], {
+    from: 'user',
+  });
+  seen.length = 0;
+  await createProgram({
+    runtime: (options) => {
+      seen.push(options.backend);
+      return Promise.resolve(env.runtime);
+    },
+    write: () => undefined,
+  }).parseAsync(args, { from: 'user' });
+  expect(seen).toEqual(['local']);
+});
+
+test('ask --chip does not require an LLM key until a model call is made', async () => {
+  await run(['ingest', 'https://example.gov/gardens.txt', '--name', 'g']);
+  const needs: boolean[] = [];
+  const keyless = {
+    ...env.runtime,
+    get answerProvider(): never {
+      throw new AppError('MISSING_KEY');
+    },
+    chips: () =>
+      Promise.resolve({
+        answer: {
+          text: 'No sponsors stated.',
+          citations: [],
+          invalidCitations: [],
+          warnings: [],
+          declined: false,
+          readingGrade: null,
+          provider: 'none',
+          model: 'none',
+          usage: { inputTokens: 0, outputTokens: 0 },
+        },
+        hits: [],
+        backendUsage: {
+          embedTokens: 0,
+          rerankUnits: 0,
+          readUnits: 0,
+          writeUnits: 0,
+        },
+        mode: 'none' as const,
+      }),
+  };
+  output = '';
+  await createProgram({
+    runtime: (o) => {
+      needs.push(o.needsLlm);
+      return Promise.resolve(keyless);
+    },
+    write: (t) => {
+      output += t;
+    },
+  }).parseAsync(['ask', 'g', '--chip', 'sponsors'], { from: 'user' });
+  expect(needs).toEqual([false]);
+  // A freeform question needs the key up front, before retrieval spends anything.
+  await expect(
+    createProgram({
+      runtime: () => Promise.resolve(keyless),
+      write: () => undefined,
+    }).parseAsync(['ask', 'g', 'a question'], { from: 'user' }),
+  ).rejects.toMatchObject({ code: 'MISSING_KEY' });
+});
+
+test('remove refuses to drop an entry that belongs to another backend', async () => {
+  await run(['ingest', 'https://example.gov/gardens.txt', '--name', 'g']);
+  const foreign = Object.create(env.backend, {
+    kind: { value: 'pinecone' },
+  }) as typeof env.backend;
+  const del = vi.spyOn(env.backend, 'deleteDocument');
+  await expect(
+    run(['remove', 'g'], {
+      runtime: () => Promise.resolve({ ...env.runtime, backend: foreign }),
+    }),
+  ).rejects.toMatchObject({
+    userMessage: expect.stringContaining('--backend local') as string,
+  });
+  expect(del).not.toHaveBeenCalled();
+  expect(await env.registry.list()).toHaveLength(1);
+});
+
+test('terminal escapes from document text never reach the output', async () => {
+  const links = [
+    {
+      url: 'https://example.gov/bill.pdf',
+      text: '\u001b]8;;https://evil.example/\u0007Full text\u001b]8;;\u0007',
+      format: 'pdf',
+    },
+  ];
+  env.runtime.fetcher = () =>
+    Promise.reject(
+      new AppError('WRAPPER_PAGE', undefined, { details: { links } }),
+    );
+  const error = await run(['ingest', 'https://example.gov/page']).catch(
+    (e: unknown) => e,
+  );
+  const message = (error as AppError).userMessage;
+  expect(message).toContain('Full text');
+  expect(message).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
+  expect(message).not.toContain('evil.example');
+});

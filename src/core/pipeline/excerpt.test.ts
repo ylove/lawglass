@@ -12,6 +12,7 @@ const sections: Section[] = [
     spans: [{ text: 'Lead-in.', status: 'unchanged' }],
     children: [
       {
+        // Not a leaf: the chunker never merges it, so it is cited (and shown) on its own.
         id: 'sec-4/a',
         num: '(a)',
         heading: 'Eligibility',
@@ -30,22 +31,46 @@ const sections: Section[] = [
           },
         ],
       },
-      { id: 'sec-4/b', num: '(b)', level: 2, spans: [], children: [] },
+      {
+        id: 'sec-4/b',
+        num: '(b)',
+        heading: 'Reports',
+        level: 2,
+        spans: [{ text: 'File a report.', status: 'unchanged' }],
+        children: [],
+      },
+      {
+        // Parsers that use the first body line as heading already print the label.
+        id: 'sec-4/c',
+        num: '(c)',
+        heading: '(c) Audit',
+        level: 2,
+        spans: [{ text: '(c) Audit the books.', status: 'inserted' }],
+        children: [],
+      },
     ],
   },
 ];
 
-test('a parent excerpt includes descendants in order, each prefixed with num and heading', () => {
+test('a parent excerpt is its own spans plus its leaf children, not the whole subtree', () => {
   const excerpt = sectionExcerpt({ sections }, 'sec-4');
   expect(excerpt.spans.map((s) => s.text).join('')).toBe(
-    'Lead-in.\n\n(a) Eligibility. Towns qualify old rule\n\n(1). Nested text.\n\n(b). ',
+    'Lead-in.\n\n(b) Reports. File a report.\n\n(c) Audit the books.',
   );
-  // Struck and inserted status survive for the drawer's styling.
-  expect(excerpt.spans.map((s) => s.status)).toContain('deleted');
+  // The non-leaf child and its descendants are cited by their own ids.
+  expect(excerpt.spans.map((s) => s.text).join('')).not.toContain('Towns');
+  expect(excerpt.spans.map((s) => s.text).join('')).not.toContain('Nested');
   expect(excerpt.spans.map((s) => s.status)).toContain('inserted');
   expect(excerpt.breadcrumb).toBe('Sec. 4 Grants');
   expect(excerpt.num).toBe('4');
   expect(excerpt.heading).toBe('Grants');
+});
+
+test('a non-leaf child shows its own text with struck spans intact', () => {
+  const excerpt = sectionExcerpt({ sections }, 'sec-4/a');
+  expect(excerpt.spans.map((s) => s.status)).toContain('deleted');
+  expect(excerpt.spans.map((s) => s.text).join('')).toContain('Towns qualify');
+  expect(excerpt.spans.map((s) => s.text).join('')).toContain('Nested text.');
 });
 
 test('a leaf excerpt has only its own text and a full breadcrumb', () => {
@@ -78,7 +103,7 @@ test('an empty parent does not start with a separator', () => {
     },
     'sec-1',
   );
-  expect(excerpt.spans.map((s) => s.text).join('')).toBe('(a). x');
+  expect(excerpt.spans.map((s) => s.text).join('')).toBe('(a) x');
 });
 
 test('unknown sections are an AppError', () => {
@@ -89,15 +114,11 @@ test('unknown sections are an AppError', () => {
   );
 });
 
-test('location comes from the spans of the section and its descendants', async () => {
+test('location comes from the spans actually shown', async () => {
   const pdf = await makeAmendingBillPdf();
-  const excerpt = sectionExcerpt(pdf.groundTruth, 'sec-5747.01');
-  expect(excerpt.location.pageStart).toBe(1);
-  expect(excerpt.location.lineStart).toBeGreaterThan(0);
-  // The parent has no spans of its own; the children's text is still present.
-  expect(excerpt.spans.map((s) => s.text).join('')).toContain(
-    'As used in this chapter:',
-  );
+  const excerpt = sectionExcerpt(pdf.groundTruth, 'sec-5747.01/A/1');
+  expect(excerpt.location).toMatchObject({ pageStart: 1, lineStart: 5 });
+  expect(excerpt.location.lineEnd).toBeGreaterThanOrEqual(5);
 });
 
 test('without span positions the section own location is used', () => {

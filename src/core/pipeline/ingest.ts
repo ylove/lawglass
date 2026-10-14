@@ -5,16 +5,19 @@
  */
 import { createHash } from 'node:crypto';
 import { chunkDocument } from '../chunk/index.js';
-import { enrichDocument, extractMetadata } from '../enrich/index.js';
+import {
+  enrichDocument,
+  extractMetadata,
+  MAX_METADATA_CHARS,
+} from '../enrich/index.js';
 import type { SafeFetchResult } from '../fetch/index.js';
-import { parseHtml, parseText, parseXml } from '../parse/index.js';
+import { parseHtml, parsePdf, parseText, parseXml } from '../parse/index.js';
 import {
   AppError,
   ChunkType,
   DocSummary,
   sectionText,
   walkSections,
-  type BackendUsage,
   type Chunk,
   type IngestStage,
   type IngestStats,
@@ -35,7 +38,7 @@ export interface ParseContext {
   sourceUrl: string;
   fetchedAt: string;
 }
-/** TODO(pdf parser): `core/parse` has no `parsePdf` yet; callers inject one once it lands. */
+/** Defaults to `core/parse`'s `parsePdf`; tests inject a stub. */
 export type PdfParser = (
   bytes: Uint8Array,
   context: ParseContext,
@@ -81,7 +84,6 @@ export interface IngestResult {
 }
 
 const DEFAULT_MAX_DOCS = 5;
-const METADATA_CHARS = 6000;
 const MAX_LABEL = 80;
 
 function countSpans(doc: NormalizedDoc): { inserted: number; deleted: number } {
@@ -162,12 +164,7 @@ async function parseFetched(
       case 'text':
         return parseText(fetched.bytes, context);
       case 'pdf':
-        if (!deps.parsePdf)
-          throw new AppError(
-            'UNSUPPORTED_FORMAT',
-            'PDF parsing is not available in this build yet.',
-          );
-        return await deps.parsePdf(fetched.bytes, context);
+        return await (deps.parsePdf ?? parsePdf)(fetched.bytes, context);
       default:
         throw new AppError('UNSUPPORTED_FORMAT');
     }
@@ -177,15 +174,22 @@ async function parseFetched(
   }
 }
 
-/** Text the extraction model reads: the start of the document, headings included. */
+/** Text the extraction model reads: the start of the document, headings included once. */
 function metadataText(doc: NormalizedDoc): string {
   let text = '';
   for (const section of walkSections(doc.sections)) {
-    text += `${[section.num, section.heading].filter(Boolean).join(' ')}\n`;
-    text += `${sectionText(section, { includeDeleted: false })}\n`;
-    if (text.length >= METADATA_CHARS) break;
+    const body = sectionText(section, { includeDeleted: false });
+    const header = [section.num, section.heading].filter(Boolean).join(' ');
+    // PDF/HTML/text parsers use the first body line as the heading; don't print it twice.
+    const firstLine = body.trimStart().split('\n')[0] ?? '';
+    const repeated =
+      header === '' ||
+      body.trimStart().startsWith(header) ||
+      (section.heading !== undefined && firstLine.includes(section.heading));
+    text += `${repeated ? '' : `${header}\n`}${body}\n`;
+    if (text.length >= MAX_METADATA_CHARS) break;
   }
-  return text.slice(0, METADATA_CHARS);
+  return text.slice(0, MAX_METADATA_CHARS);
 }
 
 function hostLabel(url: string): string {
@@ -217,16 +221,51 @@ function chunkAndEnrich(doc: NormalizedDoc): {
   return enrichDocument(doc, chunkDocument(doc));
 }
 
+// Ingests of the same document run one at a time: two racing ingests of one docId could
+// otherwise clean up (delete the namespace of) each other's work.
+const inFlight = new Map<string, Promise<unknown>>();
+async function withDocLock<T>(
+  docId: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  const previous = inFlight.get(docId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(task);
+  inFlight.set(docId, next);
+  try {
+    return await next;
+  } finally {
+    if (inFlight.get(docId) === next) inFlight.delete(docId);
+  }
+}
+
+/**
+ * Enforce the cap after the new document is safely registered, so a failed ingest never costs
+ * the user an old one. Entries of another backend are left alone: their namespaces can only be
+ * deleted through that backend, and dropping the entry would orphan them. Best effort: the
+ * ingest itself already succeeded, and a failure here leaves registry and index consistent
+ * (the backend delete happens first).
+ */
+async function enforceCap(deps: IngestDeps, keep: string): Promise<void> {
+  const { backend, registry } = deps;
+  try {
+    const cap = Math.max(1, deps.maxDocs ?? DEFAULT_MAX_DOCS);
+    for (const old of await registry.evictionCandidates(cap)) {
+      if (old.docId === keep || old.backend !== backend.kind) continue;
+      await backend.deleteDocument(old.docId);
+      await registry.remove(old.docId);
+    }
+  } catch {
+    // See above: not worth failing a completed ingest.
+  }
+}
+
 export async function ingest(
   url: string,
   deps: IngestDeps,
   opts: IngestOptions = {},
 ): Promise<IngestResult> {
-  const { backend, registry } = deps;
   const { signal } = opts;
-  const progress = (p: IngestProgress): void => opts.onProgress?.(p);
-
-  progress({ stage: 'fetching', detail: url });
+  opts.onProgress?.({ stage: 'fetching', detail: url });
   // WRAPPER_PAGE (with candidate links in `details`) propagates untouched for callers to offer.
   const fetched = await deps.fetcher(url, { signal });
   signal?.throwIfAborted();
@@ -236,10 +275,30 @@ export async function ingest(
       'FETCH_FAILED',
       'Fetched document id does not match its bytes.',
     );
+  return withDocLock(docId, () => ingestLocked(docId, fetched, deps, opts));
+}
+
+async function ingestLocked(
+  docId: string,
+  fetched: SafeFetchResult,
+  deps: IngestDeps,
+  opts: IngestOptions,
+): Promise<IngestResult> {
+  const { backend, registry } = deps;
+  const { signal } = opts;
+  const progress = (p: IngestProgress): void => opts.onProgress?.(p);
 
   const entries = await registry.list();
   const known = entries.find((e) => e.docId === docId);
+  // Fail before spending anything (LLM, embeddings) when the label cannot be used.
+  if (!known && opts.label && entries.some((e) => e.label === opts.label))
+    throw new AppError('INVALID_INPUT', 'Label already in use.', {
+      userMessage:
+        'That document label is already in use. Choose a different label.',
+    });
   const alreadyIndexed = await backend.hasDocument(docId);
+
+  // Zero-token path: nothing to fetch-parse-embed.
   if (known && alreadyIndexed) {
     const touched = await registry.touch(docId);
     const cached = await registry.getDocument(docId);
@@ -253,69 +312,98 @@ export async function ingest(
     };
   }
 
-  progress({ stage: 'parsing' });
-  const parsed = await parseFetched(fetched, deps);
-  signal?.throwIfAborted();
-
-  progress({ stage: 'enriching', detail: 'metadata' });
+  // Known entry whose namespace vanished: the registry's cached document already has the
+  // metadata, so no parse and no LLM call. Re-embedding is the only cost (and the local
+  // backend skips unchanged vectors). Residual cost elsewhere: a namespace left by a crash
+  // before registration is re-parsed but not re-extracted (see below).
+  const cachedDoc = known
+    ? await registry.getDocument(docId).catch(() => undefined)
+    : undefined;
   const meter = metered(deps.provider);
-  const extracted = await extractMetadata(parsed, {
-    provider: meter.provider,
-    text: metadataText(parsed),
-    signal,
-  });
-  const withMetadata: NormalizedDoc = {
-    ...parsed,
-    metadata: extracted.metadata,
-    warnings: [...parsed.warnings, ...extracted.warnings],
-  };
-
-  progress({ stage: 'chunking' });
-  const { doc, chunks } = chunkAndEnrich(withMetadata);
+  let doc: NormalizedDoc;
+  let chunks: Chunk[];
+  if (cachedDoc) {
+    progress({ stage: 'chunking' });
+    ({ doc, chunks } = chunkAndEnrich(cachedDoc));
+  } else {
+    progress({ stage: 'parsing' });
+    const parsed = await parseFetched(fetched, deps);
+    signal?.throwIfAborted();
+    let withMetadata = parsed;
+    if (alreadyIndexed) {
+      // A previous ingest was interrupted after indexing: don't pay for extraction again.
+      withMetadata = {
+        ...parsed,
+        warnings: [
+          ...parsed.warnings,
+          'Metadata was not extracted because an earlier ingest was interrupted. Remove and ingest again to fill it in.',
+        ],
+      };
+    } else {
+      progress({ stage: 'enriching', detail: 'metadata' });
+      const extracted = await extractMetadata(parsed, {
+        provider: meter.provider,
+        text: metadataText(parsed),
+        signal,
+      });
+      withMetadata = {
+        ...parsed,
+        metadata: extracted.metadata,
+        warnings: [...parsed.warnings, ...extracted.warnings],
+      };
+    }
+    progress({ stage: 'chunking' });
+    ({ doc, chunks } = chunkAndEnrich(withMetadata));
+  }
   signal?.throwIfAborted();
 
-  // Make room before indexing: keep at most maxDocs - 1 others, so the new doc fits the cap.
-  if (!known) {
-    const maxDocs = Math.max(1, deps.maxDocs ?? DEFAULT_MAX_DOCS);
-    for (const old of await registry.evictionCandidates(maxDocs - 1)) {
-      if (old.backend === backend.kind) await backend.deleteDocument(old.docId);
-      await registry.remove(old.docId);
-    }
-  }
-
-  let usage: BackendUsage | undefined;
   let entry: RegistryEntry;
+  let embedTokens = 0;
   try {
     await backend.ensureReady(signal);
     progress({ stage: 'embedding', done: 0, total: chunks.length });
-    ({ usage } = await backend.upsertChunks(docId, chunks, (p) => {
+    const { usage } = await backend.upsertChunks(docId, chunks, (p) => {
       progress({ stage: 'embedding', done: p.done, total: p.total });
-    }));
-    signal?.throwIfAborted();
-    const labels = new Set((await registry.list()).map((e) => e.label));
-    entry = await registry.add(doc, {
-      label: opts.label ?? chooseLabel(doc, labels),
-      backend: backend.kind,
-      usage: {
-        embedTokens: usage.embedTokens,
-        llmInputTokens: meter.usage.inputTokens,
-        llmOutputTokens: meter.usage.outputTokens,
-      },
     });
+    embedTokens = usage.embedTokens;
+    signal?.throwIfAborted();
+    const spent = {
+      embedTokens,
+      llmInputTokens: meter.usage.inputTokens,
+      llmOutputTokens: meter.usage.outputTokens,
+    };
+    if (known) {
+      // Refresh recency (so the re-indexed doc is not next to be evicted) and count the spend.
+      entry = await registry.touch(docId, spent);
+    } else {
+      const labels = new Set((await registry.list()).map((e) => e.label));
+      entry = await registry.add(doc, {
+        label: opts.label ?? chooseLabel(doc, labels),
+        backend: backend.kind,
+        usage: spent,
+      });
+    }
   } catch (error) {
-    // Do not leave a half-indexed namespace behind, unless it was there before this attempt.
-    if (!alreadyIndexed)
-      await backend.deleteDocument(docId).catch(() => undefined);
+    // Don't leave a half-indexed namespace behind, unless it was there before this attempt or
+    // another process registered this document meanwhile (its entry points at the namespace).
+    if (!alreadyIndexed) {
+      const registeredMeanwhile =
+        !known &&
+        (await registry.list().catch(() => [])).some((e) => e.docId === docId);
+      if (!registeredMeanwhile)
+        await backend.deleteDocument(docId).catch(() => undefined);
+    }
     if (error instanceof AppError || signal?.aborted) throw error;
     throw new AppError('BACKEND_UNAVAILABLE', undefined, { cause: error });
   }
 
+  await enforceCap(deps, docId);
   progress({ stage: 'done' });
   return {
     doc: summarize(entry),
-    stats: buildStats(doc, chunks, usage.embedTokens, false),
+    stats: buildStats(doc, chunks, embedTokens, false),
     usage: {
-      embedTokens: usage.embedTokens,
+      embedTokens,
       llmInputTokens: meter.usage.inputTokens,
       llmOutputTokens: meter.usage.outputTokens,
     },

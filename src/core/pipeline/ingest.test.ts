@@ -4,6 +4,7 @@ import {
   makeAmendingBillPdf,
   makeCongressionalBillXml,
   makeFederalStylePdf,
+  makeScannedPdf,
   makeSectionedText,
 } from '../../../tests/synth/index.js';
 import {
@@ -239,14 +240,19 @@ test('a wrapper page propagates with its candidate links', async () => {
   expect(error).toMatchObject({ code: 'WRAPPER_PAGE', details: { links } });
 });
 
-test('PDF without a parser, unknown formats and parser crashes are explicit errors', async () => {
+test('scanned PDFs, unknown formats and parser crashes are explicit errors', async () => {
+  env.serve(
+    'https://example.gov/scan.pdf',
+    await makeScannedPdf(),
+    'application/pdf',
+  );
+  await expect(
+    ingest('https://example.gov/scan.pdf', deps()),
+  ).rejects.toMatchObject({
+    code: 'SCANNED_PDF',
+  });
   const pdf = await makeFederalStylePdf();
   env.serve('https://example.gov/a.pdf', pdf, 'application/pdf');
-  await expect(
-    ingest('https://example.gov/a.pdf', deps()),
-  ).rejects.toMatchObject({
-    code: 'UNSUPPORTED_FORMAT',
-  });
   await expect(
     ingest(
       'https://example.gov/a.pdf',
@@ -266,6 +272,16 @@ test('PDF without a parser, unknown formats and parser crashes are explicit erro
     code: 'UNSUPPORTED_FORMAT',
   });
   expect(await env.registry.list()).toEqual([]);
+});
+
+test('the real PDF parser is the default', async () => {
+  env.serve(
+    'https://example.gov/a.pdf',
+    await makeFederalStylePdf(),
+    'application/pdf',
+  );
+  const result = await ingest('https://example.gov/a.pdf', deps());
+  expect(result.stats.format).toBe('pdf');
 });
 
 test('a failed upsert deletes the namespace and surfaces an AppError', async () => {
@@ -330,4 +346,154 @@ test('metadata extraction usage is reported', async () => {
     llmInputTokens: 7,
     llmOutputTokens: 3,
   });
+});
+
+const textSample = (body: string) => ({
+  bytes: new TextEncoder().encode(`Section 1. T\n${body}\n`),
+});
+
+test('racing ingests of one document are serialized; an aborted one leaves the index intact', async () => {
+  env.serve('https://example.gov/s9001.xml', makeCongressionalBillXml());
+  const controller = new AbortController();
+  const aborted = ingest('https://example.gov/s9001.xml', deps(), {
+    signal: controller.signal,
+    onProgress: (p) => {
+      if (p.stage === 'embedding' && p.done === p.total) controller.abort();
+    },
+  }).catch((e: unknown) => e);
+  const winner = ingest('https://example.gov/s9001.xml', deps());
+  const [first, second] = await Promise.all([aborted, winner]);
+  expect(first).toBeDefined();
+  expect(second).toMatchObject({ stats: { reused: false } });
+  const [entry] = await env.registry.list();
+  expect(entry).toBeDefined();
+  expect(await env.backend.hasDocument(entry?.docId ?? '')).toBe(true);
+});
+
+test('cleanup does not delete a namespace another process registered meanwhile', async () => {
+  env.serve('https://example.gov/a.txt', textSample('One.'), 'text/plain');
+  const registry = env.registry;
+  const realAdd = registry.add.bind(registry);
+  vi.spyOn(registry, 'add').mockImplementationOnce(async (doc, o) => {
+    // Simulate another process winning the race, then this add failing.
+    await realAdd(doc, { ...o, label: 'other-process' });
+    throw new AppError('INVALID_INPUT');
+  });
+  await expect(
+    ingest('https://example.gov/a.txt', deps()),
+  ).rejects.toBeInstanceOf(AppError);
+  const [entry] = await registry.list();
+  expect(await env.backend.hasDocument(entry?.docId ?? '')).toBe(true);
+});
+
+test('concurrent ingests of different documents never exceed the cap', async () => {
+  const urls = ['a', 'b', 'c', 'd'].map((n) => `https://example.gov/${n}.txt`);
+  for (const [i, url] of urls.entries())
+    env.serve(url, textSample(`Doc ${String(i)}.`), 'text/plain');
+  await Promise.all(urls.map((url) => ingest(url, deps({ maxDocs: 2 }))));
+  const entries = await env.registry.list();
+  expect(entries.length).toBeLessThanOrEqual(2);
+  for (const e of entries)
+    expect(await env.backend.hasDocument(e.docId)).toBe(true);
+});
+
+test('a failed ingest at the cap does not evict anyone', async () => {
+  env.serve('https://example.gov/a.txt', textSample('One.'), 'text/plain');
+  env.serve('https://example.gov/b.txt', textSample('Two.'), 'text/plain');
+  const a = await ingest('https://example.gov/a.txt', deps({ maxDocs: 1 }));
+  vi.spyOn(env.backend, 'upsertChunks').mockRejectedValue(
+    new Error('disk full'),
+  );
+  await expect(
+    ingest('https://example.gov/b.txt', deps({ maxDocs: 1 })),
+  ).rejects.toBeInstanceOf(AppError);
+  expect((await env.registry.list()).map((e) => e.docId)).toEqual([
+    a.doc.docId,
+  ]);
+  expect(await env.backend.hasDocument(a.doc.docId)).toBe(true);
+});
+
+test('a taken label fails right after the fetch, before any spend', async () => {
+  env.serve('https://example.gov/a.txt', textSample('One.'), 'text/plain');
+  env.serve('https://example.gov/b.txt', textSample('Two.'), 'text/plain');
+  await ingest('https://example.gov/a.txt', deps(), { label: 'garden' });
+  const calls = env.embedder.calls.length;
+  const generate = vi.spyOn(env.provider, 'generateObject');
+  const upsert = vi.spyOn(env.backend, 'upsertChunks');
+  await expect(
+    ingest('https://example.gov/b.txt', deps(), { label: 'garden' }),
+  ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  expect(generate).not.toHaveBeenCalled();
+  expect(upsert).not.toHaveBeenCalled();
+  expect(env.embedder.calls.length).toBe(calls);
+});
+
+test('re-indexing a known document makes no LLM call, refreshes recency and counts usage', async () => {
+  env.serve('https://example.gov/a.txt', textSample('One.'), 'text/plain');
+  const first = await ingest('https://example.gov/a.txt', deps());
+  const [before] = await env.registry.list();
+  await env.backend.deleteDocument(first.doc.docId);
+  const generate = vi.spyOn(env.provider, 'generateObject');
+  const again = await ingest('https://example.gov/a.txt', deps());
+  expect(generate).not.toHaveBeenCalled();
+  expect(again.stats.reused).toBe(false);
+  expect(again.normalized.metadata).toEqual(first.normalized.metadata);
+  const [after] = await env.registry.list();
+  expect((after?.lastUsedAt ?? '') > (before?.lastUsedAt ?? '')).toBe(true);
+  expect(after?.usage.embedTokens).toBe(
+    (before?.usage.embedTokens ?? 0) + again.stats.embedTokens,
+  );
+});
+
+test('a namespace left by a crash before registration skips metadata extraction', async () => {
+  env.serve('https://example.gov/a.txt', textSample('One.'), 'text/plain');
+  const first = await ingest('https://example.gov/a.txt', deps());
+  await env.registry.remove(first.doc.docId); // index stays, as after a crash before add
+  const generate = vi.spyOn(env.provider, 'generateObject');
+  const upsert = vi.spyOn(env.backend, 'upsertChunks');
+  const again = await ingest('https://example.gov/a.txt', deps());
+  expect(generate).not.toHaveBeenCalled();
+  expect(again.normalized.warnings.join(' ')).toMatch(/interrupted/);
+  expect(await env.registry.list()).toHaveLength(1);
+  // Local upsert skips unchanged vectors, so the re-run embeds nothing.
+  expect(again.stats.embedTokens).toBe(0);
+  expect(upsert).toHaveBeenCalledOnce();
+});
+
+test('eviction leaves entries of another backend alone rather than orphaning them', async () => {
+  env.serve('https://example.gov/a.txt', textSample('One.'), 'text/plain');
+  env.serve('https://example.gov/b.txt', textSample('Two.'), 'text/plain');
+  const a = await ingest('https://example.gov/a.txt', deps());
+  const remove = vi.spyOn(env.registry, 'remove');
+  const foreign = { ...deps().backend, kind: 'pinecone' as const };
+  Object.setPrototypeOf(foreign, env.backend);
+  const b = await ingest(
+    'https://example.gov/b.txt',
+    deps({ backend: foreign, maxDocs: 1 }),
+  );
+  expect(remove).not.toHaveBeenCalled();
+  expect((await env.registry.list()).map((e) => e.docId).sort()).toEqual(
+    [a.doc.docId, b.doc.docId].sort(),
+  );
+});
+
+test('metadata text does not repeat header lines that the body already starts with', async () => {
+  const seen: string[] = [];
+  const real = env.provider.generateObject.bind(env.provider);
+  vi.spyOn(env.provider, 'generateObject').mockImplementation((req) => {
+    seen.push(req.prompt);
+    return real(req);
+  });
+  env.serve(
+    'https://example.gov/a.txt',
+    {
+      bytes: new TextEncoder().encode(
+        'Section 1. Short title\nShort title of the act.\nSection 2. Grants\nMore.\n',
+      ),
+    },
+    'text/plain',
+  );
+  await ingest('https://example.gov/a.txt', deps());
+  expect(seen).toHaveLength(1);
+  expect(seen[0]?.match(/Short title/g)).toHaveLength(2); // heading line + body, not three times
 });

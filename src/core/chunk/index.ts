@@ -56,7 +56,7 @@ const ALREADY_LABELLED =
  * "Sec. 142" and a division reads "Division A". Enumerated children such as "(b)" have no
  * recognised prefix and stay as printed.
  */
-function levelNum(section: Section): string {
+export function levelNum(section: Section): string {
   const num = section.num ?? '';
   if (!num || ALREADY_LABELLED.test(num)) return num;
   const prefix = /^([a-z]+)-/.exec(section.id.split('/').at(-1) ?? '')?.[1];
@@ -64,7 +64,7 @@ function levelNum(section: Section): string {
   return label ? `${label} ${num}` : num;
 }
 
-function breadcrumb(path: readonly Section[]): string {
+export function breadcrumb(path: readonly Section[]): string {
   return path
     .map(
       (section) =>

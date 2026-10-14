@@ -221,3 +221,101 @@ test('chips dispatch through the injected runner and record its usage', async ()
     rerankUnits: 1,
   });
 });
+
+test('a registry entry without an index is a clear error, not a silent decline', async () => {
+  const docId = await load(
+    'https://example.gov/s9001.xml',
+    makeCongressionalBillXml(),
+  );
+  await env.backend.deleteDocument(docId);
+  await expect(
+    ask(docId, { question: 'garden grants' }, askDeps()),
+  ).rejects.toMatchObject({
+    code: 'DOC_NOT_FOUND',
+    userMessage: expect.stringContaining('Run ingest again') as string,
+  });
+});
+
+test('chips that never retrieve load nothing and report mode none', async () => {
+  const docId = await load(
+    'https://example.gov/s9001.xml',
+    makeCongressionalBillXml(),
+  );
+  await env.backend.deleteDocument(docId); // would fail any retrieval
+  const ready = vi.spyOn(env.backend, 'ensureReady');
+  const runner = vi.fn<ChipRunner>(() =>
+    Promise.resolve({
+      answer: {
+        text: 'Sponsors: none stated.',
+        citations: [],
+        invalidCitations: [],
+        warnings: [],
+        declined: false,
+        readingGrade: null,
+        provider: 'none',
+        model: 'none',
+        usage: { inputTokens: 0, outputTokens: 0 },
+      },
+      hits: [],
+      backendUsage: {
+        embedTokens: 0,
+        rerankUnits: 0,
+        readUnits: 0,
+        writeUnits: 0,
+      },
+    }),
+  );
+  const result = await ask(
+    docId,
+    { chipId: 'sponsors' },
+    askDeps({ chips: runner }),
+  );
+  expect(result.mode).toBe('none');
+  expect(ready).not.toHaveBeenCalled();
+});
+
+test('chip answers report the runner mode, else the configured one when retrieval ran', async () => {
+  const docId = await load(
+    'https://example.gov/s9001.xml',
+    makeCongressionalBillXml(),
+  );
+  const answerStub = {
+    text: 't',
+    citations: [],
+    invalidCitations: [],
+    warnings: [],
+    declined: false,
+    readingGrade: null,
+    provider: 'mock',
+    model: 'mock',
+    usage: { inputTokens: 0, outputTokens: 0 },
+  };
+  const usage = { embedTokens: 0, rerankUnits: 0, readUnits: 0, writeUnits: 0 };
+  const explicit = vi.fn<ChipRunner>(() =>
+    Promise.resolve({
+      answer: answerStub,
+      hits: [],
+      backendUsage: usage,
+      mode: 'dense' as const,
+    }),
+  );
+  expect(
+    (await ask(docId, { chipId: 'definitions' }, askDeps({ chips: explicit })))
+      .mode,
+  ).toBe('dense');
+  const retrieving = vi.fn<ChipRunner>(async (_i, id, ctx) => {
+    await ctx.backend.search({
+      docId: id,
+      index: 'sparse',
+      query: 'garden',
+      topK: 1,
+    });
+    return { answer: answerStub, hits: [], backendUsage: usage };
+  });
+  const result = await ask(
+    docId,
+    { chipId: 'penalties' },
+    askDeps({ chips: retrieving, retrievalMode: 'hybrid' }),
+  );
+  expect(result.mode).toBe('hybrid');
+});

@@ -1,8 +1,11 @@
 /** Plain-text rendering of pipeline results for the terminal. */
 import { formatCitation } from '../core/pipeline/index.js';
 import type { AskResult, IngestResult } from '../core/pipeline/index.js';
+import { safeText } from './sanitize.js';
 import type { NormalizedDoc } from '../core/model/index.js';
 import type { RegistryEntry as RegistryEntryLike } from '../core/registry.js';
+
+const MAX_LISTED_REFS = 10;
 
 export function formatIngest(result: IngestResult): string {
   const { stats, normalized: doc, usage } = result;
@@ -44,7 +47,12 @@ export function formatIngest(result: IngestResult): string {
   lines.push(
     `Unresolved external references: ${String(doc.externalRefs.length)}`,
   );
-  for (const ref of doc.externalRefs) lines.push(`  - ${ref.citation}`);
+  for (const ref of doc.externalRefs.slice(0, MAX_LISTED_REFS))
+    lines.push(`  - ${ref.citation}`);
+  if (doc.externalRefs.length > MAX_LISTED_REFS)
+    lines.push(
+      `  ... and ${String(doc.externalRefs.length - MAX_LISTED_REFS)} more`,
+    );
   lines.push(
     stats.reused
       ? 'Embedding tokens: 0'
@@ -58,7 +66,7 @@ export function formatIngest(result: IngestResult): string {
     lines.push('Warnings:');
     for (const warning of doc.warnings) lines.push(`  - ${warning}`);
   }
-  return `${lines.join('\n')}\n`;
+  return safeText(`${lines.join('\n')}\n`);
 }
 
 const WARNING_TEXT: Record<string, string> = {
@@ -86,20 +94,22 @@ export function formatAskFooter(
   }
   for (const warning of result.answer.warnings)
     lines.push(`Warning: ${WARNING_TEXT[warning] ?? warning}`);
-  return `${lines.join('\n')}\n`;
+  return safeText(`${lines.join('\n')}\n`);
 }
 
 export function formatList(entries: readonly RegistryEntryLike[]): string {
   if (entries.length === 0) return 'No documents ingested yet.\n';
-  return `${entries
-    .map((e) =>
-      [
-        e.label,
-        e.docId.slice(0, 12),
-        e.format,
-        e.title ?? e.billNumber ?? '-',
-        `last used ${e.lastUsedAt}`,
-      ].join('  |  '),
-    )
-    .join('\n')}\n`;
+  return safeText(
+    `${entries
+      .map((e) =>
+        [
+          e.label,
+          e.docId.slice(0, 12),
+          e.format,
+          e.title ?? e.billNumber ?? '-',
+          `last used ${e.lastUsedAt}`,
+        ].join('  |  '),
+      )
+      .join('\n')}\n`,
+  );
 }

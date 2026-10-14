@@ -21,7 +21,7 @@ import type { Registry } from '../registry.js';
 /**
  * Chip dispatch seam, shaped like `runChip` from core/chips.ts (#31) so wiring it later is
  * `chips: (id, docId, ctx, o) => runChip(getChip(id), docId, ctx, o)`.
- * TODO(#31): pass `runChip` here from the CLI/server once that branch merges. Until then a
+ * TODO(#70): once chips merge, the default becomes `(id, docId, ctx, o) => runChip(getChip(id), docId, ctx, o)`. Until then a
  * chip request without a runner is a clear user error, and freeform questions are unaffected.
  */
 export type ChipRunner = (
@@ -40,6 +40,8 @@ export type ChipRunner = (
   answer: AnswerResult;
   hits: readonly (SearchHit & { injected?: boolean })[];
   backendUsage: BackendUsage;
+  /** The retrieval mode the chip actually used; 'none' for chips that don't retrieve. */
+  mode?: RetrievalMode | 'none';
 }>;
 
 export interface AskDeps {
@@ -62,7 +64,8 @@ export interface AskOptions {
 export interface AskResult {
   answer: AnswerResult;
   refs: RetrievedRef[];
-  mode: RetrievalMode;
+  /** 'none' when the answer needed no retrieval (e.g. the sponsors chip). */
+  mode: RetrievalMode | 'none';
   latencyMs: number;
 }
 
@@ -76,6 +79,52 @@ function refsOf(
     score: hit.score,
     injectedDefinition: hit.injected === true,
   }));
+}
+
+/**
+ * Wraps the backend so the first retrieval call (and only then) loads models and checks that
+ * the document's namespace exists. Chips that never retrieve (sponsors) therefore load nothing,
+ * and a registry entry whose index vanished is a clear error rather than an empty result that
+ * the model would "decline" to answer.
+ */
+function guarded(
+  backend: RetrievalBackend,
+  docId: string,
+  signal: AbortSignal | undefined,
+): { backend: RetrievalBackend; used: () => boolean } {
+  let ready: Promise<void> | undefined;
+  const ensure = (): Promise<void> => {
+    ready ??= (async () => {
+      if (!(await backend.hasDocument(docId)))
+        throw new AppError('DOC_NOT_FOUND', 'The document has no index.', {
+          userMessage:
+            "This document's search index is missing. Run ingest again for its URL.",
+        });
+      await backend.ensureReady(signal);
+    })();
+    return ready;
+  };
+  const wrapped: RetrievalBackend = {
+    kind: backend.kind,
+    ensureReady: (s) => backend.ensureReady(s),
+    hasDocument: (id) => backend.hasDocument(id),
+    upsertChunks: (id, chunks, onProgress) =>
+      backend.upsertChunks(id, chunks, onProgress),
+    search: async (req) => {
+      await ensure();
+      return backend.search(req);
+    },
+    getChunks: async (id, ids) => {
+      await ensure();
+      return backend.getChunks(id, ids);
+    },
+    rerank: async (req) => {
+      await ensure();
+      return backend.rerank(req);
+    },
+    deleteDocument: (id) => backend.deleteDocument(id),
+  };
+  return { backend: wrapped, used: () => ready !== undefined };
 }
 
 export async function ask(
@@ -101,11 +150,11 @@ export async function ask(
             'Question chips are not available yet. Ask a question instead.',
         },
       );
-    await backend.ensureReady(signal);
+    const guard = guarded(backend, docId, signal);
     const ran = await deps.chips(
       input.chipId,
       docId,
-      { backend, provider: deps.provider, doc },
+      { backend: guard.backend, provider: deps.provider, doc },
       { signal, onToken: opts.onToken },
     );
     await registry.touch(docId, {
@@ -117,7 +166,10 @@ export async function ask(
     return {
       answer: ran.answer,
       refs: refsOf(ran.hits),
-      mode: deps.retrievalMode ?? 'hybrid_rerank',
+      // TODO(#70): derive the exact mode from getChip(id) when the runner doesn't say.
+      mode:
+        ran.mode ??
+        (guard.used() ? (deps.retrievalMode ?? 'hybrid_rerank') : 'none'),
       latencyMs: now() - startedAt,
     };
   }
@@ -127,11 +179,11 @@ export async function ask(
     throw new AppError('INVALID_INPUT', 'Empty question.', {
       userMessage: 'Enter a question to ask.',
     });
-  await backend.ensureReady(signal);
+  const guard = guarded(backend, docId, signal);
 
   const mode = deps.retrievalMode ?? 'hybrid_rerank';
   const includeDeleted = asksAboutChanges(question);
-  const retrieved = await retrieve(backend, {
+  const retrieved = await retrieve(guard.backend, {
     docId,
     query: question,
     mode,

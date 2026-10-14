@@ -3,8 +3,9 @@ import { Command } from 'commander';
 import packageJson from '../../package.json' with { type: 'json' };
 import { BRAND } from '../core/brand.js';
 import { initConfig } from '../core/config.js';
-import { AppError, ChipId } from '../core/model/index.js';
+import { AppError, ChipId, type LlmProvider } from '../core/model/index.js';
 import { ask, ingest } from '../core/pipeline/index.js';
+import { safeText } from './sanitize.js';
 import { formatAskFooter, formatIngest, formatList } from './format.js';
 import {
   createRuntime,
@@ -31,6 +32,23 @@ export interface CliDependencies {
 
 interface BackendOption {
   backend?: string;
+}
+
+/**
+ * Defers reading the provider (which throws MISSING_KEY when no key is configured) until it is
+ * used, so chips that make no LLM call, like sponsors, work without a key.
+ */
+function lazyProvider(get: () => LlmProvider): LlmProvider {
+  return {
+    get id() {
+      return get().id;
+    },
+    get model() {
+      return get().model;
+    },
+    streamText: (req) => get().streamText(req),
+    generateObject: (req) => get().generateObject(req),
+  };
 }
 
 export function createProgram(dependencies: CliDependencies = {}): Command {
@@ -74,8 +92,8 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
         const links = Array.isArray(error.details?.links)
           ? (error.details.links as { url: string; text: string }[])
           : [];
-        const list = links.map(
-          (l) => `  ${l.url}${l.text ? `  (${l.text})` : ''}`,
+        const list = links.map((l) =>
+          safeText(`  ${l.url}${l.text ? `  (${l.text})` : ''}`),
         );
         const message = [
           error.userMessage,
@@ -92,6 +110,8 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
   }
 
   const program = new Command()
+    // Without this the root's --backend swallows the flag before subcommands see it.
+    .enablePositionalOptions()
     .name(BRAND.name)
     .description('Ask plain-language questions about one legislation document.')
     .version(packageJson.version)
@@ -150,19 +170,29 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
           throw new AppError('INVALID_INPUT', 'Unknown chip.', {
             userMessage: `Unknown chip "${String(options.chip)}". Choose one of: ${ChipId.options.join(', ')}.`,
           });
-        const runtime = await open(options, true);
+        // Keys are only required once an LLM call happens; freeform questions always need one,
+        // so fail before retrieval spends anything.
+        const runtime = await open(options, false);
+        const provider =
+          question === undefined
+            ? lazyProvider(() => runtime.answerProvider)
+            : runtime.answerProvider;
         const entry = await runtime.registry.findByLabelOrPrefix(doc);
         const result = await ask(
           entry.docId,
           chip?.success ? { chipId: chip.data } : { question: question ?? '' },
           {
             backend: runtime.backend,
-            provider: runtime.answerProvider,
+            provider,
             registry: runtime.registry,
             retrievalMode: runtime.retrievalMode,
             chips: runtime.chips,
           },
-          { onToken: write },
+          {
+            onToken: (text) => {
+              write(safeText(text));
+            },
+          },
         );
         const normalized = await runtime.registry.getDocument(entry.docId);
         write(`\n${formatAskFooter(result, normalized)}`);
@@ -183,10 +213,15 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
     .action(async (doc: string, options: BackendOption) => {
       const runtime = await open(options, false);
       const entry = await runtime.registry.findByLabelOrPrefix(doc);
-      if (entry.backend === runtime.backend.kind)
-        await runtime.backend.deleteDocument(entry.docId);
+      // A namespace can only be deleted through the backend that holds it. Dropping the entry
+      // anyway would orphan it (and, on Pinecone, keep it billed), so refuse instead.
+      if (entry.backend !== runtime.backend.kind)
+        throw new AppError('INVALID_INPUT', 'Document is on another backend.', {
+          userMessage: `${safeText(entry.label)} was indexed with the ${entry.backend} backend. Run again with --backend ${entry.backend}.`,
+        });
+      await runtime.backend.deleteDocument(entry.docId);
       await runtime.registry.remove(entry.docId);
-      write(`Removed ${entry.label}\n`);
+      write(`Removed ${safeText(entry.label)}\n`);
     });
   program
     .command('serve')

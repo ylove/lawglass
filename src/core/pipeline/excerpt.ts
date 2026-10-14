@@ -2,6 +2,7 @@
  * Section excerpts for the citation drawer and the CLI. Built from the cached NormalizedDoc
  * (never from the index), so the text is the full source text including struck spans.
  */
+import { breadcrumb, levelNum } from '../chunk/index.js';
 import {
   AppError,
   type NormalizedDoc,
@@ -10,18 +11,6 @@ import {
   type SourceLocation,
   type Span,
 } from '../model/index.js';
-
-/** Printed label for sections whose id says they are numbered sections ("sec-4" -> "Sec. 4"). */
-export function numLabel(section: Section): string {
-  const num = section.num ?? '';
-  const prefix = /^([a-z]+)-/.exec(section.id.split('/').at(-1) ?? '')?.[1];
-  const labelled = /^(?:sec(?:tion)?\.?(?:\s|$)|§|\()/i.test(num);
-  return num && prefix === 'sec' && !labelled ? `Sec. ${num}` : num;
-}
-
-function label(section: Section): string {
-  return [numLabel(section), section.heading].filter(Boolean).join(' ');
-}
 
 /** Path from a top-level section to `id`, or undefined when the id is not in the tree. */
 export function findSectionPath(
@@ -36,9 +25,9 @@ export function findSectionPath(
   return undefined;
 }
 
-/** Human-readable path such as "Sec. 4 Grants > (b) Eligibility". */
+/** Human-readable path such as "Division A > Title I > Sec. 101 Grants" (the chunker's form). */
 export function breadcrumbFor(path: readonly Section[]): string {
-  return path.map((s) => label(s) || s.id).join(' > ');
+  return breadcrumb(path);
 }
 
 /** Same rule as the chunker: first line from the first page, last line from the last page. */
@@ -73,9 +62,31 @@ function locationOf(
 }
 
 /**
- * The section's own spans followed by every descendant's spans in document order, each
- * descendant introduced by its number and heading. A chunk covering a merged parent cites the
- * parent, so the excerpt has to show the children's text too.
+ * The label the chunker puts in front of a merged child ("(a) Heading."), or '' when the
+ * child's own text already starts with it. PDF/HTML/text parsers use the first body line as the
+ * heading, so repeating the label would show the same words twice.
+ */
+function childLabel(child: Section): string {
+  const text = child.spans
+    .map((s) => s.text)
+    .join('')
+    .trimStart();
+  const label = [child.num, child.heading].filter(Boolean).join(' ');
+  if (!label) return '';
+  if (
+    (child.num && text.startsWith(child.num)) ||
+    (!child.num && child.heading && text.startsWith(child.heading))
+  )
+    return '';
+  const punctuation = child.heading && !/[.!?:]$/.test(label) ? '.' : '';
+  return `${label}${punctuation} `;
+}
+
+/**
+ * The section's own spans plus its LEAF children's spans, each child introduced by its label.
+ * This is exactly what a chunk carrying this section id can contain: the chunker merges only
+ * small leaf siblings into their parent's chunk, and every deeper section is cited by its own
+ * id. Showing the whole subtree would disagree with the chunk the model actually saw.
  */
 export function sectionExcerpt(
   doc: Pick<NormalizedDoc, 'sections'>,
@@ -89,18 +100,16 @@ export function sectionExcerpt(
     });
 
   const spans: Span[] = [...section.spans];
-  const addChildren = (parent: Section): void => {
-    for (const child of parent.children) {
-      const heading = label(child);
-      if (heading) {
-        const separator = spans.length > 0 ? '\n\n' : '';
-        spans.push({ text: `${separator}${heading}. `, status: 'unchanged' });
-      }
-      spans.push(...child.spans);
-      addChildren(child);
-    }
-  };
-  addChildren(section);
+  for (const child of section.children) {
+    if (child.children.length > 0) continue;
+    const label = childLabel(child);
+    if (label || spans.length > 0)
+      spans.push({
+        text: `${spans.length > 0 ? '\n\n' : ''}${label}`,
+        status: 'unchanged',
+      });
+    spans.push(...child.spans);
+  }
 
   return {
     sectionId: section.id,
@@ -110,4 +119,9 @@ export function sectionExcerpt(
     spans,
     location: locationOf(spans, section),
   };
+}
+
+/** The printed label of a node alone: "Sec. 4", "Division A", "(b)". */
+export function numLabel(section: Section): string {
+  return levelNum(section);
 }
