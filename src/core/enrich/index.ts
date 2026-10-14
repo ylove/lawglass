@@ -22,6 +22,8 @@ export {
   extractDefinitions,
   segmentDefinitions,
 } from './definitions.js';
+export { extractDelegations } from './delegations.js';
+export type { DelegationItem, Delegations } from './delegations.js';
 export * from './metadata.js';
 export {
   collectExternalRefs,
