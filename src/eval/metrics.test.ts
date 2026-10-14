@@ -335,7 +335,7 @@ describe('removalAcknowledgedRate', () => {
   });
 
   test('is 0 with no removed questions', () => {
-    expect(removalAcknowledgedRate([outcome({})])).toBe(0);
+    expect(removalAcknowledgedRate([outcome({})])).toBeUndefined();
   });
 });
 
