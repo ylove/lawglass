@@ -83,7 +83,7 @@ test('all human-readable fields strip upstream HTML, while literal text remains 
     );
   const result = parse(xml);
   expect(result.sponsorProfiles[0]?.name).toBe('Rep. Example, Alex [I-OH-3]');
-  expect(result.history.versions.at(-2)?.label).toBe('Enrolled Bill');
+  expect(result.history.versions.at(-1)?.label).toBe('Enrolled Bill');
   expect(result.history.actions[1]).toMatchObject({
     text: 'Referred to Example. 2 < 3 & <untrusted>.',
     committee: 'Example Committee',
@@ -144,9 +144,8 @@ test('synthetic BILLSTATUS yields schema-valid history and sponsor profiles', ()
     'eas',
     'eah',
     'enr',
-    '',
   ]);
-  expect(history.versions.at(-2)?.date).toBeUndefined();
+  expect(history.versions.at(-1)?.date).toBeUndefined();
   expect(history.actions[1]).toMatchObject({
     text: 'Referred to the Example Committee.',
     committee: 'Example Committee',
@@ -258,13 +257,13 @@ test('ignores links to other hosts and other bills; never takes a text URL from 
     'https://evil.test/BILLS-118hr9001enr',
   ).replaceAll('BILLS-118hr9001eh', 'BILLS-118hr9002eh');
   expect(parse(xml).history.versions.at(-1)?.code).toBe('');
-  expect(parse(xml).history.versions.at(-2)?.code).toBe('');
+  expect(parse(xml).history.versions[2]?.code).toBe('');
   const unsafe = BILLSTATUS_XML.replace(
     'https://www.govinfo.gov/content/pkg/BILLS-118hr9001enr/xml/BILLS-118hr9001enr.xml',
     'https://www.congress.gov/help',
   );
   expect(parse(unsafe).history.versions.at(-1)?.code).toBe('');
-  expect(parse(unsafe).history.versions.at(-3)?.code).toBe('eah');
+  expect(parse(unsafe).history.versions.at(-2)?.code).toBe('eah');
 });
 
 test('skips incomplete optional entries and strips summary HTML to plain text', () => {

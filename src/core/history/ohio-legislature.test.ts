@@ -11,6 +11,7 @@ import { assertHistoryUrl } from './allowlist.js';
 import { chooseVersion, historySource, resolveHistory } from './resolve.js';
 import {
   chooseOhioVersion,
+  isOhioLandingHost,
   ohioHistorySource,
   ohioTextUrl,
   parseOhioHistory,
@@ -84,9 +85,7 @@ test.each([
   ohioTextUrl(plan, '00_IN').replace('search-prod.', 'evil.search-prod.'),
 ])('does not map malformed or unmatched Ohio URL %s', (url) => {
   // Unmapped URLs on the landing host are rejected with guidance, never fetched.
-  if (
-    new URL(url).hostname.replace(/\.+$/, '').endsWith('legislature.ohio.gov')
-  )
+  if (isOhioLandingHost(new URL(url)))
     expect(() => resolveHistory(url)).toThrow(AppError);
   else expect(resolveHistory(url)).toBeUndefined();
 });

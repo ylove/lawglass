@@ -221,16 +221,13 @@ export function chooseVersion(
   if (plan.version) return plan.version;
   if (plan.source === 'ohio') return chooseOhioVersion(history);
   const versions = history?.versions ?? [];
-  // GovInfo lists text versions newest-first (reversed when stored). List order is authoritative, including
-  // equal/inconsistent dates: Enrolled often has <date/>, and a later-dated Public
-  // Law can be appended last. Dates must never override the first listed entry.
-  // Stored versions are oldest first, so the first one BILLSTATUS listed is now the last.
-  // An unresolvable entry (e.g. a Public Law with no text package) is stored last and
-  // must not hide the latest text we can actually read.
-  const latest = versions.findLast((item) =>
-    historySource(plan.source).isVersion(item.code),
-  );
-  if (!latest) {
+  // Stored versions are oldest first; GovInfo lists them newest first, and that order is
+  // authoritative, including equal or missing dates (Enrolled often has <date/>). Dates
+  // never override it.
+  // The newest stored entry decides. If its link was unusable (empty code) we fail instead
+  // of falling back to an older text.
+  const latest = versions.at(-1);
+  if (!latest || !historySource(plan.source).isVersion(latest.code)) {
     throw new AppError('FETCH_FAILED', undefined, {
       userMessage:
         'The official record could not identify the latest text version. Paste a specific version URL, such as a congress.gov bill URL ending in /text/ih or a GovInfo BILLS version URL.',

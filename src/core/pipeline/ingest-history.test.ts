@@ -102,7 +102,7 @@ test.each([
     (await historyStore.readHistory(dir, result.doc.docId))?.versions.map(
       (item) => item.code,
     ),
-  ).toEqual(['ih', 'rh', 'eh', 'pcs', 'eas', 'eah', 'enr', '']);
+  ).toEqual(['ih', 'rh', 'eh', 'pcs', 'eas', 'eah', 'enr']);
   agent.assertNoPendingInterceptors();
 });
 
@@ -242,17 +242,19 @@ test('latest text selection refreshes a mutable BILLSTATUS record', async () => 
   agent.assertNoPendingInterceptors();
 });
 
-test('an unresolvable latest entry is skipped for the last resolvable version', async () => {
+test('a newest text entry with a bad link, plus a Public Law entry, never selects an older version', async () => {
   serveStatus(
     BILLSTATUS_XML.replace(
       'https://www.govinfo.gov/content/pkg/BILLS-118hr9001enr/xml/BILLS-118hr9001enr.xml',
       'https://evil.test/bill',
     ),
   );
-  serveText('eah');
-  const result = await ingest(page, deps);
-  expect(result.normalized.sourceUrl).toBe(`${origin}${textPath('eah')}`);
-  agent.assertNoPendingInterceptors();
+  const error: unknown = await ingest(page, deps).catch(
+    (error: unknown) => error,
+  );
+  expect(error).toMatchObject({ code: 'FETCH_FAILED' });
+  expect((error as AppError).userMessage).toContain('specific version URL');
+  expect(deps.fetcher).toHaveBeenCalledOnce();
 });
 
 test('failed registration cleans up its sidecar and half-indexed namespace', async () => {

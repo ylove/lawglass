@@ -166,19 +166,23 @@ test('explicit version wins; latest follows official list order even with missin
   }
 });
 
-test('an unresolvable entry never hides the last resolvable version', () => {
+test('an unresolvable newest entry is never skipped for an older text', () => {
   const plan = resolveHistory(page)!;
   const history: BillHistory = {
     versions: [
       { code: 'eh', label: 'Engrossed' },
-      { code: 'enr', label: 'Enrolled' },
-      { code: '', label: 'Public Law' },
+      { code: '', label: 'Enrolled, link missing' },
     ],
     actions: [],
     amendments: [],
     sources: [],
   };
-  expect(chooseVersion(plan, history)).toBe('enr');
+  expect(() => chooseVersion(plan, history)).toThrow(
+    expect.objectContaining({
+      code: 'FETCH_FAILED',
+      userMessage: expect.stringContaining('specific version URL') as unknown,
+    }) as unknown,
+  );
 });
 
 test('hr5009 version-list shape chooses dateless Enrolled first, ahead of the later-dated Public Law', () => {
@@ -196,10 +200,12 @@ test('hr5009 version-list shape chooses dateless Enrolled first, ahead of the la
     'eas',
     'eah',
     'enr',
-    '',
   ]);
-  expect(history.versions.at(-1)?.date).toBe('2024-12-24T04:59:59Z');
-  expect(history.versions.at(-2)?.date).toBeUndefined();
+  // The Public Law entry is not bill text, so it is not a version at all.
+  expect(history.versions.some((item) => item.label === 'Public Law')).toBe(
+    false,
+  );
+  expect(history.versions.at(-1)?.date).toBeUndefined();
   expect(chooseVersion(plan, history)).toBe('enr');
 });
 

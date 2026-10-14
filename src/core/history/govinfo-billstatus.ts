@@ -152,6 +152,19 @@ function member(
   });
 }
 
+/**
+ * The enacted Public Law is not a bill text version (its package is PLAW-..., not BILLS-...),
+ * and it must not stand in for or hide the latest bill text, so it is left out of versions.
+ */
+function isPublicLaw(element: Element): boolean {
+  return (
+    textField(element, 'type')?.toLowerCase() === 'public law' ||
+    items(child(element, 'formats')).some((format) =>
+      /\/PLAW-[^/]*\/|\/PLAW-[^/]*$/.test(field(format, 'url') ?? ''),
+    )
+  );
+}
+
 function version(
   element: Element,
   plan: GovinfoPlan,
@@ -180,27 +193,13 @@ function version(
       url: govinfoTextUrl(plan, linked.version),
     };
   }
-  // Preserve an unresolvable entry so latest selection cannot silently choose an older text.
+  // Keep an unresolvable bill-text entry (empty code) so latest selection fails loudly
+  // instead of silently choosing an older text.
   return {
     code: '',
     label: textField(element, 'type') ?? 'Version unavailable',
     date: date(field(element, 'date')),
   };
-}
-
-/**
- * Stored versions are oldest first. BILLSTATUS lists them newest first, so reverse.
- * Unresolvable entries (code '') keep their relative order but go last, so they never
- * look like an older text.
- */
-function storedVersions(
-  listed: BillHistory['versions'],
-): BillHistory['versions'] {
-  const oldestFirst = [...listed].reverse();
-  return [
-    ...oldestFirst.filter((item) => item.code),
-    ...oldestFirst.filter((item) => !item.code),
-  ];
 }
 
 function amendmentStatus(
@@ -312,9 +311,11 @@ export function parseGovinfoBillStatus(
   }
   const history = BillHistory.parse({
     officialSummary,
-    versions: storedVersions(
-      items(child(bill, 'textVersions')).map((item) => version(item, plan)),
-    ),
+    // Stored versions are oldest first. BILLSTATUS lists them newest first, so reverse.
+    versions: items(child(bill, 'textVersions'))
+      .filter((item) => !isPublicLaw(item))
+      .map((item) => version(item, plan))
+      .reverse(),
     actions: items(child(bill, 'actions')).flatMap((item) => {
       const actionDate = date(field(item, 'actionDate'));
       const text = textField(item, 'text');
