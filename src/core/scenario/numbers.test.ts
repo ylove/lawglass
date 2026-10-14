@@ -37,7 +37,7 @@ describe('figure normalization', () => {
     expect(billContains(5, 'USD', '$500')).toBe(false);
     expect(billContains(4, 'percent', '4 days')).toBe(false);
     expect(billContains(500, 'USD', '$50,00')).toBe(false);
-    expect(textNumbers('abc123 income_2')).toEqual([]);
+    expect(textNumbers('abc123')).toEqual([]);
     // A raw section id is not exempt: it fails closed rather than hiding amounts.
     expect(numberTokens('sec-1').length).toBeGreaterThan(0);
   });
@@ -252,6 +252,17 @@ describe('fail-closed caption numbers', () => {
     });
     expect(textNumbers('a -4 percent change')).toEqual([
       { value: -4, unit: 'percent' },
+    ]);
+  });
+  it.each(['rate_4 percent', 'rate.4 percent', 'rate_-4 percent'])(
+    'does not let _ or . shield a number: %s',
+    (t) => {
+      expect(textNumbers(t).some((n) => n.unit === 'percent')).toBe(true);
+    },
+  );
+  it('keeps a decimal as one token', () => {
+    expect(textNumbers('1.5 percent')).toEqual([
+      { value: 1.5, unit: 'percent' },
     ]);
   });
 });
