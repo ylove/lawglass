@@ -13,6 +13,7 @@ import {
   type DocSummary,
   type IngestEvent,
   type IngestRequest,
+  type Scenario,
   type SectionExcerpt,
 } from '../core/model/index.js';
 import { BRAND } from '../core/brand.js';
@@ -171,6 +172,40 @@ const ANSWERS: Record<ChipId, string> = {
     'Here is what the official record says about how this bill got here.\n\nKey actions:\n- 2026-02-03: Introduced in the House.\n- 2026-03-10: Reported by the House Water Committee.\n\nThe record lists no amendments to this bill.',
   sponsors:
     'Sponsored by Rep. A. Rivera, Rep. J. Chen. Cosponsors, if any, are not included.',
+};
+
+/** Invented example for the `who-affected` demo. Every frame cites a section the answer cites. */
+const SAMPLE_SCENARIO: Scenario = {
+  subject: 'Lead pipe replacement',
+  profile: {
+    name: 'Sam',
+    label: 'Example household',
+    illustrative: true,
+    assumptions: [],
+  },
+  frames: [
+    {
+      kind: 'setup',
+      avatar: 'family',
+      icon: 'house',
+      caption: 'This is Sam. Example household.',
+      citations: [],
+    },
+    {
+      kind: 'rule',
+      avatar: 'family',
+      icon: 'water',
+      caption: 'The utility must replace lead pipes.',
+      citations: ['sec-4/b'],
+    },
+    {
+      kind: 'effect',
+      avatar: 'family',
+      icon: 'document',
+      caption: 'Sam is told in writing before work happens.',
+      citations: ['sec-4/b'],
+    },
+  ],
 };
 
 const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
@@ -502,6 +537,11 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
         // Demo of a validation warning: one citation pointed outside the retrieved set.
         answer.warnings = ['INVALID_CITATIONS_REMOVED'];
         answer.invalidCitations = ['sec-99'];
+      }
+      if (req.chipId === 'who-affected' && !declined && !publicMode) {
+        // Same order as the real server: the scenario event comes just before `done`.
+        answer.scenario = SAMPLE_SCENARIO;
+        yield { type: 'scenario', scenario: SAMPLE_SCENARIO };
       }
       yield { type: 'done', answer };
     },

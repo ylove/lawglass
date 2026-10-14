@@ -440,6 +440,8 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
             registry: runtime.registry,
             retrievalMode: runtime.retrievalMode,
             chips: runtime.chips,
+            // Public servers make no extra model call for a visitor's story.
+            scenario: { enabled: !publicMode },
           },
           {
             signal,
@@ -454,6 +456,11 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
           refs: result.refs,
           latencyMs: result.latencyMs,
         });
+        // Order: tokens (streamed), retrieval, scenario, done. The scenario goes just BEFORE `done` so a
+        // client that stops reading at `done` still receives it. `done.answer.scenario` carries
+        // the same object, for clients (and cached answers) that only keep the final answer.
+        if (result.answer.scenario)
+          emit({ type: 'scenario', scenario: result.answer.scenario });
         emit({ type: 'done', answer: result.answer });
       },
       (error) => ({ type: 'error', error }),

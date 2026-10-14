@@ -20,6 +20,8 @@ import {
   type RetrievedRef,
 } from '../model/index.js';
 import type { Registry } from '../registry.js';
+import { addScenarioUsage, attachScenario } from '../scenario/attach.js';
+import { classifyBill, wantsScenario } from '../scenario/detect.js';
 
 /**
  * Chip dispatch seam, shaped like `runChip` from core/chips.ts. The default is
@@ -62,6 +64,11 @@ export interface AskDeps {
   /** Defaults to `defaultChipRunner`. */
   chips?: ChipRunner | undefined;
   now?: (() => number) | undefined;
+  /**
+   * Scenario attachment (#127). Defaults to on; the server turns it off in public mode, where
+   * no extra model call may be made for a visitor. `timeoutMs` bounds the generation.
+   */
+  scenario?: { enabled?: boolean; timeoutMs?: number } | undefined;
 }
 
 export type AskInput = { chipId: ChipId } | { question: string };
@@ -137,6 +144,34 @@ function guarded(
   return { backend: wrapped, used: () => ready !== undefined };
 }
 
+/**
+ * Generate a scenario for a finished answer, or return it unchanged. Runs after the answer
+ * text, so streaming is never delayed, and never throws (see `attachScenario`).
+ */
+async function withScenario(
+  result: AnswerResult,
+  hits: readonly SearchHit[],
+  wanted: boolean,
+  deps: AskDeps,
+  question: string | undefined,
+  signal: AbortSignal | undefined,
+): Promise<AnswerResult> {
+  if (!wanted || deps.scenario?.enabled === false) return result;
+  // A declined or uncited answer has nothing for a story to stand on.
+  if (result.declined || !result.citations.some((c) => c.valid)) return result;
+  const attached = await attachScenario({
+    provider: deps.provider,
+    hits,
+    question,
+    signal,
+    timeoutMs: deps.scenario?.timeoutMs,
+  });
+  const usage = addScenarioUsage(result.usage, attached.usage);
+  return attached.scenario
+    ? { ...result, usage, scenario: attached.scenario }
+    : { ...result, usage };
+}
+
 export async function ask(
   docId: string,
   input: AskInput,
@@ -169,14 +204,28 @@ export async function ask(
       },
       { signal, onToken: opts.onToken },
     );
+    // `who-affected` always tries; `summary` only for a single-subject bill, since an omnibus
+    // summary stays descriptive (spec amendment 13).
+    const wanted =
+      input.chipId === 'who-affected' ||
+      (input.chipId === 'summary' &&
+        classifyBill(doc.sections) === 'single-subject');
+    const finished = await withScenario(
+      ran.answer,
+      ran.hits,
+      wanted,
+      deps,
+      undefined,
+      signal,
+    );
     await registry.touch(docId, {
       embedTokens: ran.backendUsage.embedTokens,
       rerankUnits: ran.backendUsage.rerankUnits,
-      llmInputTokens: ran.answer.usage.inputTokens,
-      llmOutputTokens: ran.answer.usage.outputTokens,
+      llmInputTokens: finished.usage.inputTokens,
+      llmOutputTokens: finished.usage.outputTokens,
     });
     return {
-      answer: ran.answer,
+      answer: finished,
       refs: refsOf(ran.hits),
       // Chips report the mode they used; an injected runner that doesn't falls back here.
       mode:
@@ -220,15 +269,23 @@ export async function ask(
     onToken: opts.onToken,
   });
 
+  const finished = await withScenario(
+    result,
+    usable.filter((hit) => !hit.injected),
+    wantsScenario(question),
+    deps,
+    question,
+    signal,
+  );
   await registry.touch(docId, {
     embedTokens: retrieved.usage.embedTokens,
     rerankUnits: retrieved.usage.rerankUnits,
-    llmInputTokens: result.usage.inputTokens,
-    llmOutputTokens: result.usage.outputTokens,
+    llmInputTokens: finished.usage.inputTokens,
+    llmOutputTokens: finished.usage.outputTokens,
   });
 
   return {
-    answer: result,
+    answer: finished,
     refs: refsOf(usable),
     mode: retrieved.mode,
     latencyMs: now() - startedAt,

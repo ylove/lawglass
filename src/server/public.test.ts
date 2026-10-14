@@ -16,6 +16,8 @@ import {
   type NormalizedDoc,
 } from '../core/model/index.js';
 import type { ChipRunner } from '../core/pipeline/index.js';
+import { scenarioProvider } from '../../tests/support/scenario-provider.js';
+import { scenarioExcerpts } from '../../tests/synth/scenario.js';
 import { readSseEvents } from '../web/sse.js';
 import { createApp, type AppOptions } from './app.js';
 
@@ -103,6 +105,24 @@ describe('freeform questions', () => {
     env.runtime.chips = chipRunner;
     const chip = await post(a, `/api/docs/${docId}/ask`, { chipId: 'summary' });
     expect((await events(chip, AskEvent)).at(-1)?.type).toBe('done');
+  });
+
+  test('never generate a scenario, even for who-affected', async () => {
+    const a = publicApp();
+    const docId = await ingestOk(a, 'https://example.gov/a.txt');
+    const provider = scenarioProvider(env.provider);
+    Object.assign(env.runtime, { answerProvider: provider });
+    const inner = chipRunner;
+    env.runtime.chips = async (...args) => ({
+      ...(await inner(...args)),
+      hits: scenarioExcerpts(),
+    });
+    const res = await post(a, `/api/docs/${docId}/ask`, {
+      chipId: 'who-affected',
+    });
+    const evs = await events(res, AskEvent);
+    expect(evs.map((e) => e.type)).not.toContain('scenario');
+    expect(provider.scenarioCalls).toBe(0);
   });
 
   test('a rejected freeform question does not use up the allowance', async () => {

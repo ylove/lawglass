@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   makeAmendmentHtml,
   makeCongressionalBillXml,
@@ -9,7 +9,16 @@ import {
   makePipelineEnv,
   type PipelineEnv,
 } from '../../../tests/support/pipeline-env.js';
-import { AppError, DECLINE_TEXT, type SearchHit } from '../model/index.js';
+import {
+  scenarioProvider,
+  type ScenarioProvider,
+} from '../../../tests/support/scenario-provider.js';
+import {
+  AppError,
+  DECLINE_TEXT,
+  type Section,
+  type SearchHit,
+} from '../model/index.js';
 import { ask, type AskDeps, type ChipRunner } from './ask.js';
 import { writeHistory } from '../history/history-store.js';
 import { ingest } from './ingest.js';
@@ -395,4 +404,210 @@ test('chip answers report the runner mode, else the configured one when retrieva
     askDeps({ chips: retrieving, retrievalMode: 'hybrid' }),
   );
   expect(result.mode).toBe('hybrid');
+});
+
+// ---------------------------------------------------------------------------------------------
+// Scenario attachment (#127)
+// ---------------------------------------------------------------------------------------------
+
+function scenarioDeps(
+  overrides: Partial<AskDeps> = {},
+): AskDeps & { provider: ScenarioProvider } {
+  const provider = scenarioProvider(env.provider);
+  return { ...askDeps(), provider, ...overrides } as AskDeps & {
+    provider: ScenarioProvider;
+  };
+}
+
+/** A chip runner that answers from one real chunk, so the scenario can cite it. */
+async function runnerFor(docId: string): Promise<ChipRunner> {
+  const probe = await ask(docId, { question: 'garden grants' }, askDeps());
+  const base = probe.answer;
+  const chunks = await env.backend.getChunks(
+    docId,
+    probe.refs.map((r) => r.chunkId),
+  );
+  const hits: SearchHit[] = chunks.map((chunk) => ({ chunk, score: 1 }));
+  return () =>
+    Promise.resolve({
+      answer: base,
+      hits,
+      backendUsage: {
+        embedTokens: 0,
+        rerankUnits: 0,
+        readUnits: 0,
+        writeUnits: 0,
+      },
+      mode: 'none' as const,
+    });
+}
+
+const BILL_URL = 'https://example.gov/s9001.xml';
+
+test('an affect-me question gets a scenario after the answer text, and its usage is recorded', async () => {
+  const docId = await load(BILL_URL, makeCongressionalBillXml());
+  const deps = scenarioDeps();
+  const order: string[] = [];
+  deps.provider.onScenario = () => order.push('scenario');
+  const result = await ask(
+    docId,
+    { question: 'How will the garden grants affect my family?' },
+    deps,
+    { onToken: () => order.push('token') },
+  );
+  expect(result.answer.scenario?.frames.length).toBeGreaterThanOrEqual(3);
+  expect(order.at(-1)).toBe('scenario');
+  expect(order.filter((o) => o === 'scenario')).toHaveLength(1);
+  expect(result.answer.usage.inputTokens).toBeGreaterThanOrEqual(5);
+  const [entry] = await env.registry.list();
+  expect(entry?.usage.llmInputTokens).toBe(result.answer.usage.inputTokens);
+});
+
+test('a plain question makes no scenario call', async () => {
+  const docId = await load(BILL_URL, makeCongressionalBillXml());
+  const deps = scenarioDeps();
+  const result = await ask(
+    docId,
+    { question: 'What are the garden grants?' },
+    deps,
+  );
+  expect(deps.provider.scenarioCalls).toBe(0);
+  expect(result.answer.scenario).toBeUndefined();
+});
+
+test('a failing scenario leaves the answer intact', async () => {
+  const docId = await load(BILL_URL, makeCongressionalBillXml());
+  const plain = await ask(
+    docId,
+    { question: 'How will garden grants affect me?' },
+    askDeps(),
+  );
+  const deps = scenarioDeps();
+  deps.provider.behavior = () => Promise.reject(new AppError('PROVIDER_ERROR'));
+  const result = await ask(
+    docId,
+    { question: 'How will garden grants affect me?' },
+    deps,
+  );
+  expect(deps.provider.scenarioCalls).toBe(1);
+  expect(result.answer.scenario).toBeUndefined();
+  expect(result.answer.text).toBe(plain.answer.text);
+  expect(result.answer.citations).toEqual(plain.answer.citations);
+});
+
+test('a hung scenario is cut off by the timeout', async () => {
+  const docId = await load(BILL_URL, makeCongressionalBillXml());
+  const deps = scenarioDeps({ scenario: { timeoutMs: 20 } });
+  deps.provider.behavior = (req) =>
+    new Promise((_, reject) => {
+      req.signal?.addEventListener('abort', () => {
+        reject(new DOMException('aborted', 'AbortError'));
+      });
+    });
+  const result = await ask(
+    docId,
+    { question: 'How will garden grants affect me?' },
+    deps,
+  );
+  expect(result.answer.scenario).toBeUndefined();
+  expect(result.answer.declined).toBe(false);
+});
+
+test('disabled (public mode) never generates, even for an affect-me question', async () => {
+  const docId = await load(BILL_URL, makeCongressionalBillXml());
+  const deps = scenarioDeps({ scenario: { enabled: false } });
+  const result = await ask(
+    docId,
+    { question: 'How will garden grants affect me?' },
+    deps,
+  );
+  expect(deps.provider.scenarioCalls).toBe(0);
+  expect(result.answer.scenario).toBeUndefined();
+});
+
+test('a declined answer gets no scenario', async () => {
+  const docId = await load(BILL_URL, makeCongressionalBillXml());
+  const deps = scenarioDeps({ retrievalMode: 'sparse' });
+  const result = await ask(
+    docId,
+    { question: 'zzzz qqqq xylophone, how does it affect me' },
+    deps,
+  );
+  expect(result.answer.declined).toBe(true);
+  expect(deps.provider.scenarioCalls).toBe(0);
+});
+
+describe('chip attachment', () => {
+  const omnibus = (): Section[] =>
+    ['A', 'B', 'C'].map(
+      (d) =>
+        ({
+          id: `div-${d}`,
+          heading: `Division ${d}`,
+          level: 1,
+          spans: [],
+          children: [
+            {
+              id: `sec-${d}`,
+              heading: 'Topic',
+              level: 2,
+              spans: [{ text: 'x', status: 'unchanged' }],
+              children: [],
+            },
+          ],
+        }) as unknown as Section,
+    );
+
+  test.each([
+    ['who-affected', true],
+    ['summary', true],
+    ['penalties', false],
+    ['effective-date', false],
+  ] as const)('%s on a focused bill: scenario=%s', async (chipId, expected) => {
+    const docId = await load(BILL_URL, makeCongressionalBillXml());
+    const chips = await runnerFor(docId);
+    const doc = await env.registry.getDocument(docId);
+    vi.spyOn(env.registry, 'getDocument').mockResolvedValue({
+      ...doc,
+      sections: [
+        {
+          id: 'sec-1',
+          heading: 'Garden grants',
+          level: 1,
+          spans: [{ text: 'x', status: 'unchanged' }],
+          children: [],
+        } as unknown as Section,
+      ],
+    });
+    const deps = scenarioDeps({ chips });
+    const result = await ask(docId, { chipId }, deps);
+    expect(result.answer.scenario !== undefined).toBe(expected);
+    expect(deps.provider.scenarioCalls).toBe(expected ? 1 : 0);
+  });
+
+  test('summary of an omnibus bill stays descriptive, but who-affected still tries', async () => {
+    const docId = await load(BILL_URL, makeCongressionalBillXml());
+    const chips = await runnerFor(docId);
+    const doc = await env.registry.getDocument(docId);
+    vi.spyOn(env.registry, 'getDocument').mockResolvedValue({
+      ...doc,
+      sections: omnibus(),
+    });
+    const deps = scenarioDeps({ chips });
+    expect(
+      (await ask(docId, { chipId: 'summary' }, deps)).answer.scenario,
+    ).toBeUndefined();
+    expect(deps.provider.scenarioCalls).toBe(0);
+    expect(
+      (await ask(docId, { chipId: 'who-affected' }, deps)).answer.scenario,
+    ).toBeDefined();
+  });
+
+  test('chips in disabled mode never generate', async () => {
+    const docId = await load(BILL_URL, makeCongressionalBillXml());
+    const chips = await runnerFor(docId);
+    const deps = scenarioDeps({ chips, scenario: { enabled: false } });
+    await ask(docId, { chipId: 'who-affected' }, deps);
+    expect(deps.provider.scenarioCalls).toBe(0);
+  });
 });

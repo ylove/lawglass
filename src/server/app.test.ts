@@ -26,6 +26,7 @@ import {
   type NormalizedDoc,
 } from '../core/model/index.js';
 import type { ChipRunner } from '../core/pipeline/index.js';
+import { scenarioProvider } from '../../tests/support/scenario-provider.js';
 import { readSseEvents } from '../web/sse.js';
 import { createApp, toErrorPayload, type AppOptions } from './app.js';
 
@@ -418,6 +419,43 @@ describe('ask', () => {
       type: 'done',
       answer: { text: streamed.join('') },
     });
+  });
+
+  test('emits the scenario after retrieval and just before done, and done carries it too', async () => {
+    const a = app();
+    const doc = await ingestDoc(a);
+    const provider = scenarioProvider(env.provider);
+    Object.assign(env.runtime, { answerProvider: provider });
+    const evs = await events(
+      await post(a, `/api/docs/${doc.docId}/ask`, {
+        question: 'Who must file an annual report, and does it affect me?',
+      }),
+      AskEvent,
+    );
+    const types = evs.map((e) => e.type);
+    expect(types.slice(-3)).toEqual(['retrieval', 'scenario', 'done']);
+    const scenario = evs.find((e) => e.type === 'scenario');
+    const done = evs.at(-1);
+    if (scenario?.type !== 'scenario' || done?.type !== 'done')
+      throw new Error('expected scenario and done');
+    expect(done.answer.scenario).toEqual(scenario.scenario);
+    expect(provider.scenarioCalls).toBe(1);
+  });
+
+  test('a scenario that fails still ends in done without a scenario event', async () => {
+    const a = app();
+    const doc = await ingestDoc(a);
+    const provider = scenarioProvider(env.provider);
+    provider.behavior = () => Promise.reject(new AppError('PROVIDER_ERROR'));
+    Object.assign(env.runtime, { answerProvider: provider });
+    const evs = await events(
+      await post(a, `/api/docs/${doc.docId}/ask`, {
+        question: 'Who must file an annual report, and does it affect me?',
+      }),
+      AskEvent,
+    );
+    expect(evs.map((e) => e.type)).not.toContain('scenario');
+    expect(evs.at(-1)?.type).toBe('done');
   });
 
   test('rejects bodies that are not exactly one of chip or question', async () => {
