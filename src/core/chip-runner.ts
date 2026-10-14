@@ -71,10 +71,12 @@ function runMetadataChip(
   onToken: ((text: string) => void) | undefined,
 ): ChipRun {
   const names = metadata.sponsors?.filter((s) => s.trim() !== '') ?? [];
+  // `sponsors` holds primary sponsors only (XML and extraction both leave cosponsors out), so the
+  // answer must not read as the complete list of names on the bill.
   const text =
     names.length === 0
       ? "This document doesn't say who sponsored it."
-      : `Listed on the bill as sponsor or cosponsor: ${names.join(', ')}.`;
+      : `Sponsored by ${names.join(', ')}. Cosponsors, if any, are not included.`;
   onToken?.(text); // the CLI and UI print only streamed text
   return {
     answer: {
