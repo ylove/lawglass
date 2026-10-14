@@ -296,7 +296,6 @@ async function ingestLocked(
       userMessage:
         'That document label is already in use. Choose a different label.',
     });
-  await backend.ensureReady(signal);
   const alreadyIndexed = await backend.hasDocument(docId);
 
   // Zero-token path: nothing to fetch-parse-embed.
@@ -312,6 +311,8 @@ async function ingestLocked(
       normalized: cached,
     };
   }
+
+  await backend.ensureReady(signal);
 
   // Known entry whose namespace vanished: the registry's cached document already has the
   // metadata, so no parse and no LLM call. Re-embedding is the only cost (and the local

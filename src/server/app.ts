@@ -247,7 +247,6 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     if (publicMode) throw new AppError('PUBLIC_MODE_FORBIDDEN');
     const entry = await entryFor(c.req.param('docId'));
     if (entry.backend === runtime.backend.kind) {
-      await runtime.backend.ensureReady();
       await runtime.backend.deleteDocument(entry.docId);
     }
     await runtime.registry.remove(entry.docId);

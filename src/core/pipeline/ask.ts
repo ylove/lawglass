@@ -100,12 +100,12 @@ function guarded(
   let ready: Promise<void> | undefined;
   const ensure = (): Promise<void> => {
     ready ??= (async () => {
-      await backend.ensureReady(signal);
       if (!(await backend.hasDocument(docId)))
         throw new AppError('DOC_NOT_FOUND', 'The document has no index.', {
           userMessage:
             "This document's search index is missing. Run ingest again for its URL.",
         });
+      await backend.ensureReady(signal);
     })();
     return ready;
   };

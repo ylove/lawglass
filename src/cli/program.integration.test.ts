@@ -132,22 +132,25 @@ test('list and remove', async () => {
   expect(output).toMatch(/^g {2}\| {2}[0-9a-f]{12} {2}\| {2}text/);
   const [entry] = await env.registry.list();
   output = '';
+  const embedReady = vi.spyOn(env.embedder, 'ensureReady');
+  const rerankReady = vi.spyOn(env.reranker, 'ensureReady');
   await run(['remove', 'g']);
+  expect(embedReady).not.toHaveBeenCalled();
+  expect(rerankReady).not.toHaveBeenCalled();
   expect(output).toBe('Removed g\n');
   expect(await env.registry.list()).toEqual([]);
   expect(await env.backend.hasDocument(entry?.docId ?? '')).toBe(false);
 });
 
-test('remove preserves the registry entry when backend initialization fails', async () => {
+test('remove preserves the registry entry when backend deletion fails', async () => {
   await run(['ingest', 'https://example.gov/gardens.txt', '--name', 'g']);
-  vi.spyOn(env.backend, 'ensureReady').mockRejectedValue(
-    new AppError('BACKEND_UNAVAILABLE'),
-  );
-  const remove = vi.spyOn(env.backend, 'deleteDocument');
+  const remove = vi
+    .spyOn(env.backend, 'deleteDocument')
+    .mockRejectedValue(new AppError('BACKEND_UNAVAILABLE'));
   await expect(run(['remove', 'g'])).rejects.toMatchObject({
     code: 'BACKEND_UNAVAILABLE',
   });
-  expect(remove).not.toHaveBeenCalled();
+  expect(remove).toHaveBeenCalledOnce();
   expect(await env.registry.list()).toHaveLength(1);
 });
 

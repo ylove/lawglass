@@ -87,6 +87,87 @@ describe('PineconeBackend', () => {
       sparse: `${BRAND.indexPrefix}sparse`,
     });
   });
+  it('checks documents on a fresh backend and shares initialization with ensureReady', async () => {
+    const { backend, sdk } = setup();
+    await expect(backend.hasDocument(DOC_A)).resolves.toBe(false);
+    await Promise.all([backend.hasDocument(DOC_B), backend.ensureReady()]);
+    expect(sdk.create).toHaveBeenCalledTimes(2);
+  });
+  it('deletes documents on a fresh backend without ensureReady', async () => {
+    const { sdk } = setup();
+    const writer = new PineconeBackend({
+      client: sdk.client,
+      logUsage: () => undefined,
+    });
+    await writer.ensureReady();
+    await writer.upsertChunks(DOC_A, CHUNKS_A);
+    sdk.create.mockClear();
+    const fresh = new PineconeBackend({
+      client: sdk.client,
+      logUsage: () => undefined,
+    });
+    await fresh.deleteDocument(DOC_A);
+    expect(await writer.hasDocument(DOC_A)).toBe(false);
+    expect(await writer.recordCounts(DOC_A)).toEqual([0, 0]);
+    expect(sdk.create).toHaveBeenCalledTimes(2);
+  });
+  it('retries a failed lazy initialization on the next method call', async () => {
+    const { backend, sdk } = setup();
+    sdk.create.mockRejectedValueOnce(new Error('network'));
+    await expect(backend.hasDocument(DOC_A)).rejects.toMatchObject({
+      code: 'BACKEND_UNAVAILABLE',
+    });
+    await backend.deleteDocument(DOC_A);
+    expect(sdk.create).toHaveBeenCalledTimes(3);
+    await backend.ensureReady();
+    expect(sdk.create).toHaveBeenCalledTimes(3);
+  });
+  it.each(['upsert', 'search', 'fetch', 'rerank', 'counts', 'settle'] as const)(
+    'initializes lazily for %s and reuses the same indexes',
+    async (operation) => {
+      const { backend, sdk } = setup();
+      switch (operation) {
+        case 'upsert':
+          await backend.upsertChunks(DOC_A, CHUNKS_A);
+          expect(sdk.dense.upsert).toHaveBeenCalled();
+          break;
+        case 'search':
+          await expect(
+            backend.search({
+              docId: DOC_A,
+              index: 'dense',
+              query: 'garden',
+              topK: 1,
+            }),
+          ).resolves.toMatchObject({ hits: [] });
+          break;
+        case 'fetch':
+          await expect(backend.getChunks(DOC_A, ['missing'])).resolves.toEqual(
+            [],
+          );
+          break;
+        case 'rerank':
+          // These hits can come from another backend instance, outside the fake's store.
+          sdk.rerank.mockResolvedValueOnce({ data: [{ index: 0, score: 1 }] });
+          await backend.rerank({
+            query: 'garden',
+            hits: [{ chunk: CHUNKS_A[0]!, score: 1 }],
+            topN: 1,
+          });
+          expect(sdk.rerank).toHaveBeenCalled();
+          break;
+        case 'counts':
+          await expect(backend.recordCounts(DOC_A)).resolves.toEqual([0, 0]);
+          break;
+        case 'settle':
+          await backend.settle();
+          break;
+      }
+      expect(sdk.create).toHaveBeenCalledTimes(2);
+      await backend.ensureReady();
+      expect(sdk.create).toHaveBeenCalledTimes(2);
+    },
+  );
   it('polls existing initializing indexes and retries ensureReady after failures', async () => {
     const { backend, sdk } = setup();
     sdk.describeIndex.mockResolvedValueOnce({
@@ -575,7 +656,25 @@ describe('PineconeBackend', () => {
       expect(JSON.stringify(logUsage.mock.calls)).not.toContain('secret-key');
     },
   );
-  it('requires a key only when no client is injected, and requires readiness', async () => {
+  it('explains a rejected Pinecone key without retaining key material', async () => {
+    const { backend, sdk } = setup();
+    sdk.create.mockRejectedValueOnce(
+      Object.assign(new Error('secret-key'), { status: 401 }),
+    );
+    const error: unknown = await backend
+      .ensureReady()
+      .catch((error: unknown) => error);
+    expect(error).toMatchObject({
+      code: 'MISSING_KEY',
+      userMessage:
+        'Pinecone rejected the API key in PINECONE_API_KEY (or your saved config). Check it and try again.',
+      cause: undefined,
+    });
+    expect(String(error)).not.toContain('missing');
+    expect(String(error)).not.toContain('secret-key');
+    expect(JSON.stringify(error)).not.toContain('secret-key');
+  });
+  it('requires a key only when no client is injected', () => {
     expect(() => new PineconeBackend({ apiKey: '' })).toThrow(
       'API key is missing',
     );
@@ -583,10 +682,6 @@ describe('PineconeBackend', () => {
     expect(new PineconeBackend({ apiKey: 'synthetic-test-key' }).kind).toBe(
       'pinecone',
     );
-    const { backend } = setup();
-    await expect(backend.hasDocument(DOC_A)).rejects.toMatchObject({
-      code: 'BACKEND_UNAVAILABLE',
-    });
   });
   it('checks abort before network calls and while polling without leaking abort reasons', async () => {
     const { backend, sdk } = setup();

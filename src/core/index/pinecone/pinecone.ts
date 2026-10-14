@@ -169,7 +169,10 @@ async function safe<T>(run: () => Promise<T>): Promise<T> {
       throw new DOMException('The operation was aborted.', 'AbortError');
     // SDK errors can echo headers and credentials. Never retain the raw error, even as a cause.
     if (hasStatus(error, 401, 'PineconeAuthorizationError'))
-      throw new AppError('MISSING_KEY');
+      throw new AppError('MISSING_KEY', 'Pinecone rejected the API key.', {
+        userMessage:
+          'Pinecone rejected the API key in PINECONE_API_KEY (or your saved config). Check it and try again.',
+      });
     if (hasStatus(error, 429, 'PineconeRateLimitError'))
       throw new AppError('RATE_LIMITED');
     throw new AppError('BACKEND_UNAVAILABLE');
@@ -184,7 +187,8 @@ export class PineconeBackend implements RetrievalBackend {
   private readonly now: () => number;
   private readonly sleep: NonNullable<PineconeBackendOptions['sleep']>;
   private readonly logUsage: NonNullable<PineconeBackendOptions['logUsage']>;
-  private indexes: { dense: PineconeIndex; sparse: PineconeIndex } | undefined;
+  private initialization:
+    Promise<{ dense: PineconeIndex; sparse: PineconeIndex }> | undefined;
   private pending: Promise<unknown> = Promise.resolve();
   private readonly expectedIds = new Map<string, Set<string>>();
 
@@ -219,19 +223,12 @@ export class PineconeBackend implements RetrievalBackend {
     this.logUsage({ backend: this.kind, operation, usage });
     return usage;
   }
-  private readyIndexes(): { dense: PineconeIndex; sparse: PineconeIndex } {
-    if (!this.indexes)
-      throw new AppError(
-        'BACKEND_UNAVAILABLE',
-        'Call ensureReady before using Pinecone.',
-      );
-    return this.indexes;
-  }
-
-  ensureReady(signal?: AbortSignal): Promise<void> {
-    return this.serial(async () => {
+  // Share successful initialization across every operation; a failure can be retried.
+  private readyIndexes(
+    signal?: AbortSignal,
+  ): Promise<{ dense: PineconeIndex; sparse: PineconeIndex }> {
+    this.initialization ??= safe(async () => {
       abortIfNeeded(signal);
-      if (this.indexes) return;
       const indexes = {} as { dense: PineconeIndex; sparse: PineconeIndex };
       for (const kind of ['dense', 'sparse'] as const) {
         abortIfNeeded(signal);
@@ -280,7 +277,18 @@ export class PineconeBackend implements RetrievalBackend {
           await this.sleep(this.config.pollIntervalMs, signal);
         }
       }
-      this.indexes = indexes;
+      return indexes;
+    }).catch((error: unknown) => {
+      this.initialization = undefined;
+      throw error;
+    });
+    return this.initialization;
+  }
+
+  ensureReady(signal?: AbortSignal): Promise<void> {
+    return this.serial(async () => {
+      abortIfNeeded(signal);
+      await this.readyIndexes(signal);
     });
   }
 
@@ -288,10 +296,11 @@ export class PineconeBackend implements RetrievalBackend {
     return this.serial(() => this.isComplete(docId));
   }
   private async isComplete(docId: string): Promise<boolean> {
+    const { dense } = await this.readyIndexes();
     let response: unknown;
     try {
-      response = await this.readyIndexes()
-        .dense.namespace(completionNamespace(docId))
+      response = await dense
+        .namespace(completionNamespace(docId))
         .fetch({ ids: [COMPLETION_ID] });
     } catch (error) {
       if (hasStatus(error, 404, 'PineconeNotFoundError')) return false;
@@ -308,10 +317,9 @@ export class PineconeBackend implements RetrievalBackend {
     return true;
   }
   private async removeCompletion(docId: string): Promise<void> {
+    const { dense } = await this.readyIndexes();
     try {
-      await this.readyIndexes().dense.deleteNamespace(
-        completionNamespace(docId),
-      );
+      await dense.deleteNamespace(completionNamespace(docId));
     } catch (error) {
       if (!hasStatus(error, 404, 'PineconeNotFoundError')) throw error;
     }
@@ -338,7 +346,7 @@ export class PineconeBackend implements RetrievalBackend {
   private async remove(docId: string): Promise<void> {
     // Invalidate completion before deleting chunks, even if chunk cleanup fails.
     await this.removeCompletion(docId);
-    for (const index of Object.values(this.readyIndexes())) {
+    for (const index of Object.values(await this.readyIndexes())) {
       try {
         await index.deleteNamespace(docId);
       } catch (error) {
@@ -356,7 +364,7 @@ export class PineconeBackend implements RetrievalBackend {
   ): Promise<{ usage: BackendUsage }> {
     return this.serial(async () => {
       abortIfNeeded(signal);
-      const indexes = this.readyIndexes();
+      const indexes = await this.readyIndexes(signal);
       const records = chunks.map((chunk) => {
         const parsed = Chunk.safeParse(chunk);
         if (!parsed.success || chunk.docId !== docId)
@@ -429,18 +437,17 @@ export class PineconeBackend implements RetrievalBackend {
       if (!Number.isInteger(req.topK) || req.topK < 1 || req.topK > 10_000)
         throw new AppError('INVALID_INPUT');
       const filter = translateFilter(req.filter);
+      const indexes = await this.readyIndexes(req.signal);
       let response: unknown;
       try {
-        response = await this.readyIndexes()
-          [req.index].namespace(req.docId)
-          .searchRecords({
-            query: {
-              topK: req.topK,
-              inputs: { text: req.query },
-              ...(filter ? { filter } : {}),
-            },
-            fields: STORED_FIELDS,
-          });
+        response = await indexes[req.index].namespace(req.docId).searchRecords({
+          query: {
+            topK: req.topK,
+            inputs: { text: req.query },
+            ...(filter ? { filter } : {}),
+          },
+          fields: STORED_FIELDS,
+        });
       } catch (error) {
         if (!hasStatus(error, 404, 'PineconeNotFoundError')) throw error;
         return { hits: [], usage: { ...ZERO_USAGE } };
@@ -461,7 +468,7 @@ export class PineconeBackend implements RetrievalBackend {
 
   getChunks(docId: string, ids: readonly string[]): Promise<StoredChunk[]> {
     return this.serial(async () => {
-      const namespace = this.readyIndexes().dense.namespace(docId);
+      const namespace = (await this.readyIndexes()).dense.namespace(docId);
       const chunks: StoredChunk[] = [];
       for (let offset = 0; offset < ids.length; offset += 1_000) {
         const batch = ids.slice(offset, offset + 1_000);
@@ -493,6 +500,7 @@ export class PineconeBackend implements RetrievalBackend {
       abortIfNeeded(req.signal);
       if (!Number.isInteger(req.topN) || req.topN < 1)
         throw new AppError('INVALID_INPUT');
+      await this.readyIndexes(req.signal);
       if (!req.hits.length) return { hits: [], usage: { ...ZERO_USAGE } };
       if (req.hits.length > 100)
         throw new AppError(
@@ -532,20 +540,21 @@ export class PineconeBackend implements RetrievalBackend {
   deleteDocument(docId: string, signal?: AbortSignal): Promise<void> {
     return this.serial(async () => {
       abortIfNeeded(signal);
+      await this.readyIndexes(signal);
       await this.remove(docId);
       await this.pollCompletion(docId, false, signal);
     });
   }
 
   async settle(signal?: AbortSignal): Promise<void> {
-    await this.pending;
+    await this.ensureReady(signal);
     for (const [docId, ids] of this.expectedIds)
       await settle(this, docId, ids.size, signal);
   }
   recordCounts(docId: string): Promise<number[]> {
     return safe(async () => {
       const counts: number[] = [];
-      for (const index of Object.values(this.readyIndexes())) {
+      for (const index of Object.values(await this.readyIndexes())) {
         const stats = Stats.parse(await index.describeIndexStats());
         counts.push(stats.namespaces?.[docId]?.recordCount ?? 0);
       }

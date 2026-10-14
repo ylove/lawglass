@@ -192,6 +192,7 @@ node dist/cli.js --help
 ```
 
 - `npm run fixtures:fetch` downloads the six public documents in [`fixtures/manifest.json`](fixtures/manifest.json) into the gitignored `fixtures/downloads/`, checking SHA-256 and size. Fixtures are never committed; local fixture tests skip when the files are absent, and CI uses generated samples from [`tests/synth/`](tests/synth/). See [`fixtures/README.md`](fixtures/README.md).
+- Pinecone Starter includes 500 BGE rerank requests per month. `eval --backend pinecone` estimates the rerank calls before starting and warns above 100; the default run reranks answerable questions in `hybrid_rerank`, and `--answers` adds a rerank call for every question in that mode. Narrow the run with `--fixture` or choose `--mode dense`, `sparse` or `hybrid` to avoid rerank calls.
 - `node dist/cli.js eval --backend local` reruns the eval on the downloaded fixtures and writes `eval/results.md` (add `--answers` to score answers with your configured provider; it makes one model call per question and mode).
 - `npm run models:fetch` pre-downloads the local models. `npm run test:models` runs the offline suite against the real models (not part of `check`, which uses fakes).
 - `npm run test:live` runs key-gated provider contract tests and spends tokens. It never runs the Claude CLI.

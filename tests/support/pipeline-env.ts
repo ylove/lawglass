@@ -21,6 +21,7 @@ export interface PipelineEnv {
   dir: string;
   backend: LocalBackend;
   embedder: FakeEmbedder;
+  reranker: FakeReranker;
   registry: Registry;
   provider: MockProvider;
   /** Serve a sample at a URL. */
@@ -42,10 +43,11 @@ export async function makePipelineEnv(
   // Strictly increasing clock so LRU order is deterministic.
   const now = (): Date => new Date(Date.UTC(2026, 9, 13, 0, 0, tick++));
   const embedder = new FakeEmbedder();
+  const reranker = new FakeReranker();
   const backend = new LocalBackend({
     root: join(dir, 'store'),
     embedder,
-    reranker: new FakeReranker(),
+    reranker,
   });
   const registry = new Registry(join(dir, 'config'), { now });
   const provider = new MockProvider();
@@ -80,6 +82,7 @@ export async function makePipelineEnv(
     dir,
     backend,
     embedder,
+    reranker,
     registry,
     provider,
     fetches,

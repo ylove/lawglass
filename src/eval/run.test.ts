@@ -16,7 +16,6 @@ import {
   type RunEvalInput,
 } from './run.js';
 import type { GoldenQuestion, GoldenSet } from '../core/model/index.js';
-import { AppError } from '../core/model/index.js';
 import { DetailedEvalRun, firstRelevantRank } from './details.js';
 import { mean, recallAtK, reciprocalRank } from './metrics.js';
 import { MemoryBackend } from '../../tests/contracts/memory-backend.js';
@@ -430,17 +429,4 @@ test('a non-AppError during a fixture run propagates', async () => {
       backends: [{ kind: 'local', backend: failing, registry: env.registry }],
     }),
   ).rejects.toThrow('disk on fire');
-});
-
-test('backend initialization failure stops before existence checks and cleanup', async () => {
-  vi.spyOn(env.backend, 'ensureReady').mockRejectedValue(
-    new AppError('BACKEND_UNAVAILABLE'),
-  );
-  const exists = vi.spyOn(env.backend, 'hasDocument');
-  const remove = vi.spyOn(env.backend, 'deleteDocument');
-  await expect(
-    runEval(baseInput([await syntheticGolden()])),
-  ).rejects.toMatchObject({ code: 'BACKEND_UNAVAILABLE' });
-  expect(exists).not.toHaveBeenCalled();
-  expect(remove).not.toHaveBeenCalled();
 });

@@ -50,9 +50,7 @@ export interface RuntimeOptions {
 export type RuntimeFactory = (options: RuntimeOptions) => Promise<CliRuntime>;
 
 export function createPineconeClient(apiKey: string): PineconeClient {
-  // The SDK has process-wide debug flags, including curl output that exposes keys.
-  // Leave them off: data-plane clients create their middleware later, on first use.
-  delete process.env.PINECONE_DEBUG;
+  // SDK curl logging exposes API keys; ordinary PINECONE_DEBUG already redacts them.
   delete process.env.PINECONE_DEBUG_CURL;
   return new Pinecone({ apiKey, maxRetries: 0 });
 }

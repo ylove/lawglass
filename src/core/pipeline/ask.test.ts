@@ -241,15 +241,19 @@ test('a registry entry without an index is a clear error, not a silent decline',
     makeCongressionalBillXml(),
   );
   await env.backend.deleteDocument(docId);
+  const embedReady = vi.spyOn(env.embedder, 'ensureReady');
+  const rerankReady = vi.spyOn(env.reranker, 'ensureReady');
   await expect(
     ask(docId, { question: 'garden grants' }, askDeps()),
   ).rejects.toMatchObject({
     code: 'DOC_NOT_FOUND',
     userMessage: expect.stringContaining('Run ingest again') as string,
   });
+  expect(embedReady).not.toHaveBeenCalled();
+  expect(rerankReady).not.toHaveBeenCalled();
 });
 
-test('backend initialization failure stops before existence checks and retrieval', async () => {
+test('backend initialization failure stops before retrieval', async () => {
   const docId = await load(
     'https://example.gov/s9001.xml',
     makeCongressionalBillXml(),
@@ -262,7 +266,7 @@ test('backend initialization failure stops before existence checks and retrieval
   await expect(
     ask(docId, { question: 'garden grants' }, askDeps()),
   ).rejects.toMatchObject({ code: 'BACKEND_UNAVAILABLE' });
-  expect(exists).not.toHaveBeenCalled();
+  expect(exists).toHaveBeenCalledOnce();
   expect(search).not.toHaveBeenCalled();
   expect(await env.registry.list()).toHaveLength(1);
 });

@@ -263,7 +263,6 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
         throw new AppError('INVALID_INPUT', 'Document is on another backend.', {
           userMessage: `${safeText(entry.label)} was indexed with the ${entry.backend} backend. Run again with --backend ${entry.backend}.`,
         });
-      await runtime.backend.ensureReady();
       await runtime.backend.deleteDocument(entry.docId);
       await runtime.registry.remove(entry.docId);
       write(`Removed ${safeText(entry.label)}\n`);
