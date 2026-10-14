@@ -32,11 +32,11 @@ These override the original text below, and the 2026-10-13 amendments above, whe
 
 9. **Known landing pages (§5.1).** `safeFetch` still never follows a link found in a page. The ingest layer may rewrite a _known_ landing-page URL before any fetch, by pure, anchored string mapping. The rewrite reads nothing from the network and takes nothing from page content. Two mappings exist:
    - **congress.gov bill URLs**, such as `https://www.congress.gov/bill/118th-congress/house-bill/5009`, map to the GovInfo text URL and to `https://www.govinfo.gov/bulkdata/BILLSTATUS/<congress>/<type>/BILLSTATUS-<congress><type><number>.xml`. congress.gov itself is never fetched. It blocks automated clients, and GovInfo is the official bulk source.
-   - **`https://www.legislature.ohio.gov/legislation/<ga>/<bill>`** maps to the Ohio LIS text, `https://search-prod.lis.state.oh.us/api/v2/general_assembly_<ga>/legislation/<bill>/<version>/pdf/`, plus the Ohio history pages (`/status`, `/documents`, `/committee`).
+   - **`https://www.legislature.ohio.gov/legislation/<ga>/<bill>`** maps to the Ohio LIS text, `https://search-prod.lis.state.oh.us/api/v2/general_assembly_<ga>/legislation/<bill>/<version>/pdf/`, plus the Ohio history, read from the LIS JSON API (`/legislation/<bill>/`, `/actions/`, `/meetings/`, `/amendments/`). Nothing is fetched from `www.legislature.ohio.gov`.
 
    **Version selection is deterministic.** The mappings need a text version, and a landing URL often does not name one.
    - If the pasted URL names a version, that version is used. For congress.gov this is `/text/<code>`, such as `/text/ih`. For GovInfo it is the `BILLS-<congress><type><n><code>` form.
-   - Otherwise the **latest** text version listed in the official record is used: BILLSTATUS `textVersions` for federal bills, and the Ohio documents/status page for Ohio. Reading that record is allowed because it is an allowlisted history source, not link-following in page content. Only the version code is taken from the record. The text URL is still built by the anchored mapping.
+   - Otherwise the **latest** text version listed in the official record is used: BILLSTATUS `textVersions` for federal bills, and the Ohio LIS JSON API for Ohio. Reading that record is allowed because it is an allowlisted history source, not link-following in page content. Only the version code is taken from the record. The text URL is still built by the anchored mapping.
    - If the record cannot be read, ingest fails with a clear message asking the user to paste a specific version's URL. We never guess a version, because a guess could summarize a different text than the user means.
    - The UI shows which version was read and lists the other versions from the history, so the user can open one.
 
@@ -44,9 +44,9 @@ These override the original text below, and the 2026-10-13 amendments above, whe
 
    The rules around these fetches:
    - Every fetch still goes through `safeFetch`: SSRF guard, pinned IP, and re-validation on every redirect.
-   - History adapters may fetch only from an exact-host allowlist: `www.govinfo.gov`, `www.legislature.ohio.gov`, `search-prod.lis.state.oh.us`, and `unitedstates.github.io` (the legislators directory). No host comes from user input.
+   - History adapters may fetch only from an exact-host allowlist: `www.govinfo.gov`, `search-prod.lis.state.oh.us`, and `unitedstates.github.io` (the legislators directory). No host comes from user input.
    - A history failure never blocks ingest. The text is still read, and the UI says "history unavailable".
-   - The User-Agent is honest and derived from `BRAND`: name, version and repository URL. We never spoof a browser. On 2026-10-14 Ohio returned 200 to an honest User-Agent and 403 only to curl's default.
+   - The User-Agent is honest and derived from `BRAND`: name, version and repository URL. We never spoof a browser. On 2026-10-14 the Ohio LIS API returned 200 to an honest User-Agent and 403 only to curl's default.
 
 10. **Legislative history (new §5.8).** The document screen may show a bill's history: its stages, its committees, and the changes between versions.
     - **Sources** are official and keyless, and for rc.2 federal and Ohio only. News is still never used.
@@ -56,7 +56,7 @@ These override the original text below, and the 2026-10-13 amendments above, whe
 
 11. **Sponsor links.** Sponsors link out only as far as the evidence goes.
     - Federal sponsors are joined to the `unitedstates/congress-legislators` dataset by `bioguideId` only, never by name. Names collide and change.
-    - Ohio links come only from member links on the bill's own official page.
+    - Ohio's LIS API gives no member-page URL, so Ohio sponsors carry `memberId` and labeled search links only.
     - Everywhere else, Ballotpedia and Wikipedia _search_ links are offered. They are labeled as searches and carry `verified: false`, because we have not confirmed that they reach the right person.
 
 12. **Summary on arrival (§3.2, §3.3).** Opening a document never shows an empty page.

@@ -3,6 +3,12 @@ import {
   type BillHistory,
   type SponsorProfile,
 } from '../model/index.js';
+import {
+  chooseOhioVersion,
+  isOhioLandingHost,
+  ohioHistorySource,
+  ohioPageError,
+} from './ohio-legislature.js';
 import { parseGovinfoBillStatus } from './govinfo-billstatus.js';
 import type { SafeFetchResult } from '../fetch/index.js';
 
@@ -15,6 +21,8 @@ export interface HistoryPlan {
 export interface HistoryRecord {
   history: BillHistory;
   sponsorProfiles: SponsorProfile[];
+  /** Part of the record could not be read; the rest is kept and the user is warned. */
+  partial?: boolean;
 }
 export interface HistorySource {
   source: string;
@@ -70,6 +78,7 @@ function isCongressHost(url: URL): boolean {
 /** Also covers a redirect to Congress.gov from an otherwise ordinary document URL. */
 export function assertNoCongressFetch(url: URL): void {
   if (isCongressHost(url)) throw billPageError();
+  if (isOhioLandingHost(url)) throw ohioPageError();
 }
 
 export function govinfoTextUrl(plan: GovinfoPlan, version: string): string {
@@ -155,6 +164,7 @@ export function resolveGovinfo(url: URL): GovinfoPlan | undefined {
 
 // Adding another jurisdiction requires one adapter file and one registration here.
 export const HISTORY_SOURCES: readonly HistorySource[] = [
+  ohioHistorySource,
   {
     source: 'govinfo',
     hosts: ['www.govinfo.gov'],
@@ -194,9 +204,13 @@ export function resolveHistory(input: string): HistoryPlan | undefined {
   )
     throw billPageError();
   for (const source of HISTORY_SOURCES) {
+    // Preserve the anchored mapping when URL has normalized a raw dot segment or backslash.
+    if (source.source === 'ohio' && /\\|\/(?:\.|\.\.)\//.test(input)) continue;
     const plan = source.resolve(url);
     if (plan) return plan;
   }
+  // The landing host fails TLS from Node and is never fetched; say what to paste instead.
+  if (isOhioLandingHost(url)) throw ohioPageError();
   return undefined;
 }
 
@@ -205,11 +219,14 @@ export function chooseVersion(
   history?: BillHistory,
 ): string {
   if (plan.version) return plan.version;
+  if (plan.source === 'ohio') return chooseOhioVersion(history);
   const versions = history?.versions ?? [];
-  // GovInfo lists text versions newest-first. List order is authoritative, including
-  // equal/inconsistent dates: Enrolled often has <date/>, and a later-dated Public
-  // Law can be appended last. Dates must never override the first listed entry.
-  const latest = versions[0];
+  // Stored versions are oldest first; GovInfo lists them newest first, and that order is
+  // authoritative, including equal or missing dates (Enrolled often has <date/>). Dates
+  // never override it.
+  // The newest stored entry decides. If its link was unusable (empty code) we fail instead
+  // of falling back to an older text.
+  const latest = versions.at(-1);
   if (!latest || !historySource(plan.source).isVersion(latest.code)) {
     throw new AppError('FETCH_FAILED', undefined, {
       userMessage:
