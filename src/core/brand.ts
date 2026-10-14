@@ -2,11 +2,11 @@
 import packageJson from '../../package.json' with { type: 'json' };
 
 export const BRAND = {
-  name: 'legislation-summary',
-  displayName: 'Legislation Summary',
-  envPrefix: 'LEGSUM',
-  configDirName: '.legislation-summary',
-  indexPrefix: 'legsum-',
+  name: 'lawglass',
+  displayName: 'Lawglass',
+  envPrefix: 'LAWGLASS',
+  configDirName: '.lawglass',
+  indexPrefix: 'lawglass-',
   version: packageJson.version,
   repositoryUrl: packageJson.repository.url
     .replace(/^git\+/, '')

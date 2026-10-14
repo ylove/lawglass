@@ -1,5 +1,5 @@
 {
-  "name": "legislation-summary",
+  "name": "lawglass",
   "version": "0.1.0-rc.1",
   "description": "A localhost-first legislation tool with cited plain-language answers.",
   "type": "module",
@@ -8,7 +8,7 @@
   },
   "packageManager": "npm@11.12.1",
   "bin": {
-    "legislation-summary": "dist/cli.js"
+    "lawglass": "dist/cli.js"
   },
   "files": [
     "dist",
@@ -19,7 +19,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/ylove/legislation-summary.git"
+    "url": "git+https://github.com/ylove/lawglass.git"
   },
   "overrides": {
     "esbuild": "0.28.2"
