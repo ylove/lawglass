@@ -1,6 +1,6 @@
 {
   "name": "lawglass",
-  "version": "0.1.0-rc.1",
+  "version": "0.1.0-rc.2",
   "description": "A localhost-first legislation tool with cited plain-language answers.",
   "type": "module",
   "engines": {
