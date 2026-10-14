@@ -7,6 +7,7 @@ import type {
   IngestStats,
 } from '../core/model/index.js';
 import { selectApi, type ApiClient } from './api.js';
+import { BILL_TITLE_ID } from './document/MetadataHeader.js';
 import { DocumentView } from './DocumentView.js';
 import { errorMessage } from './errors.js';
 import { Ingest } from './Ingest.js';
@@ -129,7 +130,11 @@ export function App({ api: provided }: { api?: ApiClient }) {
             onRemove={(id) => void remove(id)}
           />
         )}
-        <main id="main" tabIndex={-1}>
+        <main
+          id="main"
+          tabIndex={-1}
+          aria-labelledby={selected !== null ? BILL_TITLE_ID : undefined}
+        >
           {problem && (
             <p role="alert" className="error">
               {problem}

@@ -23,7 +23,8 @@ export function ChipRow({
             key={chip.id}
             type="button"
             className="chip"
-            aria-pressed={chip.label === activeLabel}
+            // "current", not "pressed": clicking again re-asks rather than toggling off.
+            aria-current={chip.label === activeLabel ? 'true' : undefined}
             aria-disabled={busy}
             onClick={() => {
               // aria-disabled (not disabled) keeps keyboard focus on the chip.

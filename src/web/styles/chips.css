@@ -16,7 +16,7 @@
   border-color: var(--accent);
 }
 /* The selected chip is marked by border, fill and weight, not color alone. */
-.chip[aria-pressed='true'] {
+.chip[aria-current='true'] {
   border-color: var(--accent);
   background: var(--soft);
   font-weight: 500;

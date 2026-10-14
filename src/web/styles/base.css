@@ -151,3 +151,11 @@ input[type='text'] {
   opacity: 0.55;
   cursor: not-allowed;
 }
+/* Flat, readable disabled state for primary buttons (chips keep the opacity treatment). */
+.btn.primary:disabled,
+.btn.primary[aria-disabled='true'] {
+  opacity: 1;
+  background: var(--line);
+  border-color: var(--line);
+  color: var(--muted);
+}

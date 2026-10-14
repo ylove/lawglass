@@ -34,3 +34,8 @@ sup {
 .answer-body {
   overflow-wrap: anywhere;
 }
+/* Inline, so a long breadcrumb wraps as text and the list marker sits on its first line. */
+.sources .link-btn {
+  display: inline;
+  padding: 0;
+}
