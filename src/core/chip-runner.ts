@@ -76,7 +76,7 @@ function runMetadataChip(
   const text =
     names.length === 0
       ? "This document doesn't say who sponsored it."
-      : `Sponsored by ${names.join(', ')}. Cosponsors, if any, are listed on the bill's first page.`;
+      : `Sponsored by ${names.join(', ')}. Cosponsors, if any, are not included.`;
   onToken?.(text); // the CLI and UI print only streamed text
   return {
     answer: {

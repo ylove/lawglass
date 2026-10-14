@@ -166,7 +166,8 @@ const ANSWERS: Record<ChipId, string> = {
     'The only dollar amount in the text is the daily fine of up to $1,000 for a late utility [S:sec-6]. The bill does not set aside money for the pipe work.',
   definitions:
     '- Public water system: a system that supplies drinking water to at least 25 people [S:sec-2/a].\n- Utility: any public or private operator of a public water system [S:sec-2/a].',
-  sponsors: 'This bill was sponsored by Rep. A. Rivera and Rep. J. Chen.',
+  sponsors:
+    'Sponsored by Rep. A. Rivera, Rep. J. Chen. Cosponsors, if any, are not included.',
 };
 
 const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
