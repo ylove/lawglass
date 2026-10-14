@@ -66,6 +66,17 @@
       "retrievedAt": "2026-10-13",
       "jurisdiction": "US Congress",
       "notes": "118th Congress H.R. 5009 enrolled: National Defense Authorization Act for FY2025 (about 430k tokens). The LARGE fixture for the retrieval vs. context-stuffing comparison."
+    },
+    {
+      "name": "oh-columbus-issue8-2026",
+      "description": "Franklin County ballot Issue 8 (Nov. 3, 2026): full text of a proposed Columbus City Charter amendment.",
+      "format": "pdf",
+      "url": "https://vote.franklincountyohio.gov/getmedia/a7a2dd78-e53f-4e74-933a-0ba0de9aaa4c/8-Full-OCOS-Charter-Amendment",
+      "sha256": "06faa06bf25c373b0d94ef2853282ece9af78386e822e0cf542e9a5bd49f9cb1",
+      "bytes": 153969,
+      "retrievedAt": "2026-10-14",
+      "jurisdiction": "Ohio",
+      "notes": "Two pages: a typed cover page, then an Adobe Paper Capture (ClearScan) scan of the redline. Visible OCR text over a washed-out background image; long underlines are vector paths, strike-throughs survive only as dashes in the image. Hand labels: src/eval/golden/marks/."
     }
   ]
 }

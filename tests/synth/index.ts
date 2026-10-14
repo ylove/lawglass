@@ -6,3 +6,4 @@ export * from './text.js';
 export * from './injection.js';
 export * from './eval-bill.js';
 export * from './billstatus.js';
+export * from './scanned-pdf.js';
