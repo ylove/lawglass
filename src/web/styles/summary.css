@@ -1,0 +1,134 @@
+/* Summary on arrival, the scenario strip, the history timeline and the server-down card. */
+.summary-preview {
+  margin: 0 0 0.75rem;
+  font-size: 1.35rem;
+  line-height: 1.45;
+}
+.summary-text {
+  font-size: 1.2rem;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.summary-note {
+  margin: 0 0 0.5rem;
+  font-size: 0.9rem;
+}
+.official-summary {
+  border-top: 1px solid var(--line);
+  padding-top: 0.75rem;
+  margin-top: 0.5rem;
+}
+.official-summary summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+.official-summary p {
+  margin-top: 0.5rem;
+  white-space: pre-line;
+}
+
+.scenario {
+  margin-bottom: 1.5rem;
+}
+.scenario-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+.scenario-head h3 {
+  margin: 0;
+}
+.scenario-badge {
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  background: var(--soft);
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.scenario-frames {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: 0.75rem;
+  list-style: none;
+  margin: 0 0 0.5rem;
+  padding: 0;
+}
+.scenario-frames[data-count='3'] {
+  /* Three frames fit one row in the main column; no orphan cell. */
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+}
+.scenario-frame {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+}
+.scenario-frame p {
+  margin: 0;
+  font-size: 0.95rem;
+}
+.scenario-art {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--accent);
+}
+.scenario-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  background: var(--soft);
+  color: var(--ink);
+}
+.scenario-note {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
+.history h4 {
+  margin: 0.75rem 0 0.35rem;
+  color: var(--muted);
+}
+.timeline {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 0.9rem;
+  border-left: 2px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  font-size: 0.95rem;
+}
+.timeline li {
+  display: flex;
+  flex-direction: column;
+}
+.timeline .when {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.history-note,
+.history-more {
+  margin: 0.75rem 0;
+  font-size: 0.85rem;
+}
+.history .btn {
+  width: 100%;
+}
+
+.server-down code {
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.35rem;
+  background: var(--soft);
+  font-size: 0.95em;
+}

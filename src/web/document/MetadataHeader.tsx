@@ -1,14 +1,10 @@
 import type { ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { DocDetail } from '../../core/model/index.js';
+import { SponsorList } from './SponsorList.js';
 
 /** Names the main region while a bill is open (the title itself lives in the masthead). */
 export const BILL_TITLE_ID = 'bill-title';
-
-// Its own component so later work (sponsor links) can extend it without touching the rows.
-export function SponsorList({ sponsors }: { sponsors: string[] }) {
-  return <>{sponsors.join(', ')}</>;
-}
 
 /** The title and facts go in the masthead band (`slot`); the notes stay with the page body. */
 export function MetadataHeader({
@@ -25,7 +21,10 @@ export function MetadataHeader({
   if (m.session) rows.push(['Session', m.session]);
   if (m.version) rows.push(['Version', m.version]);
   if (m.sponsors && m.sponsors.length > 0)
-    rows.push(['Sponsors', <SponsorList sponsors={m.sponsors} />]);
+    rows.push([
+      'Sponsors',
+      <SponsorList names={m.sponsors} profiles={m.sponsorProfiles} />,
+    ]);
   const identity = (
     <div className="doc-header">
       <h2 id={BILL_TITLE_ID}>{m.title ?? detail.doc.label}</h2>

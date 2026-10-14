@@ -15,9 +15,13 @@ import { ChipRow } from './document/ChipRow.js';
 import { MetadataHeader } from './document/MetadataHeader.js';
 import { NoticeBar } from './document/NoticeBar.js';
 import { ReferencedCard } from './document/ReferencedCard.js';
-import { SummarySlot } from './document/SummarySlot.js';
+import { FactsCard } from './document/FactsCard.js';
+import { HistoryCard } from './document/HistoryCard.js';
+import { ServerDownCard } from './document/ServerDownCard.js';
+import { SummaryPanel } from './document/SummaryPanel.js';
 import type { Turn } from './document/types.js';
 import { errorMessage } from './errors.js';
+import { ApiError } from './sse.js';
 import { CUT_OFF } from './sse.js';
 
 export function DocumentView({
@@ -35,7 +39,8 @@ export function DocumentView({
   mastheadSlot?: HTMLElement | null;
 }) {
   const [detail, setDetail] = useState<DocDetail | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<unknown>(null);
+  const [attempt, setAttempt] = useState(0);
   const [turn, setTurn] = useState<Turn | null>(null);
   const [open, setOpen] = useState<{
     sectionId: string;
@@ -52,13 +57,13 @@ export function DocumentView({
         if (live) setDetail(d);
       })
       .catch((e: unknown) => {
-        if (live) setLoadError(errorMessage(e));
+        if (live) setLoadError(e);
       });
     return () => {
       live = false;
       abort.current?.abort();
     };
-  }, [api, docId]);
+  }, [api, docId, attempt]);
 
   const busy = turn?.phase === 'searching' || turn?.phase === 'writing';
 
@@ -78,7 +83,10 @@ export function DocumentView({
     try {
       for await (const event of api.ask(docId, req, controller.signal)) {
         if (controller.signal.aborted) return;
-        if (event.type === 'token') {
+        if (event.type === 'scenario') {
+          // Arrives after `done`, so this loop keeps reading until the stream closes.
+          setTurn((t) => (t ? { ...t, scenario: event.scenario } : t));
+        } else if (event.type === 'token') {
           setTurn((t) =>
             t ? { ...t, phase: 'writing', text: t.text + event.text } : t,
           );
@@ -90,12 +98,17 @@ export function DocumentView({
                   phase: 'done',
                   text: event.answer.text,
                   result: event.answer,
+                  ...(event.answer.scenario
+                    ? { scenario: event.answer.scenario }
+                    : {}),
                 }
               : t,
           );
         } else if (event.type === 'error') {
           setTurn((t) =>
-            t ? { ...t, phase: 'error', error: event.error.message } : t,
+            t && t.phase !== 'done'
+              ? { ...t, phase: 'error', error: event.error.message }
+              : t,
           );
           return;
         }
@@ -112,20 +125,37 @@ export function DocumentView({
     } catch (e) {
       if (!controller.signal.aborted) {
         setTurn((t) =>
-          t ? { ...t, phase: 'error', error: errorMessage(e) } : t,
+          // A failure after the answer is complete only costs the optional example.
+          t && t.phase !== 'done'
+            ? { ...t, phase: 'error', error: errorMessage(e) }
+            : t,
         );
       }
     }
   }
 
   if (loadError) {
+    if (loadError instanceof ApiError && loadError.code === 'NETWORK') {
+      return (
+        <ServerDownCard
+          onRetry={() => {
+            setLoadError(null);
+            setAttempt((n) => n + 1);
+          }}
+        />
+      );
+    }
     return (
       <p role="alert" className="error">
-        {loadError}
+        {errorMessage(loadError)}
       </p>
     );
   }
   if (!detail) return <p role="status">Loading the document...</p>;
+
+  const openSection = (sectionId: string, trigger: HTMLElement) => {
+    setOpen({ sectionId, trigger });
+  };
 
   const showFreeform = config.freeformEnabled && !config.publicMode;
 
@@ -133,32 +163,53 @@ export function DocumentView({
     <div className="doc">
       <NoticeBar notice={notice} />
       <MetadataHeader detail={detail} slot={mastheadSlot ?? null} />
-      <SummarySlot />
-      <ChipRow
-        chips={config.chips}
-        busy={busy}
-        activeLabel={turn?.label ?? null}
-        onPick={(chipId, label) => {
-          void run({ chipId }, label);
-        }}
-      />
-      {showFreeform && (
-        <AskForm
-          busy={busy}
-          onAsk={(q) => {
-            void run({ question: q }, q);
-          }}
-        />
-      )}
-      <AnswerCard
-        turn={turn}
-        busy={busy}
-        hasLineNumbers={detail.hasLineNumbers}
-        onOpenSection={(sectionId, trigger) => {
-          setOpen({ sectionId, trigger });
-        }}
-      />
-      <ReferencedCard externalRefs={detail.externalRefs} />
+      <div className="doc-grid">
+        <div className="doc-main">
+          <SummaryPanel
+            api={api}
+            docId={docId}
+            preview={detail.preview}
+            officialSummary={detail.history?.officialSummary}
+            publicMode={config.publicMode}
+            onOpenSection={openSection}
+          />
+          <ChipRow
+            chips={config.chips}
+            busy={busy}
+            activeLabel={turn?.label ?? null}
+            onPick={(chipId, label) => {
+              void run({ chipId }, label);
+            }}
+          />
+          {showFreeform && (
+            <AskForm
+              busy={busy}
+              onAsk={(q) => {
+                void run({ question: q }, q);
+              }}
+            />
+          )}
+          <AnswerCard
+            turn={turn}
+            busy={busy}
+            hasLineNumbers={detail.hasLineNumbers}
+            onOpenSection={openSection}
+          />
+        </div>
+        <aside aria-label="About this bill" className="doc-aside">
+          <FactsCard detail={detail} />
+          <HistoryCard
+            history={detail.history}
+            canAskFullStory={config.chips.some((c) => c.id === 'history')}
+            busy={busy}
+            onFullStory={() => {
+              const chip = config.chips.find((c) => c.id === 'history');
+              if (chip) void run({ chipId: chip.id }, chip.label);
+            }}
+          />
+          <ReferencedCard externalRefs={detail.externalRefs} />
+        </aside>
+      </div>
       {open && (
         <CitationDrawer
           key={open.sectionId}

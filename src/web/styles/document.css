@@ -24,3 +24,63 @@
 .doc-notes .note:first-child {
   margin-top: 0;
 }
+
+/* Main column plus an aside on desktop; one stacked column at phone width (see responsive.css). */
+.doc-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 17rem;
+  gap: 1.5rem;
+  align-items: start;
+}
+.doc-main,
+.doc-aside {
+  min-width: 0;
+}
+.doc-aside .card h3 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+.facts dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.35rem 1rem;
+  margin: 0;
+  font-size: 0.95rem;
+}
+.facts dt {
+  color: var(--muted);
+}
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* Sponsor byline inside the navy band. Links keep the band's ink color and an underline, so
+   they are not told apart by color alone. No italics here. */
+.sponsors {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.75rem;
+  align-items: baseline;
+  font-style: normal;
+}
+.sponsor-row {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 0.9rem;
+}
+.sponsors a {
+  color: var(--band-ink);
+}
+.sponsor-kind {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--band-muted);
+}
+.cosponsors summary {
+  cursor: pointer;
+  color: var(--band-muted);
+}
+.cosponsors[open] summary {
+  margin-bottom: 0.25rem;
+}

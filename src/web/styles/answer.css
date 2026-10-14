@@ -11,10 +11,11 @@
   padding-top: 0.75rem;
 }
 .cite {
+  /* 24px minimum target (WCAG 2.2 AA), with little side margin so no gap precedes punctuation. */
   min-width: 1.5rem;
   min-height: 1.5rem;
-  padding: 0 0.35rem;
-  margin: 0 0.1rem;
+  padding: 0 0.3rem;
+  margin: 0 0 0 0.1rem;
   font: inherit;
   font-size: 0.8rem;
   font-weight: 600;
