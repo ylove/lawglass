@@ -38,6 +38,8 @@ Both NDAA losses are paraphrases:
 
 Our reading, not yet tested: the local cross-encoder is small (about 22M parameters) and trained on web search queries, and it does not bridge synonyms like _forks_ and _flatware_ the way the embedding model does. The NDAA's long heading paths (Division > Title > Subtitle > Sec.) may also crowd its 512-token input. On the NDAA, weighted fusion without reranking is the best local mode (recall@5 0.96, MRR 0.92). A stronger reranker, such as the `bge-reranker-v2-m3` model Pinecone hosts, is the next thing to measure.
 
+_Update, 2026-10-14: we measured it. `bge-reranker-v2-m3` on Pinecone also misses hr5009-13, so the stronger-reranker hypothesis did not hold; see [Pinecone backend (2026-10-14)](#pinecone-backend-2026-10-14)._
+
 ### A fix that came from the eval (#97)
 
 The reranker originally scored a chunk's text without its heading path, while the embedder indexed both. Giving the reranker the same `breadcrumb: text` the embedder sees changed `hybrid_rerank` as follows:
