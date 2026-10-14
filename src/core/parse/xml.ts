@@ -798,11 +798,9 @@ const DC_PREFIX = /^\s*(?:\d+\s+)?[A-Za-z]+\s*\d+\s+[A-Z]+:\s+/;
 
 function billMetadata(root: El): BillMetadata {
   const form = findAll(root, 'form')[0];
-  const sponsors = form
-    ? [...findAll(form, 'sponsor'), ...findAll(form, 'cosponsor')]
-    : [];
-  // Document order, not "all sponsors then all cosponsors".
-  const ordered = form ? orderByDocument(form, sponsors) : [];
+  // The frozen metadata contract has no cosponsors field; keep sponsorship roles distinct.
+  // findAll already returns sponsor elements in document order.
+  const sponsors = form ? findAll(form, 'sponsor') : [];
   const stripped = firstText(findAll(root, 'metadata')[0], 'title')?.replace(
     DC_PREFIX,
     '',
@@ -818,23 +816,9 @@ function billMetadata(root: El): BillMetadata {
       firstText(form, 'session'),
     ),
     version: root.attrs['bill-stage'] ?? root.attrs['resolution-stage'] ?? null,
-    sponsors: ordered.length ? ordered.map(plainText).filter(Boolean) : null,
+    sponsors: sponsors.length ? sponsors.map(plainText).filter(Boolean) : null,
     source: 'structured',
   };
-}
-
-function orderByDocument(root: El, wanted: El[]): El[] {
-  const set = new Set(wanted);
-  const out: El[] = [];
-  const visit = (el: El) => {
-    for (const kid of el.kids) {
-      if (typeof kid === 'string') continue;
-      if (set.has(kid)) out.push(kid);
-      visit(kid);
-    }
-  };
-  visit(root);
-  return out;
 }
 
 function genericMetadata(root: El): BillMetadata {
