@@ -36,6 +36,20 @@ only `127.0.0.1` and `localhost` may connect. Web tests use happy-dom.
 Run a subset with `npm test -- <pattern>`. Use `npm run format` to apply Prettier
 and `npm run format:check` to verify formatting.
 
+The CLI accepts a local PDF, XML, HTML, or text file as well as an HTTP(S) URL:
+
+```sh
+node dist/cli.js ingest ./bill.pdf
+node dist/cli.js ingest "./downloaded bill.xml" --name my-bill
+node dist/cli.js ./bill.txt
+```
+
+`file://` URLs work too. Formats are detected from the bytes, with the extension
+as a fallback. Local files use the filename as their default label and have the
+same 50 MiB limit as downloads. Re-ingesting unchanged bytes spends no tokens;
+editing a file creates a new document, with a suffix if its filename label is
+already taken. File ingestion is CLI-only; HTTP ingest must remain HTTP(S)-only.
+
 To preview the built web UI, run `npx vite preview --outDir ../../dist/web`. The
 Vite root is `src/web`, so `--outDir` must be given relative to it.
 

@@ -9,7 +9,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-test('--help lists every command and the default URL argument', () => {
+test('--help lists every command and the default URL or path argument', () => {
   let output = '';
   const program = createProgram()
     .exitOverride()
@@ -22,7 +22,7 @@ test('--help lists every command and the default URL argument', () => {
     expect.objectContaining({ code: 'commander.helpDisplayed', exitCode: 0 }),
   );
   expect(output).toContain(`Usage: ${BRAND.name}`);
-  expect(output).toContain('<url>');
+  expect(output).toContain('<url-or-path>');
   for (const command of [
     'init',
     'ingest',
