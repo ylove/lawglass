@@ -71,12 +71,30 @@ function runMetadataChip(
   onToken: ((text: string) => void) | undefined,
 ): ChipRun {
   const names = metadata.sponsors?.filter((s) => s.trim() !== '') ?? [];
-  // `sponsors` holds primary sponsors only (XML and extraction both leave cosponsors out), so the
-  // answer must not read as the complete list of names on the bill.
-  const text =
+  // Legacy names omit cosponsors. Official-record profiles keep the roles separate.
+  let text =
     names.length === 0
       ? "This document doesn't say who sponsored it."
       : `Sponsored by ${names.join(', ')}. Cosponsors, if any, are not included.`;
+  if (metadata.sponsorProfiles && metadata.sponsorProfiles.length > 0) {
+    const sponsors = metadata.sponsorProfiles.filter(
+      (p) => p.role === 'sponsor',
+    );
+    const cosponsors = metadata.sponsorProfiles.filter(
+      (p) => p.role === 'cosponsor',
+    );
+    text =
+      sponsors.length === 0
+        ? "This document doesn't say who sponsored it."
+        : `Sponsored by ${sponsors.map((p) => p.name).join(', ')}.`;
+    if (cosponsors.length > 0) {
+      const listed =
+        cosponsors.length <= 10
+          ? `: ${cosponsors.map((p) => p.name).join(', ')}`
+          : '';
+      text += ` Cosponsors (${String(cosponsors.length)})${listed}.`;
+    }
+  }
   onToken?.(text); // the CLI and UI print only streamed text
   return {
     answer: {
