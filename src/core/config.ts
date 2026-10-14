@@ -362,3 +362,44 @@ export async function initConfig(
   );
   return redact(validated);
 }
+
+/** Pinecone integrated-embedding settings. Index lifecycle only: the document cap lives in the shared registry. */
+export const PineconeSettings = z.object({
+  denseModel: nonempty.default('llama-text-embed-v2'),
+  sparseModel: nonempty.default('pinecone-sparse-english-v0'),
+  rerankModel: nonempty.default(DEFAULT_RERANK_MODELS.pinecone),
+  cloud: z.enum(['aws', 'gcp', 'azure']).default('aws'),
+  // Starter plans only serve AWS us-east-1.
+  region: nonempty.default('us-east-1'),
+  indexPrefix: z
+    .string()
+    .regex(/^[a-z0-9][a-z0-9-]*-$/)
+    .max(39)
+    .default(BRAND.indexPrefix),
+  pollIntervalMs: z.number().int().positive().default(1_000),
+  timeoutMs: z.number().int().positive().default(120_000),
+});
+export type PineconeSettings = z.infer<typeof PineconeSettings>;
+
+/** Defaults, then env (`envVar(...)`), then explicit overrides. */
+export function pineconeConfig(
+  overrides: Partial<PineconeSettings> = {},
+  env: Readonly<Record<string, string | undefined>> = process.env,
+): PineconeSettings {
+  const fromEnv = {
+    denseModel: env[envVar('DENSE_MODEL')],
+    sparseModel: env[envVar('SPARSE_MODEL')],
+    rerankModel: env[envVar('RERANK_MODEL')],
+    cloud: env[envVar('PINECONE_CLOUD')],
+    region: env[envVar('PINECONE_REGION')],
+  };
+  const parsed = PineconeSettings.safeParse({
+    ...Object.fromEntries(
+      Object.entries(fromEnv).filter(([, value]) => value?.trim()),
+    ),
+    ...overrides,
+  });
+  if (!parsed.success)
+    throw new AppError('INVALID_INPUT', 'Invalid Pinecone configuration.');
+  return parsed.data;
+}

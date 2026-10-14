@@ -1,0 +1,96 @@
+{
+  "fixture": "synthetic-orchard",
+  "frozenAtCommit": null,
+  "questions": [
+    {
+      "id": "fine-water-log",
+      "question": "What is the civil fine for falsifying the water log?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-11"]
+    },
+    {
+      "id": "application-deadline",
+      "question": "By what date must an orchard application be filed with the parks department?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-6"]
+    },
+    {
+      "id": "effective-date",
+      "question": "When does this act take effect?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-14"]
+    },
+    {
+      "id": "annual-report",
+      "question": "What report must the parks department send to the city council each January?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-12"]
+    },
+    {
+      "id": "grant-size",
+      "question": "How much money can a new fruit tree project receive to buy saplings and fencing?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-5"]
+    },
+    {
+      "id": "site-rules",
+      "question": "Which empty city land can be turned into a community fruit grove?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-4"]
+    },
+    {
+      "id": "check-ups",
+      "question": "How often do officials come to look at the trees and the fences?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-10"]
+    },
+    {
+      "id": "hydrant-hours",
+      "question": "At what hours may volunteers take water from a city hydrant?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-8"]
+    },
+    {
+      "id": "money-set-aside",
+      "question": "How much money does the act set aside from the general fund?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-13"]
+    },
+    {
+      "id": "define-steward",
+      "question": "What does orchard steward mean?",
+      "kind": "definition",
+      "expectedSectionIds": ["sec-3"]
+    },
+    {
+      "id": "define-vacant-lot",
+      "question": "What counts as a vacant lot under this act?",
+      "kind": "definition",
+      "expectedSectionIds": ["sec-3"]
+    },
+    {
+      "id": "removed-pesticide",
+      "question": "What rule about telling neighbors before spraying pesticide does the bill remove?",
+      "kind": "removed",
+      "expectedSectionIds": ["sec-9"]
+    },
+    {
+      "id": "removed-fee",
+      "question": "What was the old harvest permit fee that the bill strikes out?",
+      "kind": "removed",
+      "expectedSectionIds": ["sec-7"]
+    },
+    {
+      "id": "no-sales-tax",
+      "question": "What is the state sales tax rate on lottery tickets?",
+      "kind": "unanswerable",
+      "expectedSectionIds": []
+    },
+    {
+      "id": "no-airline",
+      "question": "Which airline serves the regional airport?",
+      "kind": "unanswerable",
+      "expectedSectionIds": []
+    }
+  ]
+}

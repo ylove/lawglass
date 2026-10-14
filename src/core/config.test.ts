@@ -17,8 +17,10 @@ import { AppError } from './model/index.js';
 import { configFileSystem } from './config-files.js';
 import {
   DEFAULT_MODELS,
+  DEFAULT_RERANK_MODELS,
   getConfigDir,
   initConfig,
+  pineconeConfig,
   providerConfig,
   redact,
   redactKey,
@@ -622,4 +624,41 @@ it('write ignores directory fsync errors on platforms without it', async () => {
       prompt: vi.fn().mockResolvedValue(secret),
     }),
   ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+});
+
+describe('Pinecone settings', () => {
+  it('provides defaults and env/override precedence', () => {
+    const defaults = pineconeConfig({}, {});
+    expect(defaults).toMatchObject({
+      cloud: 'aws',
+      region: 'us-east-1',
+      indexPrefix: BRAND.indexPrefix,
+      rerankModel: DEFAULT_RERANK_MODELS.pinecone,
+    });
+    expect(
+      pineconeConfig(
+        { denseModel: 'override' },
+        {
+          [envVar('DENSE_MODEL')]: 'env-dense',
+          [envVar('SPARSE_MODEL')]: 'env-sparse',
+          [envVar('RERANK_MODEL')]: 'env-rerank',
+          [envVar('PINECONE_REGION')]: 'eu-west-1',
+        },
+      ),
+    ).toMatchObject({
+      denseModel: 'override',
+      sparseModel: 'env-sparse',
+      rerankModel: 'env-rerank',
+      region: 'eu-west-1',
+    });
+  });
+  it.each([
+    { indexPrefix: 'BAD-' },
+    { indexPrefix: 'x'.repeat(45) + '-' },
+    { timeoutMs: 0 },
+  ])('rejects invalid settings without echoing values: %j', (settings) => {
+    expect(() => pineconeConfig(settings, {})).toThrow(
+      'Invalid Pinecone configuration.',
+    );
+  });
 });

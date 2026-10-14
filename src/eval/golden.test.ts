@@ -36,9 +36,11 @@ function parsed(fixture: string): GoldenSet {
 }
 
 describe('golden sets', () => {
-  it('has exactly one JSON file per fixture', () => {
+  it('has exactly one JSON file per real fixture (synthetic CI sets excluded)', () => {
     const files = readdirSync(goldenDirectory)
-      .filter((file) => file.endsWith('.json'))
+      .filter(
+        (file) => file.endsWith('.json') && !file.startsWith('synthetic-'),
+      )
       .sort();
     expect(files).toEqual(FIXTURES.map((fixture) => `${fixture}.json`));
   });
