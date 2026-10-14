@@ -16,7 +16,9 @@ The product name is not final and this repository will be renamed. The name live
 
 ## Demo
 
-<!-- DEMO_GIF -->
+![Asking "What does it change?" about Ohio HB 62: a cited plain-language answer, then the source drawer with struck and underlined text](docs/demo.gif)
+
+_Ohio HB 62 (135th General Assembly, as introduced), answered by Claude Sonnet 5.5 through the local `claude-cli` provider. Recorded with [`scripts/record-demo.ts`](scripts/record-demo.ts)._
 
 ## Quick start
 
@@ -191,6 +193,7 @@ node dist/cli.js --help
 - `npm run fixtures:fetch` downloads the six public documents in [`fixtures/manifest.json`](fixtures/manifest.json) into the gitignored `fixtures/downloads/`, checking SHA-256 and size. Fixtures are never committed; local fixture tests skip when the files are absent, and CI uses generated samples from [`tests/synth/`](tests/synth/). See [`fixtures/README.md`](fixtures/README.md).
 - `npm run models:fetch` pre-downloads the local models. `npm run test:models` runs the offline suite against the real models (not part of `check`, which uses fakes).
 - `npm run test:live` runs key-gated provider contract tests and spends tokens. It never runs the Claude CLI.
+- `npx tsx scripts/record-demo.ts --doc <label>` re-records the demo GIF from a running `serve` (needs Chromium from Playwright and ffmpeg).
 - `npm run smoke:package` and `npm run test:e2e` run the packed-tarball smoke and the Playwright suite locally. Set `PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/ms-playwright"` and run `npx playwright install chromium` once.
 - Unit tests block outbound HTTP, so adapters take injected fetchers and spawners.
 
