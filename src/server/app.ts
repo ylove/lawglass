@@ -440,9 +440,12 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
             registry: runtime.registry,
             retrievalMode: runtime.retrievalMode,
             chips: runtime.chips,
+            // Public servers make no extra model call for a visitor's story.
+            scenario: { enabled: !publicMode },
           },
           {
             signal,
+            deferScenario: true,
             onToken: (text) => {
               emit({ type: 'token', text });
             },
@@ -454,7 +457,14 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
           refs: result.refs,
           latencyMs: result.latencyMs,
         });
+        // Event order: token* (while writing), retrieval, done, then scenario (only when one was
+        // made). The answer is complete at `done`, so it never waits for the scenario; the
+        // scenario is generated afterwards (bounded by its own timeout) and sent before the
+        // stream closes. `done.answer` carries no scenario. Clients must keep reading after
+        // `done` (#131 renders the late event).
         emit({ type: 'done', answer: result.answer });
+        const scenario = await result.scenario;
+        if (scenario) emit({ type: 'scenario', scenario });
       },
       (error) => ({ type: 'error', error }),
     );

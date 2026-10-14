@@ -11,6 +11,7 @@ import {
 } from '../../tests/support/pipeline-env.js';
 import type { AskEvent, IngestEvent } from '../core/model/index.js';
 import { createHttpApi } from '../web/api.js';
+import { envVar } from '../core/brand.js';
 import { createLauncher } from './launch.js';
 import { startServer, type RunningServer } from './serve.js';
 
@@ -203,6 +204,7 @@ describe('launcher', () => {
     const launch = createLauncher({
       start,
       open,
+      env: {},
       write: (t) => {
         out += t;
       },
@@ -224,6 +226,23 @@ describe('launcher', () => {
     });
     expect(out).toContain('http://localhost:4317');
     expect(running.closed).toHaveBeenCalledOnce();
+  });
+
+  test.each([
+    ['--no-open', { noOpen: true }, {}],
+    ['BROWSER=none', {}, { BROWSER: 'none' }],
+    ['NO_OPEN=1', {}, { [envVar('NO_OPEN')]: '1' }],
+    ['NO_OPEN=true', {}, { [envVar('NO_OPEN')]: 'true' }],
+  ])('does not open a browser with %s', async (_name, request, environment) => {
+    const open = vi.fn();
+    await createLauncher({
+      start: vi.fn(() => Promise.resolve(fakeServer())),
+      open,
+      env: environment,
+      write: () => undefined,
+      untilStopped: () => Promise.resolve(),
+    })(env.runtime, { publicMode: false, ...request });
+    expect(open).not.toHaveBeenCalled();
   });
 
   test('never opens a browser for a public deployment, and passes the host', async () => {

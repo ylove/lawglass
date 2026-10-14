@@ -19,16 +19,22 @@ h4 {
   margin: 0 0 0.5rem;
 }
 h1 {
-  font-size: 1.5rem;
+  font-size: 1.4rem;
+  font-weight: 600;
 }
 h2 {
   font-size: 1.3rem;
+  font-weight: 500;
+  letter-spacing: -0.02em;
 }
 h3 {
-  font-size: 1.1rem;
+  font-size: 1.2rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
 }
 h4 {
-  font-size: 1rem;
+  font-size: 0.9rem;
+  font-weight: 600;
 }
 p {
   margin: 0 0 0.75rem;
@@ -76,15 +82,16 @@ a {
 .card {
   background: var(--surface);
   border: 1px solid var(--line);
-  border-radius: 0.5rem;
-  padding: 1rem;
+  border-radius: var(--radius);
+  padding: 1.25rem;
   margin-bottom: 1rem;
 }
 .note {
   background: var(--warn-bg);
-  border-left: 4px solid var(--muted);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
   padding: 0.5rem 0.75rem;
-  border-radius: 0.25rem;
+  border-radius: var(--radius-sm);
   font-size: 0.95rem;
 }
 .error {
@@ -94,7 +101,8 @@ a {
 
 label {
   display: block;
-  font-weight: 600;
+  font-size: 0.9rem;
+  font-weight: 500;
   margin-bottom: 0.25rem;
 }
 .row {
@@ -111,8 +119,9 @@ input[type='text'] {
   font: inherit;
   color: var(--ink);
   background: var(--surface);
-  border: 2px solid var(--muted);
-  border-radius: 0.375rem;
+  /* Inputs use the stronger muted border so the field edge meets 3:1 non-text contrast. */
+  border: 1px solid var(--muted);
+  border-radius: var(--radius-sm);
 }
 .btn,
 .chip {
@@ -121,13 +130,15 @@ input[type='text'] {
   font: inherit;
   color: var(--ink);
   background: var(--surface);
-  border: 2px solid var(--accent);
-  border-radius: 0.375rem;
+  border: 1px solid var(--chip);
+  border-radius: var(--radius-sm);
   cursor: pointer;
 }
 .btn.primary {
-  background: var(--accent);
-  color: var(--accent-ink);
+  background: var(--btn);
+  border-color: var(--btn);
+  color: var(--btn-ink);
+  font-weight: 600;
 }
 .btn.danger {
   border-color: var(--err-ink);
@@ -139,4 +150,12 @@ input[type='text'] {
 .btn[aria-disabled='true'] {
   opacity: 0.55;
   cursor: not-allowed;
+}
+/* Flat, readable disabled state for primary buttons (chips keep the opacity treatment). */
+.btn.primary:disabled,
+.btn.primary[aria-disabled='true'] {
+  opacity: 1;
+  background: var(--line);
+  border-color: var(--line);
+  color: var(--muted);
 }

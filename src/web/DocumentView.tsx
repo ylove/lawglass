@@ -25,11 +25,14 @@ export function DocumentView({
   config,
   docId,
   notice,
+  mastheadSlot,
 }: {
   api: ApiClient;
   config: ClientConfig;
   docId: string;
   notice?: string | null;
+  /** The masthead element that should hold the bill's title; falls back to inline. */
+  mastheadSlot?: HTMLElement | null;
 }) {
   const [detail, setDetail] = useState<DocDetail | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -129,11 +132,12 @@ export function DocumentView({
   return (
     <div className="doc">
       <NoticeBar notice={notice} />
-      <MetadataHeader detail={detail} />
+      <MetadataHeader detail={detail} slot={mastheadSlot ?? null} />
       <SummarySlot />
       <ChipRow
         chips={config.chips}
         busy={busy}
+        activeLabel={turn?.label ?? null}
         onPick={(chipId, label) => {
           void run({ chipId }, label);
         }}

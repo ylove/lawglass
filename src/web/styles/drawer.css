@@ -1,7 +1,7 @@
 .drawer-backdrop {
   position: fixed;
   inset: 0;
-  background: rgb(0 0 0 / 0.45);
+  background: rgb(10 17 29 / 0.55);
   display: flex;
   justify-content: flex-end;
   align-items: stretch;
@@ -31,18 +31,25 @@
 .excerpt {
   border-left: 4px solid var(--line);
   padding-left: 0.75rem;
+  border-radius: 2px;
 }
 .excerpt-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* Struck + amber for removed text, underlined + light blue for added text. */
 del {
   text-decoration: line-through;
   background: var(--del-bg);
-  color: var(--muted);
+  color: var(--del-ink);
+  padding: 0 2px;
+  border-radius: 2px;
 }
 ins {
   text-decoration: underline;
   text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
   background: var(--ins-bg);
+  padding: 0 2px;
+  border-radius: 2px;
 }
