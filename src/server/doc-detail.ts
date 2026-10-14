@@ -158,6 +158,7 @@ export async function buildDocDetail(
     externalRefs: doc.externalRefs,
     warnings: doc.warnings,
     hasLineNumbers: hasLineNumbers(doc.sections),
+    ...(doc.scan ? { scan: doc.scan } : {}),
     ...(history ? { history: truncateHistory(history) } : {}),
     ...(preview ? { preview } : {}),
     ...(personas.length ? { scenarioPersonas: personas } : {}),

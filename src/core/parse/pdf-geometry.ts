@@ -24,6 +24,26 @@ export interface PdfTextItem {
   fontSize: number;
   /** PDF.js's loaded font name; keys the glyph-width table. */
   fontName: string;
+  /**
+   * Rise of the baseline per point of x. Scanned pages are slightly skewed (Issue 8 reads
+   * 0.008 to 0.012), so a line's baseline climbs across the page. Absent means level.
+   */
+  slope?: number;
+  /** A whitespace-only text item came immediately before this one in the content stream. */
+  spaceBefore?: boolean;
+}
+
+/** The baseline's height where it crosses x = 0: one value for every item of a skewed line. */
+export function lineY(item: Pick<PdfTextItem, 'x' | 'y' | 'slope'>): number {
+  return item.y - (item.slope ?? 0) * item.x;
+}
+
+/** The baseline's height at `x`, following the item's own direction. */
+export function baselineAt(
+  item: Pick<PdfTextItem, 'x' | 'y' | 'slope'>,
+  x: number,
+): number {
+  return item.y + (item.slope ?? 0) * (x - item.x);
 }
 
 /** A visible horizontal rule after the current transform: a candidate strike or underline. */
@@ -46,7 +66,7 @@ export interface Rect {
 /** Advance widths by font, then by character, in the font's own units. */
 export type GlyphWidths = ReadonlyMap<string, ReadonlyMap<string, number>>;
 
-type Matrix = readonly [number, number, number, number, number, number];
+export type Matrix = readonly [number, number, number, number, number, number];
 
 /**
  * Thresholds, all relative to the text baseline and in ems of the item's font size so they
@@ -135,7 +155,7 @@ const QUADRATIC_CURVE_TO = 3;
 const CLOSE_PATH = 4;
 
 // PDF.js passes matrices as plain arrays or typed arrays depending on the operator.
-const matrixArgs = z.preprocess(
+export const matrixArgs = z.preprocess(
   (value) =>
     value instanceof Float32Array || value instanceof Float64Array
       ? Array.from(value)
@@ -154,7 +174,7 @@ const pathArgs = z.tuple([
   z.tuple([z.union([z.instanceof(Float32Array), z.array(z.number())])]),
   z.unknown(),
 ]);
-const formArgs = z.tuple([matrixArgs.nullable(), z.unknown()]);
+export const formArgs = z.tuple([matrixArgs.nullable(), z.unknown()]);
 const lineWidthArgs = z.tuple([z.number()]);
 // PDF.js converts every colour space to "#rrggbb" for these operators.
 const colourArgs = z.tuple([z.string().regex(/^#[0-9a-f]{6}$/i)]);
@@ -165,7 +185,7 @@ const fontArgs = z.tuple([z.string(), z.unknown()]);
 const glyph = z.object({ unicode: z.string(), width: z.number() });
 
 /** `m` then `n`, as PDF's `cm` operator composes them onto the current transform. */
-function concat(m: Matrix, n: Matrix): Matrix {
+export function concat(m: Matrix, n: Matrix): Matrix {
   return [
     m[0] * n[0] + m[2] * n[1],
     m[1] * n[0] + m[3] * n[1],
@@ -176,7 +196,7 @@ function concat(m: Matrix, n: Matrix): Matrix {
   ];
 }
 
-function apply(m: Matrix, x: number, y: number): [number, number] {
+export function apply(m: Matrix, x: number, y: number): [number, number] {
   return [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
 }
 
@@ -518,7 +538,11 @@ function bucketFor(
   segment: MarkSegment,
   item: PdfTextItem,
 ): Bucket | undefined {
-  const kind = classifyMarkHeight(segment.y, item);
+  // A rule is level but a skewed line's baseline is not: compare at the rule's middle.
+  const kind = classifyMarkHeight(segment.y, {
+    fontSize: item.fontSize,
+    y: baselineAt(item, (segment.x0 + segment.x1) / 2),
+  });
   if (!kind || segment.thickness > GEOMETRY.maxBarEm * item.fontSize)
     return undefined;
   if (kind === 'ambiguous') return kind;
