@@ -75,7 +75,7 @@ export function makeCongressionalBillXml(): SyntheticSample<CongressionalGroundT
         jurisdiction: 'United States',
         session: '119th CONGRESS, 1st Session',
         version: 'Introduced-in-Senate',
-        sponsors: ['Senator Rowan Example', 'Senator Avery Sample'],
+        sponsors: ['Senator Rowan Example'],
         source: 'structured',
       },
       definitions: [

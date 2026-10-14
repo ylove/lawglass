@@ -70,8 +70,6 @@ function runMetadataChip(
   metadata: BillMetadata,
   onToken: ((text: string) => void) | undefined,
 ): ChipRun {
-  // Structured sources (XML) merge sponsors and cosponsors into one list, so the wording must
-  // be true either way: it says "listed on the bill", not "the sponsors are".
   const names = metadata.sponsors?.filter((s) => s.trim() !== '') ?? [];
   const text =
     names.length === 0

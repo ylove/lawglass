@@ -70,7 +70,7 @@ describe('congressional XML reader round-trip', () => {
           : null,
         session: `${form.querySelector('congress')!.textContent}, ${form.querySelector('session')!.textContent}`,
         version: doc.documentElement.getAttribute('bill-stage'),
-        sponsors: Array.from(form.querySelectorAll('sponsor,cosponsor')).map(
+        sponsors: Array.from(form.querySelectorAll('sponsor')).map(
           (element) => element.textContent,
         ),
         source: 'structured',
