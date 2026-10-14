@@ -16,6 +16,12 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # onnxruntime-node's postinstall downloads optional CUDA binaries from api.nuget.org on Linux.
+  # The local models run on CPU (those binaries ship in the package), and that download has
+  # timed out on runners, failing npm ci. Skip it.
+  ONNXRUNTIME_NODE_INSTALL: skip
+
 jobs:
   local-models:
     name: local-models (node ${{ matrix.node }})
