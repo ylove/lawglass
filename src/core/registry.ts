@@ -176,6 +176,16 @@ export class Registry {
     return this.exclusive(() => this.readEntries());
   }
 
+  /**
+   * Whether the document is still listed. Deliberately lock-free: the answer cache calls this
+   * while holding its own per-document lock, and `remove` holds the registry lock while it waits
+   * for that same cache lock, so taking the registry lock here could deadlock. The registry file
+   * is replaced atomically (rename), so an unlocked read sees either the old or the new list.
+   */
+  async isRegistered(docId: string): Promise<boolean> {
+    return (await this.readEntries()).some((entry) => entry.docId === docId);
+  }
+
   add(doc: NormalizedDoc, options: AddDocumentOptions): Promise<RegistryEntry> {
     return this.exclusive(async () => {
       const parsedDoc = NormalizedDoc.safeParse(doc);
