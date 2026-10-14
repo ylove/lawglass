@@ -59,6 +59,31 @@ function clock(): { now: () => Date; set: (iso: string) => void } {
 }
 
 describe('Registry', () => {
+  it('updates cached metadata and warnings while preserving label, recency, and usage', async () => {
+    const r = new Registry(dir);
+    const original = doc(id('a'));
+    const entry = await r.add(original, {
+      label: 'one',
+      backend: 'local',
+      usage: { embedTokens: 10 },
+    });
+    const updated = {
+      ...original,
+      metadata: { ...original.metadata, title: 'Official title' },
+      warnings: ['History unavailable'],
+    };
+    expect(await r.updateDocument(updated)).toEqual({
+      ...entry,
+      title: 'Official title',
+    });
+    expect(await r.getDocument(original.docId)).toEqual(updated);
+    await expect(r.updateDocument(doc(id('b')))).rejects.toMatchObject({
+      code: 'DOC_NOT_FOUND',
+    });
+    await expect(
+      r.updateDocument({ ...original, docId: '../bad' }),
+    ).rejects.toThrow('The normalized document is invalid.');
+  });
   it('adds entries and stores the document privately (0600 file, 0700 dir)', async () => {
     const r = new Registry(dir);
     const entry = await r.add(doc(id('a')), { label: 'one', backend: 'local' });

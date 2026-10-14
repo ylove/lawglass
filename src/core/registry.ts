@@ -2,6 +2,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { AnswerCache } from './answer-cache.js';
+import { deleteHistory } from './history/history-store.js';
 import {
   AppError,
   DocSummary,
@@ -260,6 +261,28 @@ export class Registry {
         if (!isMissingFile(error))
           throw storageError('The cached document could not be removed.');
       }
+      await deleteHistory(this.configDir, docId, this.fs);
+    });
+  }
+
+  /** Refresh official-record metadata and warnings without re-indexing or spending tokens. */
+  updateDocument(doc: NormalizedDoc): Promise<RegistryEntry> {
+    return this.exclusive(async () => {
+      const parsed = NormalizedDoc.safeParse(doc);
+      if (!parsed.success)
+        throw storageError('The normalized document is invalid.');
+      const entries = await this.readEntries();
+      const entry = entries.find((item) => item.docId === doc.docId);
+      if (!entry) throw new AppError('DOC_NOT_FOUND');
+      await writePrivateJson(
+        this.documentPath(doc.docId),
+        parsed.data,
+        this.fs,
+      );
+      entry.title = parsed.data.metadata.title;
+      entry.billNumber = parsed.data.metadata.billNumber;
+      await writePrivateJson(this.path, entries, this.fs);
+      return entry;
     });
   }
 
