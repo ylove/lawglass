@@ -1,12 +1,13 @@
-import { load } from 'cheerio';
+import type { CheerioAPI } from 'cheerio';
+import { prepareHtml } from '../parse/html.js';
 import { CandidateLink } from '../model/index.js';
 import { formatFromExtension } from './sniff.js';
 
 export function findCandidateLinks(
-  html: string,
+  html: string | CheerioAPI,
   baseUrl: string,
 ): CandidateLink[] {
-  const $ = load(html);
+  const $ = typeof html === 'string' ? prepareHtml(html).dom : html;
   const candidates: CandidateLink[] = [];
   const seen = new Set<string>();
   $('a[href]').each((_index, element) => {
@@ -33,22 +34,25 @@ export function findCandidateLinks(
   return candidates;
 }
 
-export function isLikelyWrapper(html: string): boolean {
-  const $ = load(html);
-  $('script, style, nav, header, footer').remove();
-  // Cheerio's text() concatenates siblings; preserve boundaries for headings and body words.
-  $(
-    'address, article, aside, blockquote, br, dd, div, dl, dt, fieldset, figcaption, figure, ' +
-      'h1, h2, h3, h4, h5, h6, hr, li, main, ol, p, pre, section, table, td, th, tr, ul',
-  ).each((_index, element) => {
-    $(element).prepend('\n').append('\n');
-  });
-  const text = $('body').text().replace(/\s+/g, ' ').trim();
+export function isLikelyWrapper(html: string | CheerioAPI): boolean {
+  const $ = typeof html === 'string' ? prepareHtml(html).dom : html;
+  const body = $('body').clone();
+  body.find('script, style, nav, header, footer').remove();
+  // Keep block boundaries without changing the DOM that the bill parser will receive.
+  body
+    .find(
+      'address, article, aside, blockquote, br, dd, div, dl, dt, fieldset, figcaption, figure, ' +
+        'h1, h2, h3, h4, h5, h6, hr, li, main, ol, p, pre, section, table, td, th, tr, ul',
+    )
+    .each((_index, element) => {
+      $(element).prepend('\n').append('\n');
+    });
+  const text = body.text().replace(/\s+/g, ' ').trim();
   const hasSection = /\b(?:section|sec\.)\s+\d+[a-z]?\s*\./i.test(text);
   const subsections = text.match(/\((?:[a-z]|\d+)\)/gi) ?? [];
   const billLike =
     hasSection && (text.length >= 400 || subsections.length >= 2);
   return (
-    !billLike && findCandidateLinks(html, 'https://wrapper.invalid/').length > 0
+    !billLike && findCandidateLinks($, 'https://wrapper.invalid/').length > 0
   );
 }

@@ -1,4 +1,22 @@
 import ipaddr from 'ipaddr.js';
+import { isIP } from 'node:net';
+
+/** Loopback only, unlike the broader SSRF policy below. Mapped IPv6 uses its IPv4 range. */
+export function isLoopbackAddress(ip: string): boolean {
+  if (ip.includes('%') || !isIP(ip)) return false;
+  if (isIP(ip) === 6 && ip.includes('.')) {
+    // ipaddr.js treats the obsolete ::a.b.c.d notation as mapped IPv4. Convert the dotted
+    // suffix to hex first so only the actual ::ffff:0:0/96 network counts as mapped.
+    const split = ip.lastIndexOf(':') + 1;
+    const suffix = ipaddr.IPv4.parse(ip.slice(split))
+      .toIPv4MappedAddress()
+      .parts.slice(-2)
+      .map((part) => part.toString(16))
+      .join(':');
+    ip = ip.slice(0, split) + suffix;
+  }
+  return ipaddr.process(ip).range() === 'loopback';
+}
 
 // Keep the policy explicit: special-use and documentation networks are not fetch targets.
 const IPV4_BLOCKS = [
