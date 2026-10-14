@@ -4,8 +4,9 @@
  * public-mode policy and error mapping.
  */
 import { getConnInfo } from '@hono/node-server/conninfo';
-import { Hono, type Context } from 'hono';
+import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import packageJson from '../../package.json' with { type: 'json' };
 import type { CliRuntime } from '../cli/runtime.js';
@@ -23,6 +24,7 @@ import {
   type IngestEvent,
 } from '../core/model/index.js';
 import { parsePdf as defaultParsePdf } from '../core/parse/index.js';
+import { readParseLimits } from '../core/parse/limits.js';
 import { ask, ingest, sectionExcerpt } from '../core/pipeline/index.js';
 import type { RegistryEntry } from '../core/registry.js';
 import { buildDocDetail } from './doc-detail.js';
@@ -31,6 +33,8 @@ import { SlidingWindowLimiter } from './rate-limit.js';
 import { createSummaryService } from './summary.js';
 import { staticAssets } from './static.js';
 import { noopTurnstile, type TurnstileVerifier } from './turnstile.js';
+import { isLoopbackHost } from './bind.js';
+import { createSessionToken, localSession } from './session.js';
 
 export interface PublicLimits {
   questionsPerHour: number;
@@ -62,6 +66,8 @@ export interface AppOptions {
   trustProxy?: boolean;
   /** Reject requests whose Host is not loopback (DNS-rebinding defence). Default: not public. */
   localOnly?: boolean;
+  /** Launch token; generated when omitted. Ignored in public mode. */
+  sessionToken?: string | undefined;
   now?: () => number;
 }
 
@@ -88,9 +94,6 @@ export function toErrorPayload(error: unknown): ErrorPayload {
 function invalid(userMessage: string): AppError {
   return new AppError('INVALID_INPUT', userMessage, { userMessage });
 }
-
-const isLoopbackHost = (host: string): boolean =>
-  /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(host);
 
 export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   const publicMode = options.publicMode ?? false;
@@ -140,12 +143,14 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     const origin = c.req.header('origin');
     if (origin && c.req.path.startsWith('/api/')) {
       let originHost = '';
+      let requestHost = host;
       try {
         originHost = new URL(origin).host;
+        requestHost = new URL(`http://${host}`).host;
       } catch {
         /* treated as a mismatch below */
       }
-      if (originHost !== host)
+      if (originHost !== requestHost)
         return c.json(
           {
             error: { code: 'INVALID_INPUT', message: 'Cross-origin request.' },
@@ -155,6 +160,53 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     }
     await next();
   });
+
+  app.use('/api/*', async (c, next) => {
+    const method = c.req.method;
+    const canSpendOrChange =
+      method === 'POST' ||
+      method === 'DELETE' ||
+      // HEAD reaches the GET handler, so it can start the same paid generation.
+      ((method === 'GET' || method === 'HEAD') &&
+        /^\/api\/docs\/[^/]+\/summary$/.test(c.req.path));
+    if (canSpendOrChange && c.req.header('sec-fetch-site') === 'cross-site')
+      return c.json(
+        { error: { code: 'INVALID_INPUT', message: 'Cross-site request.' } },
+        403,
+      );
+    if (
+      method === 'POST' &&
+      c.req.header('content-type')?.split(';')[0]?.trim().toLowerCase() !==
+        'application/json'
+    )
+      return c.json(
+        {
+          error: {
+            code: 'INVALID_INPUT',
+            message: 'Content-Type must be application/json.',
+          },
+        },
+        415,
+      );
+    await next();
+  });
+
+  if (!publicMode)
+    app.use('*', localSession(options.sessionToken ?? createSessionToken()));
+
+  const limitPostBody: MiddlewareHandler = bodyLimit({
+    maxSize: 16 * 1024,
+    onError: (c) =>
+      c.json(
+        {
+          error: { code: 'TOO_LARGE', message: 'Request body exceeds 16 KB.' },
+        },
+        413,
+      ),
+  });
+  const postBodyLimit: MiddlewareHandler = (c, next) =>
+    c.req.method === 'POST' ? limitPostBody(c, next) : next();
+  app.use('/api/*', postBodyLimit);
 
   app.onError((error, c) => {
     if (isAppError(error))
@@ -337,7 +389,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     )
       throw new AppError('DOC_CAP_REACHED');
 
-    // The pipeline defaults to core/parse's parsePdf, so the cap must wrap that too.
+    // Resource policy reaches both the default parser and runtime-injected parsers.
     const parsePdf = runtime.parsePdf ?? defaultParsePdf;
     ingestsInFlight++;
     return sse<IngestEvent>(
@@ -354,16 +406,11 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
               now: runtime.now,
               // Public servers never evict: a visitor must not push out someone else's document.
               maxDocs: publicMode ? limits.maxDocs : runtime.maxDocs,
-              parsePdf: publicMode
-                ? async (bytes, context) => {
-                    const doc = await parsePdf(bytes, context);
-                    if ((doc.pageCount ?? 0) > limits.maxPages)
-                      throw new AppError('TOO_LARGE', undefined, {
-                        userMessage: `This public server accepts documents up to ${String(limits.maxPages)} pages.`,
-                      });
-                    return doc;
-                  }
-                : parsePdf,
+              parseLimits: {
+                ...readParseLimits(publicMode),
+                ...(publicMode ? { maxPages: limits.maxPages } : {}),
+              },
+              parsePdf,
             },
             {
               ...(body.label === undefined ? {} : { label: body.label }),

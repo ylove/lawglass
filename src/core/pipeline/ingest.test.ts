@@ -1,3 +1,7 @@
+import { BRAND } from '../brand.js';
+import { readParseLimits } from '../parse/limits.js';
+import { MemoryBackend } from '../../../tests/contracts/memory-backend.js';
+import { ScriptedProvider } from '../../../tests/contracts/scripted-provider.js';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { join } from 'node:path';
 import { AnswerCache, type AnswerCacheKey } from '../answer-cache.js';
@@ -20,6 +24,7 @@ import { ingest, type IngestDeps, type IngestProgress } from './ingest.js';
 let env: PipelineEnv;
 afterEach(async () => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   await env.cleanup();
 });
 
@@ -545,4 +550,93 @@ test('metadata text does not repeat header lines that the body already starts wi
   await ingest('https://example.gov/a.txt', deps());
   expect(seen).toHaveLength(1);
   expect(seen[0]?.match(/Short title/g)).toHaveLength(2); // heading line + body, not three times
+});
+
+test('threads the ingest signal and env-based resource limits to fetch and PDF parsing', async () => {
+  vi.stubEnv(`${BRAND.envPrefix}_MAX_PAGES`, '7');
+  vi.stubEnv(`${BRAND.envPrefix}_PARSE_TIMEOUT_MS`, '50');
+  const sample = await makeAmendingBillPdf();
+  env.serve('https://example.gov/limits.pdf', sample, 'application/pdf');
+  const parser = vi.fn(stubPdfParser(sample));
+  const fetcher = vi.fn(env.runtime.fetcher);
+  const controller = new AbortController();
+  await ingest(
+    'https://example.gov/limits.pdf',
+    deps({ parsePdf: parser, fetcher }),
+    { signal: controller.signal },
+  );
+  expect(parser).toHaveBeenCalledWith(
+    sample.bytes,
+    expect.objectContaining({
+      signal: controller.signal,
+      maxPages: 7,
+      timeoutMs: 50,
+    }),
+  );
+  expect(fetcher).toHaveBeenCalledWith(
+    'https://example.gov/limits.pdf',
+    expect.objectContaining({
+      signal: controller.signal,
+      parseLimits: expect.objectContaining({
+        maxPages: 7,
+        timeoutMs: 50,
+      }) as unknown,
+    }),
+  );
+});
+
+test('refuses large plain text before indexing with the configured chunk ceiling', async () => {
+  vi.stubEnv(`${BRAND.envPrefix}_MAX_CHUNKS`, '3');
+  const backend = new MemoryBackend();
+  const provider = new ScriptedProvider();
+  const upsert = vi.spyOn(backend, 'upsertChunks');
+  env.serve(
+    'https://example.gov/large.txt',
+    textSample('The board shall fund towns. '.repeat(5_000)),
+    'text/plain',
+  );
+  await expect(
+    ingest('https://example.gov/large.txt', deps({ backend, provider })),
+  ).rejects.toMatchObject({
+    code: 'TOO_LARGE',
+    userMessage: expect.stringContaining('3 chunks') as unknown,
+  });
+  expect(upsert).not.toHaveBeenCalled();
+  expect(await env.registry.list()).toEqual([]);
+});
+
+test('also applies the chunk ceiling to enriched definitions and cached documents', async () => {
+  env.serve(
+    'https://example.gov/defs.txt',
+    textSample(
+      '“town” means a municipality. “board” means the governing body.',
+    ),
+    'text/plain',
+  );
+  const limits = { ...readParseLimits(false, {}), maxChunks: 1 };
+  await expect(
+    ingest('https://example.gov/defs.txt', deps({ parseLimits: limits })),
+  ).rejects.toMatchObject({ code: 'TOO_LARGE' });
+  const result = await ingest('https://example.gov/defs.txt', deps());
+  expect(result.stats.chunkCountsByType.definition).toBe(2);
+  await expect(
+    ingest('https://example.gov/defs.txt', deps({ parseLimits: limits })),
+  ).rejects.toMatchObject({ code: 'TOO_LARGE' });
+  expect(await env.backend.hasDocument(result.doc.docId)).toBe(true);
+});
+
+test('rejects non-PDF bytes from injected fetchers under the public resource policy', async () => {
+  env.serve(
+    'https://example.gov/large.txt',
+    textSample('x'.repeat(100)),
+    'text/plain',
+  );
+  await expect(
+    ingest(
+      'https://example.gov/large.txt',
+      deps({
+        parseLimits: { ...readParseLimits(true, {}), maxNonPdfBytes: 50 },
+      }),
+    ),
+  ).rejects.toMatchObject({ code: 'TOO_LARGE' });
 });

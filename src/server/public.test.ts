@@ -19,7 +19,8 @@ import type { ChipRunner } from '../core/pipeline/index.js';
 import { scenarioProvider } from '../../tests/support/scenario-provider.js';
 import { scenarioExcerpts } from '../../tests/synth/scenario.js';
 import { readSseEvents } from '../web/sse.js';
-import { createApp, type AppOptions } from './app.js';
+import { createSessionTestApp as createApp } from '../../tests/support/session-app.js';
+import type { AppOptions } from './app.js';
 
 let env: PipelineEnv;
 beforeEach(async () => {

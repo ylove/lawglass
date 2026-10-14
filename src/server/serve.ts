@@ -7,6 +7,9 @@ import { serve as nodeServe } from '@hono/node-server';
 import type { CliRuntime } from '../cli/runtime.js';
 import { AppError } from '../core/model/index.js';
 import { createApp, type AppOptions } from './app.js';
+import { validateBindHost } from './bind.js';
+import { isLoopbackAddress } from '../core/fetch/ip.js';
+import { createSessionToken } from './session.js';
 
 export type BrowserOpener = (url: string) => void | Promise<void>;
 
@@ -31,6 +34,7 @@ export interface StartServerOptions extends AppOptions {
 }
 
 export interface RunningServer {
+  /** Browser launch link, including a fresh session token in local mode. Use its origin for APIs. */
   url: string;
   port: number;
   close(): Promise<void>;
@@ -41,18 +45,17 @@ export function defaultWebRoot(): string {
   return join(dirname(fileURLToPath(import.meta.url)), 'web');
 }
 
-const LOOPBACK = '127.0.0.1';
-
 export async function startServer(
   runtime: CliRuntime,
   options: StartServerOptions = {},
 ): Promise<RunningServer> {
-  const host = options.host ?? LOOPBACK;
+  const host = validateBindHost(options.host, options.publicMode);
+  const sessionToken = options.publicMode ? undefined : createSessionToken();
   const app = createApp(runtime, {
     webRoot: defaultWebRoot(),
-    localOnly:
-      !options.publicMode && ['127.0.0.1', 'localhost', '::1'].includes(host),
     ...options,
+    localOnly: !options.publicMode && isLoopbackAddress(host),
+    sessionToken,
   });
   const server = await new Promise<Server>((resolve, reject) => {
     const s = nodeServe(
@@ -73,11 +76,12 @@ export async function startServer(
   });
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : 0;
-  const urlHost =
-    host === LOOPBACK ? 'localhost' : isIP(host) === 6 ? `[${host}]` : host;
+  const boundHost =
+    typeof address === 'object' && address ? address.address : host;
+  const urlHost = isIP(boundHost) === 6 ? `[${boundHost}]` : boundHost;
   return {
     port,
-    url: `http://${urlHost}:${String(port)}`,
+    url: `http://${urlHost}:${String(port)}${sessionToken ? `/?k=${sessionToken}` : ''}`,
     close: () =>
       new Promise((resolve) => {
         server.closeAllConnections();

@@ -7,7 +7,7 @@ import { afterEach, expect, test, vi } from 'vitest';
 import { envVar } from '../core/brand.js';
 import { getConfigDir } from '../core/config.js';
 import { defaultCacheDir } from '../core/fetch/index.js';
-import { createApp } from '../server/app.js';
+import { createSessionTestApp as createApp } from '../../tests/support/session-app.js';
 import { createRuntimeFrom } from './runtime.js';
 
 let dispatcher: Agent | undefined;

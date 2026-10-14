@@ -19,6 +19,7 @@ import {
 import { promptChoice, promptSecret } from './secret-prompt.js';
 import { createLauncher, type Launcher } from '../server/launch.js';
 import { prepareIngestSource } from './ingest-source.js';
+import { validateBindHost } from '../server/bind.js';
 
 export interface CliDependencies {
   init?: (options: {
@@ -153,14 +154,28 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
     )
     .option('--backend <backend>', 'retrieval backend (pinecone or local)')
     .option('--no-open', 'do not open the browser')
-    .action(async (url: string, options: BackendOption & OpenOptions) => {
-      const { runtime } = await ingestSource(url, options);
-      // The UI lists the most recently used document first, which is the one just ingested.
-      await (dependencies.serve ?? createLauncher({ write }))(runtime, {
-        publicMode: false,
-        ...noOpenRequest(options),
-      });
-    });
+    .option('--host <host>', 'IP literal or localhost (default 127.0.0.1)')
+    .option('--port <port>', 'local server port (default 4317)')
+    .option('--public', 'explicitly allow a network bind; question chips only')
+    .action(
+      async (
+        url: string,
+        options: BackendOption &
+          OpenOptions &
+          PortOptions & { public?: boolean },
+      ) => {
+        validateBindHost(options.host, options.public);
+        const port = parsePort(options.port);
+        const { runtime } = await ingestSource(url, options);
+        // The UI lists the most recently used document first, which is the one just ingested.
+        await (dependencies.serve ?? createLauncher({ write }))(runtime, {
+          publicMode: options.public ?? false,
+          ...(options.host === undefined ? {} : { host: options.host }),
+          ...(port === undefined ? {} : { port }),
+          ...noOpenRequest(options),
+        });
+      },
+    );
 
   program
     .command('init')
@@ -294,10 +309,12 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
           PortOptions &
           OpenOptions & { public?: boolean },
       ) => {
+        validateBindHost(options.host, options.public);
+        const port = parsePort(options.port);
         const runtime = await open(options, true);
         await (dependencies.serve ?? createLauncher({ write }))(runtime, {
           publicMode: options.public ?? false,
-          port: parsePort(options.port),
+          port,
           host: options.host,
           ...noOpenRequest(options),
         });

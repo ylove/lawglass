@@ -1,6 +1,12 @@
 import { createHash } from 'node:crypto';
 import { load, type CheerioAPI } from 'cheerio';
 import { z } from 'zod';
+import { ParseBudget } from './limits.js';
+import {
+  assertHtmlBytes,
+  assertHtmlDepth,
+  withHtmlDepthLimit,
+} from './html-safety.js';
 import {
   AppError,
   EMPTY_METADATA,
@@ -20,6 +26,8 @@ import type { TextParseOptions } from './text.js';
 export type HtmlParseOptions = TextParseOptions & {
   /** HTTP `Content-Type` header value, when the fetch layer has one. Its charset wins over `<meta>`. */
   contentType?: string;
+  maxHtmlBytes?: number | undefined;
+  preparedHtml?: PreparedHtml | undefined;
 };
 
 // domhandler is cheerio's own dependency; derive its node types rather than depend on it.
@@ -92,12 +100,58 @@ interface ClassRule {
   status: SpanStatus;
 }
 
+/** Nested `@media` levels flattened before the rest is ignored. */
+const MAX_AT_RULE_DEPTH = 4;
+
+/**
+ * Remove CSS comments in one pass. A lazy regex here rescans to the end of the text
+ * for every unclosed `/*`, which is quadratic on hostile input.
+ */
+function stripCssComments(css: string): string {
+  let out = '';
+  let at = 0;
+  while (at < css.length) {
+    const open = css.indexOf('/*', at);
+    if (open < 0) return out + css.slice(at);
+    out += css.slice(at, open);
+    const close = css.indexOf('*/', open + 2);
+    if (close < 0) return out;
+    at = close + 2;
+  }
+  return out;
+}
+
+/**
+ * The `selectors { body }` blocks of a flat stylesheet, in one linear pass. Matches what
+ * `/([^{}]+)\{([^{}]*)\}/g` would find, without its quadratic backtracking on brace-free text.
+ */
+function cssBlocks(css: string): [selectors: string, body: string][] {
+  const blocks: [string, string][] = [];
+  let segmentStart = 0;
+  for (let i = 0; i < css.length; i++) {
+    const ch = css[i];
+    if (ch === '}') {
+      segmentStart = i + 1;
+      continue;
+    }
+    if (ch !== '{') continue;
+    let j = i + 1;
+    while (j < css.length && css[j] !== '{' && css[j] !== '}') j++;
+    if (i > segmentStart && css[j] === '}') {
+      blocks.push([css.slice(segmentStart, i), css.slice(i + 1, j)]);
+      i = j;
+    }
+    segmentStart = i + 1;
+  }
+  return blocks;
+}
+
 /**
  * At-rules are handled conservatively: the contents of `@media screen` / `@media all` (the
  * rendering a reader sees) are kept as ordinary rules; every other at-rule (`@media print`,
  * `@supports`, `@page`, `@font-face`, ...) is ignored, so a print-only style never marks text.
  */
-function flattenAtRules(css: string): string {
+function flattenAtRules(css: string, nesting = 0): string {
   let out = '';
   let at = 0;
   while (at < css.length) {
@@ -118,8 +172,12 @@ function flattenAtRules(css: string): string {
       else if (css[end] === '}' && --depth === 0) break;
     }
     const prelude = css.slice(start, open).trim().toLowerCase();
-    if (/^@media\s+(?:only\s+)?(?:screen|all)\s*$/.test(prelude))
-      out += flattenAtRules(css.slice(open + 1, end));
+    // Real stylesheets nest @media a level or two; the cap keeps hostile nesting linear.
+    if (
+      nesting < MAX_AT_RULE_DEPTH &&
+      /^@media\s+(?:only\s+)?(?:screen|all)\s*$/.test(prelude)
+    )
+      out += flattenAtRules(css.slice(open + 1, end), nesting + 1);
     at = end + 1;
   }
   return out;
@@ -132,10 +190,8 @@ function flattenAtRules(css: string): string {
  */
 function readClassRules(css: string): ClassRule[] {
   const rules: ClassRule[] = [];
-  const stripped = flattenAtRules(css.replace(/\/\*[\s\S]*?\*\//g, ''));
-  for (const [, selectors = '', body = ''] of stripped.matchAll(
-    /([^{}]+)\{([^{}]*)\}/g,
-  )) {
+  const stripped = flattenAtRules(stripCssComments(css));
+  for (const [selectors, body] of cssBlocks(stripped)) {
     const status = decorationFromDeclarations(body);
     if (!status) continue;
     for (const selector of selectors.split(',')) {
@@ -234,7 +290,9 @@ function walk(
   rules: readonly ClassRule[],
   status: SpanStatus,
   pre: boolean,
+  budget: ParseBudget,
 ): void {
+  budget.check();
   // domhandler's ElementType is an enum; compare as plain strings.
   const type: string = node.type;
   if (type === 'text' && 'data' in node) {
@@ -255,7 +313,7 @@ function walk(
   const childStatus = combine(status, ownStatus(node, rules));
   const childPre = pre || name === 'pre';
   for (const child of node.children)
-    walk(child, builder, rules, childStatus, childPre);
+    walk(child, builder, rules, childStatus, childPre, budget);
   if (block) builder.endLine();
   if (/^h[1-6]$/.test(name))
     for (const line of builder.lines.slice(firstLine))
@@ -421,7 +479,7 @@ function prescanCharset(bytes: Uint8Array): string | undefined {
  */
 function decodeHtml(
   bytes: Uint8Array,
-  options: HtmlParseOptions,
+  options: Pick<HtmlParseOptions, 'contentType'>,
 ): { html: string; warnings: string[] } {
   const warnings: string[] = [];
   let label: string | undefined;
@@ -658,6 +716,34 @@ function collapseGaps(section: Section): void {
   section.spans = spans;
 }
 
+export interface PreparedHtml {
+  dom: CheerioAPI;
+  warnings: string[];
+}
+
+/** Shared with the wrapper check; the DOM is handed to parseHtml rather than loaded again. */
+export function prepareHtml(
+  input: string | Uint8Array,
+  options: Pick<HtmlParseOptions, 'contentType' | 'maxHtmlBytes'> = {},
+  budget = new ParseBudget(),
+): PreparedHtml {
+  assertHtmlBytes(
+    typeof input === 'string'
+      ? Buffer.byteLength(input, 'utf8')
+      : input.byteLength,
+    options.maxHtmlBytes,
+  );
+  budget.check();
+  const decoded =
+    typeof input === 'string'
+      ? { html: input, warnings: [] }
+      : decodeHtml(input, options);
+  assertHtmlDepth(decoded.html, budget);
+  const dom = withHtmlDepthLimit(() => load(decoded.html));
+  budget.check();
+  return { dom, warnings: decoded.warnings };
+}
+
 /**
  * HTML bill pages: strip page chrome, flow the body into lines (keeping `<pre>` layout),
  * let `detectSections` find the structure, then map strike/underline markup (tags, inline
@@ -667,29 +753,35 @@ export function parseHtml(
   input: string | Uint8Array,
   options: HtmlParseOptions,
 ): NormalizedDoc {
+  return withHtmlDepthLimit(() => parseHtmlDocument(input, options));
+}
+
+function parseHtmlDocument(
+  input: string | Uint8Array,
+  options: HtmlParseOptions,
+): NormalizedDoc {
   if (!context.safeParse(options).success) {
     throw new AppError(
       'INVALID_INPUT',
       'Invalid HTML document source or fetch timestamp.',
     );
   }
+  const budget = new ParseBudget(options);
   const bytes = typeof input === 'string' ? Buffer.from(input, 'utf8') : input;
-  const decoded =
-    typeof input === 'string'
-      ? { html: input, warnings: [] }
-      : decodeHtml(input, options);
-  const html = decoded.html;
-  const $: CheerioAPI = load(html);
+  assertHtmlBytes(bytes.byteLength, options.maxHtmlBytes);
+  const prepared = options.preparedHtml ?? prepareHtml(input, options, budget);
+  const $ = prepared.dom;
+  budget.check();
   const rules = $('style')
     .toArray()
     .flatMap((style) => readClassRules($(style).text()));
-  const warnings = [...decoded.warnings, ...removeNoise($)];
+  const warnings = [...prepared.warnings, ...removeNoise($)];
   $('style').remove();
 
   const builder = new LineBuilder();
   for (const root of $.root().toArray()) {
     for (const child of root.children)
-      walk(child, builder, rules, 'unchanged', false);
+      walk(child, builder, rules, 'unchanged', false, budget);
   }
   builder.endLine();
   // Leading/trailing blank lines (common around <pre>) carry nothing.
@@ -707,6 +799,7 @@ export function parseHtml(
   const fullText = lineTexts.join('\n');
   const statuses: SpanStatus[] = [];
   for (const [index, line] of lines.entries()) {
+    budget.check();
     // A loop, not push(...array): spreading a long block overflows the call stack.
     for (const chunk of line)
       for (const _unit of chunk.text.split('')) statuses.push(chunk.status);
@@ -727,7 +820,8 @@ export function parseHtml(
   }
   refineIds(sections, printedHeadings);
   for (const section of walkSections(sections)) collapseGaps(section);
-  return NormalizedDoc.parse({
+  budget.check();
+  const doc = NormalizedDoc.parse({
     docId: createHash('sha256').update(bytes).digest('hex'),
     sourceUrl: options.sourceUrl,
     fetchedAt: options.fetchedAt,
@@ -738,4 +832,6 @@ export function parseHtml(
     externalRefs: [],
     warnings,
   });
+  budget.check();
+  return doc;
 }

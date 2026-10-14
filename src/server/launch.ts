@@ -1,5 +1,6 @@
 import { envVar } from '../core/brand.js';
 import type { CliRuntime } from '../cli/runtime.js';
+import { validateBindHost } from './bind.js';
 import {
   openBrowser,
   startServer,
@@ -67,6 +68,7 @@ export function createLauncher(deps: LauncherDeps = {}): Launcher {
   const env = deps.env ?? process.env;
   const untilStopped = deps.untilStopped ?? untilSignal;
   return async (runtime, request) => {
+    validateBindHost(request.host, request.publicMode);
     const server = await start(runtime, {
       publicMode: request.publicMode,
       ...(request.port === undefined ? {} : { port: request.port }),
