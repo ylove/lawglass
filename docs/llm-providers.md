@@ -45,7 +45,13 @@ errors discard upstream messages, causes and request bodies.
 
 ## Local Claude CLI
 
-Select `claude-cli` explicitly for local development. It uses the user's installed
+`claude-cli` is opt-in and is never chosen automatically, even when `claude` is on
+`PATH`. Provider selection order: an explicit provider (environment, config file
+or flag), then the first available API key in the order anthropic, openai,
+google, then (on a TTY) a single question asking which of those three to use,
+followed by that provider's key. With no provider, the tool fails with
+`MISSING_KEY` listing the options. Select it explicitly with
+`<PREFIX>_LLM_PROVIDER=claude-cli` for local development. It uses the user's installed
 `claude` executable and leaves authentication to that executable. The adapter
 never reads credential files or forwards `ProviderConfig.apiKey` to it. There is
 no application login flow. The CLI API has no hard output-token flag; its own
