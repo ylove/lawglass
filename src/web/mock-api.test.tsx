@@ -110,6 +110,22 @@ describe('mock API', () => {
     });
   });
 
+  test('delegations skips retrieval and cites only sections of the sample', async () => {
+    const m = api();
+    const [sample] = await m.listDocs();
+    const events = await collect(
+      m.ask(sample!.docId, { chipId: 'delegations' }),
+    );
+    expect(events[0]?.type).toBe('token');
+    const done = events.at(-1);
+    expect(done).toMatchObject({
+      type: 'done',
+      answer: { warnings: [], invalidCitations: [] },
+    });
+    const text = events.flatMap((e) => (e.type === 'token' ? [e.text] : []));
+    expect(text.join('')).toContain('**Decided later by**');
+  });
+
   test('who-affected emits a sample scenario after done; other chips and public mode do not', async () => {
     const m = api();
     const [sample] = await m.listDocs();

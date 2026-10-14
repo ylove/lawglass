@@ -3,8 +3,9 @@ import { Command } from 'commander';
 import packageJson from '../../package.json' with { type: 'json' };
 import { BRAND } from '../core/brand.js';
 import { CHIPS } from '../core/chips.js';
+import { lazyProvider } from '../core/llm/lazy-provider.js';
 import { initConfig } from '../core/config.js';
-import { AppError, ChipId, type LlmProvider } from '../core/model/index.js';
+import { AppError, ChipId } from '../core/model/index.js';
 import { ask, ingest } from '../core/pipeline/index.js';
 import { runEvalCommand } from '../eval/command.js';
 import { runCompareCommand, type CompareOptions } from '../eval/compare.js';
@@ -60,23 +61,6 @@ function parsePort(value: string | undefined): number | undefined {
 
 interface BackendOption {
   backend?: string;
-}
-
-/**
- * Defers reading the provider (which throws MISSING_KEY when no key is configured) until it is
- * used, so chips that make no LLM call, like sponsors, work without a key.
- */
-function lazyProvider(get: () => LlmProvider): LlmProvider {
-  return {
-    get id() {
-      return get().id;
-    },
-    get model() {
-      return get().model;
-    },
-    streamText: (req) => get().streamText(req),
-    generateObject: (req) => get().generateObject(req),
-  };
 }
 
 export function createProgram(dependencies: CliDependencies = {}): Command {
@@ -248,7 +232,10 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
             ? lazyProvider(() => runtime.answerProvider)
             : runtime.answerProvider;
         const entry = await runtime.registry.findByLabelOrPrefix(doc);
-        const isHistoryChip = chip?.success === true && chip.data === 'history';
+        // The history and delegations chips escape quoted record text for the web renderer.
+        const unescapes =
+          chip?.success === true &&
+          (chip.data === 'history' || chip.data === 'delegations');
         const result = await ask(
           entry.docId,
           chip?.success ? { chipId: chip.data } : { question: question ?? '' },
@@ -261,8 +248,8 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
           },
           {
             onToken: (text) => {
-              // Only the history chip's text was escaped by our code; model text prints unchanged.
-              write(safeText(isHistoryChip ? unescapeRecordText(text) : text));
+              // Only text our code escaped is unescaped here; model text prints unchanged.
+              write(safeText(unescapes ? unescapeRecordText(text) : text));
             },
           },
         );

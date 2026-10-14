@@ -6,12 +6,14 @@
  *
  *   metadata      formatted from `BillMetadata`; no retrieval and no LLM call
  *   outline       chip-summary.ts: outline + first chunks, capped map-reduce
+ *   extract       chip-delegations.ts: code-extracted list plus an optional one-line lede
  *   what-changes  chip-changes.ts: struck and underlined runs read from the section tree
  *   definitions   every definition chunk, document-wide ones first, capped and counted
  *   retrieve      one `retrieve()` per query, merged, reranked once, then `answer()`
  */
 import { answer, fleschKincaidGrade } from './answer/index.js';
 import { runChangesChip } from './chip-changes.js';
+import { runDelegationsChip } from './chip-delegations.js';
 import { runHistoryChip } from './chip-history.js';
 import { runOutlineChip } from './chip-summary.js';
 import {
@@ -61,10 +63,7 @@ export async function runChip(
     case 'definitions':
       return runDefinitionsChip(chip, docId, deps, options);
     case 'extract':
-      // No chip uses this strategy yet; #202 serves the delegations chip.
-      throw new Error(
-        `Chip strategy 'extract' is not served yet (${chip.id}).`,
-      );
+      return runDelegationsChip(chip, docId, deps, options);
     case 'retrieve':
       // The contract has no "spans" strategy, so what-changes is a `retrieve` chip by label
       // but is answered from the amendment spans (see chip-changes.ts for why).

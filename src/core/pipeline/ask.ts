@@ -41,7 +41,11 @@ export type ChipRunner = (
     backend: RetrievalBackend;
     provider: LlmProvider;
     /** The full cached document: `definitions` lists document-wide definitions first. */
-    doc: Pick<NormalizedDoc, 'metadata' | 'sections' | 'definitions'> & {
+    publicMode?: boolean | undefined;
+    doc: Pick<
+      NormalizedDoc,
+      'metadata' | 'sections' | 'definitions' | 'externalRefs'
+    > & {
       /** Only loaded for the history chip. */
       history?: BillHistory | undefined;
     };
@@ -76,6 +80,8 @@ export interface AskDeps {
    * `!publicMode`, because public mode makes no extra model call for a visitor. `timeoutMs` bounds the generation.
    */
   scenario?: { enabled?: boolean; timeoutMs?: number } | undefined;
+  /** Public servers skip optional model steps, such as the delegations lede. */
+  publicMode?: boolean | undefined;
 }
 
 export type AskInput = { chipId: ChipId } | { question: string };
@@ -261,6 +267,7 @@ export async function ask(
       {
         backend: guard.backend,
         provider: deps.provider,
+        publicMode: deps.publicMode,
         doc: { ...doc, history },
       },
       { signal, onToken: opts.onToken },

@@ -29,6 +29,7 @@ import { ask, ingest, sectionExcerpt } from '../core/pipeline/index.js';
 import type { RegistryEntry } from '../core/registry.js';
 import { buildDocDetail } from './doc-detail.js';
 import { CHIP_LABELS } from './chips.js';
+import { lazyProvider } from '../core/llm/lazy-provider.js';
 import { SlidingWindowLimiter } from './rate-limit.js';
 import { registerScenarioRoute } from './scenario-route.js';
 import { createSummaryService } from './summary.js';
@@ -465,12 +466,18 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
             : { chipId: body.chipId },
           {
             backend: runtime.backend,
-            provider: runtime.answerProvider,
+            // A chip may not need the model (sponsors) or may do without it (delegations),
+            // so a missing key is only reported if the chip actually calls the provider.
+            provider:
+              body.chipId === undefined
+                ? runtime.answerProvider
+                : lazyProvider(() => runtime.answerProvider),
             registry: runtime.registry,
             retrievalMode: runtime.retrievalMode,
             chips: runtime.chips,
             // Public servers make no extra model call for a visitor's story.
             scenario: { enabled: !publicMode },
+            publicMode,
           },
           {
             signal,

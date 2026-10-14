@@ -28,6 +28,7 @@ import {
   walkSections,
   type AnswerResult,
   type NormalizedDoc,
+  ZERO_USAGE,
 } from '../core/model/index.js';
 import type { ChipRunner } from '../core/pipeline/index.js';
 import { scenarioProvider } from '../../tests/support/scenario-provider.js';
@@ -97,7 +98,7 @@ describe('basic routes', () => {
       backend: 'local',
       provider: 'mock',
     });
-    expect(config.chips).toHaveLength(9);
+    expect(config.chips).toHaveLength(10);
     expect(config.chips[3]).toEqual({
       id: 'history',
       label: 'How did it get here?',
@@ -390,6 +391,57 @@ describe('error events carry the plain-language message', () => {
       },
     });
   });
+
+  test.each([false, true])(
+    'a chip gets a lazy provider and the public-mode flag (publicMode %s)',
+    async (publicMode) => {
+      const doc = await ingestDoc(app());
+      const seen: { provider: string; publicMode: boolean | undefined }[] = [];
+      env.runtime = Object.create(env.runtime, {
+        answerProvider: {
+          get: () => {
+            throw new AppError('MISSING_KEY');
+          },
+        },
+      }) as typeof env.runtime;
+      env.runtime.chips = (_id, _docId, ctx) => {
+        let provider = 'readable';
+        try {
+          expect(ctx.provider.id).toBeTruthy();
+        } catch (error) {
+          provider = (error as AppError).code;
+        }
+        seen.push({ provider, publicMode: ctx.publicMode });
+        return Promise.resolve({
+          answer: {
+            text: 'List.',
+            citations: [],
+            invalidCitations: [],
+            warnings: [],
+            declined: false,
+            readingGrade: 1,
+            provider: 'none' as const,
+            model: 'delegations',
+            usage: { inputTokens: 0, outputTokens: 0 },
+          },
+          hits: [],
+          backendUsage: ZERO_USAGE,
+          mode: 'none',
+        });
+      };
+      const evs = await events(
+        await post(
+          createApp(env.runtime, { localOnly: false, publicMode }),
+          `/api/docs/${doc.docId}/ask`,
+          { chipId: 'delegations' },
+        ),
+        AskEvent,
+      );
+      expect(evs.at(-1)?.type).toBe('done');
+      // The key error waits until the chip actually reads the provider.
+      expect(seen).toEqual([{ provider: 'MISSING_KEY', publicMode }]);
+    },
+  );
 
   test('chips run by default (sponsors needs no model or retrieval)', async () => {
     const a = app();
