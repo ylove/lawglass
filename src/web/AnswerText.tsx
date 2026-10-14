@@ -5,10 +5,20 @@ import { CITATION_PATTERN, type Citation } from '../core/model/index.js';
 
 const MARKER = new RegExp(CITATION_PATTERN.source, 'g');
 const MAX_EMPHASIS_DEPTH = 3;
+const PUNCTUATION = /^[.,;:!?)]/;
+// A marker followed by punctuation takes the whitespace before it along, so removing
+// "agreement [S:x]." leaves "agreement." rather than "agreement .".
+const MARKER_BEFORE_PUNCTUATION = new RegExp(
+  `\\s+(?:${CITATION_PATTERN.source})(?=[.,;:!?)])`,
+  'g',
+);
 
 /** Removes complete markers and a trailing half-typed one, for display mid-stream. */
 export function stripMarkers(text: string): string {
-  return text.replace(MARKER, '').replace(/\s?\[S?:?[^\]\s]*$/, '');
+  return text
+    .replace(MARKER_BEFORE_PUNCTUATION, '')
+    .replace(MARKER, '')
+    .replace(/\s?\[S?:?[^\]\s]*$/, '');
 }
 
 /** Numbers each distinct valid cited section by order of first appearance. */
@@ -124,6 +134,18 @@ function inline(
         offset += marker.length;
       }
       continue;
+    }
+    // Drop the gap before the marker when punctuation follows it, in both the shown and hidden cases.
+    if (PUNCTUATION.test(line.slice(last))) {
+      const pending = current().text;
+      while (pending.length > 0) {
+        const trimmed = (pending.at(-1) ?? '').trimEnd();
+        if (trimmed) {
+          pending[pending.length - 1] = trimmed;
+          break;
+        }
+        pending.pop();
+      }
     }
     const id = m[1] ?? '';
     const n = numbers.get(id);

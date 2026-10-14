@@ -1,4 +1,5 @@
 import type { BillHistory } from '../../core/model/index.js';
+import { formatRecordDate } from '../format-date.js';
 
 /** The first action plus the latest few; a long floor history would otherwise bury the card. */
 const RECENT_ACTIONS = 3;
@@ -71,7 +72,9 @@ export function HistoryCard({
           <ol className="timeline">
             {versions.map((v) => (
               <li key={v.code}>
-                {v.date && <span className="when">{v.date}</span>}
+                {v.date && (
+                  <span className="when">{formatRecordDate(v.date)}</span>
+                )}
                 <span>
                   {v.url ? (
                     <ExternalLink href={v.url}>{v.label}</ExternalLink>
@@ -90,7 +93,7 @@ export function HistoryCard({
           <ol className="timeline">
             {keyActions.map((a, i) => (
               <li key={`${a.date}-${String(i)}`}>
-                <span className="when">{a.date}</span>
+                <span className="when">{formatRecordDate(a.date)}</span>
                 <span>{a.text}</span>
               </li>
             ))}
@@ -110,7 +113,7 @@ export function HistoryCard({
               <li key={a.id}>
                 <span className="when">
                   {STATUS_TEXT[a.status]}
-                  {a.date ? `, ${a.date}` : ''}
+                  {a.date ? `, ${formatRecordDate(a.date)}` : ''}
                 </span>
                 <span>
                   {a.number ? `Amendment ${a.number}` : 'Amendment'}

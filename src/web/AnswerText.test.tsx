@@ -270,3 +270,38 @@ describe('answer markdown', () => {
     expect(container.querySelector('em, strong, ol, ul')).toBeNull();
   });
 });
+
+describe('whitespace before removed citation markers', () => {
+  test('streaming strips the space before punctuation that follows a marker', () => {
+    expect(stripMarkers('the deadline [S:sec-4].')).toBe('the deadline.');
+    expect(stripMarkers('a [S:a] and b [S:b], c')).toBe('a  and b, c');
+  });
+
+  test('final rendering has no space before the superscript when punctuation follows', () => {
+    const { container } = render(
+      <AnswerText
+        text="the deadline [S:sec-4]."
+        citations={[
+          {
+            sectionId: 'sec-4',
+            valid: true,
+          } as unknown as Citation,
+        ]}
+        onOpenCitation={() => undefined}
+      />,
+    );
+    expect(container.querySelector('p')?.textContent).toBe('the deadline1.');
+    expect(screen.getByRole('button', { name: 'Source 1' })).toBeTruthy();
+  });
+
+  test('an invalid marker before punctuation also leaves no gap', () => {
+    const { container } = render(
+      <AnswerText
+        text="the deadline [S:nope]."
+        citations={[]}
+        onOpenCitation={() => undefined}
+      />,
+    );
+    expect(container.querySelector('p')?.textContent).toBe('the deadline.');
+  });
+});
