@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { AppError, EMPTY_METADATA, type BillMetadata } from '../model/index.js';
 import { ScriptedProvider } from '../../../tests/contracts/scripted-provider.js';
-import { extractMetadata, MAX_METADATA_CHARS } from './metadata.js';
+import {
+  ExtractedMetadata,
+  extractMetadata,
+  MAX_METADATA_CHARS,
+} from './metadata.js';
 
 const TEXT = `IN THE HOUSE OF REPRESENTATIVES OF THE UNITED STATES
 H.R. 1234
@@ -296,5 +300,16 @@ BE IT ENACTED BY THE GENERAL ASSEMBLY OF THE STATE OF OHIO:`;
     );
     expect(r.metadata.title).toBeNull();
     expect(r.metadata.sponsors).toBeNull();
+  });
+});
+
+describe('ExtractedMetadata', () => {
+  it('never asks the model for sponsor profiles (official records only)', () => {
+    expect(Object.keys(ExtractedMetadata.shape)).not.toContain(
+      'sponsorProfiles',
+    );
+    expect(
+      ExtractedMetadata.safeParse({ ...NULLS, sponsorProfiles: [] }).success,
+    ).toBe(false);
   });
 });

@@ -72,6 +72,59 @@ export const Section: z.ZodType<Section> = z.lazy(() =>
   }),
 );
 
+/** Where a sponsor link points. `search` links are never verified (they are only a search URL). */
+export const SponsorLinkKind = z.enum([
+  'official',
+  'wikipedia',
+  'ballotpedia',
+  'legislature',
+  'search',
+]);
+export type SponsorLinkKind = z.infer<typeof SponsorLinkKind>;
+
+/** An absolute `https:` URL. The one place the rule lives; used by sponsor links and bill history. */
+export const HttpsUrl = z.string().refine((value) => {
+  try {
+    return new URL(value).protocol === 'https:';
+  } catch {
+    return false;
+  }
+}, 'must be an https URL');
+export type HttpsUrl = z.infer<typeof HttpsUrl>;
+
+/** A link about a sponsor. HTTPS only; `verified` means an official record confirmed it. */
+export const SponsorLink = z
+  .object({
+    kind: SponsorLinkKind,
+    url: HttpsUrl,
+    label: z.string().min(1),
+    verified: z.boolean(),
+  })
+  .refine((l) => l.kind !== 'search' || !l.verified, {
+    message: 'a search link can never be verified',
+    path: ['verified'],
+  });
+export type SponsorLink = z.infer<typeof SponsorLink>;
+
+/**
+ * A sponsor or cosponsor as the official record describes them. Profiles come only from
+ * official records (e.g. Congress.gov, a state legislature API), never from the LLM.
+ */
+export const SponsorProfile = z.object({
+  name: z.string().min(1),
+  role: z.enum(['sponsor', 'cosponsor']),
+  party: z.string().optional(),
+  state: z.string().optional(),
+  district: z.string().optional(),
+  chamber: z.enum(['house', 'senate', 'assembly', 'other']).optional(),
+  /** Congress.gov member id. */
+  bioguideId: z.string().optional(),
+  /** State legislature member id. */
+  memberId: z.string().optional(),
+  links: z.array(SponsorLink),
+});
+export type SponsorProfile = z.infer<typeof SponsorProfile>;
+
 /**
  * Metadata about the bill. Every field is nullable: a value is set only when it is stated in
  * the document (structured XML fields, or extracted by the model with "null unless stated").
@@ -84,6 +137,8 @@ export const BillMetadata = z.object({
   /** Version/stage as printed, e.g. "As Introduced", "Introduced in Senate", "Enrolled". */
   version: z.string().nullable(),
   sponsors: z.array(z.string()).nullable(),
+  /** Official-record profiles for the sponsors. Never produced by the model. */
+  sponsorProfiles: z.array(SponsorProfile).optional(),
   /** How the metadata was obtained, for transparency in the UI and eval. */
   source: z.enum(['structured', 'extracted', 'none']),
 });

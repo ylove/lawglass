@@ -2,6 +2,7 @@
 import { Command } from 'commander';
 import packageJson from '../../package.json' with { type: 'json' };
 import { BRAND } from '../core/brand.js';
+import { CHIPS } from '../core/chips.js';
 import { initConfig } from '../core/config.js';
 import { AppError, ChipId, type LlmProvider } from '../core/model/index.js';
 import { ask, ingest } from '../core/pipeline/index.js';
@@ -207,9 +208,11 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
           options.chip === undefined
             ? undefined
             : ChipId.safeParse(options.chip);
-        if (chip && !chip.success)
+        // `history` parses as a ChipId but is not implemented yet (#128).
+        const served = CHIPS.map((c) => c.id as string);
+        if (chip && (!chip.success || !served.includes(chip.data)))
           throw new AppError('INVALID_INPUT', 'Unknown chip.', {
-            userMessage: `Unknown chip "${String(options.chip)}". Choose one of: ${ChipId.options.join(', ')}.`,
+            userMessage: `Unknown chip "${String(options.chip)}". Choose one of: ${served.join(', ')}.`,
           });
         // Keys are only required once an LLM call happens; freeform questions always need one,
         // so fail before retrieval spends anything.

@@ -4,6 +4,7 @@
  */
 import { z } from 'zod';
 import { ChunkFilter } from './chunk.js';
+import { Scenario } from './scenario.js';
 import { SectionId, SourceLocation } from './doc.js';
 
 /**
@@ -56,6 +57,8 @@ export const AnswerResult = z.object({
   provider: z.string(),
   model: z.string(),
   usage: z.object({ inputTokens: z.number(), outputTokens: z.number() }),
+  /** Optional illustrated example; every frame cites sections of the bill. */
+  scenario: Scenario.optional(),
 });
 export type AnswerResult = z.infer<typeof AnswerResult>;
 
@@ -75,6 +78,8 @@ export const ChipId = z.enum([
   'money',
   'definitions',
   'sponsors',
+  /** Bill history from official sources. Not served until #128 implements it. */
+  'history',
 ]);
 export type ChipId = z.infer<typeof ChipId>;
 
