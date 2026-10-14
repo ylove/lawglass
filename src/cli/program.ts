@@ -15,6 +15,7 @@ import {
 } from './runtime.js';
 import { promptChoice, promptSecret } from './secret-prompt.js';
 import { createLauncher, type Launcher } from '../server/launch.js';
+import { prepareIngestSource } from './ingest-source.js';
 
 export interface CliDependencies {
   init?: (options: { force: boolean }) => Promise<unknown>;
@@ -76,24 +77,29 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
       needsLlm,
     });
 
-  async function ingestUrl(
+  async function ingestSource(
     url: string,
     options: BackendOption & { name?: string },
   ): Promise<{ runtime: CliRuntime; docId: string }> {
     const runtime = await open(options, true);
     try {
+      const source = await prepareIngestSource(
+        url,
+        runtime.fetcher,
+        await runtime.registry.list(),
+      );
       const result = await ingest(
         url,
         {
           backend: runtime.backend,
           provider: runtime.extractProvider,
           registry: runtime.registry,
-          fetcher: runtime.fetcher,
+          fetcher: source.fetcher,
           now: runtime.now,
           maxDocs: runtime.maxDocs,
           parsePdf: runtime.parsePdf,
         },
-        { label: options.name },
+        { label: options.name ?? source.label },
       );
       write(formatIngest(result));
       return { runtime, docId: result.doc.docId };
@@ -125,10 +131,13 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
     .name(BRAND.name)
     .description('Ask plain-language questions about one legislation document.')
     .version(packageJson.version)
-    .argument('<url>', 'ingest a URL, then serve and open its document')
+    .argument(
+      '<url-or-path>',
+      'ingest a URL or local file, then open its document',
+    )
     .option('--backend <backend>', 'retrieval backend (pinecone or local)')
     .action(async (url: string, options: BackendOption) => {
-      const { runtime } = await ingestUrl(url, options);
+      const { runtime } = await ingestSource(url, options);
       // The UI lists the most recently used document first, which is the one just ingested.
       await (dependencies.serve ?? createLauncher({ write }))(runtime, {
         publicMode: false,
@@ -149,12 +158,12 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
       console.log('Configuration saved with private file permissions.');
     });
   program
-    .command('ingest <url>')
+    .command('ingest <url-or-path>')
     .description('ingest a legislation document')
     .option('--name <label>', 'label for the document')
     .option('--backend <backend>', 'retrieval backend (pinecone or local)')
     .action(async (url: string, options: BackendOption & { name?: string }) => {
-      await ingestUrl(url, options);
+      await ingestSource(url, options);
     });
   program
     .command('ask <doc> [question]')
