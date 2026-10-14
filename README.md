@@ -24,7 +24,7 @@ _Ohio HB 62 (135th General Assembly, as introduced), answered by Claude Sonnet 5
 
 Requires Node.js 22.13 or newer (CI runs 22 and 24).
 
-> Not on npm yet (publishing waits on #7). Until then, download the tarball attached to the [`v0.1.0-rc.1` release](https://github.com/ylove/lawglass/releases) (or build your own with `npm pack`) and replace `npx lawglass` below with `npx --package ./<tarball>.tgz legislation-summary`.
+> Not on npm yet (publishing waits on #7). Until then, download the tarball attached to the [`v0.1.0-rc.1` release](https://github.com/ylove/lawglass/releases) (or build your own with `npm pack`) and replace `npx lawglass` below with `npx --package ./<tarball>.tgz legislation-summary` (the rc.1 tarball still uses the old command name).
 
 ```sh
 npx lawglass init                       # save provider keys (file mode 0600)
