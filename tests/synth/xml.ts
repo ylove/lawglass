@@ -13,11 +13,26 @@ export interface CongressionalGroundTruth extends SampleGroundTruth {
   quotedText: string;
 }
 
-/** Govinfo element shapes; every name and passage is invented. No DTD or external entities. */
+/**
+ * Govinfo element shapes; every name and passage is invented. Like real files it carries a
+ * DOCTYPE (a system id that must never be fetched), Dublin Core metadata and hex element
+ * ids, so parsers must build section ids from enums, not from XML ids. No entity declarations.
+ */
 export function makeCongressionalBillXml(): SyntheticSample<CongressionalGroundTruth> {
   return {
     bytes: new TextEncoder().encode(`<?xml version="1.0" encoding="UTF-8"?>
-<bill bill-stage="Introduced-in-Senate" public-private="public">
+<?xml-stylesheet type="text/xsl" href="billres.xsl"?>
+<!DOCTYPE bill PUBLIC "-//US Congress//DTDs/bill.dtd//EN" "bill.dtd">
+<bill bill-stage="Introduced-in-Senate" dms-id="A1" public-private="public">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dublinCore>
+      <dc:title>119 S9001 IS: Synthetic garden grants act</dc:title>
+      <dc:publisher>U.S. Senate</dc:publisher>
+      <dc:date>2027-01-15</dc:date>
+      <dc:format>text/xml</dc:format>
+      <dc:language>EN</dc:language>
+    </dublinCore>
+  </metadata>
   <form>
     <distribution-code display="yes">II</distribution-code>
     <congress>119th CONGRESS</congress><session>1st Session</session>
@@ -32,21 +47,21 @@ export function makeCongressionalBillXml(): SyntheticSample<CongressionalGroundT
     <official-title>To establish shared garden grants &amp; seed libraries.</official-title>
   </form>
   <legis-body>
-    <section id="sec-1" commented="no" display-inline="no-display-inline">
+    <section id="id33c97728de7044c89797d979f7d597b5" commented="no" display-inline="no-display-inline">
       <enum>1.</enum><header>Definitions</header>
       <text>In this Act:</text>
-      <subsection id="sec-1/a"><enum>(a)</enum><header>Garden groups</header>
-        <paragraph id="sec-1/a/1"><enum>(1)</enum><header>Eligible group</header>
+      <subsection id="idd189b7d000bc4651952ff48bcadab67c"><enum>(a)</enum><header>Garden groups</header>
+        <paragraph id="id8a48b20837ea4d65817fc093e1951e7d"><enum>(1)</enum><header>Eligible group</header>
           <text>The term <term>garden group</term> means a nonprofit that maintains a shared garden.</text>
         </paragraph>
       </subsection>
     </section>
-    <section id="sec-2"><enum>2.</enum><header>Grants</header>
-      <text>A group described in <internal-xref idref="sec-1/a/1">section 1(a)(1)</internal-xref>
+    <section id="id761e3361e28447a28b2863dd5d74e017"><enum>2.</enum><header>Grants</header>
+      <text>A group described in <internal-xref idref="id8a48b20837ea4d65817fc093e1951e7d">section 1(a)(1)</internal-xref>
       may apply using the size rule in <external-xref legal-doc="usc" parsable-cite="usc/15/632">15 U.S.C. 632</external-xref>.</text>
       <quoted-block><text>Award notices shall state the planting season.</text></quoted-block>
     </section>
-    <section id="sec-3"><enum>3.</enum><header>Effective date</header>
+    <section id="idef1890e9f2194fcdac62ca44a24a6bcd"><enum>3.</enum><header>Effective date</header>
       <text>This Act takes effect ninety days after enactment.</text>
     </section>
   </legis-body>
@@ -121,7 +136,7 @@ export function makeCongressionalBillXml(): SyntheticSample<CongressionalGroundT
           children: [],
           spans: [
             {
-              text: 'A group described in section 1(a)(1) may apply using the size rule in 15 U.S.C. 632. Award notices shall state the planting season.',
+              text: 'A group described in section 1(a)(1) may apply using the size rule in 15 U.S.C. 632. “Award notices shall state the planting season.”',
               status: 'unchanged',
             },
           ],
@@ -160,12 +175,23 @@ export function makeUslmXml(): SyntheticSample<UslmGroundTruth> {
     <section id="sec-2"><num value="2">Section 2.</num><heading>Reports</heading>
       <content><p>The library shall report <del>monthly</del><ins>annually</ins>.</p></content>
     </section>
+    <section id="sec-3"><num value="3">Section 3.</num><heading>Branch hours</heading>
+      <chapeau>Each branch shall:</chapeau>
+      <subsection id="sec-3-a"><num value="a">(a)</num><heading>Opening</heading>
+        <content><p>Open <ins>six</ins> days a week.</p></content>
+      </subsection>
+      <subsection id="sec-3-b"><num value="b">(b)</num><heading>Records</heading>
+        <paragraph id="sec-3-b-1"><num value="1">(1)</num>
+          <content><p>Keep a <del>paper</del> log.</p></content>
+        </paragraph>
+      </subsection>
+    </section>
   </main>
 </bill>`),
     groundTruth: {
       namespace: 'http://xml.house.gov/schemas/uslm/1.0',
-      deletedStrings: ['thirty days', 'monthly'],
-      insertedStrings: ['sixty days', 'annually'],
+      deletedStrings: ['thirty days', 'monthly', 'paper'],
+      insertedStrings: ['sixty days', 'annually', 'six'],
       sections: [
         {
           id: 'sec-1',
@@ -191,6 +217,47 @@ export function makeUslmXml(): SyntheticSample<UslmGroundTruth> {
             { text: 'monthly', status: 'deleted' },
             { text: 'annually', status: 'inserted' },
             { text: '.', status: 'unchanged' },
+          ],
+        },
+        {
+          id: 'sec-3',
+          num: '3',
+          heading: 'Branch hours',
+          level: 1,
+          spans: [{ text: 'Each branch shall:', status: 'unchanged' }],
+          children: [
+            {
+              id: 'sec-3/a',
+              num: '(a)',
+              heading: 'Opening',
+              level: 2,
+              children: [],
+              spans: [
+                { text: 'Open ', status: 'unchanged' },
+                { text: 'six', status: 'inserted' },
+                { text: ' days a week.', status: 'unchanged' },
+              ],
+            },
+            {
+              id: 'sec-3/b',
+              num: '(b)',
+              heading: 'Records',
+              level: 2,
+              spans: [],
+              children: [
+                {
+                  id: 'sec-3/b/1',
+                  num: '(1)',
+                  level: 3,
+                  children: [],
+                  spans: [
+                    { text: 'Keep a ', status: 'unchanged' },
+                    { text: 'paper', status: 'deleted' },
+                    { text: ' log.', status: 'unchanged' },
+                  ],
+                },
+              ],
+            },
           ],
         },
       ],

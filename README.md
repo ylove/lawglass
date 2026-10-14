@@ -36,6 +36,9 @@ only `127.0.0.1` and `localhost` may connect. Web tests use happy-dom.
 Run a subset with `npm test -- <pattern>`. Use `npm run format` to apply Prettier
 and `npm run format:check` to verify formatting.
 
+To preview the built web UI, run `npx vite preview --outDir ../../dist/web`. The
+Vite root is `src/web`, so `--outDir` must be given relative to it.
+
 Builds produce `dist/cli.js`, an empty server entrypoint at `dist/server.js`,
 and the React shell at `dist/web/`. CLI commands currently print their follow-up
 issue number and exit with code 2. The local retrieval backend is implemented;

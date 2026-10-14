@@ -1,0 +1,126 @@
+import { describe, expect, test } from 'vitest';
+import { createMockApi } from './mock-api.js';
+
+async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
+  const out: T[] = [];
+  for await (const x of iter) out.push(x);
+  return out;
+}
+
+const api = () => createMockApi({ delayMs: 0 });
+
+describe('mock API', () => {
+  test('ingest streams stages in order and ends with done', async () => {
+    const events = await collect(
+      api().ingest({ url: 'https://e.gov/new.pdf' }),
+    );
+    const stages = events.flatMap((e) =>
+      e.type === 'progress' ? [e.stage] : [],
+    );
+    expect(stages[0]).toBe('fetching');
+    expect(stages.at(-1)).toBe('done');
+    expect(new Set(stages)).toEqual(
+      new Set([
+        'fetching',
+        'parsing',
+        'enriching',
+        'chunking',
+        'embedding',
+        'done',
+      ]),
+    );
+    expect(events.at(-1)).toMatchObject({
+      type: 'done',
+      stats: { reused: false },
+    });
+  });
+
+  test('wrapper URLs return candidates and failing URLs return an error', async () => {
+    const m = api();
+    expect(
+      (await collect(m.ingest({ url: 'https://e.gov/wrapper' }))).at(-1)?.type,
+    ).toBe('candidates');
+    expect(
+      await collect(m.ingest({ url: 'https://e.gov/fail' })),
+    ).toContainEqual(expect.objectContaining({ type: 'error' }));
+  });
+
+  test('ingesting the same URL twice reports reuse; formats follow the extension', async () => {
+    const m = api();
+    await collect(m.ingest({ url: 'https://e.gov/a.xml' }));
+    const second = await collect(m.ingest({ url: 'https://e.gov/a.xml' }));
+    expect(second.at(-1)).toMatchObject({ stats: { reused: true } });
+    const docs = await m.listDocs();
+    const xml = docs.find((d) => d.sourceUrl.endsWith('a.xml'));
+    expect(xml?.format).toBe('xml');
+    expect((await m.getDoc(xml!.docId)).hasLineNumbers).toBe(false);
+    const html = await collect(m.ingest({ url: 'https://e.gov/b.html' }));
+    const txt = await collect(m.ingest({ url: 'https://e.gov/c.txt' }));
+    expect(html.at(-1)).toMatchObject({ doc: { format: 'html' } });
+    expect(txt.at(-1)).toMatchObject({ doc: { format: 'text' } });
+  });
+
+  test('sections carry page and line only for line-numbered formats', async () => {
+    const m = api();
+    const [sample] = await m.listDocs();
+    const s = await m.getSection(sample!.docId, 'sec-4/b');
+    expect(s.location).toMatchObject({ pageStart: 3, lineStart: 5 });
+    expect(s.spans.map((x) => x.status)).toContain('deleted');
+    await expect(m.getSection(sample!.docId, 'nope')).rejects.toThrow(
+      'section',
+    );
+    await expect(m.getSection('missing', 'sec-1')).rejects.toThrow(
+      'not been loaded',
+    );
+  });
+
+  test('a chip answer streams tokens then a done event whose citations are valid', async () => {
+    const m = api();
+    const [sample] = await m.listDocs();
+    const events = await collect(m.ask(sample!.docId, { chipId: 'penalties' }));
+    expect(events[0]?.type).toBe('retrieval');
+    expect(events.filter((e) => e.type === 'token').length).toBeGreaterThan(3);
+    const done = events.at(-1);
+    expect(done).toMatchObject({
+      type: 'done',
+      answer: { citations: [{ sectionId: 'sec-6', valid: true }] },
+    });
+  });
+
+  test('sponsors skips retrieval; off-topic questions decline; money warns', async () => {
+    const m = api();
+    const [sample] = await m.listDocs();
+    const id = sample!.docId;
+    expect((await collect(m.ask(id, { chipId: 'sponsors' })))[0]?.type).toBe(
+      'token',
+    );
+    const declined = (
+      await collect(m.ask(id, { question: 'What about the moon?' }))
+    ).at(-1);
+    expect(declined).toMatchObject({ answer: { declined: true } });
+    const money = (await collect(m.ask(id, { chipId: 'money' }))).at(-1);
+    expect(money).toMatchObject({
+      answer: { warnings: ['INVALID_CITATIONS_REMOVED'] },
+    });
+  });
+
+  test('public mode rejects freeform questions; unknown docs fail; remove works', async () => {
+    const pub = createMockApi({ delayMs: 0, publicMode: true });
+    const [sample] = await pub.listDocs();
+    expect(await collect(pub.ask(sample!.docId, { question: 'hi' }))).toEqual([
+      expect.objectContaining({ type: 'error' }),
+    ]);
+    await pub.removeDoc(sample!.docId);
+    expect(await pub.listDocs()).toEqual([]);
+    await expect(pub.getDoc(sample!.docId)).rejects.toThrow('not been loaded');
+  });
+
+  test('aborting stops the stream', async () => {
+    const m = createMockApi({ delayMs: 5 });
+    const controller = new AbortController();
+    const it = m.ingest({ url: 'https://e.gov/x.pdf' }, controller.signal);
+    await it[Symbol.asyncIterator]().next();
+    controller.abort();
+    await expect(collect(it)).rejects.toMatchObject({ name: 'AbortError' });
+  });
+});
