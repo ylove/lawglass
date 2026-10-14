@@ -19,6 +19,7 @@ import {
   type Section,
   type SearchHit,
 } from '../model/index.js';
+import { ScriptedProvider } from '../../../tests/contracts/scripted-provider.js';
 import { ask, type AskDeps, type ChipRunner } from './ask.js';
 import { writeHistory } from '../history/history-store.js';
 import { ingest } from './ingest.js';
@@ -140,6 +141,55 @@ test('struck text never reaches a default answer, but does for change questions'
     changes.refs.map((r) => r.chunkId),
   );
   expect(hits.some((c) => c.amendmentStatus === 'deleted')).toBe(true);
+});
+
+describe('inline struck text', () => {
+  // A provider that answers with the excerpts it was shown, to prove what reached the model.
+  const echo = () =>
+    new ScriptedProvider({
+      reply: (req) => {
+        const content = req.messages[0]?.content;
+        return typeof content === 'string' ? content : '';
+      },
+    });
+
+  test('a change question sees struck and inserted words in place; citations still validate', async () => {
+    const docId = await load(
+      'https://example.gov/permit.html',
+      makeAmendmentHtml(),
+      'text/html',
+    );
+    const provider = echo();
+    const result = await ask(
+      docId,
+      { question: 'What fees were struck?' },
+      askDeps({ provider }),
+    );
+    const sent = result.answer.text;
+    expect(sent).toContain('[struck]five dollars[/struck]');
+    expect(sent).toContain('[inserted]six dollars[/inserted]');
+    expect(sent).toContain('section="sec-1"');
+    expect(
+      result.answer.citations.every((c) =>
+        c.chunkIds.every((id) => !id.includes(':~')),
+      ),
+    ).toBe(true);
+  });
+
+  test('an ordinary question never sees struck text or markers', async () => {
+    const docId = await load(
+      'https://example.gov/permit.html',
+      makeAmendmentHtml(),
+      'text/html',
+    );
+    const result = await ask(
+      docId,
+      { question: 'What are the permit fees?' },
+      askDeps({ provider: echo() }),
+    );
+    expect(result.answer.text).toContain('<excerpt');
+    expect(result.answer.text).not.toMatch(/\[struck\]|five dollars/);
+  });
 });
 
 test('even if the backend returns deleted chunks, a default question drops them', async () => {
