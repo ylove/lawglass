@@ -231,7 +231,7 @@ describe('local backend', () => {
     await backend.dispose();
   });
 
-  it('passes embedding text, queries and raw reranking text to their respective adapters', async () => {
+  it('passes embedding text, queries and breadcrumb-prefixed reranking text to their adapters', async () => {
     await backend.upsertChunks(DOC_A, CHUNKS_A);
     expect(embedder.calls[0]).toEqual({
       texts: CHUNKS_A.map((c) => c.embedText),
@@ -256,7 +256,8 @@ describe('local backend', () => {
     });
     expect(score).toHaveBeenCalledWith(
       'grant water',
-      hits.map((hit) => hit.chunk.text),
+      // The cross-encoder sees the same `breadcrumb: text` the embedder indexed.
+      hits.map((hit) => `${hit.chunk.breadcrumb}: ${hit.chunk.text}`),
       undefined,
     );
     expect(reranked.usage.rerankUnits).toBe(3);

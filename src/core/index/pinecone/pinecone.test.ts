@@ -568,7 +568,7 @@ describe('PineconeBackend', () => {
       query: 'town',
       documents: hits.map((hit) => ({
         id: hit.chunk.id,
-        text: hit.chunk.text,
+        text: `${hit.chunk.breadcrumb}: ${hit.chunk.text}`,
       })),
       rankFields: ['text'],
       topN: 2,

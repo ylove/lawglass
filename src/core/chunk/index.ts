@@ -8,9 +8,11 @@ import {
   type Span,
 } from '../model/index.js';
 import { classifyChunk } from './classify.js';
+import { contextualText } from './contextual-text.js';
 import { estimateTokens } from './tokens.js';
 
 export { classifyChunk } from './classify.js';
+export { contextualText } from './contextual-text.js';
 export { estimateTokens } from './tokens.js';
 
 const TARGET_MIN = 300;
@@ -190,7 +192,7 @@ export function chunkDocument(input: NormalizedDoc): Chunk[] {
             range.end > first.start,
         )
         .map((range) => range.span);
-      const embedText = `${prefix}: ${text}`;
+      const embedText = contextualText({ breadcrumb: prefix, text });
       const n = counters.get(section.id) ?? 0;
       const chunk: Chunk = {
         id: makeChunkId(doc.docId, section.id, n),

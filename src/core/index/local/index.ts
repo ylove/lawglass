@@ -12,6 +12,7 @@ import {
   type StoredChunk,
   type UpsertProgress,
 } from '../../model/index.js';
+import { contextualText } from '../../chunk/index.js';
 import { buildBm25, scoreBm25 } from './bm25.js';
 import {
   createLocalModels,
@@ -295,7 +296,7 @@ export class LocalBackend implements RetrievalBackend {
     try {
       scores = await this.reranker.score(
         req.query,
-        unique.map((hit) => hit.chunk.text),
+        unique.map((hit) => contextualText(hit.chunk)),
         req.signal,
       );
     } catch (cause) {

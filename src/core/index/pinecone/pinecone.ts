@@ -20,6 +20,7 @@ import {
 } from '@pinecone-database/pinecone';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
+import { contextualText } from '../../chunk/index.js';
 import { pineconeConfig, type PineconeSettings } from '../../config.js';
 import {
   AppError,
@@ -504,7 +505,7 @@ export class PineconeBackend implements RetrievalBackend {
         query: req.query,
         documents: req.hits.map((hit) => ({
           id: hit.chunk.id,
-          text: hit.chunk.text,
+          text: contextualText(hit.chunk),
         })),
         rankFields: ['text'],
         topN,
