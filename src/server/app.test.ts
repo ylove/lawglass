@@ -250,7 +250,16 @@ describe('ingest and documents', () => {
 
   test('a bad request body is a 400 before any stream starts', async () => {
     const a = app();
-    for (const body of [{ url: 'not a url' }, {}, 'text']) {
+    const fetcher = vi.fn(env.runtime.fetcher);
+    env.runtime.fetcher = fetcher;
+    for (const body of [
+      { url: 'not a url' },
+      {},
+      'text',
+      // Local files are CLI-only (#86): a web request must never name one.
+      { url: 'file:///etc/passwd' },
+      { url: 'ftp://example.gov/bill.pdf' },
+    ]) {
       const res = await post(a, '/api/ingest', body);
       expect(res.status).toBe(400);
       expect(await res.json()).toMatchObject({
@@ -262,6 +271,7 @@ describe('ingest and documents', () => {
       body: '{broken',
     });
     expect(raw.status).toBe(400);
+    expect(fetcher).not.toHaveBeenCalled();
   });
 
   test('a wrapper page streams candidate links instead of an error', async () => {

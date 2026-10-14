@@ -341,6 +341,13 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       IngestRequest,
       'Enter a full web address, starting with http:// or https://.',
     );
+    // `z.url()` accepts any scheme. Only the CLI may read local files; a web request naming
+    // `file:` (or anything else) must never reach a fetcher, so reject it before any stream.
+    if (!/^https?:$/.test(new URL(body.url).protocol))
+      throw new AppError('INVALID_INPUT', 'Ingest URL is not http(s).', {
+        userMessage:
+          'Enter a full web address, starting with http:// or https://.',
+      });
     await guardPublic(c, ingests, body.turnstileToken);
     if (
       publicMode &&

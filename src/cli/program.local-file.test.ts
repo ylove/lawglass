@@ -15,6 +15,7 @@ import { MockProvider } from '../core/llm/mock.js';
 import { Registry } from '../core/registry.js';
 import { createProgram } from './program.js';
 import type { CliRuntime } from './runtime.js';
+import type { Launcher } from '../server/launch.js';
 
 let dir: string;
 let runtime: CliRuntime;
@@ -47,10 +48,7 @@ afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
 });
 
-async function run(
-  args: string[],
-  serve?: (runtime: CliRuntime, docId: string) => Promise<void>,
-) {
+async function run(args: string[], serve?: Launcher) {
   await createProgram({
     runtime: () => Promise.resolve(runtime),
     write: (text) => {
@@ -146,9 +144,11 @@ test.each(['path', 'file URL'])(
     const path = join(dir, 'bill #1.txt');
     const bytes = makeSectionedText().bytes;
     await writeFile(path, bytes);
-    const serve = vi.fn(() => Promise.resolve());
+    const serve = vi.fn<Launcher>(() => Promise.resolve());
     await run([kind === 'path' ? path : pathToFileURL(path).href], serve);
-    expect(serve).toHaveBeenCalledWith(runtime, documentId(bytes));
+    expect(serve).toHaveBeenCalledWith(runtime, { publicMode: false });
+    // The UI opens the most recently used document, which is the one just ingested.
+    expect((await runtime.registry.list())[0]?.docId).toBe(documentId(bytes));
     expect(output).toContain('Ingested: bill #1.txt');
     expect(network).not.toHaveBeenCalled();
   },
