@@ -1,3 +1,4 @@
+import { vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
@@ -727,4 +728,42 @@ describe('parseHtml review fixes', () => {
       'SEC. 1. A.\nrate and 5\nmore',
     );
   });
+});
+
+it('refuses deep nesting quickly and caps HTML bytes including UTF-8 strings', () => {
+  const options = {
+    sourceUrl: 'https://example.gov/bill.html',
+    fetchedAt: '2026-10-13T00:00:00.000Z',
+  };
+  const html = '<div>'.repeat(20_000) + 'Bill text' + '</div>'.repeat(20_000);
+  const start = performance.now();
+  expect(() => parseHtml(html, options)).toThrow(/nesting depth/);
+  expect(performance.now() - start).toBeLessThan(200);
+  expect(() =>
+    parseHtml('<p>éé</p>', { ...options, maxHtmlBytes: 10 }),
+  ).toThrow(/byte limit/);
+});
+
+it('checks HTML cancellation and a synchronous deadline before DOM loading', () => {
+  const options = {
+    sourceUrl: 'https://example.gov/bill.html',
+    fetchedAt: '2026-10-13T00:00:00.000Z',
+  };
+  const controller = new AbortController();
+  controller.abort();
+  expect(() =>
+    parseHtml('<p>Bill</p>', { ...options, signal: controller.signal }),
+  ).toThrow(/aborted/);
+  const clock = vi
+    .spyOn(performance, 'now')
+    .mockReturnValueOnce(0)
+    .mockReturnValueOnce(0)
+    .mockReturnValue(11);
+  try {
+    expect(() =>
+      parseHtml('<p>Bill</p>', { ...options, timeoutMs: 10 }),
+    ).toThrow(/time budget/);
+  } finally {
+    clock.mockRestore();
+  }
 });

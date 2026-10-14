@@ -1,3 +1,5 @@
+import { parseText } from '../parse/text.js';
+import { readParseLimits } from '../parse/limits.js';
 import { describe, expect, it } from 'vitest';
 import {
   AppError,
@@ -791,5 +793,25 @@ describe('generated document properties', () => {
               ),
             ).toBe(true);
     },
+  );
+});
+
+it('refuses a large plain-text document above the chunk ceiling', () => {
+  const doc = parseText(
+    'Section 1. Grants\n' +
+      'The board shall fund eligible towns. '.repeat(5_000),
+    {
+      sourceUrl: 'https://example.gov/bill.txt',
+      fetchedAt: '2026-10-13T00:00:00.000Z',
+    },
+  );
+  expect(() => chunkDocument(doc, { maxChunks: 3 })).toThrow(/chunk limit/);
+  const chunks = chunkDocument(doc);
+  expect(chunks.length).toBeGreaterThan(3);
+  expect(chunkDocument(doc, { maxChunks: chunks.length })).toHaveLength(
+    chunks.length,
+  );
+  expect(readParseLimits(true, {}).maxChunks).toBeLessThan(
+    readParseLimits(false, {}).maxChunks,
   );
 });

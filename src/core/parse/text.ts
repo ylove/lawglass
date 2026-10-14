@@ -1,9 +1,11 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { ParseBudget, type ParseControl } from './limits.js';
 import { AppError, EMPTY_METADATA, NormalizedDoc } from '../model/index.js';
 import { detectSections, type SectionDetectionOptions } from './sections.js';
 
-export interface TextParseOptions extends SectionDetectionOptions {
+export interface TextParseOptions
+  extends SectionDetectionOptions, ParseControl {
   sourceUrl: string;
   /** Supplied by the fetch step so parsing is deterministic. */
   fetchedAt: string;
@@ -22,6 +24,7 @@ export function parseText(
       'Invalid text document source or fetch timestamp.',
     );
   }
+  const budget = new ParseBudget(options);
   const bytes = typeof input === 'string' ? Buffer.from(input, 'utf8') : input;
   let text: string;
   try {
@@ -36,7 +39,7 @@ export function parseText(
   if (!text.trim())
     throw new AppError('PARSE_FAILED', 'The text document is empty.');
   const lines = text.split(/\r\n|\r|\n/).map((text) => ({ text }));
-  return NormalizedDoc.parse({
+  const doc = NormalizedDoc.parse({
     docId: createHash('sha256').update(bytes).digest('hex'),
     sourceUrl: options.sourceUrl,
     fetchedAt: options.fetchedAt,
@@ -47,4 +50,6 @@ export function parseText(
     externalRefs: [],
     warnings: [],
   });
+  budget.check();
+  return doc;
 }
