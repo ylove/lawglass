@@ -246,8 +246,10 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     // Public servers share one library; visitors must not be able to wipe each other's documents.
     if (publicMode) throw new AppError('PUBLIC_MODE_FORBIDDEN');
     const entry = await entryFor(c.req.param('docId'));
-    if (entry.backend === runtime.backend.kind)
+    if (entry.backend === runtime.backend.kind) {
+      await runtime.backend.ensureReady();
       await runtime.backend.deleteDocument(entry.docId);
+    }
     await runtime.registry.remove(entry.docId);
     return c.body(null, 204);
   });

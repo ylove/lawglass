@@ -37,6 +37,23 @@ beforeEach(async () => {
   env = await makePipelineEnv();
 });
 
+test('backend initialization failure stops before existence checks or metadata extraction', async () => {
+  env.serve('https://example.gov/s9001.xml', makeCongressionalBillXml());
+  vi.spyOn(env.backend, 'ensureReady').mockRejectedValue(
+    new AppError('BACKEND_UNAVAILABLE'),
+  );
+  const exists = vi.spyOn(env.backend, 'hasDocument');
+  const extract = vi.spyOn(env.provider, 'generateObject');
+  const write = vi.spyOn(env.backend, 'upsertChunks');
+  await expect(
+    ingest('https://example.gov/s9001.xml', deps()),
+  ).rejects.toMatchObject({ code: 'BACKEND_UNAVAILABLE' });
+  expect(exists).not.toHaveBeenCalled();
+  expect(extract).not.toHaveBeenCalled();
+  expect(write).not.toHaveBeenCalled();
+  expect(await env.registry.list()).toEqual([]);
+});
+
 test('ingests XML, reports every stage and fills structured metadata', async () => {
   env.serve('https://example.gov/s9001.xml', makeCongressionalBillXml());
   const stages: IngestProgress[] = [];

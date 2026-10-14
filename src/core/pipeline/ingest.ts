@@ -296,6 +296,7 @@ async function ingestLocked(
       userMessage:
         'That document label is already in use. Choose a different label.',
     });
+  await backend.ensureReady(signal);
   const alreadyIndexed = await backend.hasDocument(docId);
 
   // Zero-token path: nothing to fetch-parse-embed.
@@ -360,7 +361,6 @@ async function ingestLocked(
   let entry: RegistryEntry;
   let embedTokens = 0;
   try {
-    await backend.ensureReady(signal);
     progress({ stage: 'embedding', done: 0, total: chunks.length });
     const { usage } = await backend.upsertChunks(docId, chunks, (p) => {
       progress({ stage: 'embedding', done: p.done, total: p.total });

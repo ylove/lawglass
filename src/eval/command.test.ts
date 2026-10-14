@@ -8,7 +8,9 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, expect, test } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { createRuntimeFrom } from '../cli/runtime.js';
+import { fakePineconeClient } from '../../tests/contracts/fake-pinecone-client.js';
 import { AppError } from '../core/model/index.js';
 import { DetailedEvalRun } from './details.js';
 import {
@@ -46,6 +48,7 @@ beforeEach(async () => {
   );
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   await env.cleanup();
   await rm(dir, { recursive: true, force: true });
 });
@@ -68,6 +71,26 @@ function deps(overrides: Partial<EvalCommandDeps> = {}): EvalCommandDeps {
 
 /** Directories the test fixtures live in, relative to the command's cwd. */
 const where = { golden: 'golden', fixtures: 'fixtures' };
+
+test('retrieval-only eval uses the Pinecone runtime with a fake client and no LLM key', async () => {
+  vi.spyOn(console, 'info').mockImplementation(() => undefined);
+  const sdk = fakePineconeClient();
+  const runtime = createRuntimeFrom({
+    env: { PINECONE_API_KEY: 'pcsk_synthetic_eval_key' },
+    homeDir: dir,
+    isTTY: false,
+    createPineconeClient: () => sdk.client,
+  });
+  await runEvalCommand({ ...where, backend: 'pinecone' }, deps({ runtime }));
+  const md = await readFile(join(dir, 'eval', 'results.md'), 'utf8');
+  expect(md).toContain('| pinecone | hybrid_rerank (rrf) |');
+  expect(md).not.toContain('pending (');
+  expect(output).toContain('5 rows, 0 pending backends');
+  expect(sdk.dense.search).toHaveBeenCalled();
+  expect(sdk.sparse.search).toHaveBeenCalled();
+  expect(sdk.rerank).toHaveBeenCalled();
+  expect(output).not.toContain('pcsk_synthetic_eval_key');
+});
 
 test('writes results.md and a run JSON, listing pinecone as pending', async () => {
   await runEvalCommand({ ...where }, deps());

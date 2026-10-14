@@ -2,9 +2,14 @@
  * Wires real dependencies for the CLI: config, registry, backend, providers and the SSRF-safe
  * fetcher. Commands receive a `CliRuntime`, so tests inject fakes instead of touching any of this.
  */
-import { LocalBackend } from '../core/index/index.js';
+import { Pinecone } from '@pinecone-database/pinecone';
 import {
-  getConfigDir,
+  LocalBackend,
+  PineconeBackend,
+  type PineconeClient,
+} from '../core/index/index.js';
+import {
+  pineconeConfig,
   providerConfig,
   resolveConfig,
   type RuntimeConfig,
@@ -13,7 +18,6 @@ import { defaultCacheDir, safeFetch } from '../core/fetch/index.js';
 import { createProvider } from '../core/llm/index.js';
 import {
   AppError,
-  isAppError,
   type LlmProvider,
   type RetrievalBackend,
   type RetrievalMode,
@@ -39,23 +43,40 @@ export interface CliRuntime {
 
 export interface RuntimeOptions {
   backend?: string | undefined;
-  /** False for list/remove: they must work before any API key is configured. */
+  /** False for list/remove and retrieval-only eval: only the backend key is required. */
   needsLlm: boolean;
 }
 
 export type RuntimeFactory = (options: RuntimeOptions) => Promise<CliRuntime>;
 
-function buildBackend(kind: string, configDir: string): RetrievalBackend {
-  if (kind === 'local') return new LocalBackend({ configDir });
-  // TODO: the Pinecone adapter is not on main yet.
-  throw new AppError(
-    'BACKEND_UNAVAILABLE',
-    'The pinecone backend is not available yet.',
-    {
-      userMessage:
-        'The Pinecone backend is not available yet. Use --backend local.',
-    },
+export function createPineconeClient(apiKey: string): PineconeClient {
+  // The SDK has process-wide debug flags, including curl output that exposes keys.
+  // Leave them off: data-plane clients create their middleware later, on first use.
+  delete process.env.PINECONE_DEBUG;
+  delete process.env.PINECONE_DEBUG_CURL;
+  return new Pinecone({ apiKey, maxRetries: 0 });
+}
+
+function buildBackend(
+  config: RuntimeConfig,
+  sources: RuntimeSources,
+): RetrievalBackend {
+  if (config.backend === 'local')
+    return new LocalBackend({ configDir: config.configDir });
+  if (!config.pineconeApiKey) throw new AppError('MISSING_KEY');
+  const settings = pineconeConfig(
+    { rerankModel: config.rerankModel },
+    sources.env,
   );
+  try {
+    const client = (sources.createPineconeClient ?? createPineconeClient)(
+      config.pineconeApiKey,
+    );
+    return new PineconeBackend({ client, config: settings });
+  } catch {
+    // SDK construction failures can include credentials; do not retain even a cause.
+    throw new AppError('BACKEND_UNAVAILABLE');
+  }
 }
 
 /** Config sources, injectable so tests never read the real home directory or environment. */
@@ -63,54 +84,35 @@ export interface RuntimeSources {
   env?: Readonly<Record<string, string | undefined>>;
   homeDir?: string;
   isTTY?: boolean;
+  createPineconeClient?: (apiKey: string) => PineconeClient;
 }
 
 export const createRuntimeFrom =
   (sources: RuntimeSources = {}): RuntimeFactory =>
   async (options) => {
-    let config: RuntimeConfig | undefined;
-    try {
-      config = await resolveConfig({
-        ...sources,
-        ...(options.backend === undefined ? {} : { backend: options.backend }),
-        prompt: promptSecret,
-        choose: promptChoice,
-      });
-    } catch (error) {
-      // list/remove only need the store; a missing key must not block them.
-      if (
-        options.needsLlm ||
-        !isAppError(error) ||
-        error.code !== 'MISSING_KEY'
-      )
-        throw error;
-    }
-    const configDir = config?.configDir ?? getConfigDir(sources.homeDir);
-    const missing = (): never => {
-      throw new AppError('MISSING_KEY');
-    };
+    const config = await resolveConfig({
+      ...sources,
+      needsLlm: options.needsLlm,
+      ...(options.backend === undefined ? {} : { backend: options.backend }),
+      prompt: promptSecret,
+      choose: promptChoice,
+    });
+    const configDir = config.configDir;
     const cacheDir = defaultCacheDir(configDir);
     return {
-      backend: buildBackend(
-        config?.backend ?? options.backend ?? 'local',
-        configDir,
-      ),
+      backend: buildBackend(config, sources),
       registry: new Registry(configDir),
       fetcher: (url, options) =>
         safeFetch(url, { cacheDir, signal: options?.signal }),
       now: () => new Date(),
-      maxDocs: config?.maxDocs ?? 5,
-      retrievalMode: config?.retrievalMode ?? 'hybrid_rerank',
-      port: config?.port ?? 4317,
+      maxDocs: config.maxDocs,
+      retrievalMode: config.retrievalMode,
+      port: config.port,
       get answerProvider() {
-        return config
-          ? createProvider(providerConfig(config, 'answer'))
-          : missing();
+        return createProvider(providerConfig(config, 'answer'));
       },
       get extractProvider() {
-        return config
-          ? createProvider(providerConfig(config, 'extract'))
-          : missing();
+        return createProvider(providerConfig(config, 'extract'));
       },
     };
   };

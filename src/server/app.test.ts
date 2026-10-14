@@ -235,6 +235,22 @@ describe('ingest and documents', () => {
     ).toBe(404);
   });
 
+  test('DELETE preserves the registry entry when backend initialization fails', async () => {
+    const a = app();
+    const doc = await ingestDoc(a);
+    vi.spyOn(env.backend, 'ensureReady').mockRejectedValue(
+      new AppError('BACKEND_UNAVAILABLE'),
+    );
+    const remove = vi.spyOn(env.backend, 'deleteDocument');
+    const res = await a.request(`/api/docs/${doc.docId}`, { method: 'DELETE' });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toMatchObject({
+      error: { code: 'BACKEND_UNAVAILABLE' },
+    });
+    expect(remove).not.toHaveBeenCalled();
+    expect(await env.registry.list()).toHaveLength(1);
+  });
+
   test('unknown doc and unknown section are 404 with a plain message', async () => {
     const a = app();
     const missing = await a.request('/api/docs/deadbeef/sections/x');

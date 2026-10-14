@@ -138,6 +138,19 @@ test('list and remove', async () => {
   expect(await env.backend.hasDocument(entry?.docId ?? '')).toBe(false);
 });
 
+test('remove preserves the registry entry when backend initialization fails', async () => {
+  await run(['ingest', 'https://example.gov/gardens.txt', '--name', 'g']);
+  vi.spyOn(env.backend, 'ensureReady').mockRejectedValue(
+    new AppError('BACKEND_UNAVAILABLE'),
+  );
+  const remove = vi.spyOn(env.backend, 'deleteDocument');
+  await expect(run(['remove', 'g'])).rejects.toMatchObject({
+    code: 'BACKEND_UNAVAILABLE',
+  });
+  expect(remove).not.toHaveBeenCalled();
+  expect(await env.registry.list()).toHaveLength(1);
+});
+
 test('a wrapper page lists the candidate links in the error', async () => {
   const links = [
     { url: 'https://example.gov/bill.pdf', text: 'Full text', format: 'pdf' },

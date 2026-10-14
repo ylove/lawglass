@@ -7,7 +7,7 @@ import {
   makePipelineEnv,
   type PipelineEnv,
 } from '../../../tests/support/pipeline-env.js';
-import { DECLINE_TEXT, type SearchHit } from '../model/index.js';
+import { AppError, DECLINE_TEXT, type SearchHit } from '../model/index.js';
 import { ask, type AskDeps, type ChipRunner } from './ask.js';
 import { ingest } from './ingest.js';
 
@@ -247,6 +247,24 @@ test('a registry entry without an index is a clear error, not a silent decline',
     code: 'DOC_NOT_FOUND',
     userMessage: expect.stringContaining('Run ingest again') as string,
   });
+});
+
+test('backend initialization failure stops before existence checks and retrieval', async () => {
+  const docId = await load(
+    'https://example.gov/s9001.xml',
+    makeCongressionalBillXml(),
+  );
+  vi.spyOn(env.backend, 'ensureReady').mockRejectedValue(
+    new AppError('BACKEND_UNAVAILABLE'),
+  );
+  const exists = vi.spyOn(env.backend, 'hasDocument');
+  const search = vi.spyOn(env.backend, 'search');
+  await expect(
+    ask(docId, { question: 'garden grants' }, askDeps()),
+  ).rejects.toMatchObject({ code: 'BACKEND_UNAVAILABLE' });
+  expect(exists).not.toHaveBeenCalled();
+  expect(search).not.toHaveBeenCalled();
+  expect(await env.registry.list()).toHaveLength(1);
 });
 
 test('chips that never retrieve load nothing and report mode none', async () => {
