@@ -2,7 +2,11 @@ import { createHash } from 'node:crypto';
 import { load, type CheerioAPI } from 'cheerio';
 import { z } from 'zod';
 import { ParseBudget } from './limits.js';
-import { assertHtmlBytes, assertHtmlDepth } from './html-safety.js';
+import {
+  assertHtmlBytes,
+  assertHtmlDepth,
+  withHtmlDepthLimit,
+} from './html-safety.js';
 import {
   AppError,
   EMPTY_METADATA,
@@ -687,7 +691,7 @@ export function prepareHtml(
       ? { html: input, warnings: [] }
       : decodeHtml(input, options);
   assertHtmlDepth(decoded.html, budget);
-  const dom = load(decoded.html);
+  const dom = withHtmlDepthLimit(() => load(decoded.html));
   budget.check();
   return { dom, warnings: decoded.warnings };
 }
@@ -698,6 +702,13 @@ export function prepareHtml(
  * styles and `<style>` class rules) onto `Span.status`.
  */
 export function parseHtml(
+  input: string | Uint8Array,
+  options: HtmlParseOptions,
+): NormalizedDoc {
+  return withHtmlDepthLimit(() => parseHtmlDocument(input, options));
+}
+
+function parseHtmlDocument(
   input: string | Uint8Array,
   options: HtmlParseOptions,
 ): NormalizedDoc {

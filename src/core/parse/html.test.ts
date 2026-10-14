@@ -744,6 +744,21 @@ it('refuses deep nesting quickly and caps HTML bytes including UTF-8 strings', (
   ).toThrow(/byte limit/);
 });
 
+it.each(['<div a=x">', "<div a=x'>", '<div "a>'])(
+  'refuses depth hidden behind literal quotes in %s within 200 ms',
+  (prefix) => {
+    const html = prefix + '<div>'.repeat(20_000);
+    const start = performance.now();
+    expect(() => parseHtml(html, options)).toThrow(
+      expect.objectContaining({
+        code: 'TOO_LARGE',
+        message: 'HTML nesting depth limit exceeded.',
+      }) as AppError,
+    );
+    expect(performance.now() - start).toBeLessThan(200);
+  },
+);
+
 it('checks HTML cancellation and a synchronous deadline before DOM loading', () => {
   const options = {
     sourceUrl: 'https://example.gov/bill.html',

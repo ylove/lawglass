@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   AppError,
   EMPTY_METADATA,
@@ -9,6 +9,7 @@ import {
 } from '../model/index.js';
 import { detectSections, parseText } from './index.js';
 import { breadcrumb, chunkDocument } from '../chunk/index.js';
+import * as sections from './sections.js';
 
 const options = {
   sourceUrl: 'https://example.gov/bill.txt',
@@ -16,6 +17,25 @@ const options = {
 };
 
 describe('parseText', () => {
+  it.each(['Bill text\r\n'.repeat(10_000), 'x'.repeat(100_000)])(
+    'checks the deadline while splitting a large input (%#)',
+    (input) => {
+      const detect = vi.spyOn(sections, 'detectSections');
+      let ticks = 0;
+      const clock = vi
+        .spyOn(performance, 'now')
+        .mockImplementation(() => ticks++);
+      try {
+        expect(() => parseText(input, { ...options, timeoutMs: 4 })).toThrow(
+          /time budget/,
+        );
+        expect(detect).not.toHaveBeenCalled();
+      } finally {
+        clock.mockRestore();
+        detect.mockRestore();
+      }
+    },
+  );
   it('keeps headingless subdivisions out of breadcrumbs and merges their printed lead-ins once', () => {
     const input = [
       'Sec. 4.',

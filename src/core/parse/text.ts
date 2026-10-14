@@ -38,7 +38,24 @@ export function parseText(
   }
   if (!text.trim())
     throw new AppError('PARSE_FAILED', 'The text document is empty.');
-  const lines = text.split(/\r\n|\r|\n/).map((text) => ({ text }));
+  // Iterate separators so the budget can stop splitting before all lines are allocated.
+  // Checking by character offset also covers a very long line without separators.
+  const lines: { text: string }[] = [];
+  let start = 0;
+  let checkpoint = 0;
+  for (let at = 0; at < text.length; at++) {
+    if (at >= checkpoint) {
+      budget.check();
+      checkpoint = at + 4096;
+    }
+    const char = text.charAt(at);
+    if (char !== '\r' && char !== '\n') continue;
+    lines.push({ text: text.slice(start, at) });
+    if (char === '\r' && text[at + 1] === '\n') at++;
+    start = at + 1;
+  }
+  lines.push({ text: text.slice(start) });
+  budget.check();
   const doc = NormalizedDoc.parse({
     docId: createHash('sha256').update(bytes).digest('hex'),
     sourceUrl: options.sourceUrl,

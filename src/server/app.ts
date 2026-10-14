@@ -1,4 +1,3 @@
-import { readParseLimits } from '../core/parse/limits.js';
 /**
  * The Hono app: the /api routes from core/model/api.ts plus the built web UI. All pipeline work
  * (ingest, ask, excerpts) is delegated to core/pipeline; this layer only does HTTP, SSE framing,
@@ -24,6 +23,7 @@ import {
   type IngestEvent,
 } from '../core/model/index.js';
 import { parsePdf as defaultParsePdf } from '../core/parse/index.js';
+import { readParseLimits } from '../core/parse/limits.js';
 import { ask, ingest, sectionExcerpt } from '../core/pipeline/index.js';
 import type { RegistryEntry } from '../core/registry.js';
 import { buildDocDetail } from './doc-detail.js';
