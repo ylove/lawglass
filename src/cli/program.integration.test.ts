@@ -159,15 +159,38 @@ test('a wrapper page lists the candidate links in the error', async () => {
 test('the bare URL form ingests, then hands off to serve when available', async () => {
   const serve = vi.fn(() => Promise.resolve());
   await run(['https://example.gov/gardens.txt'], { serve });
-  expect(serve).toHaveBeenCalledOnce();
+  expect(serve).toHaveBeenCalledWith(env.runtime, { publicMode: false });
   expect(output).toContain('Format: text');
 });
 
-test('the bare URL form explains how to continue without a server', async () => {
-  await run(['https://example.gov/gardens.txt']);
-  expect(output).toMatch(
-    /web UI is not available yet.*ask [0-9a-f]{12} "<question>"/s,
-  );
+test('serve passes port, host and public mode to the launcher', async () => {
+  const serve = vi.fn(() => Promise.resolve());
+  await run(['serve', '--port', '4999', '--host', '0.0.0.0', '--public'], {
+    serve,
+  });
+  expect(serve).toHaveBeenCalledWith(env.runtime, {
+    publicMode: true,
+    port: 4999,
+    host: '0.0.0.0',
+  });
+});
+
+test('serve defaults to a private local server', async () => {
+  const serve = vi.fn(() => Promise.resolve());
+  await run(['serve'], { serve });
+  expect(serve).toHaveBeenCalledWith(env.runtime, {
+    publicMode: false,
+    port: undefined,
+    host: undefined,
+  });
+});
+
+test('serve rejects a port that is not a number', async () => {
+  const serve = vi.fn(() => Promise.resolve());
+  await expect(
+    run(['serve', '--port', 'abc'], { serve }),
+  ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  expect(serve).not.toHaveBeenCalled();
 });
 
 test.each([
@@ -197,6 +220,7 @@ test.each([
       return Promise.resolve(env.runtime);
     },
     write: () => undefined,
+    serve: () => Promise.resolve(),
   }).parseAsync(args, { from: 'user' });
   expect(seen).toEqual(['local']);
 });
