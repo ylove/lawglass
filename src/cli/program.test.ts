@@ -52,17 +52,8 @@ test('--version prints the package version', () => {
 });
 
 test.each([
-  {
-    args: ['ingest', 'https://example.com/bill', '--name', 'sample'],
-    issue: 28,
-  },
-  { args: ['ask', 'sample', 'What changes?'], issue: 28 },
-  { args: ['ask', 'sample', '--chip', 'effective-date'], issue: 28 },
-  { args: ['list'], issue: 28 },
-  { args: ['remove', 'sample'], issue: 28 },
   { args: ['serve', '--port', '4318', '--public'], issue: 29 },
   { args: ['eval', '--fixture', 'sample', '--mode', 'all'], issue: 32 },
-  { args: ['https://example.com/bill', '--backend', 'local'], issue: 28 },
 ])(
   '$args prints the issue placeholder and sets exit code 2',
   ({ args, issue }) => {
