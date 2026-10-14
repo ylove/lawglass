@@ -90,7 +90,8 @@ export function chunkDocument(input: NormalizedDoc): Chunk[] {
     path: readonly Section[],
     spans: readonly Span[],
     deleted: boolean,
-    refs: readonly string[] = [],
+    /** Ids of small sibling subsections merged into this chunk (see coveredSectionIds). */
+    merged: readonly string[] = [],
   ): void {
     const run = textRun(spans);
     if (!/\S/.test(run.text)) return;
@@ -179,7 +180,15 @@ export function chunkDocument(input: NormalizedDoc): Chunk[] {
         embedText,
         tokenCount: estimateTokens(embedText),
         definedTermsUsed: [],
-        refs: [...refs],
+        refs: [],
+        ...(merged.length > 0
+          ? {
+              coveredSectionIds: [section.id, ...merged] as [
+                string,
+                ...string[],
+              ],
+            }
+          : {}),
         ...location(includedSpans),
       };
       const { embedText: _omit, ...metadata } = chunk;

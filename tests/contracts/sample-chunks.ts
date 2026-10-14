@@ -49,6 +49,7 @@ export const CHUNKS_A: Chunk[] = [
     text: 'The department shall award grants to each eligible town for water treatment upgrades.',
     definedTermsUsed: ['eligible town'],
     refs: ['sec-2'],
+    coveredSectionIds: ['sec-3', 'sec-3/a', 'sec-3/b'],
   }),
   chunk(DOC_A, 'sec-4', 0, {
     text: 'A person who violates this section shall be fined not more than $5,000 per day.',
