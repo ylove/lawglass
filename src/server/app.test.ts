@@ -940,5 +940,13 @@ describe('HTTP security boundary', () => {
         })
       ).status,
     ).toBe(403);
+    expect(
+      (
+        await a.request('/api/docs/missing/summary', {
+          method: 'HEAD',
+          headers: { 'sec-fetch-site': 'cross-site' },
+        })
+      ).status,
+    ).toBe(403);
   });
 });

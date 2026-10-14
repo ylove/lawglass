@@ -165,7 +165,9 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     const canSpendOrChange =
       method === 'POST' ||
       method === 'DELETE' ||
-      (method === 'GET' && /^\/api\/docs\/[^/]+\/summary$/.test(c.req.path));
+      // HEAD reaches the GET handler, so it can start the same paid generation.
+      ((method === 'GET' || method === 'HEAD') &&
+        /^\/api\/docs\/[^/]+\/summary$/.test(c.req.path));
     if (canSpendOrChange && c.req.header('sec-fetch-site') === 'cross-site')
       return c.json(
         { error: { code: 'INVALID_INPUT', message: 'Cross-site request.' } },
