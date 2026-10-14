@@ -290,6 +290,49 @@ describe('parsePdf on every amendment-geometry case', async () => {
 });
 
 describe('parsePdf on other layouts', () => {
+  it('keeps body lead-ins out of headings and merges synthetic PDF subdivisions once', async () => {
+    const pdf = await PDFDocument.create();
+    const font = await pdf.embedFont(StandardFonts.TimesRoman);
+    const page = pdf.addPage([612, 792]);
+    const lines = [
+      'Sec. 4.',
+      '(b) Except as otherwise provided, applicants shall comply.',
+      '(1) "Gun show promoter" means a person who organizes or',
+      'operates a gun show.',
+      '(2) "Applicant" means a resident.',
+    ];
+    lines.forEach((text, index) => {
+      page.drawText(text, { x: 72, y: 700 - index * 20, size: 11, font });
+    });
+    const doc = await parsePdf(await pdf.save(), options);
+    const nodes = [...walkSections(doc.sections)];
+    expect(nodes.map((s) => s.id)).toEqual([
+      'sec-4',
+      'sec-4/b',
+      'sec-4/b/1',
+      'sec-4/b/2',
+    ]);
+    expect(nodes.map((s) => s.heading)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    const chunks = chunkDocument(doc);
+    const merged = chunks.find((c) => c.coveredSectionIds);
+    expect(merged?.breadcrumb).toBe('Sec. 4 > (b)');
+    expect(merged?.text).toBe(
+      '(1) "Gun show promoter" means a person who organizes or\noperates a gun show.\n\n(2) "Applicant" means a resident.',
+    );
+    for (const chunk of chunks)
+      for (const lead of [
+        '(b) Except',
+        '(1) "Gun show promoter"',
+        '(2) "Applicant"',
+      ])
+        expect(chunk.text.split(lead).length - 1).toBeLessThanOrEqual(1);
+  });
+
   it('reads a federal-style bill without line numbers, and says so', async () => {
     const { bytes, groundTruth } = await makeFederalStylePdf();
     const doc = await parsePdf(bytes, options);

@@ -181,7 +181,7 @@ export function chunkDocument(input: NormalizedDoc): Chunk[] {
       const last = words[end - 1];
       if (!first || !last)
         throw new AppError('INVALID_INPUT', 'Missing chunk word boundary.');
-      const text = excerpt(start, end);
+      const text = excerpt(start, end).replace(/\n{3,}/g, '\n\n');
       const includedSpans = run.ranges
         .filter(
           (range) =>
@@ -258,8 +258,22 @@ export function chunkDocument(input: NormalizedDoc): Chunk[] {
     let siblings: Section[] = [];
     const combinedSpans = (group: readonly Section[]): Span[] =>
       group.flatMap((s, index) => {
-        const label = [s.num, s.heading].filter(Boolean).join(' ');
-        const punctuation = s.heading && !/[.!?:]$/.test(label) ? '.' : '';
+        const text = textRun(s.spans).text.trimStart();
+        const startsWithLabel = (label: string): boolean =>
+          text.startsWith(label) &&
+          (text.length === label.length ||
+            /^[\s.!?:—–(]/.test(text.slice(label.length)));
+        // Text/PDF/HTML spans retain printed markers; XML may store only the body.
+        const hasNum = s.num !== undefined && startsWithLabel(s.num);
+        const hasHeading =
+          s.heading !== undefined && startsWithLabel(s.heading);
+        const label = hasNum
+          ? ''
+          : [s.num, hasHeading ? undefined : s.heading]
+              .filter(Boolean)
+              .join(' ');
+        const punctuation =
+          s.heading && !hasHeading && !/[.!?:—–]$/.test(label) ? '.' : '';
         return [
           {
             text: `${index === 0 ? '' : '\n\n'}${label ? `${label}${punctuation} ` : ''}`,

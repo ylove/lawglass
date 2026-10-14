@@ -30,6 +30,53 @@ const parse = (html: string | Uint8Array) => parseHtml(html, options);
 const page = (body: string, head = '') =>
   `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;
 
+describe('issue #69 HTML subdivisions', () => {
+  it('merges <pre> sibling spans without repeating their headings or body lead-ins', () => {
+    const doc = parse(
+      page(
+        '<pre>Sec. 4.\n(a) one\n\n\n(b) two\n(c) In general.— Residents may apply.</pre>',
+      ),
+    );
+    const children = doc.sections[0]!.children;
+    expect(children.map((s) => s.heading)).toEqual([
+      undefined,
+      undefined,
+      'In general.—',
+    ]);
+    const merged = chunkDocument(doc).find((c) => c.coveredSectionIds);
+    expect(merged?.text).toBe(
+      '(a) one\n\n(b) two\n\n(c) In general.— Residents may apply.',
+    );
+    for (const chunk of chunkDocument(doc)) {
+      for (const lead of ['(a) one', '(b) two', '(c) In general.—'])
+        expect(chunk.text.split(lead).length - 1).toBeLessThanOrEqual(1);
+      expect(chunk.text).not.toMatch(/\n{3,}/);
+    }
+  });
+
+  it('retains titles explicitly printed in heading elements and uses amended title text', () => {
+    const doc = parse(
+      page(
+        '<h2>Sec. 4. Definitions.</h2><h3>(a) <del>Obsolete</del> <ins>Current</ins> rules.</h3><p>Residents shall comply.</p><p>(b) Residents shall apply.</p>',
+      ),
+    );
+    expect(doc.sections[0]!.children[0]!.heading).toBe('Current rules.');
+    expect(doc.sections[0]!.children[1]!.heading).toBeUndefined();
+    expect(
+      chunkDocument(doc).find((c) => c.sectionId === 'sec-4/a')?.breadcrumb,
+    ).toBe('Sec. 4 Definitions. > (a) Current rules.');
+  });
+
+  it('keeps inline body text out of dash headings after removing struck title words', () => {
+    const doc = parse(
+      page(
+        '<p>Sec. 4.</p><p>(a) <del>Old</del> <ins>New</ins> rules.— Residents shall comply.</p>',
+      ),
+    );
+    expect(doc.sections[0]!.children[0]!.heading).toBe('New rules.—');
+  });
+});
+
 /**
  * Text of every span with this status, across the whole tree, in document order. Edge
  * whitespace is trimmed: collapsing the gap a deleted span leaves moves it into the struck text.
