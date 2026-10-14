@@ -59,7 +59,35 @@ describe('fleschKincaidGrade', () => {
   });
 });
 
+describe('sentence splitting', () => {
+  const bullets = [
+    '- The fee is fifty dollars',
+    '- The form is due in May',
+    '- Late forms pay extra',
+    '- The town sends the bill',
+    '- Appeals go to the board',
+    '- The board meets in June',
+  ].join('\n');
+  it('treats unpunctuated list items as separate sentences', () => {
+    const withPeriods = bullets.replaceAll('\n', '.\n') + '.';
+    expect(fleschKincaidGrade(bullets)).toBe(fleschKincaidGrade(withPeriods));
+    expect(fleschKincaidGrade(bullets)!).toBeLessThan(6);
+  });
+  it('keeps newlines when citations are present', () => {
+    const cited = bullets.replaceAll('\n', ' [S:sec-1]\n');
+    expect(fleschKincaidGrade(cited)).toBe(fleschKincaidGrade(bullets));
+  });
+  it('does not end a sentence after Sec. or U.S.C.', () => {
+    expect(fleschKincaidGrade('Sec. 4 applies to U.S.C. 1983 rules.')).toBe(
+      fleschKincaidGrade('Sec 4 applies to U S C 1983 rules.'),
+    );
+  });
+});
+
 describe('stripCitations', () => {
+  it('keeps line breaks', () => {
+    expect(stripCitations('a [S:x]\nb')).toBe('a\nb');
+  });
   it('removes markers and collapses space', () => {
     expect(stripCitations('Hi [S:a] there [S:b/c]')).toBe('Hi there');
   });

@@ -2,6 +2,7 @@
  * Answer assembly: build the prompt, stream the model's reply, then validate it.
  */
 import {
+  AppError,
   DECLINE_TEXT,
   type AnswerResult,
   type BillMetadata,
@@ -9,7 +10,7 @@ import {
   type LlmUsage,
   type SearchHit,
 } from '../model/index.js';
-import { validateCitations } from './citations.js';
+import { coveredSectionIds, validateCitations } from './citations.js';
 import { buildPrompt } from './prompt.js';
 import { fleschKincaidGrade, stripCitations } from './readability.js';
 
@@ -33,6 +34,7 @@ export interface AnswerInput {
 }
 
 export async function answer(input: AnswerInput): Promise<AnswerResult> {
+  input.signal?.throwIfAborted();
   const { provider, context, onToken } = input;
   const base = { provider: provider.id, model: provider.model };
 
@@ -61,11 +63,12 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
 
   let raw = '';
   let usage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
+  let stopReason: string | null = null;
+  let finished = false;
   for await (const event of provider.streamText({
     system: prompt.system,
     messages: [{ role: 'user', content: prompt.user }],
-    maxTokens: input.maxTokens ?? 1024,
-    temperature: 0,
+    maxTokens: input.maxTokens ?? 8192,
     signal: input.signal,
   })) {
     if (event.type === 'text') {
@@ -73,10 +76,20 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
       onToken?.(event.text);
     } else {
       usage = event.usage;
+      stopReason = event.stopReason;
+      finished = true;
     }
   }
+  if (!finished) throw new AppError('PROVIDER_BAD_OUTPUT');
+  const truncated = stopReason === 'max_tokens';
+  if (truncated) {
+    raw = `${raw.trimEnd()}…`;
+    onToken?.('…');
+  }
 
-  const sectionIds = new Set(prompt.hits.map((h) => h.chunk.sectionId));
+  const sectionIds = new Set(
+    prompt.hits.flatMap((h) => coveredSectionIds(h.chunk)),
+  );
   const validated = validateCitations(
     raw,
     sectionIds,
@@ -86,7 +99,9 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
     text: validated.text,
     citations: validated.citations,
     invalidCitations: validated.invalidCitations,
-    warnings: validated.warnings,
+    warnings: truncated
+      ? [...validated.warnings, 'TRUNCATED']
+      : validated.warnings,
     declined: validated.declined,
     readingGrade: fleschKincaidGrade(stripCitations(validated.text)),
     ...base,

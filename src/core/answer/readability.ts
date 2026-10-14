@@ -22,12 +22,39 @@ export function countSyllables(word: string): number {
   return Math.max(1, groups?.length ?? 1);
 }
 
-/** Remove `[S:id]` markers so they are not scored as words. */
+/** Remove `[S:id]` markers so they are not scored as words. Newlines are kept (they end sentences). */
 export function stripCitations(text: string): string {
   return text
     .replace(new RegExp(CITATION_PATTERN.source, 'g'), ' ')
-    .replace(/\s+/g, ' ')
+    .replace(/[ \t]+/g, ' ')
+    .replace(/ ?\n ?/g, '\n')
     .trim();
+}
+
+const ABBREVIATION = /(?:^|[^A-Za-z])(?:Sec|Secs|No|Nos|[A-Z])$/;
+
+/**
+ * A sentence ends at . ! ? followed by space or end, or at a line break (list items).
+ * A "." after "Sec" or a single capital letter ("U.S.C.") is not an end.
+ */
+function countSentences(text: string): number {
+  let count = 0;
+  for (const line of text.split('\n')) {
+    if (!/[A-Za-z0-9]/.test(line)) continue;
+    const re = /[.!?]+(?=\s|$)/g;
+    let last = 0;
+    let m: RegExpExecArray | null;
+    let ends = 0;
+    while ((m = re.exec(line)) !== null) {
+      const before = line.slice(last, m.index);
+      if (m[0] === '.' && ABBREVIATION.test(before)) continue;
+      if (/[A-Za-z0-9]/.test(before)) ends++;
+      last = m.index + m[0].length;
+    }
+    const tail = line.slice(last);
+    count += ends + (/[A-Za-z0-9]/.test(tail) ? 1 : 0);
+  }
+  return count;
 }
 
 /** Grade level of `text`, or null when it has no words. Citation markers are ignored. */
@@ -35,12 +62,7 @@ export function fleschKincaidGrade(text: string): number | null {
   const clean = stripCitations(text);
   const words = clean.match(/[A-Za-z0-9][A-Za-z0-9'’]*/g) ?? [];
   if (words.length === 0) return null;
-  // A sentence ends at . ! ? or a line break; a text with no terminator counts as one.
-  const sentences = Math.max(
-    1,
-    clean.split(/[.!?]+(?:\s|$)|\n+/).filter((s) => /[A-Za-z0-9]/.test(s))
-      .length,
-  );
+  const sentences = Math.max(1, countSentences(clean));
   const syllables = words.reduce((n, w) => n + (countSyllables(w) || 1), 0);
   const grade =
     0.39 * (words.length / sentences) +

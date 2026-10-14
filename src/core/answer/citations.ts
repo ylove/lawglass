@@ -3,6 +3,7 @@
  * hallucinated source. This is security-relevant (see AGENTS.md), so it is small and heavily tested.
  */
 import {
+  CITATION_PATTERN,
   DECLINE_TEXT,
   findCitationIds,
   type AnswerWarning,
@@ -20,8 +21,33 @@ export interface ValidatedAnswer {
   declined: boolean;
 }
 
+/** Lowercase-free normal form: straight apostrophes, no quotes or emphasis marks, one space, no final period. */
+function normalizeDecline(text: string): string {
+  return text
+    .replace(/[\u2018\u2019\u02bc]/g, "'")
+    .replace(/["\u201c\u201d*_]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\.$/, '');
+}
+
+/** True when the whole reply is the decline sentence (formatting differences tolerated, extra words not). */
 export function isDecline(text: string): boolean {
-  return text.trim() === DECLINE_TEXT;
+  return normalizeDecline(text) === normalizeDecline(DECLINE_TEXT);
+}
+
+/** Sections whose text is in this chunk: its own, plus small siblings merged under it. */
+export function coveredSectionIds(c: StoredChunk): string[] {
+  return c.coveredSectionIds ?? [c.sectionId];
+}
+
+/** Rewrite `[S:a, b]` and `[S:a; S:b]` as `[S:a] [S:b]` so each id is validated. */
+function splitMultiMarkers(text: string): string {
+  return text.replace(/\[S:([^\]]*[,;][^\]]*)\]/g, (whole, inner: string) => {
+    const ids = inner.split(/\s*[,;]\s*/).map((s) => s.replace(/^S:/, ''));
+    if (ids.some((id) => !id || /\s/.test(id))) return whole;
+    return ids.map((id) => `[S:${id}]`).join(' ');
+  });
 }
 
 function escapeRegExp(s: string): string {
@@ -36,13 +62,8 @@ function stripMarker(text: string, id: string): string {
   );
 }
 
-function span(values: (number | undefined)[], pick: 'min' | 'max') {
-  const nums = values.filter((v): v is number => v !== undefined);
-  return nums.length ? Math[pick](...nums) : undefined;
-}
-
 function buildCitation(sectionId: string, chunks: StoredChunk[]): Citation {
-  const own = chunks.filter((c) => c.sectionId === sectionId);
+  const own = chunks.filter((c) => coveredSectionIds(c).includes(sectionId));
   const citation: Citation = {
     sectionId,
     valid: true,
@@ -50,27 +71,35 @@ function buildCitation(sectionId: string, chunks: StoredChunk[]): Citation {
   };
   const first = own[0];
   if (first) citation.breadcrumb = first.breadcrumb;
-  const pageStart = span(
-    own.map((c) => c.pageStart),
-    'min',
+  // Mirror the chunker's location(): the first line comes from chunks on the first page,
+  // the last line from chunks on the last page.
+  const pageStarts = own.flatMap((c) =>
+    c.pageStart === undefined ? [] : [c.pageStart],
   );
-  const pageEnd = span(
-    own.map((c) => c.pageEnd ?? c.pageStart),
-    'max',
+  const pageEnds = own.flatMap((c) => {
+    const p = c.pageEnd ?? c.pageStart;
+    return p === undefined ? [] : [p];
+  });
+  const pageStart = pageStarts.length ? Math.min(...pageStarts) : undefined;
+  const pageEnd = pageEnds.length ? Math.max(...pageEnds) : undefined;
+  const firstLines = own.flatMap((c) =>
+    c.lineStart !== undefined &&
+    (pageStart === undefined || c.pageStart === pageStart)
+      ? [c.lineStart]
+      : [],
   );
-  const lineStart = span(
-    own.map((c) => c.lineStart),
-    'min',
-  );
-  const lineEnd = span(
-    own.map((c) => c.lineEnd ?? c.lineStart),
-    'max',
-  );
+  const lastLines = own.flatMap((c) => {
+    const line = c.lineEnd ?? c.lineStart;
+    return line !== undefined &&
+      (pageEnd === undefined || (c.pageEnd ?? c.pageStart) === pageEnd)
+      ? [line]
+      : [];
+  });
   const location: NonNullable<Citation['location']> = {};
   if (pageStart !== undefined) location.pageStart = pageStart;
   if (pageEnd !== undefined) location.pageEnd = pageEnd;
-  if (lineStart !== undefined) location.lineStart = lineStart;
-  if (lineEnd !== undefined) location.lineEnd = lineEnd;
+  if (firstLines.length) location.lineStart = Math.min(...firstLines);
+  if (lastLines.length) location.lineEnd = Math.max(...lastLines);
   if (Object.keys(location).length) citation.location = location;
   return citation;
 }
@@ -81,11 +110,20 @@ function buildCitation(sectionId: string, chunks: StoredChunk[]): Citation {
  * @param chunks the retrieved chunks, used for chunk ids, breadcrumbs and locations
  */
 export function validateCitations(
-  text: string,
+  rawText: string,
   retrievedSectionIds: Iterable<string>,
   chunks: readonly StoredChunk[] = [],
 ): ValidatedAnswer {
   const allowed = new Set(retrievedSectionIds);
+  // A cited value that is exactly a prompt chunk id means that chunk's section.
+  const byChunkId = new Map(chunks.map((c) => [c.id, c.sectionId]));
+  const text = splitMultiMarkers(rawText).replace(
+    new RegExp(CITATION_PATTERN.source, 'g'),
+    (whole, id: string) => {
+      const section = byChunkId.get(id);
+      return section === undefined ? whole : `[S:${section}]`;
+    },
+  );
   const declined = isDecline(text);
   const cited = [...new Set(findCitationIds(text))];
 

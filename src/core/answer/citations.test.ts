@@ -40,7 +40,7 @@ describe('validateCitations', () => {
       valid: true,
       chunkIds: ['c1', 'c2'],
       breadcrumb: 'Sec. sec-1',
-      location: { pageStart: 2, pageEnd: 3, lineStart: 1, lineEnd: 9 },
+      location: { pageStart: 2, pageEnd: 3, lineStart: 5, lineEnd: 4 },
     });
     expect(r.citations[1]?.location).toBeUndefined();
   });
@@ -122,5 +122,73 @@ describe('validateCitations', () => {
     const r = validateCitations('x [S:] [S: a] [s:sec-1]', ids);
     expect(r.citations).toEqual([]);
     expect(r.text).toBe('x [S:] [S: a] [s:sec-1]');
+  });
+
+  describe('merged chunks', () => {
+    const merged = hit({
+      id: 'm',
+      sectionId: 'sec-2',
+      text: '(a) x\n\n(b) y',
+      coveredSectionIds: ['sec-2', 'sec-2/a', 'sec-2/b'],
+    }).chunk;
+    it('treats a merged child as valid, with that chunk', () => {
+      const r = validateCitations(
+        'Y [S:sec-2/b].',
+        ['sec-2', 'sec-2/a', 'sec-2/b'],
+        [merged],
+      );
+      expect(r.invalidCitations).toEqual([]);
+      expect(r.citations[0]?.chunkIds).toEqual(['m']);
+    });
+    it('does not match a child that was not merged', () => {
+      const r = validateCitations(
+        'Y [S:sec-2/c].',
+        ['sec-2', 'sec-2/a', 'sec-2/b'],
+        [merged],
+      );
+      expect(r.invalidCitations).toEqual(['sec-2/c']);
+    });
+    it('does not let sec-20 match sec-2', () => {
+      const other = hit({ id: 'o', sectionId: 'sec-20', text: 'z' }).chunk;
+      const r = validateCitations('Y [S:sec-20].', ['sec-20'], [merged, other]);
+      expect(r.citations[0]?.chunkIds).toEqual(['o']);
+    });
+  });
+
+  it('maps a cited prompt chunk id back to its section', () => {
+    const r = validateCitations('It pays [S:c3].', ids, chunks);
+    expect(r.text).toBe('It pays [S:sec-2].');
+    expect(r.citations[0]?.sectionId).toBe('sec-2');
+    expect(r.invalidCitations).toEqual([]);
+  });
+
+  it('splits multi-id markers and validates each id', () => {
+    const r = validateCitations(
+      'A [S:sec-1, sec-2]. B [S:sec-1; S:nope].',
+      ids,
+      chunks,
+    );
+    expect(r.text).toBe('A [S:sec-1] [S:sec-2]. B [S:sec-1].');
+    expect(r.invalidCitations).toEqual(['nope']);
+  });
+
+  it('leaves a comma marker with a bad part alone', () => {
+    const r = validateCitations('A [S:sec-1, ].', ids, chunks);
+    expect(r.text).toBe('A [S:sec-1, ].');
+  });
+});
+
+describe('isDecline', () => {
+  it.each([
+    'This document doesn\u2019t address that question.',
+    '"This document doesn\'t address that question."',
+    "This document doesn't address that question",
+    "**This document doesn't address that question.**",
+    "This  document doesn't\naddress that question.",
+  ])('accepts %s', (t) => {
+    expect(isDecline(t)).toBe(true);
+  });
+  it('rejects extra words before or after', () => {
+    expect(isDecline(`Sorry. ${DECLINE_TEXT}`)).toBe(false);
   });
 });

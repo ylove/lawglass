@@ -1,5 +1,6 @@
 export { answer, type AnswerContext, type AnswerInput } from './answer.js';
 export {
+  coveredSectionIds,
   isDecline,
   validateCitations,
   type ValidatedAnswer,
@@ -7,6 +8,7 @@ export {
 export {
   SYSTEM_PROMPT,
   buildPrompt,
+  escapeText,
   escapeXml,
   formatExcerpt,
   mergeContext,

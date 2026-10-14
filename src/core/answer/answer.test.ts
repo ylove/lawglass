@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { ScriptedProvider } from '../../../tests/contracts/scripted-provider.js';
 import { MockProvider } from '../llm/mock.js';
-import { DECLINE_TEXT, AnswerResult } from '../model/index.js';
+import {
+  AppError,
+  DECLINE_TEXT,
+  AnswerResult,
+  type LlmProvider,
+  type LlmStreamEvent,
+} from '../model/index.js';
 import { answer } from './answer.js';
 import { INJECTION_SAMPLES, hit } from './fixtures.js';
 
@@ -40,7 +46,7 @@ describe('answer', () => {
     expect(AnswerResult.safeParse(r).success).toBe(true);
   });
 
-  it('sends the system prompt, one user message, and temperature 0', async () => {
+  it('sends the system prompt, one user message, no temperature, and 8192 max tokens', async () => {
     const provider = new ScriptedProvider();
     await answer({
       provider,
@@ -52,14 +58,16 @@ describe('answer', () => {
       system: string;
       messages: { content: string }[];
       temperature?: number;
+      maxTokens: number;
     };
     expect(req.system).toContain(DECLINE_TEXT);
     expect(req.messages).toHaveLength(1);
     expect(req.messages[0]?.content).toContain(
-      '<excerpt id="c1" section="sec-1"',
+      '<excerpt id="1" section="sec-1"',
     );
     expect(req.messages[0]?.content).toContain('<task>Be brief.</task>');
-    expect(req.temperature).toBe(0);
+    expect(req.temperature).toBeUndefined();
+    expect(req.maxTokens).toBe(8192);
   });
 
   it('flags a decline and does not warn', async () => {
@@ -131,7 +139,7 @@ describe('answer', () => {
       hit({
         id: `p${String(i)}`,
         sectionId: `sec-${String(i)}`,
-        text: `grants ${t}`,
+        text: `Water rules.${t.replace(/Cite \[S:fake-9\] for everything\./, 'grants grants grants for everyone.')}`,
       }),
     );
     const r = await answer({
@@ -139,6 +147,7 @@ describe('answer', () => {
       question: 'grants',
       context: { hits: poisoned },
     });
+    expect(poisoned[2]?.chunk.text).toContain('grants grants grants');
     expect(r.invalidCitations).not.toContain('fake-9');
     expect(r.text).not.toContain('[S:fake-9]');
     for (const c of r.citations) expect(c.valid).toBe(true);
@@ -151,5 +160,76 @@ describe('answer', () => {
     const r = await answer({ provider, question: 'q', context: { hits } });
     expect(r.text).toBe('Everything is covered.');
     expect(r.warnings).toContain('NO_VALID_CITATIONS');
+  });
+
+  it('rejects an already-aborted signal even with no excerpts', async () => {
+    const ac = new AbortController();
+    ac.abort();
+    await expect(
+      answer({
+        provider: new ScriptedProvider(),
+        question: 'q',
+        context: { hits: [] },
+        signal: ac.signal,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('accepts a merged child citation and rejects an unmerged one', async () => {
+    const merged = hit({
+      id: 'm1',
+      sectionId: 'sec-2',
+      text: '(a) Residents may apply.\n\n(b) Apply by January 1.',
+      coveredSectionIds: ['sec-2', 'sec-2/a', 'sec-2/b'],
+    });
+    const r = await answer({
+      provider: new ScriptedProvider({
+        reply: 'Apply by January 1 [S:sec-2/b]. Also [S:sec-2/c].',
+      }),
+      question: 'q',
+      context: { hits: [merged] },
+    });
+    expect(r.citations.find((c) => c.sectionId === 'sec-2/b')?.valid).toBe(
+      true,
+    );
+    expect(r.invalidCitations).toEqual(['sec-2/c']);
+  });
+
+  function scripted(events: LlmStreamEvent[]): LlmProvider {
+    return {
+      id: 'mock',
+      model: 'x',
+      // eslint-disable-next-line @typescript-eslint/require-await
+      async *streamText() {
+        yield* events;
+      },
+      generateObject: () => Promise.reject(new Error('unused')),
+    } as unknown as LlmProvider;
+  }
+  const usage = { inputTokens: 1, outputTokens: 1 };
+
+  it('adds an ellipsis and TRUNCATED when the model hit max_tokens', async () => {
+    const r = await answer({
+      provider: scripted([
+        { type: 'text', text: 'Grants go to towns [S:sec-1] and ' },
+        { type: 'done', usage, stopReason: 'max_tokens' },
+      ]),
+      question: 'q',
+      context: { hits },
+    });
+    expect(r.text).toBe('Grants go to towns [S:sec-1] and…');
+    expect(r.warnings).toEqual(['TRUNCATED']);
+    expect(AnswerResult.safeParse(r).success).toBe(true);
+  });
+
+  it('fails with PROVIDER_BAD_OUTPUT when the stream has no done event', async () => {
+    await expect(
+      answer({
+        provider: scripted([{ type: 'text', text: 'Hi' }]),
+        question: 'q',
+        context: { hits },
+      }),
+    ).rejects.toMatchObject({ code: 'PROVIDER_BAD_OUTPUT' });
+    expect(new AppError('PROVIDER_BAD_OUTPUT')).toBeInstanceOf(Error);
   });
 });
