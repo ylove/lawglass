@@ -16,8 +16,6 @@ import {
   type AnswerMetrics,
   type BackendKind,
   type BackendUsage,
-  type EvalRow,
-  type EvalRun,
   type FusionMethod,
   type GoldenQuestion,
   type GoldenSet,
@@ -30,6 +28,13 @@ import {
 } from '../core/model/index.js';
 import { ZERO_USAGE, addUsage } from '../core/model/index.js';
 import { memoryFetcher, type EvalFixture } from './fixtures.js';
+import {
+  EVAL_TOP_K,
+  retrievalDetails,
+  type DetailedEvalRow,
+  type DetailedEvalRun,
+  type RetrievalDetailHit,
+} from './details.js';
 import {
   citationValidity,
   declineRate,
@@ -45,7 +50,7 @@ import {
 } from './metrics.js';
 
 /** Hits retrieved per question; recall@5 reads the first five of the same ranking. */
-export const EVAL_TOP_K = 10;
+export { EVAL_TOP_K } from './details.js';
 
 /** One retrieval configuration under test. */
 export interface Variant {
@@ -107,7 +112,7 @@ export interface RowExtras {
 }
 
 export interface RunEvalResult {
-  run: EvalRun;
+  run: DetailedEvalRun;
   /** Parallel to `run.rows`. */
   extras: RowExtras[];
   skipped: SkippedFixture[];
@@ -150,8 +155,8 @@ export function liveSpanTexts(doc: Pick<NormalizedDoc, 'sections'>): string[] {
   return spanRunTexts(doc, (status) => status !== 'deleted');
 }
 
-interface QuestionRetrieval {
-  hits: RankedHit[];
+interface QuestionRetrieval<Hit extends RankedHit = RankedHit> {
+  hits: Hit[];
   usage: BackendUsage;
   latencyMs: number;
 }
@@ -190,8 +195,8 @@ async function collectRetrievals(
   docId: string,
   questions: readonly GoldenQuestion[],
   variant: Variant,
-): Promise<Map<string, QuestionRetrieval>> {
-  const results = new Map<string, QuestionRetrieval>();
+): Promise<Map<string, QuestionRetrieval<RetrievalDetailHit>>> {
+  const results = new Map<string, QuestionRetrieval<RetrievalDetailHit>>();
   for (const q of questions) {
     if (q.kind === 'unanswerable') continue;
     const retrieved = await retrieve(backend, {
@@ -205,7 +210,16 @@ async function collectRetrievals(
     });
     results.set(q.id, {
       // Belt and braces: with injection off nothing is injected, but never score an injected hit.
-      hits: retrieved.hits.filter((h) => !h.injected).map((h) => h.chunk),
+      hits: retrieved.hits
+        .filter((h) => !h.injected)
+        .map(({ chunk, score }) => ({
+          sectionId: chunk.sectionId,
+          breadcrumb: chunk.breadcrumb,
+          score,
+          ...(chunk.coveredSectionIds
+            ? { coveredSectionIds: chunk.coveredSectionIds }
+            : {}),
+        })),
       usage: retrieved.usage,
       latencyMs: retrieved.latencyMs,
     });
@@ -268,7 +282,7 @@ export async function runEval(input: RunEvalInput): Promise<RunEvalResult> {
   const variants = variantsFor(input.modes, fusionVariant);
   const fixtures = new Map(input.fixtures.map((f) => [f.name, f]));
   const fetcher = memoryFetcher(input.fixtures);
-  const rows: EvalRow[] = [];
+  const rows: DetailedEvalRow[] = [];
   const extras: RowExtras[] = [];
   const skipped: SkippedFixture[] = [];
   const unmatchedGolden = input.golden
@@ -309,12 +323,13 @@ export async function runEval(input: RunEvalInput): Promise<RunEvalResult> {
             golden.questions,
             variant,
           );
-          const row: EvalRow = {
+          const row: DetailedEvalRow = {
             fixture: fixture.name,
             backend: target.kind,
             mode: variant.mode,
             ...(variant.fusion ? { fusion: variant.fusion } : {}),
             retrieval: scoreRetrieval(golden.questions, retrievals),
+            questions: retrievalDetails(golden.questions, retrievals),
           };
           let extra: RowExtras = {};
           // The weighted-fusion variant is a retrieval comparison; `ask` has no fusion switch.
