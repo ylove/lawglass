@@ -134,18 +134,29 @@ The real Ohio HB 62 fixture (135th General Assembly, as introduced) parses to 26
 
 ## Retrieval quality
 
-<!-- EVAL_TABLE -->
+Retrieval quality is measured, not asserted. Five golden sets are frozen in [`src/eval/golden/`](src/eval/golden/), 21 to 28 questions each, for Ohio SB 113, SB 203 and HB 62, federal S. 202 and federal H.R. 5009 (the FY2025 NDAA, about 450k tokens). Each question names its expected `section_id`s and has a kind: exact citation lookup, paraphrase, definition-dependent, "what does it remove" (struck text), or unanswerable (three per set, which should be declined). The sets were frozen at commit `7639f18` before the first run and have not been edited since.
 
-Retrieval quality is measured, not asserted. Five golden sets are frozen in [`src/eval/golden/`](src/eval/golden/), 21 to 28 questions each, for Ohio SB 113, SB 203 and HB 62, federal S. 202 and federal H.R. 5009. Each question names its expected `section_id`s and has a kind: exact citation lookup (sparse should win), paraphrase (dense should win), definition-dependent, "what does it remove" (deleted spans), or unanswerable (three per set, which should be declined). Every set records the commit it was frozen at.
+Local backend (`bge-small-en-v1.5` embeddings, BM25, `ms-marco-MiniLM-L-6-v2` reranker), recall@5 / MRR, from [`eval/results.md`](eval/results.md):
 
-The harness runs `dense`, `sparse`, `hybrid` and `hybrid_rerank`, plus a weighted min-max fusion variant. It reports recall@5, recall@10, MRR, p50 latency, embedding and rerank tokens, citation validity, decline rate, deleted-text leakage rate, and Flesch-Kincaid grade. Injected definitions are excluded from recall so they cannot inflate a mode.
+| Fixture                  | dense           | sparse      | hybrid (RRF) | hybrid (weighted) | **hybrid_rerank** (default) |
+| ------------------------ | --------------- | ----------- | ------------ | ----------------- | --------------------------- |
+| Ohio HB 62               | 0.95 / 0.79     | 0.88 / 0.68 | 1.00 / 0.85  | 0.95 / 0.76       | 0.95 / **0.87**             |
+| Ohio SB 113              | 1.00 / 0.81     | 0.83 / 0.76 | 0.89 / 0.84  | 0.94 / 0.84       | **1.00 / 0.90**             |
+| Ohio SB 203              | 0.71 / 0.63     | 0.76 / 0.63 | 0.86 / 0.66  | 0.86 / 0.66       | **0.95 / 0.74**             |
+| Federal S. 202           | **0.90** / 0.70 | 0.68 / 0.62 | 0.80 / 0.71  | 0.85 / 0.71       | 0.85 / **0.83**             |
+| Federal H.R. 5009 (NDAA) | **0.96** / 0.89 | 0.82 / 0.68 | 0.92 / 0.81  | **0.96 / 0.92**   | 0.88 / 0.86                 |
 
-Honesty rules:
+What this shows, plainly:
 
-- Golden sets are never edited to improve a score. A change to a golden set is a new freeze.
-- `hybrid_rerank` is expected to match or beat `dense`. The `eval-smoke` CI job fails if it falls below `dense` on a synthetic set. If it loses on a real fixture, the results say so.
-- Pinecone rows read "pending" until a Pinecone key has been used to run them.
-- Each results table records the provider and model that produced it.
+- **The default mode ranks best on four of five bills** (highest MRR), and finds more of the right sections than dense alone on SB 203. It ties dense on two bills and **loses to dense on two**: S. 202 by one question (17 of 20 in the top 5, against 18) and the NDAA by two (22 of 25, against 24).
+- **Where each mode wins** (share of questions with a relevant section in the top 5, all bills pooled): `hybrid_rerank` leads on exact lookups (0.97 vs 0.90 for dense) and definitions (0.84 vs 0.79); dense leads on paraphrases (0.95 vs 0.93) and on "what does it remove" (1.00 vs 0.91).
+- **Dense misses, hybrid finds it.** SB 203, _"Does trading one gun for another count as a 'transfer'?"_ Dense retrieval ranks the definitions division that answers it 8th, behind seven other passages of the same section (2923.27), and BM25 alone does not surface it at all. Because both lists feed one candidate pool, the cross-encoder gets to read the question against that division directly and ranks it first.
+- **Where the reranker hurts.** On the NDAA, _"Does the military now have to buy American-made forks, spoons, and dishes?"_ Dense ranks Sec. 842, "Domestic production of stainless steel flatware and dinnerware", first; the small cross-encoder (22M parameters, trained on web search) does not connect _forks and spoons_ to _flatware_ and pushes it out of the top 10. The NDAA's very long heading paths (Division > Title > Subtitle > Sec.) also crowd its 512-token window. A stronger reranker, such as the `bge-reranker-v2-m3` that Pinecone hosts, is the obvious next step; weighted fusion without rerank is the best local mode on the NDAA.
+- **One fix came from this eval.** The reranker originally scored chunk text without its heading path, while the embedder saw both. Giving it the same context (#97) raised MRR on four of five bills (average 0.797 to 0.841) and cost S. 202 two borderline questions. The change was made after looking at results, so both runs are kept in the repository history.
+
+Answer quality (citation validity, decline rate, deleted-text leakage, reading grade) is in [`eval/results-answers.md`](eval/results-answers.md). Pinecone rows are pending until the nightly job runs with a key. Each table records the commit, models and golden-set freeze it came from. Per-question ranks for every mode are written to `eval/runs/*.json`, and `eval compare` lists the questions where two modes disagree ([details](docs/eval.md)).
+
+Caveats: 21 to 28 questions per bill means one question moves recall@5 by about 0.05. Ranks are chunk ranks (the first chunk whose section, or an ancestor or descendant, is expected). Two questions name their section numbers outright (hb62-03, sb203-08), and some paraphrases reuse rare words from the text, which makes them easier for BM25.
 
 ## Security notes
 
