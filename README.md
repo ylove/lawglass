@@ -267,7 +267,7 @@ CI ([`ci.yml`](.github/workflows/ci.yml)) runs these jobs:
 | `no-fixtures-guard` | Fails if real legislation files are committed                                                                       |
 | `secrets`           | Gitleaks over full history                                                                                          |
 | `dependency-review` | Blocks high-severity vulnerabilities and GPL-3.0/AGPL-3.0 licences on pull requests                                 |
-| `eval-smoke`        | Synthetic golden set end to end; fails if `hybrid_rerank` < `dense`                                                 |
+| `eval-smoke`        | Synthetic golden set end to end (fails if `hybrid_rerank` < `dense`), then the prompt-injection eval                |
 | `package-smoke`     | Packs the tarball (allowlisted contents), installs it in a clean dir, runs `init`, `ingest`, `ask`, `list`, `serve` |
 | `e2e`               | Chromium against the packed build: chip streaming, citation drawer, SSRF block, remove                              |
 
