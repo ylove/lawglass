@@ -80,3 +80,74 @@ export function makeAmendmentHtml(): SyntheticSample<HtmlGroundTruth> {
     },
   };
 }
+
+/**
+ * Amendment markup applied the indirect ways real pages do it: stylesheet classes,
+ * `text-decoration-line`, and marks nested inside each other (a struck insertion is deleted).
+ * Links are underlined by an unrelated tag rule and must stay unchanged.
+ */
+export function makeStyledAmendmentHtml(): SyntheticSample<HtmlGroundTruth> {
+  return {
+    bytes: new TextEncoder().encode(`<!doctype html>
+<html lang="en"><head><title>Synthetic Styled Bill</title>
+<style>
+/* Amendment classes */
+.strike { text-decoration: line-through }
+.under, span.add { text-decoration-line: underline; }
+a { text-decoration: underline }
+</style></head>
+<body>
+  <nav>Styled portal navigation</nav>
+  <main>
+    <section id="sec-1"><h2>Section 1. Permit fees</h2>
+      <p>The old fee is <span class="strike">five dollars</span> and <span class="legacy strike">ten dollars</span>.</p>
+      <p>The new fee is <span class="under">six dollars</span> or <span style="text-decoration-line: underline">seven dollars</span>.</p>
+    </section>
+    <section id="sec-2"><h2>Section 2. Nested marks</h2>
+      <p>Pay <s>old <u>mid</u> fee</s> and <u>new <s>dropped</s> fee</u> see <a href="#fees">the portal</a>.</p>
+    </section>
+  </main>
+</body></html>`),
+    groundTruth: {
+      deletedStrings: ['five dollars', 'ten dollars', 'old mid fee', 'dropped'],
+      insertedStrings: ['six dollars', 'seven dollars', 'new ', ' fee'],
+      noiseStrings: ['Styled portal navigation'],
+      sections: [
+        {
+          id: 'sec-1',
+          num: '1',
+          heading: 'Permit fees',
+          level: 1,
+          children: [],
+          spans: [
+            { text: 'The old fee is ', status: 'unchanged' },
+            { text: 'five dollars', status: 'deleted' },
+            { text: ' and ', status: 'unchanged' },
+            { text: 'ten dollars', status: 'deleted' },
+            { text: '. The new fee is ', status: 'unchanged' },
+            { text: 'six dollars', status: 'inserted' },
+            { text: ' or ', status: 'unchanged' },
+            { text: 'seven dollars', status: 'inserted' },
+            { text: '.', status: 'unchanged' },
+          ],
+        },
+        {
+          id: 'sec-2',
+          num: '2',
+          heading: 'Nested marks',
+          level: 1,
+          children: [],
+          spans: [
+            { text: 'Pay ', status: 'unchanged' },
+            { text: 'old mid fee', status: 'deleted' },
+            { text: ' and ', status: 'unchanged' },
+            { text: 'new ', status: 'inserted' },
+            { text: 'dropped', status: 'deleted' },
+            { text: ' fee', status: 'inserted' },
+            { text: ' see the portal.', status: 'unchanged' },
+          ],
+        },
+      ],
+    },
+  };
+}
