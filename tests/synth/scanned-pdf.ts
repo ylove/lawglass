@@ -207,6 +207,11 @@ function layoutPage(
         startChar += part.text.length;
       }
       const width = offset - CELL_PT - cursor;
+      if (topPt + TOTAL_ROWS * CELL_PT > PAGE_HEIGHT - MARGIN_TOP) {
+        throw new Error(
+          `Scanned-page line ${String(lineIndex + 1)} falls below the bottom margin`,
+        );
+      }
       if (cursor + width > PAGE_WIDTH - MARGIN_X) {
         throw new Error(
           `Scanned-page line ${String(lineIndex + 1)} is too long`,
@@ -423,16 +428,25 @@ function drawInvisibleWord(
   // spaces). A 0.001pt size change on every other word flushes the item, so there is
   // exactly one text item per OCR word, in order, without visibly changing anything.
   const size = (CAP_ROWS * CELL_PT) / 0.718 + (index % 2) * 0.001;
-  const natural = font.widthOfTextAtSize(word.text, size);
-  const squeeze = natural > 0 ? (word.box.width / natural) * 100 : 100;
+  // Helvetica is proportional but the bitmap font is not. Scale each character's
+  // horizontal size (Tz) so its advance equals its bitmap cell advance; then every
+  // character boundary in the OCR text lines up with the raster, which matters inside
+  // merged OCR words where a strike stops partway through.
+  const perCharacter = Array.from(word.text).flatMap((char) => {
+    const natural = font.widthOfTextAtSize(char, size);
+    const target = glyphAdvance(char) * CELL_PT;
+    return [
+      setCharacterSqueeze((target / natural) * 100),
+      showText(font.encodeText(char)),
+    ];
+  });
   // One BT..ET per word keeps pdfjs from merging neighbours into a single text item.
   page.pushOperators(
     beginText(),
     setTextRenderingMode(TextRenderingMode.Invisible),
     setFontAndSize(fontKey, size),
-    setCharacterSqueeze(squeeze),
     setTextMatrix(1, 0, 0, 1, word.box.x, word.baselineY),
-    showText(font.encodeText(word.text)),
+    ...perCharacter,
     endText(),
   );
 }
