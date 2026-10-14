@@ -112,9 +112,16 @@ Everything below `NormalizedDoc` is format-agnostic. The CLI, server and eval al
 
 ## Why retrieval instead of stuffing the context window
 
-<!-- CONTEXT_STUFFING -->
+Measured on the largest fixture, the FY2025 NDAA (8,618 sections), against Claude Sonnet 5.5's 1M-token window ([full write-up](docs/eval-analysis.md#retrieval-or-the-whole-bill-in-the-prompt)):
 
-Long bills fit in some context windows, but fitting is not the same as working. Sending the whole bill on every question costs its full token count each time, and a model asked about one clause has to find it among thousands of lines, with no way to show which words it relied on. Retrieval sends a few hundred tokens of the right sections, which keeps cost flat as bills grow and makes each citation point at text the model was actually shown. It also lets the pipeline do things a flat prompt cannot: exclude struck text before the model sees it, add the definitions a clause depends on, and choose a different strategy per question. The measured cost and accuracy comparison on the large federal fixture is still to come.
+|                                   | Retrieval (`hybrid_rerank`) | Whole bill in the prompt                                                   |
+| --------------------------------- | --------------------------- | -------------------------------------------------------------------------- |
+| Input tokens per question         | about 4,500                 | about 936,000 (compact form; the structured form is 2.2M and does not fit) |
+| Cost per question at list price   | about $0.01                 | $1.87 uncached; about $0.09 to $0.19 with the bill cached                  |
+| Correct on 5 pre-chosen questions | 4                           | 5                                                                          |
+| Answer time after the first call  | 4 to 9 s                    | 3 to 5 s (35 s for the first)                                              |
+
+On this small sample the whole bill was at least as accurate: retrieval missed _"What is the full short title of this Act?"_ because the NDAA has dozens of "may be cited as" sections. Retrieval's case is cost (about 200 times fewer tokens), bills that do not fit at all (the NDAA compact form already fills 94% of the window), and what a pipeline can do that a flat prompt cannot: keep struck text out unless the question is about changes, add the definitions a passage depends on, cite page and line, and pick a strategy per question.
 
 ## Amendment markup
 
