@@ -13,7 +13,7 @@ function normalize(text: string): string {
   return text.replace(/\s+/g, ' ').trim();
 }
 
-function compact(text: string): string {
+export function compact(text: string): string {
   const normalized = normalize(text);
   if (normalized.length <= PREVIEW_MAX_LENGTH) return normalized;
   const prefix = normalized.slice(0, PREVIEW_MAX_LENGTH - 1);

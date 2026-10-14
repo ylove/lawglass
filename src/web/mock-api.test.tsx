@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { AskEvent } from '../core/model/index.js';
+import { AskEvent, DocDetail, SummaryResponse } from '../core/model/index.js';
 import { createMockApi } from './mock-api.js';
 
 async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
@@ -143,5 +143,60 @@ describe('mock API', () => {
     await it[Symbol.asyncIterator]().next();
     controller.abort();
     await expect(collect(it)).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  test('the sample document carries history, sponsor profiles and a preview, all schema-valid', async () => {
+    const m = api();
+    const [sample] = await m.listDocs();
+    const detail = DocDetail.parse(await m.getDoc(sample!.docId));
+    // Federal-shaped: versions oldest first, actions, and an amendment named by the record.
+    expect(detail.history?.versions.map((v) => v.code)).toEqual(['ih', 'rh']);
+    expect(detail.history?.actions.length).toBeGreaterThan(1);
+    expect(detail.history?.amendments[0]).toMatchObject({ status: 'adopted' });
+    const links = detail.metadata.sponsorProfiles?.flatMap((p) => p.links);
+    expect(links).toContainEqual(
+      expect.objectContaining({ kind: 'official', verified: true }),
+    );
+    expect(links).toContainEqual(
+      expect.objectContaining({ kind: 'search', verified: false }),
+    );
+    expect(detail.preview).toMatchObject({ kind: 'purpose' });
+    // Each call hands out a copy, so a UI that mutates it cannot corrupt the next one.
+    expect(await m.getDoc(sample!.docId)).not.toBe(detail);
+  });
+
+  test('other documents get a title preview and no history', async () => {
+    const m = api();
+    await collect(m.ingest({ url: 'https://e.gov/new.pdf' }));
+    const other = (await m.listDocs()).find((d) =>
+      d.sourceUrl.endsWith('new.pdf'),
+    );
+    const detail = DocDetail.parse(await m.getDoc(other!.docId));
+    expect(detail.history).toBeUndefined();
+    expect(detail.preview?.kind).toBe('title');
+  });
+
+  test('the summary is pending once, then cached with a scenario', async () => {
+    const m = api();
+    const [sample] = await m.listDocs();
+    expect(SummaryResponse.parse(await m.getSummary(sample!.docId))).toEqual({
+      status: 'pending',
+    });
+    const cached = SummaryResponse.parse(await m.getSummary(sample!.docId));
+    expect(cached.status).toBe('cached');
+    expect(cached.answer?.scenario?.frames.length).toBeGreaterThanOrEqual(3);
+    expect((await m.getSummary(sample!.docId)).status).toBe('cached');
+    await expect(m.getSummary('missing')).rejects.toThrow('not been loaded');
+  });
+
+  test('a public server serves the warmed sample summary and disables the rest', async () => {
+    const pub = createMockApi({ delayMs: 0, publicMode: true });
+    const [sample] = await pub.listDocs();
+    expect((await pub.getSummary(sample!.docId)).status).toBe('cached');
+    await collect(pub.ingest({ url: 'https://e.gov/new.pdf' }));
+    const other = (await pub.listDocs()).find((d) =>
+      d.sourceUrl.endsWith('new.pdf'),
+    );
+    expect(await pub.getSummary(other!.docId)).toEqual({ status: 'disabled' });
   });
 });

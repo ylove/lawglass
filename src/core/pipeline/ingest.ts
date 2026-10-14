@@ -37,6 +37,7 @@ import {
   type HistoryRecord,
 } from '../history/resolve.js';
 import { deleteHistory, writeHistory } from '../history/history-store.js';
+import { withSponsorLinks } from '../sponsors/enrich.js';
 
 export type Fetcher = (
   url: string,
@@ -147,10 +148,30 @@ async function saveHistory(
       deps.registry.configDir,
       doc.docId,
       attachment.record.history,
+      undefined,
+      attachment.record.officialTitle,
     );
   } catch {
     doc.warnings.push(HISTORY_UNAVAILABLE);
   }
+}
+
+function enrichSponsors(
+  doc: NormalizedDoc,
+  deps: IngestDeps,
+  attachment: HistoryAttachment | undefined,
+  signal: AbortSignal | undefined,
+): Promise<NormalizedDoc> {
+  return withSponsorLinks(
+    doc,
+    {
+      fetcher: deps.fetcher,
+      configDir: deps.registry.configDir,
+      now: deps.now,
+      signal,
+    },
+    { fromRecord: attachment?.record !== undefined },
+  );
 }
 
 function countSpans(doc: NormalizedDoc): { inserted: number; deleted: number } {
@@ -406,8 +427,12 @@ async function ingestLocked(
   // Zero-token path: nothing to fetch-parse-embed.
   if (known && alreadyIndexed) {
     let touched = await registry.touch(docId);
-    const cached = attachHistory(await registry.getDocument(docId), attachment);
-    if (attachment) {
+    const attached = attachHistory(
+      await registry.getDocument(docId),
+      attachment,
+    );
+    const cached = await enrichSponsors(attached, deps, attachment, signal);
+    if (attachment || cached !== attached) {
       await saveHistory(cached, deps, attachment);
       touched = await registry.updateDocument(cached);
     }
@@ -466,7 +491,12 @@ async function ingestLocked(
     progress({ stage: 'chunking' });
     ({ doc, chunks } = chunkAndEnrich(withMetadata));
   }
-  doc = attachHistory(doc, attachment);
+  doc = await enrichSponsors(
+    attachHistory(doc, attachment),
+    deps,
+    attachment,
+    signal,
+  );
   signal?.throwIfAborted();
 
   let entry: RegistryEntry;
