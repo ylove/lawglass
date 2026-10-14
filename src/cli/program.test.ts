@@ -51,20 +51,6 @@ test('--version prints the package version', () => {
   expect(output).toBe(`${packageJson.version}\n`);
 });
 
-test.each([
-  { args: ['eval', '--fixture', 'sample', '--mode', 'all'], issue: 32 },
-])(
-  '$args prints the issue placeholder and sets exit code 2',
-  ({ args, issue }) => {
-    const output = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-    createProgram().parse(args, { from: 'user' });
-    expect(output).toHaveBeenCalledExactlyOnceWith(
-      `not implemented yet (see issue #${String(issue)})`,
-    );
-    expect(process.exitCode).toBe(2);
-  },
-);
-
 test('init awaits configuration without printing returned credentials', async () => {
   const init = vi
     .fn()
@@ -94,6 +80,8 @@ test.each([
   { command: 'serve', option: '--public' },
   { command: 'eval', option: '--fixture' },
   { command: 'eval', option: '--mode' },
+  { command: 'eval', option: '--backend' },
+  { command: 'eval', option: '--answers' },
 ])('$command documents $option', ({ command, option }) => {
   const registered = createProgram().commands.find(
     (entry) => entry.name() === command,

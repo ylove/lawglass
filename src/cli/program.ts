@@ -5,6 +5,7 @@ import { BRAND } from '../core/brand.js';
 import { initConfig } from '../core/config.js';
 import { AppError, ChipId, type LlmProvider } from '../core/model/index.js';
 import { ask, ingest } from '../core/pipeline/index.js';
+import { runEvalCommand } from '../eval/command.js';
 import { safeText } from './sanitize.js';
 import { formatAskFooter, formatIngest, formatList } from './format.js';
 import {
@@ -14,13 +15,6 @@ import {
 } from './runtime.js';
 import { promptChoice, promptSecret } from './secret-prompt.js';
 import { createLauncher, type Launcher } from '../server/launch.js';
-
-function notImplemented(issue: number): () => void {
-  return () => {
-    console.log(`not implemented yet (see issue #${String(issue)})`);
-    process.exitCode = 2;
-  };
-}
 
 export interface CliDependencies {
   init?: (options: { force: boolean }) => Promise<unknown>;
@@ -259,8 +253,31 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
     .command('eval')
     .description('evaluate retrieval on fixtures')
     .option('--fixture <name>', 'fixture to evaluate')
-    .option('--mode <mode>', 'dense, sparse, hybrid, hybrid_rerank, or all')
-    .action(notImplemented(32));
+    .option(
+      '--mode <mode>',
+      'dense, sparse, hybrid, hybrid_rerank, or all (default all)',
+    )
+    .option('--backend <backend>', 'local or pinecone (default: both)')
+    .option('--answers', 'also generate and score answers (needs a provider)')
+    .option('--golden <dir>', 'golden set directory', 'src/eval/golden')
+    .option('--fixtures <dir>', 'fixtures directory', 'fixtures')
+    .option('--out <file>', 'results file', 'eval/results.md')
+    .action(
+      async (options: {
+        fixture?: string;
+        mode?: string;
+        backend?: string;
+        answers?: boolean;
+        golden?: string;
+        fixtures?: string;
+        out?: string;
+      }) => {
+        await runEvalCommand(options, {
+          runtime: dependencies.runtime ?? createRuntime,
+          write,
+        });
+      },
+    );
 
   return program;
 }

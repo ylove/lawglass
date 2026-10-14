@@ -1,0 +1,234 @@
+import { describe, expect, test } from 'vitest';
+import {
+  citationValidity,
+  declineRate,
+  deletedLeakageRate,
+  findLeakedSpans,
+  hitSectionIds,
+  mean,
+  p50,
+  percentile,
+  recallAtK,
+  reciprocalRank,
+  removalAcknowledgedRate,
+  sectionsMatch,
+  summarizeGrades,
+  type AnswerOutcome,
+} from './metrics.js';
+
+const hit = (sectionId: string, coveredSectionIds?: string[]) => ({
+  sectionId,
+  coveredSectionIds,
+});
+
+function outcome(partial: Partial<AnswerOutcome>): AnswerOutcome {
+  return {
+    kind: 'exact',
+    text: '',
+    declined: false,
+    validCitations: 0,
+    invalidCitations: 0,
+    readingGrade: null,
+    ...partial,
+  };
+}
+
+describe('sectionsMatch', () => {
+  test('matches equal ids and ancestors or descendants on whole segments', () => {
+    expect(sectionsMatch('sec-4', 'sec-4')).toBe(true);
+    expect(sectionsMatch('sec-4/b', 'sec-4/b/2')).toBe(true);
+    expect(sectionsMatch('sec-4/b/2/A', 'sec-4/b/2')).toBe(true);
+  });
+
+  test('does not match siblings or id prefixes that are not path ancestors', () => {
+    expect(sectionsMatch('sec-1', 'sec-10')).toBe(false);
+    expect(sectionsMatch('sec-10', 'sec-1')).toBe(false);
+    expect(sectionsMatch('sec-4/a', 'sec-4/b')).toBe(false);
+  });
+});
+
+describe('hitSectionIds', () => {
+  test('prefers coveredSectionIds and falls back to the chunk section', () => {
+    expect(hitSectionIds(hit('sec-2', ['sec-2', 'sec-3']))).toEqual([
+      'sec-2',
+      'sec-3',
+    ]);
+    expect(hitSectionIds(hit('sec-2'))).toEqual(['sec-2']);
+  });
+});
+
+describe('recallAtK', () => {
+  const ranked = [hit('sec-9'), hit('sec-2'), hit('sec-7'), hit('sec-1')];
+
+  test('is the share of expected sections inside the top k', () => {
+    expect(recallAtK(ranked, ['sec-2', 'sec-1'], 2)).toBe(0.5);
+    expect(recallAtK(ranked, ['sec-2', 'sec-1'], 4)).toBe(1);
+  });
+
+  test('is 0 when nothing matches or nothing is expected', () => {
+    expect(recallAtK(ranked, ['sec-5'], 4)).toBe(0);
+    expect(recallAtK(ranked, [], 4)).toBe(0);
+    expect(recallAtK([], ['sec-1'], 5)).toBe(0);
+  });
+
+  test('credits a merged chunk for every section it covers', () => {
+    const merged = [hit('sec-3', ['sec-3', 'sec-4'])];
+    expect(recallAtK(merged, ['sec-4'], 1)).toBe(1);
+  });
+
+  test('credits ancestor and descendant chunks', () => {
+    expect(recallAtK([hit('sec-4')], ['sec-4/b'], 1)).toBe(1);
+    expect(recallAtK([hit('sec-4/b/2')], ['sec-4/b'], 1)).toBe(1);
+  });
+});
+
+describe('reciprocalRank', () => {
+  test('is 1 over the rank of the first matching hit', () => {
+    const ranked = [hit('sec-9'), hit('sec-2'), hit('sec-1')];
+    expect(reciprocalRank(ranked, ['sec-2'])).toBe(0.5);
+    expect(reciprocalRank(ranked, ['sec-1', 'sec-2'])).toBe(0.5);
+    expect(reciprocalRank(ranked, ['sec-9'])).toBe(1);
+  });
+
+  test('is 0 when nothing matches', () => {
+    expect(reciprocalRank([hit('sec-9')], ['sec-2'])).toBe(0);
+    expect(reciprocalRank([], ['sec-2'])).toBe(0);
+  });
+});
+
+describe('mean, percentile and p50', () => {
+  test('mean of nothing is 0, not NaN', () => {
+    expect(mean([])).toBe(0);
+    expect(mean([1, 2, 6])).toBe(3);
+  });
+
+  test('p50 is the middle value, or the average of the middle two', () => {
+    expect(p50([9, 1, 5])).toBe(5);
+    expect(p50([4, 1, 3, 2])).toBe(2.5);
+    expect(p50([7])).toBe(7);
+    expect(p50([])).toBe(0);
+  });
+
+  test('interpolates other percentiles and clamps out-of-range ones', () => {
+    expect(percentile([10, 20, 30, 40, 50], 25)).toBe(20);
+    expect(percentile([10, 20], 90)).toBeCloseTo(19);
+    expect(percentile([10, 20], 150)).toBe(20);
+    expect(percentile([10, 20], -5)).toBe(10);
+  });
+
+  test('does not reorder its input', () => {
+    const values = [3, 1, 2];
+    p50(values);
+    expect(values).toEqual([3, 1, 2]);
+  });
+});
+
+describe('citationValidity', () => {
+  test('is valid citations over all citations written', () => {
+    expect(
+      citationValidity([
+        outcome({ validCitations: 3, invalidCitations: 1 }),
+        outcome({ validCitations: 4, invalidCitations: 0 }),
+      ]),
+    ).toBe(7 / 8);
+  });
+
+  test('is 0 when no citation was written', () => {
+    expect(citationValidity([outcome({})])).toBe(0);
+    expect(citationValidity([])).toBe(0);
+  });
+});
+
+describe('declineRate', () => {
+  test('counts only unanswerable questions', () => {
+    expect(
+      declineRate([
+        outcome({ kind: 'unanswerable', declined: true }),
+        outcome({ kind: 'unanswerable', declined: false }),
+        outcome({ kind: 'exact', declined: true }),
+      ]),
+    ).toBe(0.5);
+  });
+
+  test('is 0 with no unanswerable questions', () => {
+    expect(declineRate([outcome({ kind: 'exact' })])).toBe(0);
+  });
+});
+
+describe('deleted-text leakage', () => {
+  const struck = [
+    'The harvest permit fee is twenty dollars for each steward.',
+    'five dollars',
+  ];
+
+  test('finds a struck span of four or more words, ignoring case and punctuation', () => {
+    expect(
+      findLeakedSpans(
+        'Per the bill, THE HARVEST PERMIT FEE IS TWENTY DOLLARS for each steward!',
+        struck,
+      ),
+    ).toEqual([struck[0]]);
+  });
+
+  test('ignores short struck spans that would collide with live text', () => {
+    expect(findLeakedSpans('It costs five dollars.', struck)).toEqual([]);
+  });
+
+  test('matches whole words only', () => {
+    expect(
+      findLeakedSpans('the fee is twenty dollars for each stewards', [
+        'the fee is twenty dollars for each steward',
+      ]),
+    ).toEqual([]);
+  });
+
+  test('rate is over non-removed answers; removed questions may quote struck text', () => {
+    const leaked = struck[0] ?? '';
+    const rate = deletedLeakageRate(
+      [
+        outcome({ kind: 'exact', text: `It says ${leaked}` }),
+        outcome({ kind: 'paraphrase', text: 'The fee is twelve dollars.' }),
+        outcome({ kind: 'removed', text: leaked }),
+      ],
+      struck,
+    );
+    expect(rate).toBe(0.5);
+  });
+
+  test('is 0 when there is nothing to score', () => {
+    expect(deletedLeakageRate([], struck)).toBe(0);
+    expect(deletedLeakageRate([outcome({ kind: 'removed' })], struck)).toBe(0);
+  });
+});
+
+describe('removalAcknowledgedRate', () => {
+  test('counts removed answers that talk about removal; a decline does not count', () => {
+    expect(
+      removalAcknowledgedRate([
+        outcome({ kind: 'removed', text: 'The bill strikes the old rule.' }),
+        outcome({ kind: 'removed', text: 'Neighbors get notice.' }),
+        outcome({ kind: 'removed', text: 'Removed text.', declined: true }),
+        outcome({ kind: 'exact', text: 'removed' }),
+      ]),
+    ).toBe(1 / 3);
+  });
+
+  test('is 0 with no removed questions', () => {
+    expect(removalAcknowledgedRate([outcome({})])).toBe(0);
+  });
+});
+
+describe('summarizeGrades', () => {
+  test('averages gradable answers and counts those above grade 9', () => {
+    expect(summarizeGrades([6, 10, null, 12])).toEqual({
+      mean: 28 / 3,
+      above9: 2,
+    });
+  });
+
+  test('grade exactly 9 is within target; no grades gives a null mean', () => {
+    expect(summarizeGrades([9])).toEqual({ mean: 9, above9: 0 });
+    expect(summarizeGrades([null])).toEqual({ mean: null, above9: 0 });
+    expect(summarizeGrades([])).toEqual({ mean: null, above9: 0 });
+  });
+});

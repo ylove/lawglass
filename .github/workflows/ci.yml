@@ -137,7 +137,25 @@ jobs:
           deny-licenses: GPL-3.0, GPL-3.0-only, GPL-3.0-or-later, AGPL-3.0, AGPL-3.0-only, AGPL-3.0-or-later
           comment-summary-in-pr: never
 
+  # Offline plumbing check on the synthetic golden set: local backend, fake models, mock LLM.
+  # Fails if the pipeline breaks or hybrid_rerank recall@5 drops below dense.
+  eval-smoke:
+    name: eval-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run eval:smoke
+
   # TODO(package-smoke): add a job that installs the npm tarball and exercises its CLI.
   # TODO(e2e): add a job that runs browser tests against the built local server.
-  # TODO(eval-smoke): add a job that evaluates deterministic synthetic samples.
   # Add each job here only when its real checks are implemented.

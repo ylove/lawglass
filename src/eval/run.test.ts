@@ -1,0 +1,272 @@
+import { afterEach, beforeEach, expect, test } from 'vitest';
+import {
+  makePipelineEnv,
+  type PipelineEnv,
+} from '../../tests/support/pipeline-env.js';
+import { makeEvalBillHtml } from '../../tests/synth/index.js';
+import { loadGoldenSets } from './golden.js';
+import type { EvalFixture } from './fixtures.js';
+import {
+  runEval,
+  scoreAnswers,
+  scoreRetrieval,
+  struckSpanTexts,
+  variantsFor,
+  type RunEvalInput,
+} from './run.js';
+import type { GoldenQuestion, GoldenSet } from '../core/model/index.js';
+
+let env: PipelineEnv;
+beforeEach(async () => {
+  env = await makePipelineEnv();
+});
+afterEach(() => env.cleanup());
+
+const bill = makeEvalBillHtml();
+const fixture: EvalFixture = {
+  name: 'synthetic-orchard',
+  url: 'https://eval.test/orchard.html',
+  bytes: bill.bytes,
+  contentType: 'text/html',
+};
+
+async function syntheticGolden(): Promise<GoldenSet> {
+  const { sets } = await loadGoldenSets(
+    new URL('./golden/', import.meta.url).pathname,
+  );
+  const set = sets.find((s) => s.fixture === 'synthetic-orchard');
+  if (!set) throw new Error('missing synthetic golden set');
+  return set;
+}
+
+function baseInput(golden: GoldenSet[]): RunEvalInput {
+  return {
+    fixtures: [fixture],
+    golden,
+    backends: [{ kind: 'local', backend: env.backend, registry: env.registry }],
+    extractProvider: env.provider,
+    modes: ['dense', 'sparse', 'hybrid', 'hybrid_rerank'],
+    commit: 'abc1234',
+    now: () => new Date('2026-10-13T12:00:00.000Z'),
+  };
+}
+
+test('every golden section id exists in the synthetic bill', async () => {
+  const golden = await syntheticGolden();
+  const ids = new Set(bill.groundTruth.sections.map((s) => s.id));
+  for (const q of golden.questions)
+    for (const id of q.expectedSectionIds) expect(ids).toContain(id);
+  expect(new Set(golden.questions.map((q) => q.kind))).toEqual(
+    new Set(['exact', 'paraphrase', 'definition', 'removed', 'unanswerable']),
+  );
+});
+
+test('variantsFor adds weighted fusion only to hybrid', () => {
+  expect(
+    variantsFor(['dense', 'sparse', 'hybrid', 'hybrid_rerank'], true),
+  ).toEqual([
+    { mode: 'dense' },
+    { mode: 'sparse' },
+    { mode: 'hybrid', fusion: 'rrf' },
+    { mode: 'hybrid', fusion: 'weighted' },
+    { mode: 'hybrid_rerank', fusion: 'rrf' },
+  ]);
+  expect(variantsFor(['hybrid'], false)).toEqual([
+    { mode: 'hybrid', fusion: 'rrf' },
+  ]);
+});
+
+test('struckSpanTexts collects deleted spans from nested sections', () => {
+  expect(
+    struckSpanTexts({
+      sections: bill.groundTruth.sections,
+    } as Parameters<typeof struckSpanTexts>[0]),
+  ).toEqual(bill.groundTruth.deletedStrings);
+});
+
+test('scoreRetrieval skips unanswerable questions and sums usage', () => {
+  const questions: GoldenQuestion[] = [
+    { id: 'a', question: 'a', kind: 'exact', expectedSectionIds: ['sec-1'] },
+    { id: 'b', question: 'b', kind: 'exact', expectedSectionIds: ['sec-2'] },
+    { id: 'c', question: 'c', kind: 'unanswerable', expectedSectionIds: [] },
+  ];
+  const usage = { embedTokens: 5, rerankUnits: 2, readUnits: 0, writeUnits: 0 };
+  const metrics = scoreRetrieval(
+    questions,
+    new Map([
+      ['a', { hits: [{ sectionId: 'sec-1' }], usage, latencyMs: 4 }],
+      [
+        'b',
+        {
+          hits: [
+            ...Array.from({ length: 6 }, () => ({ sectionId: 'sec-9' })),
+            { sectionId: 'sec-2' },
+          ],
+          usage,
+          latencyMs: 8,
+        },
+      ],
+    ]),
+  );
+  expect(metrics).toEqual({
+    recallAt5: 0.5,
+    recallAt10: 1,
+    mrr: (1 + 1 / 7) / 2,
+    p50LatencyMs: 6,
+    embedTokens: 10,
+    rerankUnits: 4,
+  });
+});
+
+test('scoreAnswers combines every answer metric', () => {
+  const { metrics, removalAcknowledgedRate } = scoreAnswers(
+    [
+      {
+        kind: 'removed',
+        text: 'It was struck.',
+        declined: false,
+        validCitations: 1,
+        invalidCitations: 1,
+        readingGrade: 12,
+      },
+      {
+        kind: 'unanswerable',
+        text: 'No.',
+        declined: true,
+        validCitations: 0,
+        invalidCitations: 0,
+        readingGrade: null,
+      },
+    ],
+    [],
+  );
+  expect(metrics).toEqual({
+    citationValidity: 0.5,
+    declineRate: 1,
+    deletedLeakageRate: 0,
+    meanReadingGrade: 12,
+    answersAboveGrade9: 1,
+  });
+  expect(removalAcknowledgedRate).toBe(1);
+});
+
+test('runs retrieval for every variant, leaves the backend clean and never fetches the network', async () => {
+  const golden = await syntheticGolden();
+  const messages: string[] = [];
+  const result = await runEval({
+    ...baseInput([golden]),
+    onProgress: (m) => messages.push(m),
+  });
+  expect(result.skipped).toEqual([]);
+  expect(result.run).toMatchObject({
+    runAt: '2026-10-13T12:00:00.000Z',
+    commit: 'abc1234',
+    goldenFrozenAtCommit: null,
+  });
+  expect(
+    result.run.rows.map((r) => `${r.mode}${r.fusion ? `/${r.fusion}` : ''}`),
+  ).toEqual([
+    'dense',
+    'sparse',
+    'hybrid/rrf',
+    'hybrid/weighted',
+    'hybrid_rerank/rrf',
+  ]);
+  for (const row of result.run.rows) {
+    expect(row.backend).toBe('local');
+    expect(row.answers).toBeUndefined();
+    expect(row.retrieval.recallAt10).toBeGreaterThanOrEqual(
+      row.retrieval.recallAt5,
+    );
+  }
+  const rerank = result.run.rows.at(-1);
+  expect(rerank?.retrieval.rerankUnits).toBeGreaterThan(0);
+  expect(result.run.rows[1]?.retrieval.embedTokens).toBe(0);
+  expect(env.fetches).toEqual([]);
+  expect(messages.length).toBeGreaterThan(0);
+  const docId = (await env.registry.list())[0]?.docId ?? '';
+  expect(await env.backend.hasDocument(docId)).toBe(false);
+});
+
+test('keeps a document that was already indexed before the run', async () => {
+  const golden = await syntheticGolden();
+  const first = await runEval({ ...baseInput([golden]), modes: ['dense'] });
+  expect(first.run.rows).toHaveLength(1);
+  // Index it ourselves, then run again: eval must not delete what it did not add.
+  env.serve(fixture.url, bill, 'text/html');
+  const { ingest } = await import('../core/pipeline/index.js');
+  const ingested = await ingest(fixture.url, {
+    backend: env.backend,
+    provider: env.provider,
+    registry: env.registry,
+    fetcher: env.runtime.fetcher,
+    now: env.runtime.now,
+  });
+  await runEval({ ...baseInput([golden]), modes: ['dense'] });
+  expect(await env.backend.hasDocument(ingested.doc.docId)).toBe(true);
+});
+
+test('with an answer provider, rows carry answer metrics and provider details', async () => {
+  const golden = await syntheticGolden();
+  const result = await runEval({
+    ...baseInput([golden]),
+    modes: ['hybrid'],
+    answerProvider: env.provider,
+  });
+  const [rrf, weighted] = result.run.rows;
+  expect(rrf?.provider).toBe('mock');
+  expect(rrf?.model).toBe('deterministic');
+  expect(rrf?.answers?.citationValidity).toBe(1);
+  expect(result.extras[0]?.removalAcknowledgedRate).toBeDefined();
+  // Weighted fusion is a retrieval comparison only.
+  expect(weighted?.answers).toBeUndefined();
+});
+
+test('skips an unsupported fixture and reports golden sets with no document', async () => {
+  const pdf: EvalFixture = {
+    name: 'a-pdf',
+    url: 'https://eval.test/a.pdf',
+    bytes: new TextEncoder().encode('%PDF-1.7 not really'),
+    contentType: 'application/pdf',
+  };
+  const golden = await syntheticGolden();
+  const result = await runEval({
+    ...baseInput([
+      { ...golden, fixture: 'a-pdf', frozenAtCommit: 'f00' },
+      { ...golden, fixture: 'not-supplied', frozenAtCommit: 'f00' },
+    ]),
+    fixtures: [pdf],
+  });
+  expect(result.run.rows).toEqual([]);
+  expect(result.skipped).toMatchObject([
+    { fixture: 'a-pdf', backend: 'local' },
+  ]);
+  expect(result.unmatchedGolden).toEqual(['not-supplied']);
+  expect(result.run.goldenFrozenAtCommit).toBe('f00');
+});
+
+test('differing golden freeze commits are not collapsed into one', async () => {
+  const golden = await syntheticGolden();
+  const result = await runEval({
+    ...baseInput([
+      golden,
+      { ...golden, fixture: 'other', frozenAtCommit: 'abc' },
+    ]),
+    modes: ['dense'],
+  });
+  expect(result.run.goldenFrozenAtCommit).toBeNull();
+});
+
+test('a non-AppError during a fixture run propagates', async () => {
+  const golden = await syntheticGolden();
+  const input = baseInput([golden]);
+  const failing = Object.create(env.backend, {
+    hasDocument: { value: () => Promise.reject(new Error('disk on fire')) },
+  }) as typeof env.backend;
+  await expect(
+    runEval({
+      ...input,
+      backends: [{ kind: 'local', backend: failing, registry: env.registry }],
+    }),
+  ).rejects.toThrow('disk on fire');
+});
