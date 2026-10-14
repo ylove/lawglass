@@ -44,7 +44,7 @@ export interface ScenarioValidation {
 const MARKUP =
   /[<>`]|&(?:[a-z][a-z\d]*|#\d+|#x[\da-f]+);|!\[|\]\(|\*\*|__|^\s*#|:\/\/|javascript:|data:|www\./im;
 const EVALUATIVE =
-  /\b(?:good|bad|unfair|fair|harm\w*|helpful|great|terrible|awful|wonderful|benefit\w*|beneficial|disastrous|relie\w+|burden\w*|giveaway|unjust\w*|punish\w*|windfall\w*|loophole\w*|handout\w*|crushing|fairness)\b/i;
+  /\b(?:good|bad|unfair|fair|harm(?:s|ed|ful|fully|less|lessly|ing)?|helpful|great|terrible|awful|wonderful|benefit(?:s|ed|ing)?|beneficial|disastrous|relief|relieve[sd]?|relieving|burden(?:s|ed|some|somely|ing)?|giveaway|unjust(?:ly|ice|ified|ifiable|ifiably)?|punish(?:es|ed|ing|ment|ments|able)?|windfalls?|loopholes?|handouts?|crushing|fairness)\b/i;
 const LEGAL_PHRASES =
   /\b(?:good cause|fair market value|fair use|fair housing|burden of proof|in good standing|bad faith|good faith|benefits? (?:plans?|eligibility|amount|payments?|recipients?)|(?:receives?|claims?|pays?|provides?) benefits?|eligible for benefits?|applies for benefits?|employee benefits?|social security benefits?|unemployment benefits?)\b/gi;
 
