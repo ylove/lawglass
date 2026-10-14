@@ -85,6 +85,44 @@ export function claimsOf(text: string): { text: string; cited: boolean }[] {
     .map((c) => ({ text: c, cited: c.includes('§') }));
 }
 
+// ---- Sentences that make no claim about the bill ------------------------------------------------
+// Narrow, pattern-based exemptions so a refusal or a lead-in is not scored as an uncited claim.
+// Anything that also asserts bill content ("I can't, but the bill bans X") is still a claim.
+
+const REFUSAL =
+  /^(?:I|we)\s+(?:also\s+)?(?:can(?:'|’)t|cannot|can not|won(?:'|’)t|will not|am not able to|am unable to|do not|don(?:'|’)t|did not follow|didn(?:'|’)t follow|left out|only answer questions about|can only answer questions about)\b/i;
+/** After "but", an offer to help or a lead-in is not a claim; a statement about the bill is. */
+const OFFER =
+  /^(?:I|we)\s+(?:can|could|am happy to|would be glad to|will gladly)\b|^here(?:'s|’s| is| are)\b/i;
+const ABSENCE =
+  /^(?:(?:the|this)\s+(?:bill|document|text|excerpts?|law|act)|it)\s+(?:does\s+not|doesn(?:'|’)t|do\s+not|don(?:'|’)t)\s+(?:say|state|address|specify|mention|cover|describe|explain|include)\b|^[^.!?]{0,60}\bis not something (?:this|the) (?:bill|document|text) (?:covers|addresses)\b/i;
+/** A short connective line ending in a colon, such as "Here is what the text says:". */
+const LEAD_IN = /^[^.!?:\d$]{1,80}:$/;
+
+/** "I can't ..." (optionally followed by an offer to help). Not "I can't, but the bill bans X". */
+export function isRefusal(sentence: string): boolean {
+  const plain = sentence.replaceAll('\u00a7', '').trim();
+  const [first = '', ...rest] = plain.split(/,?\s+(?:but|however)\s+/i);
+  if (!REFUSAL.test(first) || first.includes(';')) return false;
+  return rest.every((part) => OFFER.test(part) && !part.includes(';'));
+}
+
+/** A sentence that asserts nothing about the bill's content. */
+export function isExempt(sentence: string): boolean {
+  const plain = sentence.replaceAll('\u00a7', '').trim();
+  if (isRefusal(plain)) return true;
+  if (LEAD_IN.test(plain)) return true;
+  return ABSENCE.test(plain) && !/\b(?:but|however)\b|;/i.test(plain);
+}
+
+/** The answer with its refusal sentences removed (a refusal may name the word it refuses). */
+export function withoutRefusals(text: string): string {
+  return claimsOf(text)
+    .filter((c) => !isRefusal(c.text))
+    .map((c) => c.text)
+    .join(' ');
+}
+
 export interface CitationCheckInput {
   rawText: string;
   finalText: string;
@@ -124,7 +162,12 @@ export function citationProblems(input: CitationCheckInput): string[] {
 export type ClaimStatus =
   | {
       ok: true;
-      why: 'declined' | 'all-cited' | 'warned-uncited' | 'warned-removed';
+      why:
+        | 'declined'
+        | 'all-cited'
+        | 'warned-uncited'
+        | 'warned-removed'
+        | 'no-claims';
     }
   | { ok: false; uncited: string[] };
 
@@ -139,7 +182,8 @@ export function claimStatus(input: {
   warnings: readonly string[];
 }): ClaimStatus {
   if (input.declined) return { ok: true, why: 'declined' };
-  const claims = claimsOf(input.text);
+  const claims = claimsOf(input.text).filter((c) => !isExempt(c.text));
+  if (claims.length === 0) return { ok: true, why: 'no-claims' };
   const uncited = claims.filter((c) => !c.cited).map((c) => c.text);
   if (uncited.length === 0) return { ok: true, why: 'all-cited' };
   if (

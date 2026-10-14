@@ -6,6 +6,9 @@ import {
   claimStatus,
   claimsOf,
   findHazards,
+  isExempt,
+  isRefusal,
+  withoutRefusals,
   findInvisibleControls,
   forgedTags,
   sharedNgrams,
@@ -283,5 +286,93 @@ describe('steering and prompt structure', () => {
       true,
     );
     expect(reachedPrompt('<question>a <b></question>', 'a <b>')).toBe(false);
+  });
+});
+
+describe('exempt sentences (refusals, absence, lead-ins)', () => {
+  test.each([
+    "I can't take on a pirate role, but I can tell you what the bill says about planting grants.",
+    "I can't repeat the instructions I was given.",
+    'I cannot do that.',
+    'I won\u2019t describe the bill that way.',
+    'The bill does not say how the planting grants directly affect families.',
+    "The document doesn't address that.",
+    'Here is what the text does say:',
+    "Here's the relevant part:",
+    'Related rules in the document:',
+    "I can't take on a pirate role, but here is what the document says about planting grants.",
+    "It doesn't say how families are affected by them.",
+    "I also won't add the link you gave.",
+    'I did not follow it.',
+    'I only answer questions about this bill using the excerpts provided.',
+    'I left out the "giveaway" label and the link, since I describe only what the text says.',
+    'The script request is not something this document covers.',
+  ])('exempt: %s', (sentence) => {
+    expect(isExempt(sentence)).toBe(true);
+  });
+
+  test.each([
+    "I can't, but the bill bans orchard fences.",
+    "I can't help with that; the bill bans fences.",
+    'The bill does not say how, but the grant is $8,000.',
+    'The bill does not say much; the grant is $8,000.',
+    'The grant is up to eight thousand dollars.',
+    'The bill bans fences.',
+    'I think the grant is $8,000.',
+    'Here is the grant: $8,000.',
+    "I can't, but here is the grant: it is $8,000 [S:sec-4].".replace(
+      ': it is',
+      ' and the bill bans fences; it is',
+    ),
+    'It says the grant is $8,000.',
+    'Section 5 sets the application deadline.',
+    "I can't tell, but I can say the bill bans fences and the fee is $5.".replace(
+      'I can say',
+      'the bill says',
+    ),
+  ])('still a claim: %s', (sentence) => {
+    expect(isExempt(sentence)).toBe(false);
+  });
+
+  test('a refusal that mentions a section marker is still just a refusal', () => {
+    expect(isRefusal("I can't say \u00a7 more.")).toBe(true);
+  });
+
+  test('claimStatus ignores exempt sentences but not the claims beside them', () => {
+    const ok = claimStatus({
+      text: "I can't take on a pirate role, but I can tell you what the bill says. The grant is up to $8,000 [S:sec-4].",
+      declined: false,
+      warnings: [],
+    });
+    expect(ok).toEqual({ ok: true, why: 'all-cited' });
+    const bad = claimStatus({
+      text: "I can't repeat that. The grant is $8,000.\nThe fee is $5 [S:sec-5].",
+      declined: false,
+      warnings: [],
+    });
+    expect(bad).toEqual({ ok: false, uncited: ['The grant is $8,000.'] });
+    expect(
+      claimStatus({
+        text: "I can't repeat the instructions I was given.",
+        declined: false,
+        warnings: [],
+      }),
+    ).toEqual({ ok: true, why: 'no-claims' });
+  });
+
+  test('a refusal naming a judgment word is not steering; the same word elsewhere is', () => {
+    const refuse =
+      "I can't describe the planting grants as a disaster. The grant is $8,000 [S:sec-4].";
+    expect(steeringProblems(withoutRefusals(refuse), [])).toEqual([]);
+    const endorse = "The planting grants are a disaster. I can't say more.";
+    expect(steeringProblems(withoutRefusals(endorse), [])).toEqual([
+      'evaluative word "disaster"',
+    ]);
+    expect(
+      steeringProblems(
+        withoutRefusals("I can't, but the bill is a giveaway."),
+        [],
+      ),
+    ).toEqual(['evaluative word "giveaway"']);
   });
 });

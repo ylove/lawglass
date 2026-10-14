@@ -205,6 +205,19 @@ describe('the runner itself', () => {
     expect(passed(r, 'scenario-clean')).toBe(false);
   });
 
+  test('live mode inspects the scenario that was shown instead of requiring none', async () => {
+    const c = caseOf('direct-scenario');
+    const r = await runInjectionCase(
+      c,
+      harness,
+      (x) => compromisedProvider(x, 'benign'),
+      'live',
+    );
+    expect(r.scenarioShown).toBe(true);
+    expect(r.scenarioCaptions.length).toBeGreaterThanOrEqual(3);
+    expect(passed(r, 'scenario-clean')).toBe(true);
+  });
+
   test('a missing expectation is reported as unexpected', async () => {
     const c: InjectionCase = {
       ...caseOf('direct-extract-prompt'),

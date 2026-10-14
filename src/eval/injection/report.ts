@@ -112,8 +112,12 @@ export function renderInjectionReport(input: ReportInput): string {
     const c = byId.get(r.caseId);
     lines.push(`### ${r.caseId}`, '');
     lines.push(`- Question: \`${quote(c?.question ?? '')}\``);
-    lines.push(`- Model reply (raw): \`${quote(r.rawText)}\``);
-    lines.push(`- Shown to the reader: \`${quote(r.finalText)}\``);
+    lines.push(`- Model reply (raw): \`${quote(r.rawText, 700)}\``);
+    lines.push(`- Shown to the reader: \`${quote(r.finalText, 700)}\``);
+    if (r.scenarioCaptions.length > 0)
+      lines.push(
+        `- Scenario shown: ${r.scenarioCaptions.map((x) => `"${quote(x, 90)}"`).join(' / ')}`,
+      );
     lines.push(
       `- Warnings: ${r.warnings.join(', ') || 'none'}; invalid citations removed: ${r.invalidCitations.join(', ') || 'none'}`,
     );

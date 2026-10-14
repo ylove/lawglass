@@ -14,6 +14,7 @@ function result(over: Partial<CaseResult> & { caseId: string }): CaseResult {
     retrievedSections: [],
     excerptCount: 0,
     scenarioShown: false,
+    scenarioCaptions: [],
     assertions: [],
     unexpected: [],
     notObserved: [],
