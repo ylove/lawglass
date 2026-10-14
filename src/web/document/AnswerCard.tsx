@@ -87,7 +87,7 @@ export function AnswerCard({
           {turn.phase === 'done' && citations.length > 0 && (
             <div className="sources">
               <h4>Sources</h4>
-              <ol>
+              <ol role="list">
                 {citations.map((c) => (
                   <li key={c.sectionId}>
                     <button

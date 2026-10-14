@@ -52,3 +52,15 @@ test('the main region is named by the bill title while a bill is open', async ()
   expect(main.getAttribute('aria-labelledby')).toBe(title.id);
   expect(screen.getByRole('main', { name: title.textContent }).id).toBe('main');
 });
+
+test('the sources list keeps its list role (list-style none drops it in Safari)', async () => {
+  render(<App api={createMockApi({ delayMs: 0 })} />);
+  await screen.findByRole('heading', {
+    name: 'Clean Water Infrastructure Act',
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'What does it change?' }));
+  const heading = await screen.findByRole('heading', { name: 'Sources' });
+  const list = heading.parentElement!.querySelector('ol')!;
+  expect(list.getAttribute('role')).toBe('list');
+  expect(screen.getAllByRole('listitem').length).toBeGreaterThan(0);
+});
