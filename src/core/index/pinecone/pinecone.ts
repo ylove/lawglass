@@ -13,6 +13,7 @@
 import {
   Pinecone,
   type CreateIndexForModelOptions,
+  type IntegratedRecord,
   type FetchOptions,
   type SearchRecordsOptions,
   type UpsertRecordsOptions,
@@ -21,6 +22,7 @@ import {
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { contextualText } from '../../chunk/index.js';
+import { estimateTokens } from '../../chunk/tokens.js';
 import { pineconeConfig, type PineconeSettings } from '../../config.js';
 import {
   AppError,
@@ -171,6 +173,12 @@ function rateLimited(): AppError {
     },
   );
 }
+// Thrown by retryRateLimit when a request keeps getting 429s: the caller should send less.
+class PersistentRateLimit extends Error {}
+// A batch that is still throttled after this many 429s or this long is probably too big.
+const SHRINK_AFTER_429S = 3;
+const SHRINK_AFTER_MS = 60_000;
+const MAX_UPSERT_RECORDS = 96;
 function nextBackoffMs(ms: number): number {
   return Math.min(ms * 2, 30_000);
 }
@@ -425,10 +433,13 @@ export class PineconeBackend implements RetrievalBackend {
     run: () => Promise<T>,
     budgetMs: number,
     signal?: AbortSignal,
+    giveUpEarly = false,
   ): Promise<T> {
-    const deadline = this.now() + budgetMs;
+    const startedAt = this.now();
+    const deadline = startedAt + budgetMs;
     let backoffMs = 1_000;
     let wasRateLimited = false;
+    let rateLimits = 0;
     for (;;) {
       abortIfNeeded(signal);
       const remainingMs = deadline - this.now();
@@ -446,6 +457,13 @@ export class PineconeBackend implements RetrievalBackend {
         abortIfNeeded(signal);
         if (!hasStatus(error, 429, 'PineconeRateLimitError')) throw error;
         wasRateLimited = true;
+        rateLimits += 1;
+        if (
+          giveUpEarly &&
+          (rateLimits >= SHRINK_AFTER_429S ||
+            this.now() - startedAt >= SHRINK_AFTER_MS)
+        )
+          throw new PersistentRateLimit();
         const waitMs =
           retryAfterMs(error, this.now()) ??
           Math.min(30_000, backoffMs * (0.5 + this.random()));
@@ -463,6 +481,38 @@ export class PineconeBackend implements RetrievalBackend {
         }
         backoffMs = nextBackoffMs(backoffMs);
       }
+    }
+  }
+  /**
+   * Upserts one batch. If it keeps hitting 429, halve it and retry the halves, because an
+   * over-large request can never succeed. A single record gets the full retry budget.
+   */
+  private async upsertBatch(
+    index: PineconeIndex,
+    docId: string,
+    batch: readonly IntegratedRecord[],
+    signal?: AbortSignal,
+  ): Promise<unknown[]> {
+    try {
+      const response = await this.retryRateLimit(
+        () => index.namespace(docId).upsertRecords({ records: [...batch] }),
+        this.config.upsertRetryBudgetMs,
+        signal,
+        batch.length > 1,
+      );
+      return [response];
+    } catch (error) {
+      if (!(error instanceof PersistentRateLimit)) throw error;
+      const middle = Math.ceil(batch.length / 2);
+      return [
+        ...(await this.upsertBatch(
+          index,
+          docId,
+          batch.slice(0, middle),
+          signal,
+        )),
+        ...(await this.upsertBatch(index, docId, batch.slice(middle), signal)),
+      ];
     }
   }
   private async remove(docId: string): Promise<void> {
@@ -507,26 +557,37 @@ export class PineconeBackend implements RetrievalBackend {
           }
           const batch: typeof records = [];
           let bytes = 0;
-          while (offset + batch.length < records.length && batch.length < 96) {
+          let tokens = 0;
+          while (
+            offset + batch.length < records.length &&
+            batch.length < MAX_UPSERT_RECORDS
+          ) {
             const record = records[offset + batch.length];
             if (!record) break;
             const size = Buffer.byteLength(JSON.stringify(record)) + 1;
+            const recordTokens = estimateTokens(String(record.embed_text));
             if (bytes + size > 2_000_000) break;
+            // An oversized single record still goes alone; the token cap only groups records.
+            if (
+              batch.length > 0 &&
+              tokens + recordTokens > this.config.upsertMaxBatchTokens
+            )
+              break;
             batch.push(record);
             bytes += size;
+            tokens += recordTokens;
           }
           for (const kind of ['dense', 'sparse'] as const) {
             abortIfNeeded(signal);
-            const response = await this.retryRateLimit(
-              () =>
-                indexes[kind]
-                  .namespace(docId)
-                  .upsertRecords({ records: batch }),
-              this.config.upsertRetryBudgetMs,
+            const responses = await this.upsertBatch(
+              indexes[kind],
+              docId,
+              batch,
               signal,
             );
             // SDK 9.0.0 returns void here. Unreported usage stays zero; never estimate billed tokens.
-            usage = addUsage(usage, this.report(`upsert:${kind}`, response));
+            for (const response of responses)
+              usage = addUsage(usage, this.report(`upsert:${kind}`, response));
           }
           offset += batch.length;
           onProgress?.({ done: offset, total: chunks.length });

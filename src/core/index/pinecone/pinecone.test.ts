@@ -9,6 +9,7 @@ import {
   DOC_B,
 } from '../../../../tests/contracts/sample-chunks.js';
 import { BRAND } from '../../brand.js';
+import { estimateTokens } from '../../chunk/tokens.js';
 import { pineconeConfig } from '../../config.js';
 import {
   AppError,
@@ -125,12 +126,13 @@ describe('PineconeBackend', () => {
             }),
           );
         await expect(run()).resolves.toHaveProperty('usage');
-        expect(mock).toHaveBeenCalledTimes(4);
-        expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([
-          1_000, 2_000, 4_000,
-        ]);
+        // A multi-record upsert batch is halved on its third 429 instead of waiting again.
+        expect(mock).toHaveBeenCalledTimes(operation === 'upsert' ? 5 : 4);
+        expect(sleep.mock.calls.map(([ms]) => ms)).toEqual(
+          operation === 'upsert' ? [1_000, 2_000] : [1_000, 2_000, 4_000],
+        );
         expect(logUsage.mock.calls).toHaveLength(
-          operation === 'upsert' ? 5 : 1,
+          operation === 'upsert' ? 6 : 1,
         );
         expect(JSON.stringify(logUsage.mock.calls)).not.toContain('secret-key');
       },
@@ -291,6 +293,96 @@ describe('PineconeBackend', () => {
         );
       },
     );
+    describe('token-budgeted batches', () => {
+      const wordy = (n: number, words: number) => ({
+        ...CHUNKS_A[0]!,
+        id: `${DOC_A}:sec-1:${String(n)}`,
+        embedText: Array.from({ length: words }, () => 'word').join(' '),
+      });
+      const batchSizes = (mock: { mock: { calls: unknown[][] } }) =>
+        mock.mock.calls.map(
+          ([, options]) => (options as { records: unknown[] }).records.length,
+        );
+      it('splits batches at the configured token cap', async () => {
+        // 100 words is about 130 estimated tokens, so 300 allows two records per batch.
+        const { backend, sdk } = setup({ upsertMaxBatchTokens: 300 });
+        await backend.upsertChunks(
+          DOC_A,
+          Array.from({ length: 5 }, (_, n) => wordy(n, 100)),
+        );
+        expect(batchSizes(sdk.dense.upsert).slice(0, 3)).toEqual([2, 2, 1]);
+      });
+      it('reads the cap from the environment', () => {
+        expect(
+          pineconeConfig(
+            {},
+            { LAWGLASS_PINECONE_UPSERT_MAX_BATCH_TOKENS: '1234' },
+          ).upsertMaxBatchTokens,
+        ).toBe(1234);
+        expect(defaults.upsertMaxBatchTokens).toBe(20_000);
+      });
+      it('sends an over-cap record alone instead of dropping it', async () => {
+        const { backend, sdk } = setup({ upsertMaxBatchTokens: 10 });
+        await backend.upsertChunks(DOC_A, [wordy(0, 100), wordy(1, 100)]);
+        expect(batchSizes(sdk.dense.upsert).slice(0, 2)).toEqual([1, 1]);
+      });
+      it('halves a batch the tier keeps rejecting until the ingest completes', async () => {
+        const { backend, sdk } = setup({ upsertMaxBatchTokens: 1_000_000 });
+        const limit = 400;
+        const tokensOf = (options: unknown) =>
+          (options as { records: { embed_text: string }[] }).records.reduce(
+            (sum, r) => sum + estimateTokens(r.embed_text),
+            0,
+          );
+        for (const mock of [sdk.dense.upsert, sdk.sparse.upsert]) {
+          const ok = mock.getMockImplementation();
+          mock.mockImplementation((docId, options) =>
+            tokensOf(options) > limit
+              ? Promise.reject(Object.assign(new Error('429'), { status: 429 }))
+              : (ok?.(docId, options) ?? Promise.resolve()),
+          );
+        }
+        const chunks = Array.from({ length: 8 }, (_, n) => wordy(n, 100));
+        await expect(
+          backend.upsertChunks(DOC_A, chunks),
+        ).resolves.toBeDefined();
+        const accepted = [sdk.dense.upsert, sdk.sparse.upsert].map((mock) =>
+          mock.mock.calls
+            .map(([, o]) => o as { records: unknown[] })
+            .filter((o) => tokensOf(o) <= limit)
+            .reduce((n, o) => n + o.records.length, 0),
+        );
+        // 8 chunk records plus the completion marker (dense only).
+        expect(accepted).toEqual([9, 8]);
+      });
+      it('falls back to one record and then applies the retry budget', async () => {
+        const { backend, sdk } = setup({ upsertRetryBudgetMs: 5_000 });
+        sdk.dense.upsert.mockRejectedValue({ status: 429 });
+        await expect(
+          backend.upsertChunks(DOC_A, [wordy(0, 5), wordy(1, 5)]),
+        ).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+        expect(batchSizes(sdk.dense.upsert)).toEqual([2, 2, 2, 1, 1, 1]);
+      });
+      it('aborts while splitting', async () => {
+        const controller = new AbortController();
+        const { backend, sdk } = setup();
+        sdk.dense.upsert.mockImplementation(() => {
+          controller.abort();
+          return Promise.reject(
+            Object.assign(new Error('429'), { status: 429 }),
+          );
+        });
+        await expect(
+          backend.upsertChunks(
+            DOC_A,
+            [wordy(0, 5), wordy(1, 5)],
+            undefined,
+            controller.signal,
+          ),
+        ).rejects.toMatchObject({ name: 'AbortError' });
+        expect(sdk.dense.upsert).toHaveBeenCalledTimes(1);
+      });
+    });
     it('enforces the query budget even when a retry request never settles', async () => {
       vi.useFakeTimers();
       try {

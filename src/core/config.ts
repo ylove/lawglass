@@ -408,6 +408,12 @@ export const PineconeSettings = z.object({
   queryRetryBudgetMs: z.number().int().positive().default(60_000),
   // Opt-in pacing between chunk batches; a single-batch bill never waits.
   upsertBatchDelayMs: z.number().int().nonnegative().default(0),
+  // Starter caps embedding tokens per minute, so one request whose text is too large can
+  // never succeed, however long we back off. 96 records is Pinecone's integrated-upsert
+  // maximum; long heading paths (the NDAA's later chunks) make 96 records exceed the token
+  // limit. 20k estimated tokens is deliberately far below the documented Starter limit
+  // (https://docs.pinecone.io/reference/api/database-limits) because our estimate is rough.
+  upsertMaxBatchTokens: z.number().int().positive().default(20_000),
 });
 export type PineconeSettings = z.infer<typeof PineconeSettings>;
 
@@ -427,6 +433,7 @@ export function pineconeConfig(
     upsertRetryBudgetMs: env[envVar('PINECONE_UPSERT_RETRY_BUDGET_MS')],
     queryRetryBudgetMs: env[envVar('PINECONE_QUERY_RETRY_BUDGET_MS')],
     upsertBatchDelayMs: env[envVar('PINECONE_UPSERT_BATCH_DELAY_MS')],
+    upsertMaxBatchTokens: env[envVar('PINECONE_UPSERT_MAX_BATCH_TOKENS')],
   };
   const parsed = PineconeSettings.safeParse({
     ...Object.fromEntries(
