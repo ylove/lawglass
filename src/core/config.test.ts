@@ -662,3 +662,79 @@ describe('Pinecone settings', () => {
     );
   });
 });
+
+it('explicit non-interactive init saves environment settings without prompting', async () => {
+  const prompt = vi.fn();
+  await initConfig({
+    ...options,
+    env: { [envVar('LLM_PROVIDER')]: 'mock' },
+    nonInteractive: true,
+    backend: 'local',
+    prompt,
+  });
+  expect(prompt).not.toHaveBeenCalled();
+  const saved: unknown = JSON.parse(
+    await readFile(join(home, BRAND.configDirName, 'config.json'), 'utf8'),
+  );
+  expect(saved).toEqual({ llmProvider: 'mock', backend: 'local' });
+  expect(
+    (await stat(join(home, BRAND.configDirName, 'config.json'))).mode & 0o777,
+  ).toBe(0o600);
+});
+
+it('non-interactive init rejects invalid environment settings before writing', async () => {
+  await expect(
+    initConfig({
+      ...options,
+      env: { [envVar('LLM_PROVIDER')]: 'invalid' },
+      nonInteractive: true,
+    }),
+  ).rejects.toBeInstanceOf(AppError);
+  await expect(
+    stat(join(home, BRAND.configDirName, 'config.json')),
+  ).rejects.toMatchObject({ code: 'ENOENT' });
+});
+
+it('non-interactive init preserves existing settings, redacts saved keys and prefers an explicit backend', async () => {
+  await file({ maxDocs: 3, anthropicApiKey: secret });
+  const result = await initConfig({
+    ...options,
+    env: { [envVar('LLM_PROVIDER')]: 'mock', [envVar('BACKEND')]: 'pinecone' },
+    nonInteractive: true,
+    backend: 'local',
+  });
+  expect(result.backend).toBe('local');
+  expect(JSON.stringify(result)).not.toContain(secret);
+  expect(
+    JSON.parse(await readFile(join(getConfigDir(home), 'config.json'), 'utf8')),
+  ).toEqual({
+    maxDocs: 3,
+    anthropicApiKey: secret,
+    llmProvider: 'mock',
+    backend: 'local',
+  });
+});
+
+it('non-interactive init refuses unsafe existing config permissions without force', async () => {
+  await file({ anthropicApiKey: secret }, 0o644);
+  await expect(
+    initConfig({ ...options, nonInteractive: true }),
+  ).rejects.toMatchObject({
+    code: 'INVALID_INPUT',
+  });
+  expect(
+    (await stat(join(getConfigDir(home), 'config.json'))).mode & 0o777,
+  ).toBe(0o644);
+});
+
+it('non-interactive init rejects an invalid backend without writing', async () => {
+  await expect(
+    initConfig({ ...options, nonInteractive: true, backend: 'invalid' }),
+  ).rejects.toMatchObject({
+    code: 'INVALID_INPUT',
+    userMessage: 'Invalid backend. Choose pinecone or local.',
+  });
+  await expect(
+    stat(join(getConfigDir(home), 'config.json')),
+  ).rejects.toMatchObject({ code: 'ENOENT' });
+});

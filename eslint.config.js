@@ -13,6 +13,7 @@ export const brandGuard = {
     'src/**/*.{js,jsx,ts,tsx}',
     'scripts/**/*.{js,jsx,ts,tsx}',
     'tests/**/*.{js,jsx,ts,tsx}',
+    'e2e/**/*.{js,jsx,ts,tsx}',
   ],
   ignores: ['src/core/brand.ts'],
   rules: {
@@ -40,6 +41,9 @@ export default defineConfig(
       'node_modules/**',
       'dist/**',
       'coverage/**',
+      '.cache/**',
+      'playwright-report/**',
+      'test-results/**',
       'fixtures/downloads/**',
       '.worktrees/**',
     ],

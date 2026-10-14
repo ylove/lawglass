@@ -18,7 +18,11 @@ import { createLauncher, type Launcher } from '../server/launch.js';
 import { prepareIngestSource } from './ingest-source.js';
 
 export interface CliDependencies {
-  init?: (options: { force: boolean }) => Promise<unknown>;
+  init?: (options: {
+    force: boolean;
+    nonInteractive?: boolean;
+    backend?: string;
+  }) => Promise<unknown>;
   runtime?: RuntimeFactory;
   /** Where command output goes. Default: process.stdout. */
   write?: (text: string) => void;
@@ -151,12 +155,30 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
       '--force',
       'replace an existing config file whose permissions are too open',
     )
-    .action(async (options: { force?: boolean }) => {
-      const force = options.force ?? false;
-      await (dependencies.init?.({ force }) ??
-        initConfig({ prompt: promptSecret, choose: promptChoice, force }));
-      console.log('Configuration saved with private file permissions.');
-    });
+    .option('--non-interactive', 'save environment settings without prompting')
+    .option('--backend <backend>', 'retrieval backend (pinecone or local)')
+    .action(
+      async (options: {
+        force?: boolean;
+        nonInteractive?: boolean;
+        backend?: string;
+      }) => {
+        const initOptions = {
+          force: options.force ?? false,
+          ...(options.nonInteractive ? { nonInteractive: true } : {}),
+          ...(options.backend === undefined
+            ? {}
+            : { backend: options.backend }),
+        };
+        await (dependencies.init?.(initOptions) ??
+          initConfig({
+            prompt: promptSecret,
+            choose: promptChoice,
+            ...initOptions,
+          }));
+        console.log('Configuration saved with private file permissions.');
+      },
+    );
   program
     .command('ingest <url-or-path>')
     .description('ingest a legislation document')

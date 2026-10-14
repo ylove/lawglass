@@ -156,6 +156,65 @@ jobs:
       - run: npm ci
       - run: npm run eval:smoke
 
-  # TODO(package-smoke): add a job that installs the npm tarball and exercises its CLI.
-  # TODO(e2e): add a job that runs browser tests against the built local server.
-  # Add each job here only when its real checks are implemented.
+  # Installs the packed tarball in a clean directory and runs init, ingest (a synthetic PDF by
+  # path), ask, list and serve + /api/health with real local models and the mock LLM.
+  package-smoke:
+    name: package-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/local-backend/models
+          key: local-models-${{ runner.os }}-${{ hashFiles('models.lock.json') }}
+      - name: Select the cached model directory
+        run: |
+          node --import tsx --input-type=module -e 'import { envVar } from "./src/core/brand.ts"; console.log(`${envVar("CONFIG_DIR")}=${process.cwd()}/.cache/local-backend`)' >> "$GITHUB_ENV"
+      - run: npm run models:fetch
+      - run: npm run smoke:package
+
+  # Chromium against the packed build: document list, streamed chip, citation drawer,
+  # SSRF-blocked address and removal.
+  e2e:
+    name: e2e
+    runs-on: ubuntu-latest
+    timeout-minutes: 6
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: .cache/local-backend/models
+          key: local-models-${{ runner.os }}-${{ hashFiles('models.lock.json') }}
+      - name: Select the cached model directory
+        run: |
+          node --import tsx --input-type=module -e 'import { envVar } from "./src/core/brand.ts"; console.log(`${envVar("CONFIG_DIR")}=${process.cwd()}/.cache/local-backend`)' >> "$GITHUB_ENV"
+      - run: npm run models:fetch
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - name: Upload failure traces
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-traces
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 14

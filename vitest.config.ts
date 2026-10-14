@@ -18,6 +18,7 @@ export default defineConfig({
           ],
           exclude: [
             'src/web/**',
+            'e2e/**',
             '**/*.live.test.ts',
             // Real-model tests need downloaded models (npm run models:fetch); opt in.
             ...(process.env.LOCAL_MODELS === '1'

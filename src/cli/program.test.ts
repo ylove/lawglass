@@ -88,3 +88,17 @@ test.each([
   );
   expect(registered?.helpInformation()).toContain(option);
 });
+
+test('init passes non-interactive settings and backend through', async () => {
+  const init = vi.fn().mockResolvedValue({});
+  vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  await createProgram({ init }).parseAsync(
+    ['init', '--non-interactive', '--backend', 'local'],
+    { from: 'user' },
+  );
+  expect(init).toHaveBeenCalledWith({
+    force: false,
+    nonInteractive: true,
+    backend: 'local',
+  });
+});

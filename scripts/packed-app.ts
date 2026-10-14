@@ -1,0 +1,274 @@
+/** Runs the published package in isolation; never imports application runtime code. */
+import assert from 'node:assert/strict';
+import { spawn, execFile, type ChildProcess } from 'node:child_process';
+import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { homedir, tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
+import { promisify } from 'node:util';
+import { z } from 'zod';
+import { BRAND, envVar } from '../src/core/brand.js';
+import { Health } from '../src/core/model/index.js';
+import { makeAmendingBillPdf } from '../tests/synth/index.js';
+
+const execute = promisify(execFile);
+const repoRoot = resolve(import.meta.dirname, '..');
+export const SAMPLE_LABEL = 'Synthetic amendment bill';
+
+/** Check actual archive entries, rather than trusting package.json's files allowlist. */
+export function assertPackageFiles(paths: readonly string[]): void {
+  const files = paths.map((path) => path.replace(/^package\//, ''));
+  for (const required of ['dist/cli.js', 'dist/web/index.html']) {
+    assert(files.includes(required), `Tarball is missing ${required}`);
+  }
+  const forbidden = files.filter((path) =>
+    /(^|\/)(tests|fixtures)(\/|$)|\.test\.|(^|\/)\.env[^/]*|(^|\/)eval\/goldens?(\/|$)/i.test(
+      path,
+    ),
+  );
+  assert.deepEqual(
+    forbidden,
+    [],
+    'Tarball contains development or secret files',
+  );
+}
+
+/** Production maps are allowed, but they must not embed test sources. */
+export function assertPackageMap(content: unknown, path: string): void {
+  const map = z.object({ sources: z.array(z.string()) }).parse(content);
+  assert(
+    !map.sources.some((source) => /(^|\/)tests\/|\.test\./.test(source)),
+    `Test source in ${path}`,
+  );
+}
+
+export function isolatedEnvironment(
+  source: NodeJS.ProcessEnv,
+  home: string,
+): NodeJS.ProcessEnv {
+  // A developer's real credentials, alternate config path and Node hooks must not leak in.
+  const env = Object.fromEntries(
+    Object.entries(source).filter(
+      ([key]) =>
+        !key.startsWith(`${BRAND.envPrefix}_`) &&
+        ![
+          'PINECONE_API_KEY',
+          'ANTHROPIC_API_KEY',
+          'OPENAI_API_KEY',
+          'GOOGLE_API_KEY',
+          'NODE_OPTIONS',
+          'NODE_PATH',
+        ].includes(key),
+    ),
+  );
+  return {
+    ...env,
+    HOME: home,
+    [envVar('LLM_PROVIDER')]: 'mock',
+    npm_config_cache: join(repoRoot, '.cache/npm'),
+    npm_config_update_notifier: 'false',
+  };
+}
+
+export async function runCommand(
+  command: string,
+  args: readonly string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string> {
+  try {
+    const result = await execute(command, [...args], {
+      cwd,
+      env,
+      timeout: 120_000,
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    return result.stdout;
+  } catch (error) {
+    const failure = error as Error & { stdout?: string; stderr?: string };
+    throw new Error(
+      `Command failed: ${command} ${args.join(' ')}\n${failure.stdout ?? ''}\n${failure.stderr ?? ''}`,
+      { cause: error },
+    );
+  }
+}
+
+export interface PackedServer {
+  url: string;
+  stop(): Promise<void>;
+}
+
+/** Always reap the child, including when startup fails or graceful shutdown stalls. */
+export async function stopChild(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise<void>((resolve) => {
+    const force = setTimeout(() => {
+      child.kill('SIGKILL');
+    }, 5_000);
+    child.once('close', () => {
+      clearTimeout(force);
+      resolve();
+    });
+    child.kill('SIGTERM');
+  });
+}
+
+export async function startPackedServer(
+  binary: string,
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<PackedServer> {
+  // Port 0 is assigned by the OS, avoiding a free-port probe/bind race.
+  const child = spawn(
+    process.execPath,
+    [binary, 'serve', '--backend', 'local', '--port', '0'],
+    {
+      cwd,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    },
+  );
+  let output = '';
+  let spawnError: Error | undefined;
+  child.on('error', (error) => {
+    spawnError = error;
+  });
+  child.stdout.on('data', (data: Buffer) => {
+    output += data.toString();
+  });
+  child.stderr.on('data', (data: Buffer) => {
+    output += data.toString();
+  });
+  try {
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline) {
+      if (spawnError) throw spawnError;
+      if (child.exitCode !== null || child.signalCode !== null) {
+        throw new Error(`Packed server exited during startup:\n${output}`);
+      }
+      const url = /Serving at (http:\/\/\S+)/.exec(output)?.[1];
+      if (url) {
+        const response = await fetch(`${url}/api/health`, {
+          signal: AbortSignal.timeout(2_000),
+        });
+        assert.equal(response.status, 200);
+        Health.parse(await response.json());
+        return { url, stop: () => stopChild(child) };
+      }
+      await delay(50);
+    }
+    throw new Error(`Packed server did not become healthy:\n${output}`);
+  } catch (error) {
+    await stopChild(child);
+    throw error;
+  }
+}
+
+export interface PackedApp {
+  home: string;
+  cli(...args: string[]): Promise<string>;
+  serve(): Promise<PackedServer>;
+  dispose(): Promise<void>;
+}
+
+export async function createPackedApp(): Promise<PackedApp> {
+  const root = await mkdtemp(join(tmpdir(), 'packed-app-'));
+  const home = join(root, 'home');
+  const installDir = join(root, 'install');
+  const env = isolatedEnvironment(process.env, home);
+  const servers: PackedServer[] = [];
+  const dispose = async () => {
+    try {
+      await Promise.all(servers.map((server) => server.stop()));
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  };
+  try {
+    await mkdir(home, { mode: 0o700 });
+    await mkdir(installDir);
+    console.log('Building and packing the application…');
+    await runCommand('npm', ['run', 'build'], repoRoot, env);
+    const packed = await runCommand(
+      'npm',
+      ['pack', '--json', '--pack-destination', root],
+      repoRoot,
+      env,
+    );
+    const [manifest] = z
+      .array(z.object({ filename: z.string() }))
+      .length(1)
+      .parse(JSON.parse(packed));
+    assert(manifest);
+    const tarball = join(root, manifest.filename);
+    const entries = (await runCommand('tar', ['-tzf', tarball], repoRoot, env))
+      .trim()
+      .split('\n');
+    assertPackageFiles(entries);
+    // Maps may embed tests even when their own filename looks harmless.
+    for (const path of entries.filter((entry) => entry.endsWith('.map'))) {
+      const content = await runCommand(
+        'tar',
+        ['-xOf', tarball, path],
+        repoRoot,
+        env,
+      );
+      assertPackageMap(JSON.parse(content), path);
+    }
+    await writeFile(
+      join(installDir, 'package.json'),
+      '{"private":true,"type":"module"}\n',
+    );
+    console.log('Installing the tarball in a clean directory…');
+    await runCommand(
+      'npm',
+      ['install', '--no-audit', '--no-fund', tarball],
+      installDir,
+      env,
+    );
+    const configDir = join(home, BRAND.configDirName);
+    // CI fills this cache with models:fetch; local runs reuse already downloaded models.
+    const modelSource = join(
+      process.env[envVar('CONFIG_DIR')] ?? join(homedir(), BRAND.configDirName),
+      'models',
+    );
+    await mkdir(configDir, { mode: 0o700 });
+    await cp(modelSource, join(configDir, 'models'), { recursive: true });
+    const binary = join(installDir, 'node_modules', '.bin', BRAND.name);
+    const cli = (...args: string[]) =>
+      runCommand(
+        process.execPath,
+        [binary, ...args, '--backend', 'local'],
+        installDir,
+        env,
+      );
+    assert.match(await cli('init', '--non-interactive'), /Configuration saved/);
+    const saved: unknown = JSON.parse(
+      await readFile(join(configDir, 'config.json'), 'utf8'),
+    );
+    assert.deepEqual(saved, { llmProvider: 'mock', backend: 'local' });
+    const sample = await makeAmendingBillPdf();
+    const pdfPath = join(root, 'synthetic.pdf');
+    await writeFile(pdfPath, sample.bytes);
+    const ingested = await cli('ingest', pdfPath, '--name', SAMPLE_LABEL);
+    assert.match(ingested, /Format: pdf/);
+    assert.match(
+      ingested,
+      /Amendment spans: [1-9]\d* deleted, [1-9]\d* inserted/,
+    );
+    assert.match(ingested, /Embedding tokens: [1-9]\d*/);
+    return {
+      home,
+      cli,
+      async serve() {
+        const server = await startPackedServer(binary, installDir, env);
+        servers.push(server);
+        return server;
+      },
+      dispose,
+    };
+  } catch (error) {
+    await dispose();
+    throw error;
+  }
+}

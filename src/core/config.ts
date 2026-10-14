@@ -112,6 +112,8 @@ export interface ConfigOptions {
   choose?: ChoicePrompt;
   /** init only: replace an unreadable (group/world-readable) config instead of refusing. */
   force?: boolean;
+  /** init only: save environment settings without terminal prompts. */
+  nonInteractive?: boolean;
   /** The caller passes the parsed --backend value here. */
   backend?: string;
 }
@@ -330,7 +332,10 @@ export function redact<T extends ConfigSettings>(config: T): T {
 export async function initConfig(
   options: ConfigOptions = {},
 ): Promise<ConfigSettings> {
-  if (!(options.isTTY ?? process.stdin.isTTY) || !options.prompt) {
+  if (
+    !options.nonInteractive &&
+    (!(options.isTTY ?? process.stdin.isTTY) || !options.prompt)
+  ) {
     throw storageError(
       'Run init in an interactive terminal to enter masked keys.',
     );
@@ -350,9 +355,20 @@ export async function initConfig(
       })
     )(message);
   });
-  for (const field of Object.keys(keyNames) as KeyField[]) {
-    const key = await promptKey(field, options);
-    if (key) settings[field] = key;
+  if (options.nonInteractive) {
+    Object.assign(settings, environmentSettings(options.env ?? process.env));
+  }
+  if (options.backend !== undefined) {
+    const backend = Backend.safeParse(options.backend);
+    if (!backend.success)
+      throw storageError('Invalid backend. Choose pinecone or local.');
+    settings.backend = backend.data;
+  }
+  if (!options.nonInteractive) {
+    for (const field of Object.keys(keyNames) as KeyField[]) {
+      const key = await promptKey(field, options);
+      if (key) settings[field] = key;
+    }
   }
   const validated = validateSettings(settings);
   await writePrivateJson(
