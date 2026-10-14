@@ -64,6 +64,8 @@ export interface PineconeBackendOptions {
   apiKey?: string;
   config?: Partial<PineconeSettings>;
   client?: PineconeClient;
+  now?: () => number;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   logUsage?: (event: {
     backend: 'pinecone';
     operation: string;
@@ -130,6 +132,8 @@ const FetchResponse = z.object({
 const COMPLETION_ID = 'complete';
 const Completion = z.object({ doc_id: z.string(), version: z.literal(1) });
 // Keep control records out of chunk searches, fetches and record counts.
+// 80 ASCII characters for a SHA-256 docId, below the documented 512-character limit:
+// https://sdk.pinecone.io/python/reference/async-index.html#pinecone.AsyncIndex.create_namespace
 function completionNamespace(docId: string): string {
   return `ingest-complete:${docId}`;
 }
@@ -176,6 +180,8 @@ export class PineconeBackend implements RetrievalBackend {
   readonly config: PineconeSettings;
   readonly indexNames: { dense: string; sparse: string };
   private readonly client: PineconeClient;
+  private readonly now: () => number;
+  private readonly sleep: NonNullable<PineconeBackendOptions['sleep']>;
   private readonly logUsage: NonNullable<PineconeBackendOptions['logUsage']>;
   private indexes: { dense: PineconeIndex; sparse: PineconeIndex } | undefined;
   private pending: Promise<unknown> = Promise.resolve();
@@ -191,6 +197,9 @@ export class PineconeBackend implements RetrievalBackend {
     if (!options.client && !apiKey) throw new AppError('MISSING_KEY');
     this.client =
       options.client ?? new Pinecone({ apiKey: apiKey ?? '', maxRetries: 0 });
+    this.now = options.now ?? Date.now;
+    this.sleep =
+      options.sleep ?? ((ms, signal) => delay(ms, undefined, { signal }));
     this.logUsage =
       options.logUsage ??
       ((event) => {
@@ -235,7 +244,7 @@ export class PineconeBackend implements RetrievalBackend {
           embed: { model, fieldMap: { text: 'embed_text' } },
           suppressConflicts: true,
         });
-        const deadline = Date.now() + this.config.timeoutMs;
+        const deadline = this.now() + this.config.timeoutMs;
         for (;;) {
           abortIfNeeded(signal);
           const description = Description.parse(
@@ -261,13 +270,13 @@ export class PineconeBackend implements RetrievalBackend {
           if (
             description.status.state === 'InitializationFailed' ||
             description.status.state === 'Terminated' ||
-            Date.now() >= deadline
+            this.now() >= deadline
           )
             throw new AppError(
               'BACKEND_UNAVAILABLE',
               'Pinecone indexes did not become ready.',
             );
-          await delay(this.config.pollIntervalMs, undefined, { signal });
+          await this.sleep(this.config.pollIntervalMs, signal);
         }
       }
       this.indexes = indexes;
@@ -306,6 +315,25 @@ export class PineconeBackend implements RetrievalBackend {
       if (!hasStatus(error, 404, 'PineconeNotFoundError')) throw error;
     }
   }
+  private async pollCompletion(
+    docId: string,
+    expected: boolean,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const deadline = this.now() + Math.min(this.config.timeoutMs, 10_000);
+    let backoffMs = 250;
+    for (;;) {
+      abortIfNeeded(signal);
+      const complete = await this.isComplete(docId);
+      abortIfNeeded(signal);
+      if (complete === expected) return;
+      const remainingMs = deadline - this.now();
+      // The write succeeded; delayed visibility must not turn it into a failed ingest/delete.
+      if (remainingMs <= 0) return;
+      await this.sleep(Math.min(backoffMs, remainingMs), signal);
+      backoffMs *= 2;
+    }
+  }
   private async remove(docId: string): Promise<void> {
     // Invalidate completion before deleting chunks, even if chunk cleanup fails.
     await this.removeCompletion(docId);
@@ -323,8 +351,10 @@ export class PineconeBackend implements RetrievalBackend {
     docId: string,
     chunks: readonly Chunk[],
     onProgress?: (p: UpsertProgress) => void,
+    signal?: AbortSignal,
   ): Promise<{ usage: BackendUsage }> {
     return this.serial(async () => {
+      abortIfNeeded(signal);
       const indexes = this.readyIndexes();
       const records = chunks.map((chunk) => {
         const parsed = Chunk.safeParse(chunk);
@@ -352,6 +382,7 @@ export class PineconeBackend implements RetrievalBackend {
             bytes += size;
           }
           for (const kind of ['dense', 'sparse'] as const) {
+            abortIfNeeded(signal);
             const response = await indexes[kind]
               .namespace(docId)
               .upsertRecords({ records: batch });
@@ -362,6 +393,7 @@ export class PineconeBackend implements RetrievalBackend {
           onProgress?.({ done: offset, total: chunks.length });
         }
         // Publish durable completion only after every batch succeeds in both indexes.
+        abortIfNeeded(signal);
         const response = await indexes.dense
           .namespace(completionNamespace(docId))
           .upsertRecords({
@@ -383,6 +415,7 @@ export class PineconeBackend implements RetrievalBackend {
         if (!wasComplete) await this.remove(docId).catch(() => undefined);
         throw error;
       }
+      await this.pollCompletion(docId, true, signal);
       return { usage };
     });
   }
@@ -495,8 +528,12 @@ export class PineconeBackend implements RetrievalBackend {
       return { hits, usage };
     });
   }
-  deleteDocument(docId: string): Promise<void> {
-    return this.serial(() => this.remove(docId));
+  deleteDocument(docId: string, signal?: AbortSignal): Promise<void> {
+    return this.serial(async () => {
+      abortIfNeeded(signal);
+      await this.remove(docId);
+      await this.pollCompletion(docId, false, signal);
+    });
   }
 
   async settle(signal?: AbortSignal): Promise<void> {

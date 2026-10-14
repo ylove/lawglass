@@ -25,7 +25,12 @@ import {
   type UpsertProgress,
 } from '../../model/index.js';
 import { fromRecord, toRecord } from './metadata.js';
-import { PineconeBackend, settle, type PineconeClient } from './pinecone.js';
+import {
+  PineconeBackend,
+  settle,
+  type PineconeBackendOptions,
+  type PineconeClient,
+} from './pinecone.js';
 
 const defaults = pineconeConfig({}, {});
 function fakeSdk() {
@@ -33,11 +38,24 @@ function fakeSdk() {
     const memory = new MemoryBackend();
     const records = new Map<string, Set<string>>();
     const storedRecords = new Map<string, Map<string, IntegratedRecord>>();
+    const consistency = { upsertReads: 0, deleteReads: 0 };
+    const pendingVisibility = new Map<
+      string,
+      { remainingReads: number; previous: Map<string, IntegratedRecord> }
+    >();
+    function delayVisibility(docId: string, remainingReads: number): void {
+      if (!docId.startsWith('ingest-complete:')) return;
+      pendingVisibility.set(docId, {
+        remainingReads,
+        previous: new Map(storedRecords.get(docId)),
+      });
+    }
     const upsert = vi.fn(
       async (
         docId: string,
         options: UpsertRecordsOptions,
       ): Promise<unknown> => {
+        delayVisibility(docId, consistency.upsertReads);
         const chunks = options.records
           .filter((record) => record.section_id !== undefined)
           .map((record) => ({
@@ -99,16 +117,26 @@ function fakeSdk() {
       },
     );
     const fetch = vi.fn(
-      (docId: string, options: FetchOptions): Promise<unknown> =>
-        Promise.resolve({
+      (docId: string, options: FetchOptions): Promise<unknown> => {
+        const pending = pendingVisibility.get(docId);
+        const visible =
+          pending && pending.remainingReads > 0
+            ? pending.previous
+            : storedRecords.get(docId);
+        if (pending) {
+          if (pending.remainingReads > 0) pending.remainingReads--;
+          else pendingVisibility.delete(docId);
+        }
+        return Promise.resolve({
           records: Object.fromEntries(
             options.ids.flatMap((id) => {
-              const record = storedRecords.get(docId)?.get(id);
+              const record = visible?.get(id);
               return record ? [[id, { id, metadata: record }]] : [];
             }),
           ),
           usage: { readUnits: 1 },
-        }),
+        });
+      },
     );
     const stats = vi.fn((): Promise<unknown> =>
       Promise.resolve({
@@ -118,6 +146,7 @@ function fakeSdk() {
       }),
     );
     const deleteNamespace = vi.fn(async (docId: string): Promise<unknown> => {
+      delayVisibility(docId, consistency.deleteReads);
       await memory.deleteDocument(docId);
       records.delete(docId);
       storedRecords.delete(docId);
@@ -129,6 +158,7 @@ function fakeSdk() {
       search,
       fetch,
       records,
+      consistency,
       describeIndexStats: stats,
       deleteNamespace,
       namespace: (docId: string) => ({
@@ -197,15 +227,28 @@ function fakeSdk() {
 afterEach(() => {
   vi.restoreAllMocks();
 });
-function setup(config: Parameters<typeof pineconeConfig>[0] = {}) {
+function setup(
+  config: Parameters<typeof pineconeConfig>[0] = {},
+  timing: Pick<PineconeBackendOptions, 'now' | 'sleep'> = {},
+) {
   const sdk = fakeSdk();
-  const logUsage = vi.fn();
+  const logUsage = vi.fn<NonNullable<PineconeBackendOptions['logUsage']>>();
+  let timeMs = 0;
+  const sleep = vi.fn((ms: number, signal?: AbortSignal) => {
+    if (signal?.aborted)
+      return Promise.reject(new DOMException('Aborted', 'AbortError'));
+    timeMs += ms;
+    return Promise.resolve();
+  });
   const backend = new PineconeBackend({
     client: sdk.client,
     logUsage,
     config: { ...defaults, pollIntervalMs: 1, timeoutMs: 20, ...config },
+    now: () => timeMs,
+    sleep,
+    ...timing,
   });
-  return { backend, sdk, logUsage };
+  return { backend, sdk, logUsage, sleep };
 }
 
 // Reuse the real behavioral contract and MemoryBackend to drive fake SDK scoring.
@@ -308,7 +351,7 @@ describe('PineconeBackend', () => {
       { done: 193, total: 193 },
     ]);
     expect(response.usage).toEqual(ZERO_USAGE);
-    expect(logUsage).toHaveBeenCalledTimes(8);
+    expect(logUsage).toHaveBeenCalledTimes(9);
     await backend.settle();
   });
   it('also batches by NDJSON byte size, including multibyte text', async () => {
@@ -330,6 +373,108 @@ describe('PineconeBackend', () => {
             .join('\n'),
         ),
       ).toBeLessThanOrEqual(2_000_000);
+  });
+  it.each(['upsert', 'delete'] as const)(
+    'waits for eventual completion-marker visibility after %s',
+    async (operation) => {
+      const { backend, sdk, sleep } = setup({ timeoutMs: 10_000 });
+      await backend.ensureReady();
+      if (operation === 'upsert') {
+        sdk.dense.consistency.upsertReads = 3;
+        await backend.upsertChunks(DOC_A, CHUNKS_A);
+      } else {
+        await backend.upsertChunks(DOC_A, CHUNKS_A);
+        sdk.dense.consistency.deleteReads = 3;
+        await backend.deleteDocument(DOC_A);
+      }
+      expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([250, 500, 1_000]);
+      expect(await backend.hasDocument(DOC_A)).toBe(operation === 'upsert');
+      expect(await backend.recordCounts(DOC_A)).toEqual(
+        operation === 'upsert' ? [CHUNKS_A.length, CHUNKS_A.length] : [0, 0],
+      );
+    },
+  );
+  it.each([
+    ['upsert', 20_000],
+    ['delete', 20_000],
+    ['upsert', 600],
+    ['delete', 600],
+  ] as const)(
+    'returns after bounded polling on %s with timeoutMs=%i, preserving the successful write',
+    async (operation, timeoutMs) => {
+      const { backend, sdk, sleep, logUsage } = setup({ timeoutMs });
+      await backend.ensureReady();
+      if (operation === 'upsert') {
+        sdk.dense.consistency.upsertReads = Infinity;
+        await expect(backend.upsertChunks(DOC_A, CHUNKS_A)).resolves.toEqual({
+          usage: ZERO_USAGE,
+        });
+        expect(sdk.dense.deleteNamespace).not.toHaveBeenCalled();
+      } else {
+        await backend.upsertChunks(DOC_A, CHUNKS_A);
+        sdk.dense.consistency.deleteReads = Infinity;
+        await expect(backend.deleteDocument(DOC_A)).resolves.toBeUndefined();
+      }
+      expect(sleep.mock.calls.map(([ms]) => ms)).toEqual(
+        timeoutMs === 600 ? [250, 350] : [250, 500, 1_000, 2_000, 4_000, 2_250],
+      );
+      expect(await backend.hasDocument(DOC_A)).toBe(operation === 'delete');
+      expect(await backend.recordCounts(DOC_A)).toEqual(
+        operation === 'upsert' ? [CHUNKS_A.length, CHUNKS_A.length] : [0, 0],
+      );
+      // Polling and its timeout emit only the existing aggregate usage events.
+      for (const [event] of logUsage.mock.calls)
+        expect(Object.keys(event).sort()).toEqual([
+          'backend',
+          'operation',
+          'usage',
+        ]);
+    },
+  );
+  it.each(['upsert', 'delete'] as const)(
+    'honours abort during %s polling without rolling back the write or exposing the reason',
+    async (operation) => {
+      const controller = new AbortController();
+      const sleep = vi.fn((_ms: number, signal?: AbortSignal) => {
+        expect(signal).toBe(controller.signal);
+        controller.abort('secret-key');
+        return Promise.reject(new DOMException('Aborted', 'AbortError'));
+      });
+      const { backend, sdk, logUsage } = setup(
+        { timeoutMs: 10_000 },
+        { sleep },
+      );
+      await backend.ensureReady();
+      if (operation === 'delete') await backend.upsertChunks(DOC_A, CHUNKS_A);
+      sdk.dense.consistency.upsertReads = Infinity;
+      sdk.dense.consistency.deleteReads = Infinity;
+      const writing =
+        operation === 'upsert'
+          ? backend.upsertChunks(DOC_A, CHUNKS_A, undefined, controller.signal)
+          : backend.deleteDocument(DOC_A, controller.signal);
+      const error: unknown = await writing.catch((caught: unknown) => caught);
+      expect(error).toMatchObject({ name: 'AbortError' });
+      expect(String(error)).not.toContain('secret-key');
+      expect(JSON.stringify(logUsage.mock.calls)).not.toContain('secret-key');
+      expect(sleep).toHaveBeenCalledTimes(1);
+      expect(await backend.recordCounts(DOC_A)).toEqual(
+        operation === 'upsert' ? [CHUNKS_A.length, CHUNKS_A.length] : [0, 0],
+      );
+      if (operation === 'upsert')
+        expect(sdk.dense.deleteNamespace).not.toHaveBeenCalled();
+    },
+  );
+  it('keeps the completion namespace within the documented 512 ASCII character limit', async () => {
+    const { backend, sdk } = setup();
+    await backend.ensureReady();
+    await backend.upsertChunks(DOC_A, CHUNKS_A);
+    const namespace = sdk.dense.upsert.mock.calls.find(
+      ([, options]) => options.records[0]?._id === 'complete',
+    )?.[0];
+    expect(namespace).toBe(`ingest-complete:${DOC_A}`);
+    expect(namespace).toHaveLength(80);
+    expect(Buffer.byteLength(namespace!)).toBe(namespace!.length);
+    expect(namespace!.length).toBeLessThanOrEqual(512);
   });
   it('fetches in batches of 1000 and preserves input order and missing IDs', async () => {
     const { backend, sdk, logUsage } = setup();
@@ -651,6 +796,14 @@ describe('PineconeBackend', () => {
     });
     expect(sdk.create).not.toHaveBeenCalled();
     await backend.ensureReady();
+    await expect(
+      backend.upsertChunks(DOC_A, CHUNKS_A, undefined, signal),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    await expect(backend.deleteDocument(DOC_A, signal)).rejects.toMatchObject({
+      name: 'AbortError',
+    });
+    expect(sdk.dense.upsert).not.toHaveBeenCalled();
+    expect(sdk.dense.deleteNamespace).not.toHaveBeenCalled();
     await expect(
       backend.search({
         docId: DOC_A,
