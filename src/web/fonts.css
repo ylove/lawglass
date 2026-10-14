@@ -1,0 +1,5 @@
+/* Self-hosted Instrument Sans (OFL-1.1), latin subset only. The family ships 400-700, so the
+   light chip weight (300) resolves to 400; the selected chip's 500 still reads as heavier. */
+@import '@fontsource/instrument-sans/latin-400.css';
+@import '@fontsource/instrument-sans/latin-500.css';
+@import '@fontsource/instrument-sans/latin-600.css';

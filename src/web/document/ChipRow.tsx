@@ -5,10 +5,13 @@ type Chip = ClientConfig['chips'][number];
 export function ChipRow({
   chips,
   busy,
+  activeLabel,
   onPick,
 }: {
   chips: Chip[];
   busy: boolean;
+  /** Label of the question being shown, so its chip can look selected. */
+  activeLabel?: string | null;
   onPick: (chipId: Chip['id'], label: string) => void;
 }) {
   return (
@@ -20,6 +23,7 @@ export function ChipRow({
             key={chip.id}
             type="button"
             className="chip"
+            aria-pressed={chip.label === activeLabel}
             aria-disabled={busy}
             onClick={() => {
               // aria-disabled (not disabled) keeps keyboard focus on the chip.

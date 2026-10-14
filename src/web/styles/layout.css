@@ -1,10 +1,61 @@
-.site-header {
-  padding: 1rem 1rem 0.5rem;
-  max-width: 72rem;
-  margin: 0 auto;
+/* The masthead is a full-bleed navy band. Its inner content lines up with the 72rem column
+   below via inline padding, so no wrapper elements are needed. No italics in this region. */
+.masthead {
+  --gutter: max(1rem, calc((100% - 72rem) / 2 + 1rem));
+  background: var(--band);
+  color: var(--band-ink);
+  padding: 1.25rem var(--gutter) 2.5rem;
+  font-style: normal;
 }
-.site-header p {
+.masthead :focus-visible {
+  outline-color: var(--band-ink);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+.brand h1 {
   margin: 0;
+  font-size: 1.4rem;
+  letter-spacing: -0.01em;
+}
+.brand svg {
+  flex: none;
+}
+.hero {
+  max-width: 48rem;
+  padding-top: clamp(2rem, 6vw, 4.5rem);
+}
+.hero-kicker {
+  margin: 0 0 1rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--band-muted);
+}
+.hero-title {
+  margin: 0 0 1.25rem;
+  font-size: clamp(2.25rem, 6vw, 4.25rem);
+  font-weight: 500;
+  line-height: 1.04;
+  letter-spacing: -0.03em;
+}
+.hero-sub {
+  margin: 0;
+  max-width: 38rem;
+  font-size: 1.15rem;
+  font-weight: 400;
+  color: var(--band-muted);
+}
+.masthead-doc:empty {
+  display: none;
+}
+.masthead-doc {
+  padding-top: 1.75rem;
+}
+/* Home needs room under the band for the URL card that overlaps its edge. */
+.app[data-screen='home'] .masthead {
+  padding-bottom: 5.5rem;
 }
 .layout {
   display: grid;
@@ -12,7 +63,11 @@
   gap: 1.5rem;
   max-width: 72rem;
   margin: 0 auto;
-  padding: 1rem;
+  padding: 1.5rem 1rem;
+}
+.app[data-screen='home'] .layout {
+  margin-top: -4rem;
+  position: relative;
 }
 main:focus {
   outline: none;
@@ -23,5 +78,5 @@ main:focus {
   padding: 1rem;
   border-top: 1px solid var(--line);
   color: var(--muted);
-  font-size: 0.95rem;
+  font-size: 0.9rem;
 }

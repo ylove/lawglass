@@ -4,13 +4,22 @@
   gap: 0.5rem;
   margin-bottom: 1rem;
 }
+/* Light, thin-bordered pills. Weight 300 is requested; the bundled family starts at 400. */
 .chip {
+  padding: 0.55rem 1rem;
+  font-size: 0.95rem;
+  font-weight: 300;
   border-radius: 999px;
-  background: var(--accent-soft);
 }
 .chip:hover:not(:disabled):not([aria-disabled='true']),
 .btn:hover:not(:disabled):not([aria-disabled='true']) {
-  border-color: var(--ink);
+  border-color: var(--accent);
+}
+/* The selected chip is marked by border, fill and weight, not color alone. */
+.chip[aria-pressed='true'] {
+  border-color: var(--accent);
+  background: var(--soft);
+  font-weight: 500;
 }
 .link-btn {
   background: none;
