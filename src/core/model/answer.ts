@@ -38,6 +38,8 @@ export const AnswerWarning = z.enum([
   'INVALID_CITATIONS_REMOVED',
   /** Retrieval found nothing relevant. */
   'NO_RELEVANT_EXCERPTS',
+  /** The model hit its output-token limit; the answer may be cut off. Added in #59. */
+  'TRUNCATED',
 ]);
 export type AnswerWarning = z.infer<typeof AnswerWarning>;
 

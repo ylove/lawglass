@@ -103,7 +103,7 @@ describe('chunkDocument', () => {
     ]);
   });
 
-  it('merges adjacent small leaf siblings under their parent with span locations and child refs', () => {
+  it('merges adjacent small leaf siblings under their parent with span locations and covered child sections', () => {
     const doc = document([
       section('sec-4', 'Parent own text.', {
         num: 'Sec. 4',
@@ -135,7 +135,8 @@ describe('chunkDocument', () => {
       pageEnd: 3,
       lineStart: 28,
       lineEnd: 2,
-      refs: ['sec-4/a', 'sec-4/b'],
+      refs: [],
+      coveredSectionIds: ['sec-4', 'sec-4/a', 'sec-4/b'],
       definedTermsUsed: [],
     });
   });
@@ -162,7 +163,8 @@ describe('chunkDocument', () => {
     expect(chunk).toMatchObject({
       sectionId: 'sec-2',
       text: '(a) Eligibility. Residents may apply.\n\n(b) Deadline. Apply by January 1.\n\n(c) Use the prescribed form.',
-      refs: ['sec-2/a', 'sec-2/b', 'sec-2/c'],
+      refs: [],
+      coveredSectionIds: ['sec-2', 'sec-2/a', 'sec-2/b', 'sec-2/c'],
     });
     expect(chunk?.embedText).toBe(`Sec. 2: ${chunk!.text}`);
   });
@@ -584,7 +586,7 @@ describe('generated document properties', () => {
         ).toBeLessThan(30_000);
         const mergedLabels = new Set(
           sections
-            .filter((node) => chunk.refs.includes(node.id))
+            .filter((node) => (chunk.coveredSectionIds ?? []).includes(node.id))
             .flatMap((node) =>
               [node.num ?? '', node.heading ? `${node.heading}.` : '']
                 .join(' ')

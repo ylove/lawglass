@@ -46,6 +46,12 @@ export const Chunk = SourceLocation.extend({
   definedTermsUsed: z.array(z.string()),
   /** Internal cross-references resolved to section ids. */
   refs: z.array(z.string()),
+  /**
+   * Sections whose own text is in this chunk: `sectionId` plus any small sibling subsections
+   * the chunker merged into it. Absent means just `[sectionId]`. Citations to any of these are
+   * valid for this chunk. (`refs` is for cross-references only.) Added in #59.
+   */
+  coveredSectionIds: z.array(SectionId).nonempty().optional(),
   /** For `chunkType: 'definition'` chunks, the term defined. */
   definesTerm: z.string().optional(),
   tokenCount: z.number().int().nonnegative(),
