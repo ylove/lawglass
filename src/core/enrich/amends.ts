@@ -33,7 +33,9 @@ function hasNumberedDescendant(section: Section): boolean {
  * show struck or underlined text. Only the innermost numbered section counts, so a bill's own
  * "Section 1" that merely contains them is not mistaken for charter text.
  */
-function restatedSections(sections: readonly Section[]): string[] {
+export function restatedCharterSections(
+  sections: readonly Section[],
+): string[] {
   const nums: string[] = [];
   for (const section of walkSections(sections)) {
     const num =
@@ -46,6 +48,23 @@ function restatedSections(sections: readonly Section[]): string[] {
       nums.push(num);
   }
   return nums;
+}
+
+/** Sentence ends. Not ":" (a lead-in to a list) and not "." before a digit ("Sec. 3"). */
+const SENTENCE_END = /[.;](?=\s+[A-Z])/g;
+
+/** True when an "amend" verb is in the same sentence as the mention, within the char limits. */
+function amendsWithinSentence(
+  text: string,
+  m: { start: number; end: number },
+): boolean {
+  const before = text.slice(Math.max(0, m.start - BEFORE_CHARS), m.start);
+  const lastEnd = [...before.matchAll(SENTENCE_END)].at(-1);
+  const sameBefore = lastEnd ? before.slice(lastEnd.index + 1) : before;
+  const after = text.slice(m.end, m.end + AFTER_CHARS);
+  const nextEnd = after.search(/[.;](?=\s+[A-Z])/);
+  const sameAfter = nextEnd === -1 ? after : after.slice(0, nextEnd);
+  return /\bamend/i.test(sameBefore) || /\bamend/i.test(sameAfter);
 }
 
 /**
@@ -62,19 +81,17 @@ export function detectAmends(
   sections: readonly Section[],
   metadata: Pick<BillMetadata, 'title' | 'jurisdiction'>,
 ): AmendsTarget | undefined {
+  // Every section, children included: an amendment clause may sit inside subsection (a).
   const text = [
     metadata.title ?? '',
-    ...sections.map((s) => sectionText(s, { includeDeleted: false })),
+    ...[...walkSections(sections)].map((s) =>
+      sectionText({ ...s, children: [] }, { includeDeleted: false }),
+    ),
   ].join('\n');
   const charter = findExternalMatches(text).filter(
     (m) => m.category === 'charter',
   );
-  const amending = charter.filter(
-    (m) =>
-      /\bamend/i.test(
-        text.slice(Math.max(0, m.start - BEFORE_CHARS), m.start),
-      ) || /\bamend/i.test(text.slice(m.end, m.end + AFTER_CHARS)),
-  );
+  const amending = charter.filter((m) => amendsWithinSentence(text, m));
   if (amending.length === 0) return undefined;
 
   const city = charter.find((m) => m.city !== undefined)?.city;
@@ -84,6 +101,6 @@ export function detectAmends(
   return {
     name: charterName(city),
     ...(metadata.jurisdiction ? { jurisdiction: metadata.jurisdiction } : {}),
-    sections: [...new Set([...listed, ...restatedSections(sections)])],
+    sections: [...new Set([...listed, ...restatedCharterSections(sections)])],
   };
 }

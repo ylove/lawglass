@@ -126,15 +126,41 @@ describe('collectExternalRefs with charter text', () => {
 describe('internal links to restated charter sections', () => {
   const tree = [
     sec('sec-1', 'To amend Section 3 of the City Charter.', { num: '1' }),
-    sec('sec-3', 'Council meets monthly.', { num: 'Sec. 3.' }),
+    {
+      ...sec('sec-3', '', { num: 'Sec. 3.' }),
+      spans: [
+        { text: 'Council meets ', status: 'unchanged' as const },
+        { text: 'monthly.', status: 'inserted' as const },
+      ],
+    },
   ];
   const index = buildSectionIndex(tree);
+  const restated = { charterSections: new Set(['3']) };
 
   it('links "Section 3 of the charter" inward when the document restates it', () => {
     expect(
-      findInternalRefs('Section 3 of the charter is amended', 'sec-1', index),
+      findInternalRefs(
+        'Section 3 of the charter is amended',
+        'sec-1',
+        index,
+        restated,
+      ),
     ).toEqual(['sec-3']);
-    expect(collectExternalRefs(tree, index)).toEqual([]);
+    expect(collectExternalRefs(tree, index, [], restated)).toEqual([]);
+  });
+
+  it("does not link to an ordinance's own unrelated Section 3", () => {
+    const ordinance = [
+      sec('sec-1', 'Fees follow Section 3 of the City Charter.', { num: '1' }),
+      sec('sec-3', 'This ordinance takes effect in 30 days.', { num: '3' }),
+    ];
+    const idx = buildSectionIndex(ordinance);
+    expect(
+      findInternalRefs('Section 3 of the City Charter', 'sec-1', idx),
+    ).toEqual([]);
+    expect(collectExternalRefs(ordinance, idx).map((r) => r.citation)).toEqual([
+      'City Charter § 3',
+    ]);
   });
 
   it('keeps it external when the section is not restated', () => {
@@ -148,5 +174,32 @@ describe('internal links to restated charter sections', () => {
     expect(collectExternalRefs(lone, idx).map((r) => r.citation)).toEqual([
       'City Charter § 9',
     ]);
+  });
+});
+
+describe('adversarial input', () => {
+  const fast = (text: string): void => {
+    const t = Date.now();
+    findExternalMatches(text, OHIO);
+    expect(Date.now() - t).toBeLessThan(500);
+  };
+  it.each([
+    ['list separators', 'Sections 3' + ' '.repeat(32000) + '!'],
+    ['comma runs', 'Sections 3' + ', 4'.repeat(8000) + ' x'],
+    ['and runs', 'Sections 3' + ' and 4'.repeat(8000) + ' x'],
+    ['city names', 'Charter of the City of ' + 'Aaa '.repeat(8000) + '!'],
+    ['spaces after code', 'Columbus City Code' + ' '.repeat(32000) + '!'],
+    ['spaces after R.C.', 'R.C.' + ' '.repeat(32000) + '!'],
+    [
+      'spaces in election laws',
+      'the general election laws of' + ' '.repeat(32000),
+    ],
+  ])('stays fast on %s', (_name, text) => {
+    fast(text);
+  });
+
+  it('requires a word boundary after "charter"', () => {
+    expect(only('Section 3 of the chartered bank agreement')).toEqual([]);
+    expect(only('the City Chartered')).toEqual([]);
   });
 });

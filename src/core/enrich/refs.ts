@@ -33,6 +33,28 @@ export interface ExternalMatch {
 export interface ExternalOptions {
   /** `metadata.jurisdiction`. The Ohio Revised Code mapping applies only when this says Ohio. */
   jurisdiction?: string | null | undefined;
+  /**
+   * Normalized numbers of the charter sections this document restates. A charter citation links
+   * inward only to one of these: an ordinance's own "Section 3" is not the charter's.
+   */
+  charterSections?: ReadonlySet<string> | undefined;
+}
+
+/** Whether a match points at a section of this document (not at outside law). */
+function isInternalMatch(
+  match: ExternalMatch,
+  index: SectionIndex,
+  options: ExternalOptions,
+): boolean {
+  if (
+    match.sectionNum === undefined ||
+    !index.bySectionNum.has(match.sectionNum)
+  )
+    return false;
+  return (
+    match.category !== 'charter' ||
+    (options.charterSections?.has(match.sectionNum) ?? false)
+  );
 }
 
 export function isOhio(jurisdiction: string | null | undefined): boolean {
@@ -45,7 +67,7 @@ const PAREN_LIST = String.raw`(?:${PAREN})+(?:\s*(?:,|and|or)\s*(?:${PAREN})+)*`
 const DIVISION_PREFIX = String.raw`(?:(?:divisions?|subdivisions?|subsections?|paragraphs?|clauses?)\s+${PAREN_LIST}\s+(?:of|in)\s+)?`;
 const RC_ITEM = String.raw`\d+\.\d+(?:\.\d+)?(?:${PAREN})*`;
 const RC_SECTIONS = new RegExp(
-  String.raw`${DIVISION_PREFIX}sections?\s+(${RC_ITEM}(?:\s*(?:,\s*(?:and\s+|or\s+)?|\s+(?:and|or|to|through)\s+)${RC_ITEM})*)\s+of\s+the\s+(?:Ohio\s+)?Revised\s+Code`,
+  String.raw`${DIVISION_PREFIX}sections?\s+(${RC_ITEM}(?:(?:\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or|to|through)\s+)${RC_ITEM})*)\s+of\s+the\s+(?:Ohio\s+)?Revised\s+Code`,
   'gi',
 );
 const RC_CHAPTERS =
@@ -53,7 +75,7 @@ const RC_CHAPTERS =
 const USC_TITLE_FIRST =
   /\b(\d{1,2})\s+(?:U\.\s?S\.\s?C\.?|USC)(?:\s+(?:§§?|secs?\.|sections?))?\s*(\d+[A-Za-z0-9]*(?:-\d+[A-Za-z0-9]*)?)/g;
 const USC_ITEM = String.raw`\d+[A-Za-z0-9]*(?:\([A-Za-z0-9]+\))*`;
-const USC_LIST = String.raw`${USC_ITEM}(?:\s*(?:,\s*(?:and\s+|or\s+)?|\s+(?:and|or|to|through)\s+)${USC_ITEM})*`;
+const USC_LIST = String.raw`${USC_ITEM}(?:(?:\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or|to|through)\s+)${USC_ITEM})*`;
 const USC_CODE = String.raw`(?:United\s+States\s+Code|U\.\s?S\.\s+Code|U\.\s?S\.\s?C\.)`;
 const USC_SECTION_FIRST = new RegExp(
   String.raw`\bsections?\s+(${USC_LIST})\s+of\s+title\s+(\d{1,2})\s*,?\s+${USC_CODE}`,
@@ -81,12 +103,12 @@ const CFR =
 // where a lowercase use ("the charter school", "building code") would be a false positive.
 const CITY_NAME = String.raw`[A-Z][a-z]+(?:\s[A-Z][a-z]+)?`;
 const CHARTER_NUM = String.raw`\d+(?:[-.]\d+)*[A-Za-z]?`;
-const CHARTER_NUM_LIST = String.raw`${CHARTER_NUM}(?:\s*(?:,\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+)${CHARTER_NUM})*`;
+const CHARTER_NUM_LIST = String.raw`${CHARTER_NUM}(?:(?:\s*,\s*(?:(?:and|or)\s+)?|\s+(?:and|or)\s+)${CHARTER_NUM})*`;
 const CHARTER_OF_CITY = String.raw`Charter\s+of\s+the\s+City\s+of\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)`;
-const CHARTER_NAME = String.raw`(?:(${CITY_NAME})\s+)?[Cc]ity\s+[Cc]harter`;
+const CHARTER_NAME = String.raw`(?:(${CITY_NAME})\s+)?[Cc]ity\s+[Cc]harter\b`;
 /** "Section 3 of the City Charter", "Sections 3 and 46-3 of the Charter of the City of Columbus". */
 const CHARTER_SECTIONS = new RegExp(
-  String.raw`\b[Ss]ections?\s+(${CHARTER_NUM_LIST})\s+of\s+the\s+(?:${CHARTER_OF_CITY}|${CHARTER_NAME}|[Cc]harter(?!\s+(?:school|township)))`,
+  String.raw`\b[Ss]ections?\s+(${CHARTER_NUM_LIST})\s+of\s+the\s+(?:${CHARTER_OF_CITY}|${CHARTER_NAME}|[Cc]harter\b(?!\s+(?:school|township)))`,
   'g',
 );
 const CHARTER_PLAIN = new RegExp(
@@ -315,11 +337,7 @@ export function collectExternalRefs(
   for (const section of walkSections(sections)) {
     const text = sectionText(section, { includeDeleted: false });
     for (const match of findExternalMatches(text, options)) {
-      if (
-        match.sectionNum !== undefined &&
-        index.bySectionNum.has(match.sectionNum)
-      )
-        continue;
+      if (isInternalMatch(match, index, options)) continue;
       hits.push({ match, sectionId: section.id });
     }
   }
@@ -477,6 +495,7 @@ export function findInternalRefs(
   text: string,
   fromSectionId: string,
   index: SectionIndex,
+  options: ExternalOptions = {},
 ): string[] {
   const external = findExternalMatches(text);
   const ids: string[] = [];
@@ -486,8 +505,8 @@ export function findInternalRefs(
   };
   // Revised Code sections that this document itself contains are internal links.
   for (const match of external)
-    if (match.sectionNum !== undefined) {
-      const id = index.bySectionNum.get(match.sectionNum);
+    if (isInternalMatch(match, index, options)) {
+      const id = index.bySectionNum.get(match.sectionNum ?? '');
       if (id !== undefined) push(id);
     }
   const scrubbed = mask(text, external);

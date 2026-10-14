@@ -15,6 +15,21 @@ const CATEGORY_LABEL = {
   general_law: 'State law',
 } as const;
 
+const ORC = 'https://codes.ohio.gov/ohio-revised-code';
+
+/**
+ * A link to the official code site, only when the citation maps cleanly. No search engines:
+ * they would learn what the reader is looking at. Charter and city code get no link.
+ */
+export function officialUrl(citation: string): string | undefined {
+  if (citation === 'Ohio Revised Code, Title 35') return `${ORC}/title-35`;
+  const section = /^R\.C\. (\d+\.\d+(?:\.\d+)?)$/.exec(citation);
+  if (section) return `${ORC}/section-${encodeURIComponent(section[1] ?? '')}`;
+  const chapter = /^R\.C\. Chapter (\d+(?:\.\d+)?)$/.exec(citation);
+  if (chapter) return `${ORC}/chapter-${encodeURIComponent(chapter[1] ?? '')}`;
+  return undefined;
+}
+
 export function ReferencedCard({
   externalRefs,
 }: {
@@ -35,6 +50,22 @@ export function ReferencedCard({
             <span className="muted">
               ({r.category ? CATEGORY_LABEL[r.category] : KIND_LABEL[r.kind]})
             </span>
+            {(() => {
+              const href = officialUrl(r.citation);
+              return href ? (
+                <>
+                  {' '}
+                  <a
+                    href={href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={`View ${r.citation} on codes.ohio.gov`}
+                  >
+                    View on codes.ohio.gov
+                  </a>
+                </>
+              ) : null;
+            })()}
             <br />
             <span>{r.text}</span>
             <span className="muted">

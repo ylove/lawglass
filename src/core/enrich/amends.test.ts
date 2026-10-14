@@ -23,7 +23,9 @@ const marked = (id: string, num: string, text: string): Section => ({
 describe('detectAmends', () => {
   it('reads "To amend the City Charter" and restated sections with markup', () => {
     const sections = [
-      sec('sec-1', 'To amend the City Charter of Columbus.', { num: '1' }),
+      sec('sec-1', 'To amend the City Charter of Columbus.', {
+        num: '1',
+      }),
       marked('sec-3', 'Sec. 3.', 'New rule.'),
       marked('sec-46-3', 'Sec. 46-3.', 'Other rule.'),
     ];
@@ -73,6 +75,33 @@ describe('detectAmends', () => {
     ).toBeUndefined();
   });
 
+  it('finds an amendment clause nested in a child section', () => {
+    const outer = sec('sec-1', '', {
+      num: '1',
+      children: [
+        sec('sec-1/a', 'To amend the Charter of the City of Columbus.', {
+          num: '(a)',
+          level: 2,
+        }),
+      ],
+    });
+    expect(detectAmends([outer], meta())?.name).toBe('Columbus City Charter');
+  });
+
+  it('does not let an amend verb in another sentence reach the charter', () => {
+    expect(
+      detectAmends(
+        [
+          sec(
+            's',
+            'To amend the Columbus City Code. Procedures under the City Charter remain unchanged.',
+          ),
+        ],
+        meta(),
+      ),
+    ).toBeUndefined();
+  });
+
   it('does not count a bill section that merely contains the restated ones', () => {
     const outer = sec('sec-1', 'To amend the City Charter.', {
       num: '1',
@@ -85,7 +114,7 @@ describe('detectAmends', () => {
 describe('enrichDocument amends', () => {
   const sections = [
     sec('sec-1', 'To amend Section 3 of the City Charter.', { num: '1' }),
-    sec('sec-3', 'Restated text.', { num: 'Sec. 3.' }),
+    marked('sec-3', 'Sec. 3.', 'Restated text.'),
   ];
 
   it('fills metadata.amends and links the cited section inward', () => {
