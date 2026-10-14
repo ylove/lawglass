@@ -7,11 +7,12 @@ export const ZERO_LLM_USAGE: LlmUsage = { inputTokens: 0, outputTokens: 0 };
 export function requestSignal(
   signal?: AbortSignal,
   timeoutMs = DEFAULT_TIMEOUT_MS,
+  timeoutSignal: typeof AbortSignal.timeout = (ms) => AbortSignal.timeout(ms),
 ): AbortSignal {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
     throw new AppError('INVALID_INPUT');
   if (signal?.aborted) throw new AppError('PROVIDER_ERROR');
-  const timeout = AbortSignal.timeout(timeoutMs);
+  const timeout = timeoutSignal(timeoutMs);
   return signal ? AbortSignal.any([signal, timeout]) : timeout;
 }
 
