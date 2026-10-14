@@ -8,11 +8,11 @@ The product name is not final and this repository will be renamed. The name live
 
 **What it does**
 
-- **Reads the structure, not just the words.** It ingests one URL (XML, HTML, PDF with a text layer, or plain text), finds sections, definitions and cross-references, and tells struck-out text from inserted text.
+- **Reads the structure, not just the words.** It ingests one URL or local file (XML, HTML, PDF with a text layer, or plain text), finds sections, definitions and cross-references, and tells struck-out text from inserted text.
 - **Retrieves, then answers with citations.** Hybrid retrieval (dense, sparse, rerank) picks the excerpts. The model may use only those, and every `[S:<section>]` citation is checked against what was retrieved.
 - **Runs on your machine.** An `npx` CLI and a local web UI. A built-in local backend needs no account. You bring your own keys.
 
-> **Status: pre-release.** The ingest, retrieval, answer and chip pipeline and the CLI `ingest`, `ask`, `list` and `remove` commands work with the local backend. `serve`, `eval` and the Pinecone adapter are still being merged; the [status table](#status) says exactly what is wired today.
+> **Status: release candidate.** Everything in the [status table](#status) is on `main` and tested. The Pinecone backend is built and unit-tested against a fake, but has not yet been run against a live index (that needs a key).
 
 ## Demo
 
@@ -26,24 +26,26 @@ Requires Node.js 22.13 or newer (CI runs 22 and 24).
 npx legislation-summary init                       # save provider keys (file mode 0600)
 npx legislation-summary <url>                      # ingest, then serve and open the document
 npx legislation-summary ingest <url> --name hb62   # ingest only, with a label
+npx legislation-summary ingest ./bill.pdf          # a local file works too (CLI only)
 npx legislation-summary ask hb62 "When does this take effect?"
 npx legislation-summary ask hb62 --chip what-changes
 npx legislation-summary list
 npx legislation-summary remove hb62
 npx legislation-summary serve --port 4317          # local web UI; --public allows chips only
-npx legislation-summary eval --mode all            # retrieval eval on the fixtures
+npx legislation-summary eval --backend local       # retrieval eval on the downloaded fixtures
 ```
 
 `<doc>` is a label or a doc-id prefix. Flags are defined in [`src/cli/program.ts`](src/cli/program.ts).
 
 - `--chip <id>` is one of `summary`, `what-changes`, `who-affected`, `penalties`, `effective-date`, `money`, `definitions`, `sponsors`. Each chip has its own retrieval strategy in [`src/core/chips.ts`](src/core/chips.ts). `sponsors` reads metadata only and makes no LLM call.
-- `--backend pinecone|local` overrides backend selection on `ingest`, `ask`, `list` and `remove`.
+- `--backend pinecone|local` overrides backend selection on `ingest`, `ask`, `list`, `remove` and `eval`.
+- A local path or `file://` URL is read directly, with the same 50 MB cap and format sniffing as a download. Only the file name is recorded, never the directory. The web server accepts only `http(s)` URLs, so a web request can never name a local file.
 - If an HTML page only wraps the real bill, ingest lists the candidate PDF/XML links and stops. It never follows them on its own.
 - Re-ingesting the same bytes is a no-op: the `docId` is the SHA-256 of the raw bytes. The default cap is 5 documents, evicting the least recently used.
 
 ### Keys and providers
 
-`init` writes `~/.legislation-summary/config.json`. Environment variables win over the file. Without a configured provider, `ask` and `ingest` fail with a message listing the options. List, remove and the `sponsors` chip work without any key.
+`init` writes `~/.legislation-summary/config.json`. Environment variables win over the file. `init --non-interactive` copies the provider settings and keys currently in your environment into that file (mode 0600) without prompting, which is meant for scripted setups; it prints no keys. Without a configured provider, `ask` and `ingest` fail with a message listing the options. List, remove and the `sponsors` chip work without any key.
 
 | Provider     | Key                 | Notes                                                                                    |
 | ------------ | ------------------- | ---------------------------------------------------------------------------------------- |
@@ -58,19 +60,19 @@ Keyless HTTP endpoints are accepted only on `localhost`, `127.0.0.1` or `[::1]`.
 ### Backends
 
 - **local** (default): no Docker, no account. Dense vectors from quantized `bge-small-en-v1.5` (384 dimensions) via transformers.js, sparse search with an explicit BM25 (`k1=1.2`, `b=0.75`), and a quantized MiniLM cross-encoder as reranker. About 59 MB of models download once, from revisions pinned in [`models.lock.json`](models.lock.json). Code: [`src/core/index/local/`](src/core/index/local/).
-- **pinecone**: selected when `PINECONE_API_KEY` resolves; integrated-inference dense and sparse indexes plus hosted rerank ([decision 0001](docs/decisions/0001-pinecone-plus-local-backend.md)). The adapter is not on `main` yet, so `--backend pinecone` currently returns "not available yet".
+- **pinecone**: selected when `PINECONE_API_KEY` resolves; integrated-inference dense and sparse indexes plus hosted rerank ([decision 0001](docs/decisions/0001-pinecone-plus-local-backend.md)). Each document is a namespace. A document counts as indexed only after a completion marker is written once every batch has landed in both indexes, so a half-finished ingest is never mistaken for a finished one. Code: [`src/core/index/pinecone/`](src/core/index/pinecone/). Its live contract suite runs nightly when a key is configured; it has not run yet.
 
 Embeddings never go through the LLM provider.
 
 ### Status
 
-| Piece                                                                | State on `main`                                                        |
-| -------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| Fetch, parse, enrich, chunk, local backend, retrieval, answer, chips | Implemented and tested                                                 |
-| CLI `init`, `ingest`, `ask`, `list`, `remove`, `<url>` (ingest)      | Implemented (the `<url>` form does not open a UI until `serve` lands)  |
-| `serve`, public mode, SSE, web UI wiring                             | `serve` prints "not implemented yet" (issue #29); UI is a shell        |
-| `eval` command, results table                                        | `eval` prints "not implemented yet" (issue #32); goldens are committed |
-| Pinecone adapter                                                     | Pending                                                                |
+| Piece                                                                   | State on `main`                                               |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Fetch, parse, enrich, chunk, local backend, retrieval, answer, chips    | Implemented and tested                                        |
+| CLI `init`, `ingest`, `ask`, `list`, `remove`, `serve`, `eval`, `<url>` | Implemented and tested; e2e and package smoke run in CI       |
+| Server: REST, SSE, public mode, web UI                                  | Implemented and tested                                        |
+| Eval harness and golden sets                                            | Implemented; results in [`eval/results.md`](eval/results.md)  |
+| Pinecone adapter                                                        | Implemented and tested against a fake; live run pending a key |
 
 ## Architecture
 
@@ -141,7 +143,7 @@ The harness runs `dense`, `sparse`, `hybrid` and `hybrid_rerank`, plus a weighte
 Honesty rules:
 
 - Golden sets are never edited to improve a score. A change to a golden set is a new freeze.
-- `hybrid_rerank` is expected to match or beat `dense`. A CI smoke on a synthetic set (local backend, issue #32, not yet wired) is meant to fail if it falls below `dense`. If it loses on a real fixture, the results say so.
+- `hybrid_rerank` is expected to match or beat `dense`. The `eval-smoke` CI job fails if it falls below `dense` on a synthetic set. If it loses on a real fixture, the results say so.
 - Pinecone rows read "pending" until a Pinecone key has been used to run them.
 - Each results table records the provider and model that produced it.
 
@@ -154,7 +156,8 @@ Honesty rules:
   - Each redirect is re-resolved and re-validated, up to 5. Credentials in URLs are refused, as are ports outside 80, 443, 8080 and 8443.
   - Bodies are capped at 50 MB, with a 30 s timeout.
 - **Prompt injection** ([`src/core/answer/`](src/core/answer/)). Bill text is hostile data. Excerpt text and the user's question are XML-escaped, so neither can close an excerpt tag or forge a new source. The system prompt states that excerpts are data, not instructions. Citations are validated: every `[S:id]` must be a section that was in the prompt; invalid markers are stripped and reported, and an answer with no valid citation (other than the exact decline sentence) carries a warning. Synthetic injection samples live in [`tests/synth/injection.ts`](tests/synth/injection.ts). Citation validation is held to 90% line coverage along with the fetch layer.
-- **Public mode** (`serve --public`). Designed as: chips only, per-IP limits of 20 questions and 3 ingests per hour, a 200-page ingest cap, a global document cap, and a Cloudflare Turnstile stub. Not yet on `main`; it lands with the server (issue #29). Today `--public` is parsed but `serve` is a stub.
+- **Local server** (`serve`). Binds to `127.0.0.1` by default. Unless public mode is on, requests whose `Host` or `Origin` is not the loopback address it serves are refused, which blocks DNS-rebinding attacks from web pages you visit. Cancelling a question or an ingest in the UI aborts the work, including the download.
+- **Public mode** (`serve --public`). Chips only (no free-form questions), per-IP limits of 20 questions and 3 ingests per hour, a 200-page ingest cap, a global document cap that refuses new documents instead of evicting someone else's, and a Cloudflare Turnstile stub.
 - **Bring your own keys.** `init` writes the config file with mode 0600, and a config file that is group- or world-readable is ignored with a warning, and `init --force` replaces it. Keys are read from the environment first, then that file, then a masked prompt on a TTY. Keys go only to their own provider, are not inferred from another provider's variables, and are never logged or put in error messages; SDK diagnostic logging is off. `.env` and fixtures are ignored by git, and CI runs Gitleaks over the full history.
 - **`claude-cli` sandboxing.** Each call runs in a fresh temporary directory holding only the system prompt file, with built-in tools disabled (`--tools ""`), all MCP servers disabled, one turn, slash commands, hooks and settings sources off, no session persistence, and no permission-bypass flag. The child sees only basic process variables plus `CLAUDE_*` and `ANTHROPIC_*`, so other providers' keys and app settings are excluded. It refuses to run for real in CI.
 
@@ -170,18 +173,22 @@ node dist/cli.js --help
 - `npm run fixtures:fetch` downloads the six public documents in [`fixtures/manifest.json`](fixtures/manifest.json) into the gitignored `fixtures/downloads/`, checking SHA-256 and size. Fixtures are never committed; local fixture tests skip when the files are absent, and CI uses generated samples from [`tests/synth/`](tests/synth/). See [`fixtures/README.md`](fixtures/README.md).
 - `npm run models:fetch` pre-downloads the local models. `npm run test:models` runs the offline suite against the real models (not part of `check`, which uses fakes).
 - `npm run test:live` runs key-gated provider contract tests and spends tokens. It never runs the Claude CLI.
+- `npm run smoke:package` and `npm run test:e2e` run the packed-tarball smoke and the Playwright suite locally. Set `PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/ms-playwright"` and run `npx playwright install chromium` once.
 - Unit tests block outbound HTTP, so adapters take injected fetchers and spawners.
 
 CI ([`ci.yml`](.github/workflows/ci.yml)) runs these jobs:
 
-| Job                 | What it checks                                                      |
-| ------------------- | ------------------------------------------------------------------- |
-| `lint-type`         | ESLint, both typechecks, Prettier, `npm audit` for production deps  |
-| `test`              | Coverage-gated tests on Node 22 and 24 (Ubuntu) and Node 22 (macOS) |
-| `build`             | Production build and a `--help` smoke check                         |
-| `no-fixtures-guard` | Fails if real legislation files are committed                       |
-| `secrets`           | Gitleaks over full history                                          |
-| `dependency-review` | Blocks high-severity and GPL-family dependencies on pull requests   |
+| Job                 | What it checks                                                                                                      |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `lint-type`         | ESLint, both typechecks, Prettier, `npm audit` for production deps                                                  |
+| `test`              | Coverage-gated tests on Node 22 and 24 (Ubuntu) and Node 22 (macOS)                                                 |
+| `build`             | Production build and a `--help` smoke check                                                                         |
+| `no-fixtures-guard` | Fails if real legislation files are committed                                                                       |
+| `secrets`           | Gitleaks over full history                                                                                          |
+| `dependency-review` | Blocks high-severity and GPL-family dependencies on pull requests                                                   |
+| `eval-smoke`        | Synthetic golden set end to end; fails if `hybrid_rerank` < `dense`                                                 |
+| `package-smoke`     | Packs the tarball (allowlisted contents), installs it in a clean dir, runs `init`, `ingest`, `ask`, `list`, `serve` |
+| `e2e`               | Chromium against the packed build: chip streaming, citation drawer, SSRF block, remove                              |
 
 CodeQL, a nightly Pinecone contract check (only with a key) and a local-model offline suite run in their own workflows.
 
