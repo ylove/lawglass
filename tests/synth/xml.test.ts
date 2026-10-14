@@ -23,7 +23,12 @@ function readCongressionalSection(
     .filter(
       (child) => child.tagName === 'text' || child.tagName === 'quoted-block',
     )
-    .map((child) => normalize(child.textContent))
+    .map((child) =>
+      // Quoted law is marked with quotation marks, like the production parser does.
+      child.tagName === 'quoted-block'
+        ? `“${normalize(child.textContent)}”`
+        : normalize(child.textContent),
+    )
     .join(' ');
   const printed = children.find(
     (child) => child.tagName === 'enum',

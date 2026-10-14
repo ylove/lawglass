@@ -176,6 +176,12 @@ const SKIP = new Set([
   'form',
   'notes',
   'note',
+  // Boilerplate and signature blocks that are not law: "Be it enacted...", "Resolved," and
+  // the Speaker/Vice President attestation on enrolled bills.
+  'enacting-clause',
+  'resolving-clause',
+  'attestation-group',
+  'attestation',
 ]);
 
 /** Containers whose contents are quoted law being amended: flatten, never nest. */
@@ -193,6 +199,8 @@ interface Run {
   status: SpanStatus;
   /** Raw runs (row breaks) are not whitespace-collapsed. */
   raw?: boolean;
+  /** Quotation marks hug the quoted text: no space after an opening or before a closing one. */
+  edge?: 'open' | 'close' | 'attach';
 }
 
 /** Collects runs in order; `plain` mirrors the non-deleted text for definition scope checks. */
@@ -201,6 +209,15 @@ class RunBuffer {
 
   add(text: string, status: SpanStatus, raw = false): void {
     if (text) this.runs.push(raw ? { text, status, raw } : { text, status });
+  }
+
+  /** Adds a quotation mark that hugs the text inside it. */
+  addQuote(
+    text: string,
+    status: SpanStatus,
+    edge: 'open' | 'close' | 'attach',
+  ): void {
+    this.runs.push({ text, status, edge });
   }
 
   get plain(): string {
@@ -216,7 +233,16 @@ class RunBuffer {
     let atBreak = true; // output is empty or ends with a space/newline
     for (const run of this.runs) {
       let text: string;
-      if (run.raw) {
+      if (run.edge === 'close' || run.edge === 'attach') {
+        const prev = out.at(-1);
+        if (prev) prev.text = prev.text.replace(/ $/, '');
+        text = run.text;
+        // 'attach' glues what follows to the previous word (punctuation after a quote).
+        atBreak = run.edge === 'attach';
+      } else if (run.edge === 'open') {
+        text = run.text;
+        atBreak = true; // swallow the space that the quoted block's first child adds
+      } else if (run.raw) {
         text = run.text;
         const last = out.at(-1);
         if (last) last.text = last.text.replace(/ $/, '');
@@ -323,12 +349,30 @@ function genericDialect(name: 'uslm' | 'akn' | 'generic'): Dialect {
   };
 }
 
+/** Where a congressional document keeps its operative text. */
+const BODY_NAMES = ['legis-body', 'resolution-body', 'amendment-body'];
+
+function findBody(root: El): El | undefined {
+  for (const name of BODY_NAMES) {
+    const found = findAll(root, name)[0];
+    if (found) return found;
+  }
+  return undefined;
+}
+
+const BILL_ROOTS = new Set([
+  'bill',
+  'resolution',
+  'amendment-doc',
+  'amendment',
+]);
+
 function detectDialect(root: El): Dialect | 'bill-no-body' {
   if (root.name === 'akomaNtoso') return genericDialect('akn');
   // Checked before `bill`: USLM bills use the same root name as congressional bill XML.
   if (/uslm/i.test(root.attrs.xmlns ?? '')) return genericDialect('uslm');
-  if (root.name === 'bill' || root.name === 'resolution') {
-    return findAll(root, 'legis-body').length > 0 ? BILL : 'bill-no-body';
+  if (BILL_ROOTS.has(root.name)) {
+    return findBody(root) ? BILL : 'bill-no-body';
   }
   return genericDialect('generic');
 }
@@ -391,27 +435,48 @@ function statusOf(el: El, inherited: SpanStatus): SpanStatus {
 }
 
 const DOCUMENT_SCOPE =
-  /\b(?:in|for purposes? of|as used in) this (?:act|resolution)\b/i;
-const SECTION_SCOPE = /\b(?:in|for purposes? of|as used in) this section\b/i;
+  /\b(?:in|for (?:the )?purposes? of|as used in) this (?:act|resolution)\b/i;
+/** "In this section" and the narrower "for the purpose of this subsection". */
+const LOCAL_SCOPE =
+  /\b(?:in|for (?:the )?purposes? of|as used in) this (section|subsection|paragraph|subparagraph|clause|subclause)\b/i;
 const DEFINING = /\b(?:means?|includes?|has the meaning|have the meanings?)\b/i;
+/** A lead-in such as "The term eligible entity—" whose definition follows as subparagraphs. */
+const OPEN_LEAD_IN = /[—:–]$|--$/;
+
+/** Text of an element's own content (not struck text), whitespace-collapsed. */
+function liveText(
+  el: El,
+  frames: Frame[],
+  state: WalkState,
+  extra: El[] = [],
+): string {
+  const buffer = new RunBuffer();
+  collectInline(el, buffer, 'unchanged', frames, state, false);
+  for (const more of extra)
+    collectInline(more, buffer, 'unchanged', frames, state, false);
+  return buffer
+    .toSpans()
+    .filter((span) => span.status !== 'deleted')
+    .map((span) => span.text)
+    .join('');
+}
 
 function addDefinitions(
   el: El,
+  following: El[],
   frames: Frame[],
   state: WalkState,
   status: SpanStatus,
 ): void {
   const terms = childrenNamed(el, 'term').map(plainText).filter(Boolean);
   if (terms.length === 0 || status === 'deleted') return;
-  // Own text of this element only, minus struck text.
-  const buffer = new RunBuffer();
-  collectInline(el, buffer, 'unchanged', frames, state, false);
-  const text = buffer
-    .toSpans()
-    .filter((span) => span.status !== 'deleted')
-    .map((span) => span.text)
-    .join('');
-  if (!DEFINING.test(text)) return;
+  const leadIn = liveText(el, frames, state);
+  const verb = DEFINING.exec(leadIn);
+  const open = OPEN_LEAD_IN.test(leadIn.trim());
+  if (!verb && !open) return;
+  // "The term X—" continues in the level's subparagraphs: (A), (B), ... are part of the
+  // definition, so they are appended (injecting just "means—" would tell the model nothing).
+  const text = open ? liveText(el, frames, state, following) : leadIn;
   const owner = frames.at(-1);
   if (!owner) return;
   let scope: Definition['scope'] = 'unknown';
@@ -420,21 +485,29 @@ function addDefinitions(
   // ..."), then the intro text of each enclosing level, innermost first.
   for (let depth = frames.length; depth >= 0; depth--) {
     const plain =
-      depth === frames.length ? text : (frames[depth]?.buffer.plain ?? '');
-    const kind = DOCUMENT_SCOPE.test(plain)
-      ? 'document'
-      : SECTION_SCOPE.test(plain)
-        ? 'section'
-        : undefined;
-    if (!kind) continue;
-    scope = kind;
-    if (kind === 'section')
-      scopeSectionId = frames
-        .slice(0, depth + 1)
-        .findLast((f) => f.kind === 'section')?.section.id;
+      depth === frames.length ? leadIn : (frames[depth]?.buffer.plain ?? '');
+    if (DOCUMENT_SCOPE.test(plain)) {
+      scope = 'document';
+      break;
+    }
+    const local = LOCAL_SCOPE.exec(plain)?.[1]?.toLowerCase();
+    if (!local) continue;
+    scope = 'section';
+    // "This section" limits to the enclosing section; "this subsection/paragraph/..." to the
+    // level whose intro text says so (the definition's own level for its own sentence).
+    scopeSectionId =
+      local === 'section'
+        ? frames.slice(0, depth + 1).findLast((f) => f.kind === 'section')
+            ?.section.id
+        : frames[Math.min(depth, frames.length - 1)]?.section.id;
     break;
   }
+  // Only terms before the defining verb are being defined: "The term foreign national has
+  // the meaning given the term alien in ..." defines "foreign national", not "alien".
+  const cutoff = verb?.index ?? Infinity;
   for (const term of new Set(terms)) {
+    const at = leadIn.indexOf(term);
+    if (at >= 0 && at > cutoff) continue;
     state.definitions.push({
       term,
       text,
@@ -527,6 +600,12 @@ function collectInline(
   if (isBlock) buffer.add(' ', status);
   if (el.name === 'quote' && state.dialect.name === 'bill')
     buffer.add('“', status);
+  // Mark where quoted law (text of another statute being amended) begins and ends, so an
+  // answer can tell it from the bill's own provisions. `after-quoted-block` is the bill's
+  // own trailing words (", as so amended."), not quoted.
+  const quotedLaw = QUOTED.has(el.name) && el.name !== 'after-quoted-block';
+  if (quotedLaw) buffer.addQuote('“', status, 'open');
+  if (el.name === 'after-quoted-block') buffer.addQuote('', status, 'attach');
   if (noteRefs && (el.name === 'external-xref' || el.name === 'ref'))
     noteRef(el, frames, state);
   if (el.name === 'linebreak') buffer.add(' ', status);
@@ -541,6 +620,7 @@ function collectInline(
       collectInline(kid, buffer, status, frames, state, noteRefs);
     }
   }
+  if (quotedLaw) buffer.addQuote('”', status, 'close');
   if (el.name === 'quote' && state.dialect.name === 'bill')
     buffer.add('”', status);
   if (isBlock) buffer.add(' ', status);
@@ -558,7 +638,15 @@ function walkLevel(
   const headingEl = childrenNamed(el, dialect.headingName)[0];
   const num = numEl ? printedNum(plainText(numEl), el.name) : undefined;
   const heading = headingEl ? plainText(headingEl) || undefined : undefined;
-  const piece = idPiece(num, `n${String(siblingIndex)}`);
+  // Headings-only levels (appropriations accounts) get a readable id from the heading
+  // rather than their sibling position; uniqueId() separates repeats.
+  const headingSlug = (heading ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 40)
+    .replace(/-+$/, '');
+  const piece = idPiece(num, headingSlug || `n${String(siblingIndex)}`);
 
   const path = parent ? `${parent.section.id}/${piece}` : piece;
   const named =
@@ -584,7 +672,7 @@ function walkLevel(
   const inside = [...frames, frame];
   let childIndex = 0;
 
-  for (const kid of el.kids) {
+  for (const [at, kid] of el.kids.entries()) {
     if (typeof kid === 'string') {
       frame.buffer.add(kid, 'unchanged');
       continue;
@@ -596,7 +684,20 @@ function walkLevel(
       section.children.push(walkLevel(kid, inside, state, ++childIndex));
     } else {
       if (kid.name === 'text' || kid.name === 'p')
-        addDefinitions(kid, inside, state, 'unchanged');
+        addDefinitions(
+          kid,
+          el.kids
+            .slice(at + 1)
+            .filter(
+              (k): k is El =>
+                typeof k !== 'string' &&
+                !SKIP.has(k.name) &&
+                dialect.isLevel(k),
+            ),
+          inside,
+          state,
+          'unchanged',
+        );
       collectInline(kid, frame.buffer, 'unchanged', inside, state, true);
     }
   }
@@ -614,24 +715,108 @@ const firstText = (el: El | undefined, name: string): string | null => {
   return found ? plainText(found) || null : null;
 };
 
+const ORDINAL_WORDS: Readonly<Record<string, number>> = {
+  first: 1,
+  second: 2,
+  third: 3,
+  fourth: 4,
+  fifth: 5,
+  sixth: 6,
+  seventh: 7,
+  eighth: 8,
+  ninth: 9,
+  tenth: 10,
+  eleventh: 11,
+  twelfth: 12,
+  thirteenth: 13,
+  fourteenth: 14,
+  fifteenth: 15,
+  sixteenth: 16,
+  seventeenth: 17,
+  eighteenth: 18,
+  nineteenth: 19,
+  twentieth: 20,
+  thirtieth: 30,
+  fortieth: 40,
+  fiftieth: 50,
+  sixtieth: 60,
+  seventieth: 70,
+  eightieth: 80,
+  ninetieth: 90,
+  twenty: 20,
+  thirty: 30,
+  forty: 40,
+  fifty: 50,
+  sixty: 60,
+  seventy: 70,
+  eighty: 80,
+  ninety: 90,
+  hundred: 100,
+  one: 1,
+};
+
+/** "119th", "One Hundred Eighteenth" or "second" -> a number; undefined when not an ordinal. */
+function ordinalNumber(text: string): number | undefined {
+  const digits = /\b(\d+)(?:st|nd|rd|th)\b/i.exec(text)?.[1];
+  if (digits) return Number(digits);
+  let total = 0;
+  let found = false;
+  for (const word of text.toLowerCase().match(/[a-z]+/g) ?? []) {
+    const value = ORDINAL_WORDS[word];
+    if (value === undefined) continue;
+    found = true;
+    // "one hundred": the multiplier precedes "hundred".
+    total = value === 100 ? Math.max(total, 1) * 100 : total + value;
+  }
+  return found ? total : undefined;
+}
+
+function ordinal(n: number): string {
+  const suffix =
+    n % 100 >= 11 && n % 100 <= 13
+      ? 'th'
+      : (['th', 'st', 'nd', 'rd'][n % 10] ?? 'th');
+  return `${String(n)}${suffix}`;
+}
+
+/** Govinfo prints "One Hundred Eighteenth Congress of the United States of America". */
+function sessionLabel(
+  congress: string | null,
+  session: string | null,
+): string | null {
+  const c = congress ? ordinalNumber(congress) : undefined;
+  const sNumber = session ? ordinalNumber(session) : undefined;
+  const parts = [
+    congress ? (c ? `${ordinal(c)} Congress` : congress) : null,
+    session ? (sNumber ? `${ordinal(sNumber)} Session` : session) : null,
+  ];
+  return parts.filter(Boolean).join(', ') || null;
+}
+
+/** "119 S202 IS: Short Title" -> "Short Title" (the Dublin Core title carries a file prefix). */
+const DC_PREFIX = /^\s*(?:\d+\s+)?[A-Za-z]+\s*\d+\s+[A-Z]+:\s+/;
+
 function billMetadata(root: El): BillMetadata {
   const form = findAll(root, 'form')[0];
-  const congress = firstText(form, 'congress');
-  const session = firstText(form, 'session');
   const sponsors = form
     ? [...findAll(form, 'sponsor'), ...findAll(form, 'cosponsor')]
     : [];
   // Document order, not "all sponsors then all cosponsors".
   const ordered = form ? orderByDocument(form, sponsors) : [];
-  const title =
-    firstText(form, 'official-title') ??
-    // Dublin Core `dc:title`; scoped to <metadata> so a `<title>` division can't match.
-    firstText(findAll(root, 'metadata')[0], 'title');
+  const stripped = firstText(findAll(root, 'metadata')[0], 'title')?.replace(
+    DC_PREFIX,
+    '',
+  );
+  const shortTitle = stripped === '' ? undefined : stripped;
   return {
-    title,
+    // The short title users know the bill by; the long official title is the fallback.
+    title: shortTitle ?? firstText(form, 'official-title'),
     billNumber: firstText(form, 'legis-num'),
     jurisdiction: 'United States',
-    session: [congress, session].filter(Boolean).join(', ') || null,
+    session: sessionLabel(
+      firstText(form, 'congress'),
+      firstText(form, 'session'),
+    ),
     version: root.attrs['bill-stage'] ?? root.attrs['resolution-stage'] ?? null,
     sponsors: ordered.length ? ordered.map(plainText).filter(Boolean) : null,
     source: 'structured',
@@ -714,22 +899,47 @@ export function parseXml(
     refs: new Map(),
   };
   // Bills only have structure inside legis-body; elsewhere (form, metadata) is not body text.
-  const scope =
-    dialect.name === 'bill' ? (findAll(root, 'legis-body')[0] ?? root) : root;
+  const isBill = dialect.name === 'bill';
+  const scope = isBill ? (findBody(root) ?? root) : root;
   let sections: Section[] = [];
   let top = 0;
+  // Bills only: text that sits outside any level (a resolution's "Whereas" preamble, loose
+  // body text) is kept as a `preamble` section instead of being dropped.
+  const front = new RunBuffer();
+  const holdsLevel = (el: El): boolean =>
+    el.kids.some(
+      (k) =>
+        typeof k !== 'string' &&
+        !SKIP.has(k.name) &&
+        !QUOTED.has(k.name) &&
+        (dialect.isLevel(k) || holdsLevel(k)),
+    );
   const collect = (el: El): void => {
     for (const kid of el.kids) {
       if (typeof kid === 'string' || SKIP.has(kid.name)) continue;
       if (dialect.isLevel(kid)) sections.push(walkLevel(kid, [], state, ++top));
-      else collect(kid);
+      else if (!isBill || holdsLevel(kid)) collect(kid);
+      else collectInline(kid, front, 'unchanged', [], state, false);
     }
   };
+  if (isBill && scope !== root)
+    for (const kid of root.kids)
+      if (typeof kid !== 'string' && kid.name === 'preamble')
+        collectInline(kid, front, 'unchanged', [], state, false);
   if (dialect.isLevel(scope) && scope !== root) {
     sections.push(walkLevel(scope, [], state, ++top));
   } else {
     collect(scope);
   }
+
+  const frontSpans = front.toSpans();
+  if (frontSpans.length > 0)
+    sections.unshift({
+      id: uniqueId(state, 'preamble', 'preamble'),
+      level: 1,
+      spans: frontSpans,
+      children: [],
+    });
 
   if (sections.length === 0) {
     // No recognizable structure: keep the text so the document is still searchable.

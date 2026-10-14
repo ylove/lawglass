@@ -136,7 +136,7 @@ export function makeCongressionalBillXml(): SyntheticSample<CongressionalGroundT
           children: [],
           spans: [
             {
-              text: 'A group described in section 1(a)(1) may apply using the size rule in 15 U.S.C. 632. Award notices shall state the planting season.',
+              text: 'A group described in section 1(a)(1) may apply using the size rule in 15 U.S.C. 632. “Award notices shall state the planting season.”',
               status: 'unchanged',
             },
           ],

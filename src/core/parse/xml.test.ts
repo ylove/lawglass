@@ -52,8 +52,14 @@ describe('congressional bill XML (synthetic)', () => {
     expect(doc.warnings).toEqual([]);
   });
 
-  it('reads structured metadata from the form, not Dublin Core', () => {
-    expect(doc.metadata).toEqual(groundTruth.metadata);
+  it('reads structured metadata: form fields, with the short title from Dublin Core', () => {
+    // The ground truth is the raw form text; the parser prefers the Dublin Core short title and
+    // normalizes the session label.
+    expect(doc.metadata).toEqual({
+      ...groundTruth.metadata,
+      title: 'Synthetic garden grants act',
+      session: '119th Congress, 1st Session',
+    });
   });
 
   it('extracts definitions with their scope and external references', () => {
@@ -164,9 +170,9 @@ describe('amendment markup in congressional bills', () => {
       { text: 'old kept?', status: 'deleted' },
       { text: ' and add ', status: 'unchanged' },
       { text: 'new', status: 'inserted' },
-      { text: '. Quoted ', status: 'unchanged' },
+      { text: '. “Quoted ', status: 'unchanged' },
       { text: 'gone', status: 'deleted' },
-      { text: '.', status: 'unchanged' },
+      { text: '.”', status: 'unchanged' },
     ]);
   });
 
@@ -240,7 +246,7 @@ describe('structure and ids', () => {
     expect(doc.sections).toHaveLength(1);
     expect(doc.sections[0]!.children).toEqual([]);
     expect(doc.sections[0]!.spans[0]!.text).toBe(
-      'Amend by adding: 9. New Fresh rule (5 U.S.C. 101).',
+      'Amend by adding: “9. New Fresh rule (5 U.S.C. 101).”',
     );
     expect(doc.externalRefs.map((r) => r.citation)).toEqual(['5 U.S.C. 101']);
   });
@@ -274,8 +280,8 @@ describe('structure and ids', () => {
       ),
     );
     expect(ids(doc.sections)).toEqual([
-      'appropriations-major-n1',
-      'appropriations-intermediate-n1',
+      'appropriations-major-dept',
+      'appropriations-intermediate-office',
     ]);
     expect(doc.sections[0]!.heading).toBe('Dept');
   });
@@ -303,7 +309,6 @@ describe('definitions and references', () => {
       ['alpha', 'section', 'sec-1/1', 'sec-1'],
       ['beta', 'unknown', 'sec-2/1', undefined],
       ['delta', 'document', 'sec-4', undefined],
-      ['epsilon', 'document', 'sec-4', undefined],
     ]);
   });
 
@@ -346,13 +351,13 @@ describe('definitions and references', () => {
 });
 
 describe('metadata', () => {
-  it('falls back to Dublin Core for the title and reports missing fields as null', () => {
+  it('takes the Dublin Core short title, minus its file prefix, and reports missing fields as null', () => {
     const doc = parse(
       '<bill bill-stage="Enrolled-Bill"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dublinCore><dc:title>HR 1 ENR: Short</dc:title></dublinCore></metadata>' +
         '<form><legis-num>H. R. 1</legis-num></form><legis-body><title><enum>I</enum><text>t</text></title></legis-body></bill>',
     );
     expect(doc.metadata).toEqual({
-      title: 'HR 1 ENR: Short',
+      title: 'Short',
       billNumber: 'H. R. 1',
       jurisdiction: 'United States',
       session: null,
@@ -435,7 +440,7 @@ describe('Akoma Ntoso and generic fallback', () => {
     expect(doc.warnings).toEqual([
       'Unrecognized XML schema; parsed using generic num/heading rules.',
     ]);
-    expect(ids(doc.sections)).toEqual(['part-n1', 'item-1.1']);
+    expect(ids(doc.sections)).toEqual(['part-general', 'item-1.1']);
     expect(doc.sections[0]!.children[0]!.spans[0]!.text).toBe('First. Second.');
   });
 
@@ -458,6 +463,126 @@ describe('Akoma Ntoso and generic fallback', () => {
     const doc = parse('<bill><section><num>1</num><p>Hi.</p></section></bill>');
     expect(doc.warnings[0]).toMatch(/without a legis-body/);
     expect(doc.sections[0]!.id).toBe('sec-1');
+  });
+});
+
+describe('review fixes (resolutions, definitions, quoted law, metadata)', () => {
+  const resolution =
+    '<resolution resolution-stage="Introduced-in-Senate"><metadata/><form><congress>119th CONGRESS</congress>' +
+    '<session>1st Session</session><legis-num>S. RES. 5</legis-num><official-title>Honoring a thing.</official-title></form>' +
+    '<preamble><whereas><text>Whereas the sky is blue;</text></whereas></preamble>' +
+    '<resolution-body><resolving-clause>Resolved,</resolving-clause><section><enum>1.</enum><header>Head</header><text>Resolved text.</text></section>' +
+    '</resolution-body></resolution>';
+
+  it('parses <resolution-body> with the bill dialect, keeping the preamble and form metadata', () => {
+    const doc = parse(resolution);
+    expect(ids(doc.sections)).toEqual(['preamble', 'sec-1']);
+    expect(doc.sections[0]!.spans[0]!.text).toBe('Whereas the sky is blue;');
+    expect(doc.sections[1]!.heading).toBe('Head');
+    expect(doc.warnings).toEqual([]);
+    expect(doc.metadata).toMatchObject({
+      billNumber: 'S. RES. 5',
+      title: 'Honoring a thing.',
+      session: '119th Congress, 1st Session',
+      version: 'Introduced-in-Senate',
+      source: 'structured',
+    });
+  });
+
+  it('keeps loose body text as a preamble and still skips the enacting clause', () => {
+    const doc = parse(
+      bill(
+        '<enacting-clause>Be it enacted</enacting-clause><text>Loose text</text><section><enum>1.</enum><text>x</text></section>',
+      ),
+    );
+    expect(ids(doc.sections)).toEqual(['preamble', 'sec-1']);
+    expect(doc.sections[0]!.spans[0]!.text).toBe('Loose text');
+  });
+
+  it('reads <amendment-body> as a body too', () => {
+    const doc = parse(
+      '<amendment-doc><amendment-body><section><enum>1.</enum><text>x</text></section></amendment-body></amendment-doc>',
+    );
+    expect(ids(doc.sections)).toEqual(['sec-1']);
+  });
+
+  it('includes the subparagraphs of a multi-part definition', () => {
+    const doc = parse(
+      bill(
+        '<section><enum>2.</enum><text>In this Act:</text><paragraph><enum>(4)</enum>' +
+          '<text>The term <term>eligible entity</term>—</text>' +
+          '<subparagraph><enum>(A)</enum><text>a lender; or</text></subparagraph>' +
+          '<subparagraph><enum>(B)</enum><text>a borrower.</text></subparagraph></paragraph></section>',
+      ),
+    );
+    expect(doc.definitions).toEqual([
+      {
+        term: 'eligible entity',
+        text: 'The term eligible entity— (A) a lender; or (B) a borrower.',
+        sectionId: 'sec-2/4',
+        scope: 'document',
+      },
+    ]);
+  });
+
+  it('defines only the terms before the defining verb', () => {
+    const doc = parse(
+      bill(
+        '<section><enum>1.</enum><text>The term <term>foreign national</term> has the meaning given the term <term>alien</term> in section 101.</text></section>',
+      ),
+    );
+    expect(doc.definitions.map((d) => d.term)).toEqual(['foreign national']);
+  });
+
+  it('scopes "for the purpose of this section" and sub-section wording', () => {
+    const doc = parse(
+      bill(
+        '<section><enum>1.</enum><subsection><enum>(c)</enum><text>For the purpose of this section, the term <term>alpha</term> means a.</text></subsection></section>' +
+          '<section><enum>2.</enum><subsection><enum>(a)</enum><text>In this subsection:</text>' +
+          '<paragraph><enum>(1)</enum><text>The term <term>beta</term> means b.</text></paragraph></subsection>' +
+          '<subsection><enum>(b)</enum><paragraph><enum>(1)</enum><text>The term <term>gamma</term> means g.</text></paragraph></subsection></section>',
+      ),
+    );
+    expect(
+      doc.definitions.map((d) => [d.term, d.scope, d.scopeSectionId]),
+    ).toEqual([
+      ['alpha', 'section', 'sec-1'],
+      ['beta', 'section', 'sec-2/a'],
+      ['gamma', 'unknown', undefined],
+    ]);
+  });
+
+  it('wraps quoted-block law in quotation marks but not the trailing after-quoted-block', () => {
+    const doc = parse(
+      bill(
+        '<section><enum>1.</enum><text>Insert after section 9062:</text><quoted-block><section><enum>9062a.</enum><header>Report</header><text>Submit it.</text></section></quoted-block>' +
+          '<after-quoted-block>, as amended.</after-quoted-block></section>',
+      ),
+    );
+    expect(doc.sections[0]!.spans.map((s) => s.text).join('')).toBe(
+      'Insert after section 9062: “9062a. Report Submit it.”, as amended.',
+    );
+  });
+
+  it('normalizes spelled-out congress and session names', () => {
+    const doc = parse(
+      '<bill><form><congress>One Hundred Eighteenth Congress of the United States of America</congress><session>At the Second Session</session></form>' +
+        '<legis-body><section><enum>1.</enum><text>x</text></section></legis-body></bill>',
+    );
+    expect(doc.metadata.session).toBe('118th Congress, 2nd Session');
+  });
+
+  it('builds ids for headings-only levels from the heading, not sibling order', () => {
+    const doc = parse(
+      bill(
+        '<appropriations-major><header>Department of X</header><text>a</text></appropriations-major>' +
+          '<appropriations-major><header>Department of X</header><text>b</text></appropriations-major>',
+      ),
+    );
+    expect(ids(doc.sections)).toEqual([
+      'appropriations-major-department-of-x',
+      'appropriations-major-department-of-x~2',
+    ]);
   });
 });
 
@@ -543,12 +668,14 @@ describeWithFixture('us-s202-119-is', () => {
     const doc = load();
     expect(doc.metadata).toMatchObject({
       billNumber: 'S. 202',
-      session: '119th CONGRESS, 1st Session',
+      session: '119th Congress, 1st Session',
       version: 'Introduced-in-Senate',
       sponsors: ['Mrs. Shaheen', 'Mr. Cassidy'],
       source: 'structured',
     });
-    expect(doc.metadata.title).toMatch(/^To require the Administrator/);
+    expect(doc.metadata.title).toMatch(
+      /^Helping Small Businesses To Hedge Risk/,
+    );
     expect(doc.definitions.map((d) => d.term)).toContain('covered commodity');
     expect(doc.definitions.every((d) => d.scope === 'document')).toBe(true);
     expect(doc.externalRefs.map((r) => r.citation)).toContain('7 U.S.C. 1a');
