@@ -219,7 +219,10 @@ function shorten(text: string, max: number): string {
 
 /** The sentence from the verb on: "prescribe regulations to carry out this section". */
 function fromVerb(sentence: string, from: number): string {
-  return shorten(sentence.slice(from).replace(/^shall\s+/i, ''), WHAT_MAX);
+  return shorten(
+    sentence.slice(from, from + WHAT_MAX * 4).replace(/^shall\s+/i, ''),
+    WHAT_MAX,
+  );
 }
 
 /** The words before a trailing phrase: what the approval or determination applies to. */
@@ -236,7 +239,7 @@ function beforeMatch(sentence: string, at: number): string {
 
 // "is not subject to", "need not be approved by", "without being subject to".
 const NEGATION =
-  /\b(?:not|never|neither|nor|without)\s+(?:(?:be|been|being|to|so|also|otherwise|necessarily)\s+){0,3}$/i;
+  /\b(?:not|never|neither|nor|without)\s+(?:(?:be|been|being|to|so|also|otherwise|necessarily|required|needed|necessary|obligated|become|becomes)\s+){0,3}$/i;
 
 function isNegated(sentence: string, at: number): boolean {
   return NEGATION.test(sentence.slice(Math.max(0, at - 40), at));
@@ -286,7 +289,7 @@ const RULES: Rule[] = [
     group: 'decidedLater',
     kind: 'rulemaking',
     pattern: new RegExp(
-      String.raw`\bshall\s+(?:promptly\s+|expeditiously\s+|jointly\s+)?(?:prescribe|promulgate|issue|adopt)\s+(?:(?:${MODIFIERS})\s+){0,3}(?:[A-Za-z-]+\s+)?(?:regulations?|rules?)\b`,
+      String.raw`\bshall\s+(?:promptly\s+|expeditiously\s+|jointly\s+)?(?:prescribe|promulgate|issue|adopt)\s+(?:(?:${MODIFIERS})\s+){0,3}(?:(?!(?:no|neither|nor|none|not|never|without)\b)[A-Za-z-]+\s+)?(?:regulations?|rules?)\b`,
       'gi',
     ),
     hit: (m, s) => ({
@@ -533,8 +536,10 @@ const RULES: Rule[] = [
       /\b(?:shall\s+)?takes?\s+effect\b|\bshall\s+(?:become\s+)?effective\b|\beffective\s+(?:on|upon|beginning|as\s+of)\b|(?<!\b(?:period|years?|months?|days?|weeks?|quarter|session|term)\s)\bbeginning\s+on\b/gi,
     hit: (m, s) => ({
       what: shorten(
+        // Bounded before replacing/splitting: those are linear in the rest of the sentence,
+        // which makes many matches in one long sentence quadratic.
         s
-          .slice(m.index + m[0].length)
+          .slice(m.index + m[0].length, m.index + m[0].length + WHAT_MAX * 4)
           .replace(/^[\s,]+/, '')
           .split(/[;.]\s|[;]/)[0] ?? '',
         WHAT_MAX,

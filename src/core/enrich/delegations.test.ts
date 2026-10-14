@@ -625,6 +625,40 @@ describe('charter-style dependencies', () => {
 
 describe('review fixes', () => {
   it.each([
+    ['no regulations', 'The Secretary shall prescribe no regulations.'],
+    ['neither', 'The Secretary shall adopt neither regulations nor rules.'],
+    ['none', 'The Board shall issue none of the rules.'],
+  ])('does not read a negative quantifier as rule-making: %s', (_n, text) => {
+    expect(decided(text)).toEqual([]);
+  });
+
+  it('still reads one descriptive word before regulations', () => {
+    expect(
+      decided('The Secretary shall prescribe safety regulations.'),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    [
+      'not required to be approved',
+      'The program is not required to be approved by the Department of Labor.',
+    ],
+    [
+      'not needed to be approved',
+      'It is not necessary to be approved by the Governor.',
+    ],
+  ])('ignores a negated requirement: %s', (_n, text) => {
+    expect(depends(text)).toEqual([]);
+  });
+
+  it.each([
+    'This Act shall not become effective on January 1, 2027.',
+    'This Act shall not take effect on January 1, 2027.',
+  ])('ignores a negated effective date: %s', (text) => {
+    expect(effect(text)).toEqual([]);
+  });
+
+  it.each([
     ['appropriation', 'The program is not subject to appropriations.'],
     [
       'outside body',
@@ -732,6 +766,7 @@ describe('review fixes', () => {
         'unclosed parentheses',
         '('.repeat(100000) + 'the Secretary shall adopt rules',
       ],
+      ['repeated effective dates', 'takes effect on January 1 '.repeat(60000)],
       ['phrases without stops', 'pursuant to the '.repeat(20000)],
     ])('%s', (_n, text) => {
       expect(timed(text)).toBeLessThan(bound);
