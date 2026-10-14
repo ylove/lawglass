@@ -24,6 +24,8 @@ _Ohio HB 62 (135th General Assembly, as introduced), answered by Claude Sonnet 5
 
 Requires Node.js 22.13 or newer (CI runs 22 and 24).
 
+> Not on npm yet (publishing waits on #7). Until then, use the release tarball from [Releases](https://github.com/ylove/legislation-summary/releases) or build one with `npm pack`, and replace `npx legislation-summary` below with `npx --package ./legislation-summary-0.1.0-rc.1.tgz legislation-summary`.
+
 ```sh
 npx legislation-summary init                       # save provider keys (file mode 0600)
 npx legislation-summary <url>                      # ingest, then serve and open the document
@@ -34,7 +36,6 @@ npx legislation-summary ask hb62 --chip what-changes
 npx legislation-summary list
 npx legislation-summary remove hb62
 npx legislation-summary serve --port 4317          # local web UI; --public allows chips only
-npx legislation-summary eval --backend local       # retrieval eval on the downloaded fixtures
 ```
 
 `<doc>` is a label or a doc-id prefix. Flags are defined in [`src/cli/program.ts`](src/cli/program.ts).
@@ -191,6 +192,7 @@ node dist/cli.js --help
 ```
 
 - `npm run fixtures:fetch` downloads the six public documents in [`fixtures/manifest.json`](fixtures/manifest.json) into the gitignored `fixtures/downloads/`, checking SHA-256 and size. Fixtures are never committed; local fixture tests skip when the files are absent, and CI uses generated samples from [`tests/synth/`](tests/synth/). See [`fixtures/README.md`](fixtures/README.md).
+- `node dist/cli.js eval --backend local` reruns the eval on the downloaded fixtures and writes `eval/results.md` (add `--answers` to score answers with your configured provider; it makes one model call per question and mode).
 - `npm run models:fetch` pre-downloads the local models. `npm run test:models` runs the offline suite against the real models (not part of `check`, which uses fakes).
 - `npm run test:live` runs key-gated provider contract tests and spends tokens. It never runs the Claude CLI.
 - `npx tsx scripts/record-demo.ts --doc <label>` re-records the demo GIF from a running `serve` (needs Chromium from Playwright and ffmpeg).
