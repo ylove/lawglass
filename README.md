@@ -106,7 +106,8 @@ replays. Run `npm run test:live` separately for key-gated API contract tests.
 
 The [product spec](docs/spec.md) is the source of truth; its Amendments take
 precedence. [Decision records](docs/decisions/) explain the backend, provider,
-Claude CLI, and Node version choices. Shared contracts are reserved for a separate
+Claude CLI, and Node version choices, and how struck and underlined text is read
+from PDF geometry. Shared contracts are reserved for a separate
 contract-change issue. Product identity belongs in `src/core/brand.ts`.
 
 ## License
