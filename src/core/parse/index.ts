@@ -11,3 +11,5 @@ export { parseHtml } from './html.js';
 export type { HtmlParseOptions } from './html.js';
 export { parseXml } from './xml.js';
 export type { XmlParseOptions } from './xml.js';
+export { parsePdf } from './pdf.js';
+export type { PdfParseOptions } from './pdf.js';

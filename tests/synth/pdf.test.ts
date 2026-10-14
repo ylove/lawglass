@@ -10,6 +10,7 @@ import { z } from 'zod';
 import { Section, walkSections } from '../../src/core/model/index.js';
 import {
   makeAmendingBillPdf,
+  makeAmendmentGeometryPdf,
   makeFederalStylePdf,
   makeScannedPdf,
 } from './pdf.js';
@@ -237,12 +238,15 @@ describe('other PDF reader round-trips', () => {
     });
   });
 
-  it('finds shapes but zero text items in the scanned sample', async () => {
+  it('finds a page image and shapes but zero text items in the scanned sample', async () => {
     const { bytes, groundTruth } = await makeScannedPdf();
     await withPdf(bytes, async (doc) => {
       expect(doc.numPages).toBe(1);
       expect((await (await doc.getPage(1)).getTextContent()).items).toEqual([]);
       const operators = await (await doc.getPage(1)).getOperatorList();
+      expect(
+        operators.fnArray.filter((fn) => fn === OPS.paintImageXObject),
+      ).toHaveLength(1);
       expect(
         operators.fnArray.filter((fn) => fn === OPS.constructPath),
       ).toHaveLength(12);
@@ -255,5 +259,87 @@ describe('other PDF reader round-trips', () => {
     await expect(
       withPdf(bytes.slice(0, 20), async () => Promise.resolve()),
     ).rejects.toThrow();
+  });
+});
+
+describe('amendment geometry PDF round-trip', () => {
+  it('prints every line under a per-page line number, with header and footer', async () => {
+    const { bytes, groundTruth } = await makeAmendmentGeometryPdf();
+    await withPdf(bytes, async (doc) => {
+      expect(doc.numPages).toBe(2);
+      for (const page of groundTruth.pages) {
+        const items = await textItems(doc, page.page);
+        expect(items.some((item) => item.str === page.header)).toBe(true);
+        expect(items.some((item) => item.str === page.footer)).toBe(true);
+        const lines = Object.entries(page.lines);
+        expect(lines.map(([line]) => Number(line))).toEqual(
+          lines.map((_, index) => index + 1),
+        );
+        for (const [line, expectedText] of lines) {
+          const y =
+            groundTruth.layout.firstLineY -
+            (Number(line) - 1) * groundTruth.layout.lineSpacing;
+          const row = items.filter((item) => position(item).y === y);
+          expect(
+            row
+              .filter(
+                (item) => position(item).x === groundTruth.layout.lineNumberX,
+              )
+              .map((item) => item.str),
+          ).toEqual([line]);
+          expect(
+            row
+              .filter((item) => position(item).x >= groundTruth.layout.textX)
+              .map((item) => item.str)
+              .join('')
+              .replace(/\s+/g, ' '),
+          ).toBe(expectedText.replace(/\s+/g, ' '));
+        }
+      }
+    });
+  });
+
+  it('draws one path per true mark and per negative control', async () => {
+    const { bytes, groundTruth } = await makeAmendmentGeometryPdf();
+    await withPdf(bytes, async (doc) => {
+      let paths = 0;
+      for (const page of [1, 2]) {
+        const operators = await (await doc.getPage(page)).getOperatorList();
+        paths += operators.fnArray.filter(
+          (fn) => fn === OPS.constructPath,
+        ).length;
+      }
+      expect(paths).toBe(
+        groundTruth.decorations.length + groundTruth.controls.length,
+      );
+    });
+  });
+
+  it('places true marks in their typographic bands and covers struck and inserted strings', async () => {
+    const { groundTruth } = await makeAmendmentGeometryPdf();
+    const { fontSize, firstLineY, lineSpacing } = groundTruth.layout;
+    for (const mark of groundTruth.decorations) {
+      const baseline = firstLineY - (mark.line - 1) * lineSpacing;
+      const centre =
+        mark.shape === 'rect' ? mark.y + mark.thickness / 2 : mark.y;
+      const offset = (centre - baseline) / fontSize;
+      if (mark.status === 'deleted') {
+        expect(offset).toBeGreaterThan(0.2);
+        expect(offset).toBeLessThan(0.45);
+      } else {
+        expect(offset).toBeGreaterThan(-0.3);
+        expect(offset).toBeLessThan(0);
+      }
+      const strings =
+        mark.status === 'deleted'
+          ? groundTruth.deletedStrings
+          : groundTruth.insertedStrings;
+      expect(strings).toContain(mark.text.trim());
+    }
+    expect(
+      new Set(groundTruth.controls.map((control) => control.name)).size,
+    ).toBe(groundTruth.controls.length);
+    for (const section of walkSections(groundTruth.sections))
+      Section.parse(section);
   });
 });
