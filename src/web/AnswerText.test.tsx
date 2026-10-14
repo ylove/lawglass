@@ -88,6 +88,92 @@ describe('answer markdown', () => {
     expect(container.textContent).not.toContain('*');
   });
 
+  test('limits formatted nesting to three levels and keeps deeper paired markers literal', () => {
+    const { container } = answer(
+      '**one *two **three *four **five** four* three** two* one**',
+    );
+    expect(container.querySelectorAll('strong, em')).toHaveLength(3);
+    expect(container.querySelector('strong em strong')?.textContent).toBe(
+      'three *four **five** four* three',
+    );
+    expect(
+      container.querySelector('strong em strong strong, strong em strong em'),
+    ).toBeNull();
+    expect(container.textContent).toBe(
+      'one two three *four **five** four* three two one',
+    );
+  });
+
+  test.each([
+    ['the reviewer nesting probe', '*a **b '.repeat(2000)],
+    ['a 50,000-character answer', '*a **b '.repeat(7143).slice(0, 50_000)],
+  ])('renders %s without throwing or freezing', (_, text) => {
+    const start = performance.now();
+    const { container } = answer(text);
+    const elapsed = performance.now() - start;
+    // Normal local runs should be under 100 ms; leave room for busy CI workers.
+    expect(elapsed).toBeLessThan(1000);
+    expect(container.querySelectorAll('strong, em').length).toBeLessThanOrEqual(
+      3,
+    );
+    expect(container.textContent).toContain('*a **b ');
+    console.info(
+      `Answer render (${String(text.length)} characters): ${elapsed.toFixed(1)} ms`,
+    );
+  });
+
+  test.each([
+    '** x **',
+    '* * *',
+    '**',
+    '*',
+    '****',
+    '*[S:unknown]*',
+    '**[S:invalid]**',
+  ])('never emits empty emphasis for %s', (text) => {
+    const { container } = answer(text);
+    expect(container.querySelector('strong, em')).toBeNull();
+    expect(container.textContent).toContain('*');
+    if (text === '** x **') expect(container.textContent).toBe(text);
+  });
+
+  test.each(['- ', '* ', '1. ', '- \t '])(
+    'keeps a bare list prefix %s plain until content arrives',
+    (prefix) => {
+      const { container, rerender } = answer(prefix);
+      expect(container.querySelector('ul, ol, li')).toBeNull();
+      expect(container.querySelector('p')?.textContent).toBe(prefix);
+      rerender(
+        <AnswerText
+          text={`${prefix}Item`}
+          citations={[]}
+          onOpenCitation={vi.fn()}
+        />,
+      );
+      expect(container.querySelector('li')?.textContent).toBe('Item');
+    },
+  );
+
+  test('omits list items whose only content is a hidden citation', () => {
+    const { container } = answer(
+      '- [S:unknown]\n- [S:invalid]\n- Visible [S:sec-2]',
+    );
+    expect(screen.getAllByRole('listitem')).toHaveLength(1);
+    expect(container.querySelector('li')?.textContent).toBe('Visible 1');
+    const empty = answer('- [S:unknown]');
+    expect(empty.container.querySelector('ul, li')).toBeNull();
+  });
+
+  test('resets unclosed emphasis at a blank line', () => {
+    const { container } = answer('**bold unclosed\n\nnext paragraph');
+    const paragraphs = container.querySelectorAll('p');
+    expect(paragraphs[0]?.querySelector('strong')?.textContent).toBe(
+      'bold unclosed',
+    );
+    expect(paragraphs[1]?.querySelector('strong')).toBeNull();
+    expect(paragraphs[1]?.textContent).toBe('next paragraph');
+  });
+
   test('keeps open bold elements stable as the stream grows and closes', () => {
     const open = vi.fn();
     const { container, rerender } = render(
@@ -100,8 +186,10 @@ describe('answer markdown', () => {
       rerender(<AnswerText text={text} citations={[]} onOpenCitation={open} />);
       expect(container.querySelector('strong')).toBe(bold);
       expect(container.querySelector('li')).toBe(item);
-      expect(bold?.textContent).toBe('Section 2');
-      expect(container.textContent).not.toContain('*');
+      expect(bold?.textContent).toBe(
+        text.endsWith('2*') ? 'Section 2*' : 'Section 2',
+      );
+      expect(container.querySelector('em')).toBeNull();
     }
   });
 

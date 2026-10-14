@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { CITATION_PATTERN, type Citation } from '../core/model/index.js';
 
 const MARKER = new RegExp(CITATION_PATTERN.source, 'g');
+const MAX_EMPHASIS_DEPTH = 3;
 
 /** Removes complete markers and a trailing half-typed one, for display mid-stream. */
 export function stripMarkers(text: string): string {
@@ -39,14 +40,36 @@ function inline(
     marker: string;
     key: string;
     children: ReactNode[];
+    text: string[];
   }
-  const root: Frame = { marker: '', key: keyPrefix, children: [] };
+  const root: Frame = { marker: '', key: keyPrefix, children: [], text: [] };
   const stack: Frame[] = [];
+  // Track deeper delimiters without creating nested elements, so their closers also stay literal.
+  const literalMarkers: string[] = [];
   const current = () => stack.at(-1) ?? root;
-  const close = () => {
+  const flush = (frame: Frame) => {
+    if (frame.text.length > 0) {
+      frame.children.push(frame.text.join(''));
+      frame.text = [];
+    }
+  };
+  const append = (node: ReactNode) => {
+    flush(current());
+    current().children.push(node);
+  };
+  const close = (closed = false) => {
     const frame = current();
     stack.pop();
-    current().children.push(
+    if (
+      frame.children.length === 0 &&
+      !frame.text.some((text) => text.trim())
+    ) {
+      current().text.push(frame.marker, frame.text.join(''));
+      if (closed) current().text.push(frame.marker);
+      return;
+    }
+    flush(frame);
+    append(
       frame.marker === '**' ? (
         <strong key={frame.key}>{frame.children}</strong>
       ) : (
@@ -58,49 +81,53 @@ function inline(
   const tokens = new RegExp(`${MARKER.source}|\\\\[\\\\*]|\\*+|\\n`, 'g');
   let last = 0;
   for (const m of line.matchAll(tokens)) {
-    current().children.push(line.slice(last, m.index));
+    if (m.index > last) current().text.push(line.slice(last, m.index));
     last = m.index + m[0].length;
     const key = `${keyPrefix}-${String(m.index)}`;
     if (m[0] === '\n') {
-      current().children.push(<br key={key} />);
+      append(<br key={key} />);
       continue;
     }
     if (m[0].startsWith('\\')) {
-      current().children.push(m[0].slice(1));
+      current().text.push(m[0].slice(1));
       continue;
     }
     if (m[0].startsWith('*')) {
-      let stars = m[0];
-      while (stars.length > 0) {
+      let offset = 0;
+      while (offset < m[0].length) {
+        const remaining = m[0].length - offset;
+        const top = literalMarkers.at(-1) ?? current().marker;
         const closing =
-          stack.length > 0 &&
-          (stars === current().marker ||
-            (stars.length >= 3 && stars.startsWith(current().marker)));
-        const marker = closing
-          ? current().marker
-          : stars.length >= 2
-            ? '**'
-            : '*';
+          top !== '' && (remaining === top.length || remaining >= 3);
+        const marker = closing ? top : remaining >= 2 ? '**' : '*';
         // A spaced asterisk (e.g. "2 * 3") is ordinary text, not an opener.
         if (!closing && /\s/.test(line[last] ?? '')) {
-          current().children.push(stars);
+          current().text.push(m[0].slice(offset));
           break;
         }
-        if (closing) close();
+        if (
+          literalMarkers.length > 0 ||
+          (!closing && stack.length >= MAX_EMPHASIS_DEPTH)
+        ) {
+          current().text.push(marker);
+          if (closing) literalMarkers.pop();
+          else literalMarkers.push(marker);
+        } else if (closing) close(true);
         else
           stack.push({
             marker,
-            key: `${key}-${String(stars.length)}`,
+            key: `${key}-${String(remaining)}`,
             children: [],
+            text: [],
           });
-        stars = stars.slice(marker.length);
+        offset += marker.length;
       }
       continue;
     }
     const id = m[1] ?? '';
     const n = numbers.get(id);
     if (n === undefined) continue; // invalid or unknown marker: show nothing
-    current().children.push(
+    append(
       <sup key={key}>
         <button
           type="button"
@@ -116,13 +143,14 @@ function inline(
       </sup>,
     );
   }
-  current().children.push(line.slice(last));
+  if (last < line.length) current().text.push(line.slice(last));
   // Keep open emphasis formatted while streaming; closing it preserves the same elements.
   while (stack.length > 0) close();
+  flush(root);
   return root.children;
 }
 
-const LIST_ITEM = /^\s*(?:[-*]|(\d+)\.)\s+/;
+const LIST_ITEM = /^\s*(?:[-*]|(\d+)\.)\s+(?=\S)/;
 
 interface Block {
   kind: 'p' | 'ul' | 'ol';
@@ -169,21 +197,23 @@ export function AnswerText({
         const key = String(block.key);
         if (block.kind !== 'p') {
           const List = block.kind;
+          const items = block.lines.map((line, li) =>
+            inline(line, numbers, onOpenCitation, `${key}-${String(li)}`),
+          );
+          const nonempty = items.map((children, li) =>
+            children.some(
+              (child) => typeof child !== 'string' || child.trim(),
+            ) ? (
+              <li key={li}>{children}</li>
+            ) : null,
+          );
+          if (nonempty.every((item) => item === null)) return null;
           return (
             <List
               key={key}
               start={block.kind === 'ol' ? block.start : undefined}
             >
-              {block.lines.map((line, li) => (
-                <li key={li}>
-                  {inline(
-                    line,
-                    numbers,
-                    onOpenCitation,
-                    `${key}-${String(li)}`,
-                  )}
-                </li>
-              ))}
+              {nonempty}
             </List>
           );
         }

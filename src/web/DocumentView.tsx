@@ -9,6 +9,7 @@ import type {
   DocDetail,
 } from '../core/model/index.js';
 import type { ApiClient } from './api.js';
+import { AnswerBodyBoundary } from './AnswerBodyBoundary.js';
 import { AnswerText, stripMarkers } from './AnswerText.js';
 import { CitationDrawer, describeLocation } from './CitationDrawer.js';
 import { errorMessage } from './errors.js';
@@ -41,6 +42,7 @@ const KIND_LABEL = {
 
 type Phase = 'searching' | 'writing' | 'done' | 'error';
 interface Turn {
+  id: number;
   label: string;
   phase: Phase;
   text: string;
@@ -105,6 +107,7 @@ export function DocumentView({
     trigger: HTMLElement;
   } | null>(null);
   const abort = useRef<AbortController | null>(null);
+  const nextTurnId = useRef(0);
   const questionId = useId();
 
   useEffect(() => {
@@ -130,7 +133,14 @@ export function DocumentView({
     abort.current?.abort();
     const controller = new AbortController();
     abort.current = controller;
-    setTurn({ label, phase: 'searching', text: '', result: null, error: null });
+    setTurn({
+      id: ++nextTurnId.current,
+      label,
+      phase: 'searching',
+      text: '',
+      result: null,
+      error: null,
+    });
     try {
       for await (const event of api.ask(docId, req, controller.signal)) {
         if (controller.signal.aborted) return;
@@ -265,25 +275,31 @@ export function DocumentView({
               {STATUS_TEXT[turn.phase]}
             </p>
             <div aria-busy={busy} className="answer-body">
-              {turn.phase === 'searching' && (
-                <p className="muted">Searching the document...</p>
-              )}
-              {turn.phase === 'writing' && (
-                <AnswerText
-                  text={stripMarkers(turn.text)}
-                  citations={[]}
-                  onOpenCitation={() => undefined}
-                />
-              )}
-              {turn.phase === 'done' && turn.result && (
-                <AnswerText
-                  text={turn.result.text}
-                  citations={turn.result.citations}
-                  onOpenCitation={(sectionId, trigger) => {
-                    setOpen({ sectionId, trigger });
-                  }}
-                />
-              )}
+              <AnswerBodyBoundary
+                // Reset for each question, but retain the fallback as its answer streams.
+                key={turn.id}
+                text={turn.result?.text ?? turn.text}
+              >
+                {turn.phase === 'searching' && (
+                  <p className="muted">Searching the document...</p>
+                )}
+                {turn.phase === 'writing' && (
+                  <AnswerText
+                    text={stripMarkers(turn.text)}
+                    citations={[]}
+                    onOpenCitation={() => undefined}
+                  />
+                )}
+                {turn.phase === 'done' && turn.result && (
+                  <AnswerText
+                    text={turn.result.text}
+                    citations={turn.result.citations}
+                    onOpenCitation={(sectionId, trigger) => {
+                      setOpen({ sectionId, trigger });
+                    }}
+                  />
+                )}
+              </AnswerBodyBoundary>
             </div>
             {turn.error && (
               <p role="alert" className="error">
