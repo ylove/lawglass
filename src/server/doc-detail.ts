@@ -26,14 +26,18 @@ export const OFFICIAL_SUMMARY_MAX_LENGTH = 4000;
  */
 export function truncateHistory(history: BillHistory): BillHistory {
   const summary = history.officialSummary;
-  if (!summary || summary.text.length <= OFFICIAL_SUMMARY_MAX_LENGTH)
+  if (
+    !summary ||
+    Array.from(summary.text).length <= OFFICIAL_SUMMARY_MAX_LENGTH
+  )
     return history;
-  const prefix = summary.text.slice(0, OFFICIAL_SUMMARY_MAX_LENGTH);
+  // Count code points, not UTF-16 units, so an emoji is never cut in half.
+  const prefix = Array.from(summary.text)
+    .slice(0, OFFICIAL_SUMMARY_MAX_LENGTH)
+    .join('');
   const boundary = prefix.lastIndexOf(' ');
   const cut = (
-    boundary > OFFICIAL_SUMMARY_MAX_LENGTH / 2
-      ? prefix.slice(0, boundary)
-      : prefix
+    boundary > prefix.length / 2 ? prefix.slice(0, boundary) : prefix
   ).trimEnd();
   return {
     ...history,

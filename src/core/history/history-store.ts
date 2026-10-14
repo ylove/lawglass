@@ -9,6 +9,9 @@ import {
   type ConfigFileSystem,
 } from '../config-files.js';
 
+// File format: the sidecar is a BillHistory plus one extra key, `officialTitle` (federal preview).
+// BillHistory is frozen, so the extra key is read back separately; a contract-change follow-up
+// tracks moving it into the schema. Until then readHistory strips it.
 function historyPath(configDir: string, docId: string): string {
   if (!NormalizedDoc.shape.docId.safeParse(docId).success)
     throw storageError('Invalid document id. Use the full document hash.');

@@ -19,7 +19,9 @@ import { defaultChipRunner } from '../core/pipeline/ask.js';
 import type { ChipRunner } from '../core/pipeline/index.js';
 import { readSseEvents } from '../web/sse.js';
 import { createApp, type AppOptions } from './app.js';
-import { FAILED_RETRY_MS } from './summary.js';
+import { FAILED_RETRY_MS, SUMMARY_CACHE_VERSION } from './summary.js';
+import { AnswerCache } from '../core/answer-cache.js';
+import { SUMMARY_PROMPT_VERSION } from '../core/chip-summary.js';
 
 const URL_A = 'https://example.gov/gardens.txt';
 
@@ -176,6 +178,32 @@ describe('GET /api/docs/:docId/summary', () => {
     // And the cached copy keeps it, with no second scenario call.
     expect((await summary(a, docId)).answer?.scenario).toBeDefined();
     expect(provider.scenarioCalls).toBe(1);
+  });
+
+  test('the cache key covers the scenario prompt: a changed version is a miss', async () => {
+    const a = app();
+    const docId = await ingestDoc(a);
+    await summary(a, docId);
+    await settled(a, docId);
+    const cache = new AnswerCache({
+      dir: join(env.registry.configDir, 'cache', 'answers'),
+    });
+    const key = {
+      docId,
+      chipId: 'summary' as const,
+      provider: env.provider.id,
+      model: env.provider.model,
+    };
+    expect(SUMMARY_CACHE_VERSION).not.toBe(SUMMARY_PROMPT_VERSION);
+    expect(
+      await cache.get({ ...key, promptVersion: SUMMARY_CACHE_VERSION }),
+    ).toBeDefined();
+    expect(
+      await cache.get({
+        ...key,
+        promptVersion: `${SUMMARY_PROMPT_VERSION}.changed`,
+      }),
+    ).toBeUndefined();
   });
 
   test('an unknown document is a 404', async () => {

@@ -88,6 +88,16 @@ describe('truncateHistory', () => {
     expect(huge.officialSummary?.text).toHaveLength(200_000);
   });
 
+  test('never splits a surrogate pair at the cut', () => {
+    // Each emoji is two UTF-16 units; 4001 of them force a cut inside the run.
+    const text =
+      truncateHistory(history('😀'.repeat(OFFICIAL_SUMMARY_MAX_LENGTH + 1)))
+        .officialSummary?.text ?? '';
+    const kept = text.split('…')[0] ?? '';
+    expect(Array.from(kept)).toHaveLength(OFFICIAL_SUMMARY_MAX_LENGTH);
+    expect(kept).toBe('😀'.repeat(OFFICIAL_SUMMARY_MAX_LENGTH));
+  });
+
   test('cuts mid-word when there is no usable space', () => {
     const text =
       truncateHistory(history('x'.repeat(10_000))).officialSummary?.text ?? '';

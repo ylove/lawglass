@@ -11,8 +11,15 @@ import {
   type AnswerCacheKey,
 } from '../core/answer-cache.js';
 import { SUMMARY_PROMPT_VERSION } from '../core/chip-summary.js';
+import { SCENARIO_PROMPT_VERSION } from '../core/scenario/generate.js';
 import type { SummaryResponse } from '../core/model/index.js';
 import { ask } from '../core/pipeline/index.js';
+
+/**
+ * The scenario rides inside the cached summary, so its prompt is part of the key: editing it
+ * must not serve summaries whose scenarios were made the old way.
+ */
+export const SUMMARY_CACHE_VERSION = `${SUMMARY_PROMPT_VERSION}.${SCENARIO_PROMPT_VERSION}`;
 
 /**
  * After a summary run ends without a cacheable answer (a decline, a failed call), wait this
@@ -41,6 +48,13 @@ export function createSummaryService(
   const running = new Set<string>();
   const failedAt = new Map<string, number>();
 
+  // Accepted trade-offs:
+  // - Background runs are not aborted when the server closes or the tab goes away. For a
+  //   localhost tool that is fine, and the finished answer is cached for next time.
+  // - A transient scenario failure (a timeout, say) leaves a scenario-less summary cached. The
+  //   summary text is still correct, and retrying would pay for the whole answer again.
+  // - `disabled` doubles as "failed recently": during the cool-down (per process, in memory)
+  //   a miss answers `disabled`, and the web client stops polling on it.
   function start(docId: string, key: AnswerCacheKey, name: string): void {
     running.add(name);
     const provider = runtime.answerProvider;
@@ -92,7 +106,7 @@ export function createSummaryService(
         chipId: 'summary',
         provider: provider.id,
         model: provider.model,
-        promptVersion: SUMMARY_PROMPT_VERSION,
+        promptVersion: SUMMARY_CACHE_VERSION,
       };
       const hit = await cache.get(key);
       if (hit) return { status: 'cached', answer: hit };
