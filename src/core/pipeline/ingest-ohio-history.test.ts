@@ -100,8 +100,13 @@ test.each(['', '/status', '/documents', '/committee'])(
     expect(result.normalized.metadata.sponsorProfiles?.[0]).toMatchObject({
       memberId: '1001',
       party: 'Republican',
-      links: [],
     });
+    // Ohio gives no member page, so the only links are labeled searches, never "verified".
+    const links = result.normalized.metadata.sponsorProfiles?.[0]?.links ?? [];
+    expect(links.length).toBeGreaterThan(0);
+    expect(
+      links.every((link) => link.kind === 'search' && !link.verified),
+    ).toBe(true);
     expect((await readHistory(dir, result.doc.docId))?.versions).toHaveLength(
       7,
     );
@@ -136,7 +141,13 @@ test.each(['', ...ENDPOINTS.slice(1)])(
     expect(await deps.backend.hasDocument(result.doc.docId)).toBe(true);
     if (failure === '') {
       expect(warnings).toContain('History unavailable');
-      expect(result.normalized.metadata.sponsorProfiles).toBeUndefined();
+      // No official record: any profiles come from metadata names and are search-only.
+      for (const profile of result.normalized.metadata.sponsorProfiles ?? []) {
+        expect(profile.bioguideId ?? profile.memberId).toBeUndefined();
+        expect(profile.links.every((link) => link.kind === 'search')).toBe(
+          true,
+        );
+      }
       expect(await readHistory(dir, result.doc.docId)).toBeUndefined();
     } else {
       expect(warnings).toContain(

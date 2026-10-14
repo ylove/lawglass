@@ -66,9 +66,33 @@ function serveText(version: string, bytes = makeCongressionalBillXml().bytes) {
     });
 }
 
+const directoryOrigin = 'https://unitedstates.github.io';
+const directoryPath = (name: 'current' | 'historical') =>
+  `/congress-legislators/legislators-${name}.json`;
+const directory = JSON.stringify([
+  {
+    id: {
+      bioguide: 'X000001',
+      wikipedia: 'Alex Example',
+      ballotpedia: 'Alex Example',
+    },
+    terms: [{ start: '2023-01-03', url: 'https://example.house.gov' }],
+  },
+  { id: { bioguide: 'X000002' }, terms: [{ start: '2023-01-03' }] },
+]);
+function serveDirectory(status = 200) {
+  agent
+    .get(directoryOrigin)
+    .intercept({ path: directoryPath('current') })
+    .reply(status, status === 200 ? directory : 'down', {
+      headers: { 'content-type': 'application/json' },
+    });
+}
+
 test('a congress.gov landing page ingests the latest text with history through real safeFetch', async () => {
   serveStatus();
   serveText('enr');
+  serveDirectory();
   const result = await ingest(page, deps);
   expect(result.normalized.sourceUrl).toBe(`${origin}${textPath('enr')}`);
   expect(result.normalized.metadata.version).toBe('Enrolled Bill (enr)');
@@ -84,8 +108,48 @@ test('a congress.gov landing page ingests the latest text with history through r
   ).toBe('Congressional Research Service');
   expect(
     vi.mocked(deps.fetcher).mock.calls.map(([url]) => new URL(url).hostname),
-  ).toEqual(['www.govinfo.gov', 'www.govinfo.gov']);
+  ).toEqual(['www.govinfo.gov', 'www.govinfo.gov', 'unitedstates.github.io']);
+  // The directory read must bypass safeFetch's permanent raw cache.
+  expect(vi.mocked(deps.fetcher).mock.calls.at(-1)?.[1]?.refresh).toBe(true);
+  // Joined by bioguide id: the member with a directory entry gets verified links.
+  const [alex, jamie] = result.normalized.metadata.sponsorProfiles ?? [];
+  expect(alex?.links.map((link) => [link.kind, link.verified])).toEqual([
+    ['official', true],
+    ['wikipedia', true],
+    ['ballotpedia', true],
+    ['legislature', true],
+  ]);
+  // No official site in the directory: the bioguide biography link is all the evidence there is.
+  expect(jamie?.links.map((link) => link.kind)).toEqual(['legislature']);
   agent.assertNoPendingInterceptors();
+});
+
+test('a failing sponsor directory never blocks ingest and leaves the profiles unchanged', async () => {
+  serveStatus();
+  serveText('enr');
+  serveDirectory(503);
+  const result = await ingest(page, deps);
+  expect(await deps.backend.hasDocument(result.doc.docId)).toBe(true);
+  expect(
+    result.normalized.metadata.sponsorProfiles?.map((item) => item.links),
+  ).toEqual([[], []]);
+  expect(result.normalized.warnings.join(' ')).not.toMatch(
+    /History unavailable/,
+  );
+  agent.assertNoPendingInterceptors();
+});
+
+test('the official title from BILLSTATUS is saved beside the history', async () => {
+  serveStatus();
+  serveText('enr');
+  serveDirectory();
+  const result = await ingest(page, deps);
+  expect(await historyStore.readOfficialTitle(dir, result.doc.docId)).toBe(
+    'To create example grants for community gardens, and for other purposes.',
+  );
+  expect(
+    await historyStore.readHistory(dir, result.doc.docId),
+  ).not.toHaveProperty('officialTitle');
 });
 
 test.each([

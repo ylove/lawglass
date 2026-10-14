@@ -254,6 +254,23 @@ function amendment(
 }
 
 /**
+ * The bill's official title, which `parseXml` drops in favour of the short title. Prefer the
+ * introduced wording (it states the purpose), else any official title; never a short title.
+ */
+function officialTitle(bill: Element): string | undefined {
+  const titles = items(child(bill, 'titles')).map((item) => ({
+    type: textField(item, 'titleType') ?? '',
+    text: textField(item, 'title'),
+  }));
+  const official = titles.filter(
+    (title) => title.text && /^official title\b/i.test(title.type),
+  );
+  return (
+    official.find((title) => /as introduced/i.test(title.type)) ?? official[0]
+  )?.text;
+}
+
+/**
  * Parse official-record fields as plain text and validate against the frozen schemas.
  * Consumers must render output as text and quote it as untrusted data in prompts;
  * HTML stripping does not make upstream wording or literal angle brackets trusted.
@@ -339,5 +356,10 @@ export function parseGovinfoBillStatus(
       .filter((item) => item !== undefined),
     sources: [{ host: 'www.govinfo.gov', url: plan.billStatusUrl, fetchedAt }],
   });
-  return { history, sponsorProfiles };
+  const title = officialTitle(bill);
+  return {
+    history,
+    sponsorProfiles,
+    ...(title ? { officialTitle: title } : {}),
+  };
 }
