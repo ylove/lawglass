@@ -50,6 +50,9 @@ export function AnswerCard({
           <p role="status" className="sr-only">
             {STATUS_TEXT[turn.phase]}
           </p>
+          <p aria-live="polite" className="sr-only">
+            {turn.scenario ? 'An example was added below.' : ''}
+          </p>
           <div aria-busy={busy} className="answer-body">
             <AnswerBodyBoundary
               // Reset for each question, but retain the fallback as its answer streams.

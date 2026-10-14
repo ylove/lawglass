@@ -30,7 +30,7 @@ export function ScenarioStrip({
         </h3>
         <span className="scenario-badge">Example · invented person</span>
       </div>
-      <ol className="scenario-frames">
+      <ol className="scenario-frames" data-count={scenario.frames.length}>
         {scenario.frames.map((frame, i) => {
           const Avatar = AVATAR_ICONS[frame.avatar];
           const Topic = TOPIC_ICONS[frame.icon];

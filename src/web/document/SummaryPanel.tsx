@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import type { AnswerResult, DocDetail } from '../../core/model/index.js';
 import type { ApiClient } from '../api.js';
 import { AnswerText, type OpenCitation } from '../AnswerText.js';
-import { errorMessage } from '../errors.js';
 import { ScenarioStrip } from './ScenarioStrip.js';
 
 /** The server starts the run on the first look, so this is how often we ask again. */
@@ -16,7 +15,7 @@ type State =
   | { kind: 'cached'; answer: AnswerResult }
   | { kind: 'disabled' }
   | { kind: 'timeout' }
-  | { kind: 'error'; message: string };
+  | { kind: 'error' };
 
 /**
  * What a reader sees on arrival: the one-line preview straight away, then the plain-language
@@ -64,8 +63,14 @@ export function SummaryPanel({
             timer = setTimeout(look, pollMs);
           }
         })
-        .catch((e: unknown) => {
-          if (live) setState({ kind: 'error', message: errorMessage(e) });
+        .catch(() => {
+          if (!live) return;
+          // A blip should not hide the summary: keep trying, and only say so on the last failure.
+          if (Date.now() - started >= maxWaitMs) {
+            setState({ kind: 'error' });
+          } else {
+            timer = setTimeout(look, pollMs);
+          }
         });
     };
     look();
@@ -113,7 +118,7 @@ export function SummaryPanel({
         )}
         {state.kind === 'error' && (
           <p className="muted summary-note">
-            The summary could not be loaded. {state.message}
+            The summary could not be loaded right now.
           </p>
         )}
         {state.kind === 'disabled' && chipHint && (
@@ -141,6 +146,10 @@ export function SummaryPanel({
           </details>
         )}
       </section>
+      {/* Always mounted so the arrival of the example is announced; no second role=status. */}
+      <p aria-live="polite" className="sr-only">
+        {cached?.scenario ? 'An example was added below.' : ''}
+      </p>
       {cached?.scenario && (
         <ScenarioStrip
           scenario={cached.scenario}

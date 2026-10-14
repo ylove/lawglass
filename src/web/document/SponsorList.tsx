@@ -75,8 +75,8 @@ export function SponsorList({
   return (
     <span className="sponsors">
       <span className="sponsor-row">
-        {lead.map((p) => (
-          <Sponsor key={p.name} profile={p} />
+        {lead.map((p, i) => (
+          <Sponsor key={`${p.role}-${p.name}-${String(i)}`} profile={p} />
         ))}
       </span>
       {others.length > 0 && (
@@ -86,8 +86,8 @@ export function SponsorList({
             {others.length} {others.length === 1 ? 'cosponsor' : 'cosponsors'}
           </summary>
           <span className="sponsor-row">
-            {others.map((p) => (
-              <Sponsor key={p.name} profile={p} />
+            {others.map((p, i) => (
+              <Sponsor key={`${p.role}-${p.name}-${String(i)}`} profile={p} />
             ))}
           </span>
         </details>

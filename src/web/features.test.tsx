@@ -124,9 +124,12 @@ describe('summary on arrival', () => {
         officialSummary={undefined}
         publicMode={false}
         onOpenSection={() => undefined}
+        pollMs={5}
+        maxWaitMs={30}
       />,
     );
-    await screen.findByText(/could not be loaded/);
+    await screen.findByText('The summary could not be loaded right now.');
+    expect(screen.queryByText(/Nope/)).toBeNull();
     expect(screen.getByText(/To require water utilities/)).toBeTruthy();
   });
 
@@ -146,6 +149,31 @@ describe('summary on arrival', () => {
 });
 
 describe('scenario strip', () => {
+  test('a transient poll failure is retried and the summary still arrives', async () => {
+    const api = mock();
+    const real = api.getSummary.bind(api);
+    let calls = 0;
+    api.getSummary = (id) =>
+      ++calls === 1 ? Promise.reject(new ApiError('X', 'blip')) : real(id);
+    const { doc, detail } = await sampleDetail(api);
+    render(
+      <SummaryPanel
+        api={api}
+        docId={doc.docId}
+        preview={detail.preview}
+        officialSummary={undefined}
+        publicMode={false}
+        onOpenSection={() => undefined}
+        pollMs={5}
+      />,
+    );
+    await screen.findByRole('button', { name: 'Summary source 1' });
+    expect(
+      screen.getByText('An example was added below.').getAttribute('aria-live'),
+    ).toBe('polite');
+    expect(screen.queryAllByRole('status')).toHaveLength(0);
+  });
+
   test('appears from the cached summary and opens the citation drawer', async () => {
     render(<App api={mock()} />);
     await ready();
