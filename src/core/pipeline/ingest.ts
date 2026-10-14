@@ -66,6 +66,7 @@ export interface ParseContext extends ParseControl {
   sourceUrl: string;
   fetchedAt: string;
 }
+import { sharedLimits, type Limits } from './limits.js';
 /** Defaults to `core/parse`'s `parsePdf`; tests inject a stub. */
 export type PdfParser = (
   bytes: Uint8Array,
@@ -77,6 +78,8 @@ export interface IngestDeps {
   backend: RetrievalBackend;
   /** Used for metadata extraction (the cheap "extract" model). */
   provider: LlmProvider;
+  /** Concurrency and per-minute budgets. Defaults to the process-wide limits from the environment. */
+  limits?: Limits | undefined;
   registry: Registry;
   fetcher: Fetcher;
   now: () => Date;
@@ -399,6 +402,18 @@ export async function ingest(
   url: string,
   deps: IngestDeps,
   opts: IngestOptions = {},
+): Promise<IngestResult> {
+  return (deps.limits ?? sharedLimits()).run(
+    'ingest',
+    () => ingestWithinLimits(url, deps, opts),
+    opts.signal,
+  );
+}
+
+async function ingestWithinLimits(
+  url: string,
+  deps: IngestDeps,
+  opts: IngestOptions,
 ): Promise<IngestResult> {
   const { signal } = opts;
   deps = { ...deps, parseLimits: deps.parseLimits ?? readParseLimits() };

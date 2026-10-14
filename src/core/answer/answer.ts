@@ -11,6 +11,7 @@ import {
   type SearchHit,
 } from '../model/index.js';
 import { coveredSectionIds, validateCitations } from './citations.js';
+import { echoesSystemPrompt } from './echo.js';
 import { buildPrompt } from './prompt.js';
 import { fleschKincaidGrade, stripCitations } from './readability.js';
 
@@ -104,6 +105,20 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
     sectionIds,
     prompt.hits.map((h) => h.chunk),
   );
+  // After citation validation, so the check sees the text the user would get. Tokens already
+  // streamed cannot be recalled; the final text is what callers store and render.
+  if (echoesSystemPrompt(validated.text, prompt.system)) {
+    return {
+      text: DECLINE_TEXT,
+      citations: [],
+      invalidCitations: [],
+      warnings: [],
+      declined: true,
+      readingGrade: fleschKincaidGrade(DECLINE_TEXT),
+      ...base,
+      usage,
+    };
+  }
   return {
     text: validated.text,
     citations: validated.citations,

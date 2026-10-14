@@ -18,6 +18,7 @@ import {
   type TextRequest,
   messageText,
 } from '../model/index.js';
+import { claudeCliPool } from '../pipeline/limits.js';
 import {
   anthropicUsage,
   jsonSchema,
@@ -117,12 +118,15 @@ export class ClaudeCliProvider implements LlmProvider {
     let lines: ReturnType<typeof createInterface> | undefined;
     let signal: AbortSignal | undefined;
     let kill: (() => void) | undefined;
+    let releaseSlot: (() => void) | undefined;
     try {
       signal = requestSignal(
         req.signal,
         this.config.timeoutMs,
         this.timeoutSignal,
       );
+      // Each `claude` process is heavy; cap how many run at once (queues, honours abort/timeout).
+      releaseSlot = await claudeCliPool().acquire(signal);
       cwd = await mkdtemp(join(tmpdir(), 'llm-cli-'));
       const systemPromptFile = join(cwd, 'system-prompt.txt');
       await writeFile(systemPromptFile, req.system, {
@@ -243,6 +247,7 @@ export class ClaudeCliProvider implements LlmProvider {
         child.kill('SIGKILL');
       if (closed) await closed;
       if (cwd) await rm(cwd, { recursive: true, force: true });
+      releaseSlot?.();
     }
   }
 
