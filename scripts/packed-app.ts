@@ -161,11 +161,22 @@ export async function startPackedServer(
     while (Date.now() < deadline) {
       if (spawnError) throw spawnError;
       if (child.exitCode !== null || child.signalCode !== null) {
-        throw new Error(`Packed server exited during startup:\n${output}`);
+        throw new Error(
+          `Packed server exited during startup:\n${output.replace(/([?&]k=)[^&\s]+/g, '$1[redacted]')}`,
+        );
       }
       const url = /Serving at (http:\/\/\S+)/.exec(output)?.[1];
       if (url) {
-        const response = await fetch(`${url}/api/health`, {
+        const exchange = await fetch(url, {
+          redirect: 'manual',
+          signal: AbortSignal.timeout(2_000),
+        });
+        assert.equal(exchange.status, 302);
+        const cookie = exchange.headers.get('set-cookie')?.split(';')[0];
+        assert(cookie, 'Launch link did not establish a session');
+        await exchange.arrayBuffer();
+        const response = await fetch(new URL('/api/health', url), {
+          headers: { cookie },
           signal: AbortSignal.timeout(2_000),
         });
         assert.equal(response.status, 200);
@@ -174,7 +185,9 @@ export async function startPackedServer(
       }
       await delay(50);
     }
-    throw new Error(`Packed server did not become healthy:\n${output}`);
+    throw new Error(
+      `Packed server did not become healthy:\n${output.replace(/([?&]k=)[^&\s]+/g, '$1[redacted]')}`,
+    );
   } catch (error) {
     await stopChild(child);
     throw error;

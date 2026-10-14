@@ -1,3 +1,7 @@
+import { createApp as createRawApp } from './app.js';
+import { SESSION_COOKIE } from './session.js';
+import { MemoryBackend } from '../../tests/contracts/memory-backend.js';
+import { ScriptedProvider } from '../../tests/contracts/scripted-provider.js';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -28,7 +32,8 @@ import {
 import type { ChipRunner } from '../core/pipeline/index.js';
 import { scenarioProvider } from '../../tests/support/scenario-provider.js';
 import { readSseEvents } from '../web/sse.js';
-import { createApp, toErrorPayload, type AppOptions } from './app.js';
+import { createSessionTestApp as createApp } from '../../tests/support/session-app.js';
+import { toErrorPayload, type AppOptions } from './app.js';
 
 const GARDENS = 'https://example.gov/gardens.txt';
 const BILL = 'https://example.gov/s9001.xml';
@@ -292,6 +297,7 @@ describe('ingest and documents', () => {
     }
     const raw = await a.request('/api/ingest', {
       method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: '{broken',
     });
     expect(raw.status).toBe(400);
@@ -530,7 +536,7 @@ describe('abort and heartbeat', () => {
         },
       );
       if (phase === 'body parsing')
-        vi.spyOn(request, 'text').mockImplementation(() => {
+        vi.spyOn(Request.prototype, 'text').mockImplementationOnce(() => {
           controller.abort();
           return Promise.resolve(JSON.stringify(body));
         });
@@ -572,7 +578,7 @@ describe('abort and heartbeat', () => {
         signal: controller.signal,
       });
       if (phase === 'body parsing')
-        vi.spyOn(request, 'text').mockImplementation(() => {
+        vi.spyOn(Request.prototype, 'text').mockImplementationOnce(() => {
           controller.abort();
           return Promise.resolve(JSON.stringify(body));
         });
@@ -758,5 +764,181 @@ describe('static web assets', () => {
   test('POST to a page path is not served the index', async () => {
     const res = await app({ webRoot: root }).request('/', { method: 'POST' });
     expect(res.status).toBe(404);
+  });
+});
+
+describe('HTTP security boundary', () => {
+  const secureApp = (options: AppOptions = {}) => {
+    const provider = new ScriptedProvider();
+    const backend = new MemoryBackend();
+    const a = createRawApp(
+      {
+        ...env.runtime,
+        backend,
+        answerProvider: provider,
+        extractProvider: provider,
+      },
+      { sessionToken: securityToken, ...options },
+    );
+    return { a, provider, backend };
+  };
+  const securityToken = 'a'.repeat(43);
+  const cookie = `${SESSION_COOKIE}=${securityToken}`;
+
+  test.each([
+    '127.0.0.2',
+    '[::1]',
+    '[0:0:0:0:0:0:0:1]',
+    '[::ffff:127.0.0.1]',
+    '[::ffff:7f00:2]',
+  ])('accepts a loopback Host and its matching Origin: %s', async (host) => {
+    const { a } = secureApp();
+    const response = await a.request('http://127.0.0.1/api/health', {
+      headers: { host: `${host}:4317`, origin: `http://${host}:4317`, cookie },
+    });
+    expect(response.status).toBe(200);
+  });
+  test('DNS rebinding fails before a token can be exchanged', async () => {
+    const { a } = secureApp();
+    const response = await a.request(`http://127.0.0.1/?k=${securityToken}`, {
+      headers: { host: 'evil.example', origin: 'http://evil.example' },
+    });
+    expect(response.status).toBe(403);
+    expect(response.headers.get('set-cookie')).toBeNull();
+  });
+  test.each([
+    ['POST', '/api/ingest'],
+    ['POST', '/api/docs/missing/ask'],
+    ['DELETE', '/api/docs/missing'],
+    ['GET', '/api/docs/missing/summary'],
+  ])('refuses cross-site %s %s before pipeline work', async (method, path) => {
+    const { a, provider, backend } = secureApp();
+    const del = vi.spyOn(backend, 'deleteDocument');
+    const response = await a.request(path, {
+      method,
+      headers: {
+        cookie,
+        'sec-fetch-site': 'cross-site',
+        'content-type': 'application/json',
+      },
+      ...(method === 'POST' ? { body: '{}' } : {}),
+    });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({
+      error: { code: 'INVALID_INPUT' },
+    });
+    expect(provider.calls).toEqual([]);
+    expect(del).not.toHaveBeenCalled();
+    expect(env.fetches).toEqual([]);
+  });
+  test.each([
+    'text/plain',
+    'application/x-www-form-urlencoded',
+    'multipart/form-data',
+    '',
+    'application/jsonp',
+  ])('refuses POST media type %s', async (contentType) => {
+    const { a } = secureApp();
+    const response = await a.request('/api/ingest', {
+      method: 'POST',
+      headers: {
+        cookie,
+        ...(contentType ? { 'content-type': contentType } : {}),
+      },
+      body: '{}',
+    });
+    expect(response.status).toBe(415);
+    expect(await response.json()).toMatchObject({
+      error: { code: 'INVALID_INPUT' },
+    });
+    expect(env.fetches).toEqual([]);
+  });
+  test('accepts JSON with charset and DELETE without a content type', async () => {
+    const { a } = secureApp();
+    const postResponse = await a.request('/api/ingest', {
+      method: 'POST',
+      headers: {
+        cookie,
+        'content-type': 'application/json; charset=utf-8',
+        'sec-fetch-site': 'same-origin',
+      },
+      body: '{}',
+    });
+    expect(postResponse.status).toBe(400); // reaches schema validation
+    const del = await a.request('/api/docs/missing', {
+      method: 'DELETE',
+      headers: { cookie, 'sec-fetch-site': 'same-origin' },
+    });
+    expect(del.status).toBe(404); // reaches document lookup
+  });
+  test.each([
+    '/api/health',
+    '/api/config',
+    '/api/docs',
+    '/api/docs/missing',
+    '/api/docs/missing/summary',
+    '/api/missing',
+  ])('requires a launch cookie on %s', async (path) => {
+    const { a } = secureApp();
+    for (const headers of [
+      new Headers(),
+      new Headers({ cookie: `${SESSION_COOKIE}=wrong` }),
+    ]) {
+      const response = await a.request(path, { headers });
+      expect(response.status).toBe(401);
+      expect(await response.json()).toMatchObject({
+        error: { code: 'UNAUTHORIZED' },
+      });
+    }
+  });
+  test.each([false, true])(
+    'limits streamed and declared POST bodies in publicMode=%s',
+    async (publicMode) => {
+      const { a } = secureApp({ publicMode });
+      for (const path of ['/api/ingest', '/api/docs/missing/ask']) {
+        for (const declareLength of [false, true]) {
+          const response = await a.request(path, {
+            method: 'POST',
+            headers: {
+              cookie,
+              'content-type': 'application/json',
+              ...(declareLength ? { 'content-length': '16385' } : {}),
+            },
+            body: ' '.repeat(16385),
+          });
+          expect(response.status).toBe(413);
+          expect(await response.json()).toEqual({
+            error: {
+              code: 'TOO_LARGE',
+              message: 'Request body exceeds 16 KB.',
+            },
+          });
+        }
+      }
+      const edge = await a.request('/api/ingest', {
+        method: 'POST',
+        headers: { cookie, 'content-type': 'application/json' },
+        body: '{}'.padEnd(16384),
+      });
+      expect(edge.status).toBe(400);
+    },
+  );
+  test('public mode has no session gate or exchange, and still enforces CSRF', async () => {
+    const { a } = secureApp({ publicMode: true });
+    const health = await a.request('http://example.com/api/health');
+    expect(health.status).toBe(200);
+    expect(health.headers.get('set-cookie')).toBeNull();
+    const query = await a.request(
+      `http://example.com/api/health?k=${securityToken}`,
+    );
+    expect(query.status).toBe(200);
+    expect(query.headers.get('set-cookie')).toBeNull();
+    expect(
+      (
+        await a.request('/api/docs/missing/summary', {
+          headers: { 'sec-fetch-site': 'cross-site' },
+        })
+      ).status,
+    ).toBe(403);
   });
 });
