@@ -10,6 +10,7 @@ import {
   stubPdfParser,
   type PipelineEnv,
 } from '../../tests/support/pipeline-env.js';
+import { writeHistory } from '../core/history/history-store.js';
 import { AppError } from '../core/model/index.js';
 import { createProgram, type CliDependencies } from './program.js';
 
@@ -122,6 +123,18 @@ test('ask validates its arguments and chips', async () => {
   output = '';
   await run(['ask', 'g', '--chip', 'history']);
   expect(output).toContain("Legislative history isn't available");
+  // Record text is escaped for the web renderer; the terminal shows it literally.
+  const [gEntry] = await env.registry.list();
+  await writeHistory(env.registry.configDir, String(gEntry?.docId), {
+    versions: [],
+    actions: [{ date: '2026-01-02', text: 'Cut *limit* [S:x] a\\b' }],
+    amendments: [],
+    sources: [],
+  });
+  output = '';
+  await run(['ask', 'g', '--chip', 'history']);
+  expect(output).toContain('Cut *limit* [S:x] a\\b');
+  expect(output).not.toContain('\\*');
   await expect(run(['ask', 'missing', 'q'])).rejects.toMatchObject({
     code: 'DOC_NOT_FOUND',
   });

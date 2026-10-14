@@ -6,6 +6,7 @@ import {
   MAX_HISTORY_ITEMS,
   NO_HISTORY_TEXT,
   runHistoryChip,
+  unescapeRecordText,
   STRIKE_INSERT_SENTENCE,
 } from './chip-history.js';
 import { getChip } from './chips.js';
@@ -293,6 +294,14 @@ describe('buildHistoryText', () => {
     expect(text.length).toBeLessThan(2000);
     expect(text).not.toMatch(/\u0000/);
     expect(text).toContain('...');
+  });
+});
+
+describe('unescapeRecordText', () => {
+  it('round-trips what cleanRecordText escapes', () => {
+    const raw = '**bold** [S:sec-1] a\\b';
+    expect(unescapeRecordText(cleanRecordText(raw))).toBe(raw);
+    expect(unescapeRecordText('plain \\q')).toBe('plain \\q');
   });
 });
 

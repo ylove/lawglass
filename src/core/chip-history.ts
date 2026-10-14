@@ -44,7 +44,18 @@ export function cleanRecordText(
     oneLine.length <= max
       ? oneLine
       : `${oneLine.slice(0, max - 3).trimEnd()}...`;
-  return short.replace(/[\\*[]/g, (c) => `\\${c}`);
+  return short.replace(ESCAPABLE, (c) => `\\${c}`);
+}
+
+/** The characters the answer renderer treats as markup. Keep in step with AnswerText.tsx. */
+const ESCAPABLE = /[\\*[]/g;
+
+/**
+ * The inverse of the escaping above, for output that is not rendered markdown (the terminal).
+ * It undoes exactly the escapes the web renderer understands: `\\\\`, `\\*` and `\\[`.
+ */
+export function unescapeRecordText(text: string): string {
+  return text.replace(/\\([\\*[])/g, '$1');
 }
 
 function hasChangedSpans(sections: readonly Section[]): boolean {

@@ -8,6 +8,7 @@ import { AppError, ChipId, type LlmProvider } from '../core/model/index.js';
 import { ask, ingest } from '../core/pipeline/index.js';
 import { runEvalCommand } from '../eval/command.js';
 import { runCompareCommand, type CompareOptions } from '../eval/compare.js';
+import { unescapeRecordText } from '../core/chip-history.js';
 import { safeText } from './sanitize.js';
 import { formatAskFooter, formatIngest, formatList } from './format.js';
 import {
@@ -233,7 +234,7 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
           },
           {
             onToken: (text) => {
-              write(safeText(text));
+              write(safeText(unescapeRecordText(text)));
             },
           },
         );
