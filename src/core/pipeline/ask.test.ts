@@ -152,7 +152,7 @@ test('even if the backend returns deleted chunks, a default question drops them'
   expect(chunks.every((c) => c.amendmentStatus !== 'deleted')).toBe(true);
 });
 
-test('rejects empty questions, unknown docs and chips without a runner', async () => {
+test('rejects empty questions and unknown docs', async () => {
   const docId = await load(
     'https://example.gov/s9001.xml',
     makeCongressionalBillXml(),
@@ -163,9 +163,22 @@ test('rejects empty questions, unknown docs and chips without a runner', async (
   await expect(
     ask('a'.repeat(64), { question: 'hi' }, askDeps()),
   ).rejects.toMatchObject({ code: 'DOC_NOT_FOUND' });
-  await expect(
-    ask(docId, { chipId: 'summary' }, askDeps()),
-  ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+});
+
+test('chips default to the real chip strategies (no runner injected)', async () => {
+  const docId = await load(
+    'https://example.gov/s9001.xml',
+    makeCongressionalBillXml(),
+  );
+  const tokens: string[] = [];
+  const result = await ask(docId, { chipId: 'sponsors' }, askDeps(), {
+    onToken: (t) => tokens.push(t),
+  });
+  // Sponsors is metadata-only: no retrieval, no model call, but the answer still streams.
+  expect(result.mode).toBe('none');
+  expect(result.answer.provider).toBe('none');
+  expect(result.answer.text).toMatch(/sponsor/i);
+  expect(tokens.join('')).toBe(result.answer.text);
 });
 
 test('chips dispatch through the injected runner and record its usage', async () => {

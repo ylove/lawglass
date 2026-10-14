@@ -114,10 +114,10 @@ test('ask validates its arguments and chips', async () => {
   await expect(run(['ask', 'g', '--chip', 'nonsense'])).rejects.toMatchObject({
     userMessage: expect.stringContaining('Unknown chip') as string,
   });
-  // A valid chip id with no chip runner wired yet is a clear error, not a crash.
-  await expect(run(['ask', 'g', '--chip', 'summary'])).rejects.toMatchObject({
-    code: 'INVALID_INPUT',
-  });
+  // Chips are wired by default: the metadata-only sponsors chip answers without a model.
+  output = '';
+  await run(['ask', 'g', '--chip', 'sponsors']);
+  expect(output).toMatch(/sponsor/i);
   await expect(run(['ask', 'missing', 'q'])).rejects.toMatchObject({
     code: 'DOC_NOT_FOUND',
   });

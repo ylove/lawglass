@@ -3,6 +3,7 @@
  * (#29) and eval (#32).
  */
 import { answer } from '../answer/index.js';
+import { getChip, runChip } from '../chips.js';
 import { asksAboutChanges, retrieve } from '../retrieve/index.js';
 import {
   AppError,
@@ -19,10 +20,8 @@ import {
 import type { Registry } from '../registry.js';
 
 /**
- * Chip dispatch seam, shaped like `runChip` from core/chips.ts (#31) so wiring it later is
- * `chips: (id, docId, ctx, o) => runChip(getChip(id), docId, ctx, o)`.
- * TODO(#70): once chips merge, the default becomes `(id, docId, ctx, o) => runChip(getChip(id), docId, ctx, o)`. Until then a
- * chip request without a runner is a clear user error, and freeform questions are unaffected.
+ * Chip dispatch seam, shaped like `runChip` from core/chips.ts. The default is
+ * `defaultChipRunner`; tests (and eval) may inject their own.
  */
 export type ChipRunner = (
   chipId: ChipId,
@@ -30,7 +29,8 @@ export type ChipRunner = (
   ctx: {
     backend: RetrievalBackend;
     provider: LlmProvider;
-    doc: Pick<NormalizedDoc, 'metadata' | 'sections'>;
+    /** The full cached document: `definitions` lists document-wide definitions first. */
+    doc: Pick<NormalizedDoc, 'metadata' | 'sections' | 'definitions'>;
   },
   opts: {
     signal?: AbortSignal | undefined;
@@ -44,12 +44,17 @@ export type ChipRunner = (
   mode?: RetrievalMode | 'none';
 }>;
 
+/** Runs the real chip strategies from core/chips.ts. */
+export const defaultChipRunner: ChipRunner = (chipId, docId, ctx, opts) =>
+  runChip(getChip(chipId), docId, ctx, opts);
+
 export interface AskDeps {
   backend: RetrievalBackend;
   provider: LlmProvider;
   registry: Registry;
   /** Default `hybrid_rerank`. */
   retrievalMode?: RetrievalMode | undefined;
+  /** Defaults to `defaultChipRunner`. */
   chips?: ChipRunner | undefined;
   now?: (() => number) | undefined;
 }
@@ -141,17 +146,9 @@ export async function ask(
   const doc = await registry.getDocument(docId);
 
   if ('chipId' in input) {
-    if (!deps.chips)
-      throw new AppError(
-        'INVALID_INPUT',
-        `Chip ${input.chipId} is unavailable.`,
-        {
-          userMessage:
-            'Question chips are not available yet. Ask a question instead.',
-        },
-      );
+    const runChipFor = deps.chips ?? defaultChipRunner;
     const guard = guarded(backend, docId, signal);
-    const ran = await deps.chips(
+    const ran = await runChipFor(
       input.chipId,
       docId,
       { backend: guard.backend, provider: deps.provider, doc },
@@ -166,7 +163,7 @@ export async function ask(
     return {
       answer: ran.answer,
       refs: refsOf(ran.hits),
-      // TODO(#70): derive the exact mode from getChip(id) when the runner doesn't say.
+      // Chips report the mode they used; an injected runner that doesn't falls back here.
       mode:
         ran.mode ??
         (guard.used() ? (deps.retrievalMode ?? 'hybrid_rerank') : 'none'),
