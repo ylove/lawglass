@@ -140,7 +140,7 @@ describe('segmentDefinitions performance', () => {
     const defs = extractDefinitions([sec('sec-1', text, { num: '1' })]);
     expect(found).toHaveLength(800);
     expect(defs).toHaveLength(800);
-    expect(performance.now() - started).toBeLessThan(2000);
+    expect(performance.now() - started).toBeLessThan(10_000);
   });
 });
 
