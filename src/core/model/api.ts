@@ -41,8 +41,11 @@ export const ClientConfig = z.object({
   provider: z.string(),
   model: z.string(),
   chips: z.array(z.object({ id: ChipId, label: z.string() })),
-  /** False in public mode, where scenarios are not offered. */
-  scenariosEnabled: z.boolean(),
+  /**
+   * False in public mode, where scenarios are not offered. Defaults to false so a config
+   * response from an older server (no field) still parses and hides the feature.
+   */
+  scenariosEnabled: z.boolean().default(false),
   /** Public-mode bot-check site key (Turnstile); absent when not configured. */
   turnstileSiteKey: z.string().optional(),
 });

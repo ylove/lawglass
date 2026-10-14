@@ -11,6 +11,11 @@ import {
   ScenarioResponse,
   ScanStatus,
 } from './index.js';
+import {
+  ClientConfig as Rc2ClientConfig,
+  DocDetail as Rc2DocDetail,
+} from '../../../tests/support/rc2-model/api.js';
+import { NormalizedDoc as Rc2NormalizedDoc } from '../../../tests/support/rc2-model/doc.js';
 
 const rc2Metadata = {
   title: 'A bill',
@@ -98,9 +103,9 @@ describe('rc.2-shaped data still parses', () => {
       scenariosEnabled: true,
     };
     expect(ClientConfig.parse(config).turnstileSiteKey).toBeUndefined();
-    // scenariosEnabled is required in the response schema.
+    // An rc.2 server sends no scenariosEnabled: it still parses, with scenarios hidden.
     const { scenariosEnabled: _omit, ...old } = config;
-    expect(ClientConfig.safeParse(old).success).toBe(false);
+    expect(ClientConfig.parse(old).scenariosEnabled).toBe(false);
   });
 });
 
@@ -216,24 +221,71 @@ describe('ScenarioRequest / ScenarioResponse', () => {
   });
 });
 
-describe('an rc.2-style reader ignores the new optional fields', () => {
-  // An rc.2 binary parses with the rc.2 shape; zod objects strip unknown keys.
-  it('strips unknown keys on the non-strict schemas', () => {
-    const doc = NormalizedDoc.parse({
-      ...rc2Doc,
-      scan,
-      metadata: { ...rc2Metadata, docKind: 'bill', future: 1 },
-    });
-    expect(doc.metadata.docKind).toBe('bill');
-    const stripped = NormalizedDoc.parse({ ...rc2Doc, somethingNew: true });
-    expect('somethingNew' in stripped).toBe(false);
-    const ref = ExternalRef.parse({
-      text: 't',
-      citation: 'c',
+describe('an rc.2 reader (frozen schemas from fb663d1) parses rc.3 data', () => {
+  // A real rc.2 binary may share ~/.lawglass with rc.3, so rc.3 output must parse with the
+  // rc.2 schemas exactly as published, not with today's schemas.
+  const rc3Metadata = {
+    ...rc2Metadata,
+    docKind: 'charter_amendment',
+    amends: { name: 'City Charter', jurisdiction: 'Columbus', sections: ['3'] },
+  };
+  const rc3Doc = {
+    ...rc2Doc,
+    metadata: rc3Metadata,
+    externalRefs: [
+      {
+        text: 'the general election laws of the state',
+        citation: 'Ohio Rev. Code Title 35',
+        kind: 'other',
+        category: 'general_law',
+        sectionIds: [],
+      },
+    ],
+    scan,
+  };
+
+  it('parses an rc.3 NormalizedDoc and drops only the new fields', () => {
+    const current = NormalizedDoc.parse(rc3Doc);
+    expect(current.scan).toEqual(scan);
+    const old = Rc2NormalizedDoc.parse(rc3Doc);
+    expect('scan' in old).toBe(false);
+    expect('docKind' in old.metadata).toBe(false);
+    expect('amends' in old.metadata).toBe(false);
+    expect(old.externalRefs[0]).toEqual({
+      text: 'the general election laws of the state',
+      citation: 'Ohio Rev. Code Title 35',
       kind: 'other',
       sectionIds: [],
-      futureField: 1,
     });
-    expect('futureField' in ref).toBe(false);
+    expect(old.metadata.title).toBe(rc2Metadata.title);
+  });
+
+  it('parses an rc.3 DocDetail and drops only the new fields', () => {
+    const detail = {
+      ...rc2Detail,
+      metadata: rc3Metadata,
+      scan,
+      scenarioPersonas: ['a voter'],
+    };
+    expect(DocDetail.parse(detail).scenarioPersonas).toEqual(['a voter']);
+    const old = Rc2DocDetail.parse(detail);
+    expect('scan' in old).toBe(false);
+    expect('scenarioPersonas' in old).toBe(false);
+    expect(old.hasLineNumbers).toBe(true);
+  });
+
+  it('parses an rc.3 config response without the served-chip list changing', () => {
+    const config = Rc2ClientConfig.parse({
+      productName: 'Product',
+      publicMode: false,
+      freeformEnabled: true,
+      backend: 'local',
+      provider: 'p',
+      model: 'm',
+      chips: [{ id: 'summary', label: 'Summary' }],
+      scenariosEnabled: true,
+      turnstileSiteKey: 'site-key',
+    });
+    expect('scenariosEnabled' in config).toBe(false);
   });
 });
