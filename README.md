@@ -2,33 +2,42 @@
 
 [![CI](https://github.com/ylove/lawglass/actions/workflows/ci.yml/badge.svg)](https://github.com/ylove/lawglass/actions/workflows/ci.yml)
 
-> Paste a link to one bill. Get a plain-language answer to "what does this say, and how does it affect me?", with citations to the sections it drew on, each checked against the text the model was shown.
+**Understand any bill in plain English.** Paste a link to legislation and get a plain-language explanation, with every point cited to the section and line it came from.
 
-The project was called `legislation-summary` until rc.2. If you used the RC, move `~/.legislation-summary` to `~/.lawglass` to keep your saved keys and documents, and rename any `LEGSUM_*` environment variables to `LAWGLASS_*`. The product name lives in one file, [`src/core/brand.ts`](src/core/brand.ts).
+Lawglass is a free, open-source bill explainer. Bills are long, written for lawyers, and full of changes to other laws. Lawglass reads the whole text, then helps you answer the questions that matter: What does this bill do? Who does it affect? How might it affect me? Where did it come from? It runs on your own computer, and it answers only from the bill's own text.
 
-**What it does**
+![Asking "What does it change?" about a federal bill: a cited plain-language answer, then the source drawer with the exact text](docs/demo.gif)
 
-- **Reads the structure, not just the words.** It ingests one URL or local file (XML, HTML, PDF with a text layer, or plain text), finds sections, definitions and cross-references, and tells struck-out text from inserted text.
-- **Retrieves, then answers with citations.** Hybrid retrieval (dense, sparse, rerank) picks the excerpts. The model may use only those, and every `[S:<section>]` citation is checked against what was retrieved.
-- **Runs on your machine.** An `npx` CLI and a local web UI. A built-in local backend needs no account. You bring your own keys.
+_The demo shows a real federal bill, S. 202 of the 119th Congress, answered by Claude._
 
-> **Status: release candidate.** Everything in the [status table](#status) is on `main` and tested. The Pinecone backend passed its live contract suite and a full five-bill eval on a Starter-tier index (2026-10-14).
+## What it does
 
-## Demo
+- **A summary the moment you open a bill.** You never start with a blank page. You see the official title first, then a plain-language summary of what the bill does, with citations.
+- **"What it could mean for one person."** Short illustrated stories show how a bill might land on one made-up person. Numbers about that person, such as an income, are invented, and each one is labeled as an example. Every claim about what the bill does is cited to its text, and any rate or amount comes from the bill itself.
+- **What the bill changes.** Many bills work by editing existing law. Lawglass tells struck-out (removed) text from newly added text, shows a before and after, and never reads removed words as current law.
+- **Who it affects, and when.** Ask who is covered, what the penalties are, when it takes effect, how much money is involved, and what its terms mean.
+- **"How did it get here?"** For federal bills (from GovInfo) and Ohio bills (from the legislature's own API), see the stages, the committees and the versions, drawn from official records. A person or committee is named only when the record names them, never guessed. Strike-through in an introduced bill is the bill rewriting current law, and Lawglass does not call it an amendment by a legislator.
+- **Sponsors, with links to their official pages** where the evidence supports the link. Otherwise you get clearly labeled search links.
+- **Questions in your own words.** Ask "Does this raise my taxes?" or "What does the bill cross out?" and get an answer with citations.
 
-![Asking "What does it change?" about Ohio HB 62: a cited plain-language answer, then the source drawer with struck and underlined text](docs/demo.gif)
+## How to check an answer
 
-_Ohio HB 62 (135th General Assembly, as introduced), answered by Claude Sonnet 5.5 through the local `claude-cli` provider. Recorded with [`scripts/record-demo.ts`](scripts/record-demo.ts)._
+Lawglass is built so you do not have to take its word for anything.
+
+- **Every citation opens the exact text.** Click one to open the source passage next to the answer. For PDFs it shows the page and line. HTML and XML bills have no printed line numbers, so those citations point to the section, and the screen says so.
+- **Struck and added text are marked in the text itself.** Removed text is struck through and added text is underlined, never shown by color alone. Struck text is left out of ordinary answers unless you ask about changes.
+- **It answers only from the bill's text.** No news, no commentary, no outside sources. Each citation is checked against the passages the model was actually shown, and an answer that cites nothing is flagged. When the bill does not cover your question, Lawglass is meant to say so rather than guess.
 
 ## Quick start
 
-Requires Node.js 22.13 or newer (CI runs 22 and 24).
+Requires Node.js 22.13 or newer.
 
-> Not on npm yet (publishing waits on #7). Until then, download the tarball attached to the [`v0.1.0-rc.1` release](https://github.com/ylove/lawglass/releases) (or build your own with `npm pack`) and replace `npx lawglass` below with `npx --package ./<tarball>.tgz legislation-summary` (the rc.1 tarball still uses the old command name).
+> Not on npm yet (publishing waits on [#7](https://github.com/ylove/lawglass/issues/7)). Until then, download the tarball attached to the [`v0.1.0-rc.1` release](https://github.com/ylove/lawglass/releases) (or build your own with `npm pack`) and replace `npx lawglass` below with `npx --package ./<tarball>.tgz legislation-summary` (the rc.1 tarball still uses the old command name).
 
 ```sh
 npx lawglass init                       # save provider keys (file mode 0600)
 npx lawglass <url>                      # ingest, then serve and open the document
+npx lawglass <url> --no-open            # same, without opening the browser
 npx lawglass ingest <url> --name hb62   # ingest only, with a label
 npx lawglass ingest ./bill.pdf          # a local file works too (CLI only)
 npx lawglass ask hb62 "When does this take effect?"
@@ -38,48 +47,38 @@ npx lawglass remove hb62
 npx lawglass serve --port 4317          # local web UI; --public allows chips only; --no-open skips the browser
 ```
 
-`<doc>` is a label or a doc-id prefix. Flags are defined in [`src/cli/program.ts`](src/cli/program.ts).
+Paste a bill's own page, for example:
 
-- `--chip <id>` is one of `summary`, `what-changes`, `who-affected`, `penalties`, `effective-date`, `money`, `definitions`, `sponsors`. Each chip has its own retrieval strategy in [`src/core/chips.ts`](src/core/chips.ts). `sponsors` reads metadata only and makes no LLM call.
-- `--backend pinecone|local` overrides backend selection on `ingest`, `ask`, `list`, `remove`, `serve` and `eval`.
-- A local path or `file://` URL is read directly, with the same 50 MB cap and format sniffing as a download. Only the file name is recorded, never the directory. The web server accepts only `http(s)` URLs, so a web request can never name a local file.
-- If an HTML page only wraps the real bill, ingest lists the candidate PDF/XML links and stops. It never follows them on its own.
-- Re-ingesting the same bytes is a no-op: the `docId` is the SHA-256 of the raw bytes. The default cap is 5 documents, evicting the least recently used.
+- A federal bill on congress.gov: `https://www.congress.gov/bill/119th-congress/senate-bill/202`
+- An Ohio bill: `https://www.legislature.ohio.gov/legislation/136/sb113`
 
-### Keys and providers
+If the link does not name a text version, Lawglass reads the latest one in the official record and tells you which version it read. You can also paste a PDF, XML, HTML or plain-text link, or a local file.
 
-`init` writes `~/.lawglass/config.json`. Environment variables win over the file. `init --non-interactive` copies the provider settings and keys currently in your environment into that file (mode 0600) without prompting, which is meant for scripted setups; it prints no keys. Without a configured provider, `ask` and `ingest` fail with a message listing the options. List, remove and the `sponsors` chip work without any key.
+`init` asks for the key of an AI provider (Anthropic, OpenAI or Google, or any OpenAI-compatible endpoint). Your keys stay on your machine and go only to their own provider. Your question and the passages needed to answer it are what get sent to the provider. Provider details are in the engineers' section below. `<doc>` above is a label or a document-id prefix, and every flag is defined in [`src/cli/program.ts`](src/cli/program.ts).
 
-| Provider     | Key                 | Notes                                                                                      |
-| ------------ | ------------------- | ------------------------------------------------------------------------------------------ |
-| `anthropic`  | `ANTHROPIC_API_KEY` | Defaults `claude-sonnet-5-5` (answers) and `claude-haiku-5-5` (metadata extraction)        |
-| `openai`     | `OPENAI_API_KEY`    | `OPENAI_BASE_URL` points it at any OpenAI-compatible endpoint (OpenRouter, Ollama, Groq)   |
-| `google`     | `GOOGLE_API_KEY`    | Official Google GenAI SDK                                                                  |
-| `claude-cli` | none                | Opt-in, local development only: `LAWGLASS_LLM_PROVIDER=claude-cli`. Uses your own `claude` |
-| `mock`       | none                | Deterministic, used by tests and CI                                                        |
+`--chip <id>` is one of `summary`, `what-changes`, `who-affected`, `penalties`, `effective-date`, `money`, `definitions`, `sponsors`.
 
-Keyless HTTP endpoints are accepted only on `localhost`, `127.0.0.1` or `[::1]`. The `claude-cli` provider never reads or forwards credentials and is never chosen automatically ([decision 0003](docs/decisions/0003-claude-cli-provider.md), [provider details](docs/llm-providers.md)). Override models with `LAWGLASS_ANSWER_MODEL` and `LAWGLASS_EXTRACT_MODEL`.
+Coming from the earlier `legislation-summary` name? Move `~/.legislation-summary` to `~/.lawglass` to keep your saved keys and documents, and rename any `LEGSUM_*` environment variables to `LAWGLASS_*`.
 
-### Backends
+## Not legal advice
 
-- **local** (default): no Docker, no account. Dense vectors from quantized `bge-small-en-v1.5` (384 dimensions) via transformers.js, sparse search with an explicit BM25 (`k1=1.2`, `b=0.75`), and a quantized MiniLM cross-encoder as reranker. About 59 MB of models download once, from revisions pinned in [`models.lock.json`](models.lock.json). Code: [`src/core/index/local/`](src/core/index/local/).
-- **pinecone**: selected when `PINECONE_API_KEY` resolves; integrated-inference dense and sparse indexes plus hosted rerank ([decision 0001](docs/decisions/0001-pinecone-plus-local-backend.md)). Each document is a namespace. A document counts as indexed only after a completion marker is written once every batch has landed in both indexes, so a half-finished ingest is never mistaken for a finished one. Code: [`src/core/index/pinecone/`](src/core/index/pinecone/). Its live contract suite runs nightly when a key is configured. It passed 21 of 21 on 2026-10-14; a later run hit one eventual-consistency flake, a search issued right after a delete that still returned the deleted record ([#163](https://github.com/ylove/lawglass/issues/163)).
+Lawglass explains what a bill's text says. It is not a lawyer, and it does not tell you what a bill means for your situation. For a decision that matters, read the cited text and talk to a qualified attorney. Know its limits:
 
-Embeddings never go through the LLM provider.
+- **US first.** It was built and tested on U.S. federal and Ohio bills. Other jurisdictions may work if you give it the bill's text, but you get no history view.
+- **History covers federal and Ohio only,** and only what those official records contain.
+- **Scanned PDFs are not supported.** A PDF needs a text layer. A scan stops with a clear message.
+- **Plain language is a goal, not a promise.** The target reading level is 7th grade. Answers often read higher: in our evaluation, measured grades averaged 8.5 to 10.2, mostly because legal terms push the score up ([results](docs/eval-analysis.md)).
+- **It can be wrong.** In testing, every citation pointed at a passage the model was shown, but a citation shows where an answer came from, not that the answer is right. Check the cited text.
+- **Scenarios are illustrations.** The people in them are made up, and the dollar figures about them are examples.
 
-Pinecone retries 429 responses with jittered exponential backoff, honors exposed `Retry-After` values, and supports cancellation. Each write request (including the completion marker) has a 10-minute budget; searches and reranking have a 60-second budget. Set `LAWGLASS_PINECONE_UPSERT_RETRY_BUDGET_MS` or `LAWGLASS_PINECONE_QUERY_RETRY_BUDGET_MS` to override these budgets. Optional `LAWGLASS_PINECONE_UPSERT_BATCH_DELAY_MS` pacing waits between chunk batches after both indexes have accepted the previous batch. It defaults to zero and never delays a single-batch bill. Chunk batches hold at most 96 records and at most `LAWGLASS_PINECONE_UPSERT_MAX_BATCH_TOKENS` estimated embedding tokens (default 20,000), because Starter's per-minute embedding-token limit ([limits](https://docs.pinecone.io/reference/api/database-limits)) makes an over-large request fail with 429 forever. If a batch still gets three consecutive 429s or 60 seconds of them, it is halved and the halves are retried, down to one record; only then does the 10-minute budget apply. The smaller size is kept for the rest of that ingest. Only 429 is retried; 5xx and 402 (quota) errors fail immediately. A first ingest clears the document's namespaces before writing, so a late write from an earlier failed attempt cannot leave orphans. These environment names use the prefix from [`BRAND.envPrefix`](src/core/brand.ts).
+> **Status: release candidate.** Everything described here is on `main` and tested.
 
-### Status
+<details>
+<summary>For engineers and recruiters: how it works, retrieval quality, cost and security</summary>
 
-| Piece                                                                   | State on `main`                                                                             |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Fetch, parse, enrich, chunk, local backend, retrieval, answer, chips    | Implemented and tested                                                                      |
-| CLI `init`, `ingest`, `ask`, `list`, `remove`, `serve`, `eval`, `<url>` | Implemented and tested; e2e and package smoke run in CI                                     |
-| Server: REST, SSE, public mode, web UI                                  | Implemented and tested                                                                      |
-| Eval harness and golden sets                                            | Implemented; results in [`eval/results.md`](eval/results.md)                                |
-| Pinecone adapter and CLI runtime                                        | Wired into all commands; live contract suite and five-bill eval run on Starter (2026-10-14) |
+Lawglass is a production-style RAG pipeline: structure-aware parsing, hybrid retrieval (dense, sparse, rerank), validated citations, and a measured eval. This section holds the architecture, the cost case against stuffing the whole bill into the prompt, the eval results (including the misses), security notes, and development setup.
 
-## Architecture
+### Architecture
 
 ```mermaid
 flowchart LR
@@ -115,7 +114,7 @@ Everything below `NormalizedDoc` is format-agnostic. The CLI, server and eval al
 - **Chips** ([`src/core/chips.ts`](src/core/chips.ts)). Eight one-click questions, each with an explicit strategy: sparse-heavy (`effective-date`, `penalties`), filtered by chunk type (`money`, `definitions`), reranked (`who-affected`), outline map-reduce (`summary`), exact amendment spans (`what-changes`), and metadata only (`sponsors`).
 - **Surfaces.** CLI in [`src/cli/`](src/cli/), server in [`src/server/`](src/server/), React UI in [`src/web/`](src/web/).
 
-## Why retrieval instead of stuffing the context window
+### Why retrieval instead of stuffing the context window
 
 Measured on the largest fixture, the FY2025 NDAA (8,618 sections), against Claude Sonnet 5.5's 1M-token window ([full write-up](docs/eval-analysis.md#retrieval-or-the-whole-bill-in-the-prompt)):
 
@@ -128,7 +127,7 @@ Measured on the largest fixture, the FY2025 NDAA (8,618 sections), against Claud
 
 On this small sample the whole bill was at least as accurate: retrieval missed _"What is the full short title of this Act?"_ because the NDAA has dozens of "may be cited as" sections. Retrieval's case is cost (about 200 times fewer tokens), bills that do not fit at all (the NDAA compact form already fills 94% of the window), and what a pipeline can do that a flat prompt cannot: keep struck text out unless the question is about changes, add the definitions a passage depends on, cite page and line, and pick a strategy per question.
 
-## Amendment markup
+### Amendment markup
 
 Bills that amend existing law show the change with typography: struck-through text is being repealed and underlined text is being added. In a PDF's text layer, or in flattened HTML, repealed words are character-for-character ordinary words. A naive RAG pipeline embeds them as current law, retrieves them, and answers "the bill requires X" when the bill deletes X. For a legislation tool that is the failure that matters most.
 
@@ -144,7 +143,7 @@ How it is handled:
 
 The real Ohio HB 62 fixture (135th General Assembly, as introduced) parses to 26 struck runs and 28 inserted runs, matching a count taken by hand on the rendered pages. Fixtures are downloaded locally, never committed (see [Development](#development)).
 
-## Retrieval quality
+### Retrieval quality
 
 Retrieval quality is measured, not asserted. Five golden sets are frozen in [`src/eval/golden/`](src/eval/golden/), 21 to 28 questions each, for Ohio SB 113, SB 203 and HB 62, federal S. 202 and federal H.R. 5009 (the FY2025 NDAA, about 1.8 million characters). Each question names its expected `section_id`s and has a kind: exact citation lookup, paraphrase, definition-dependent, "what does it remove" (struck text), or unanswerable (three per set, which should be declined). The sets were frozen at commit `7639f18` before the first run and have not been edited since.
 
@@ -183,7 +182,7 @@ What this shows, plainly:
 
 Caveats: 21 to 28 questions per bill means one question moves recall@5 by about 0.05. Ranks are chunk ranks (the first chunk whose section, or an ancestor or descendant, is expected). Two questions name their section numbers outright (hb62-03, sb203-08), and some paraphrases reuse rare words from the text, which makes them easier for BM25.
 
-## Security notes
+### Security notes
 
 - **SSRF guard** ([`src/core/fetch/`](src/core/fetch/)).
   - Resolved addresses are checked against private, loopback, link-local, CGNAT, multicast, documentation, unique-local and other special-use IPv4 and IPv6 ranges. Cloud metadata `169.254.169.254` falls inside link-local.
@@ -197,7 +196,40 @@ Caveats: 21 to 28 questions per bill means one question moves recall@5 by about 
 - **Bring your own keys.** `init` writes the config file with mode 0600. A config file that other users can read is refused: commands skip it with a warning, and `init` stops unless `--force` replaces it. Keys are read from the environment first, then that file, then a masked prompt on a TTY. Keys go only to their own provider, are not inferred from another provider's variables, and are never logged or put in error messages; SDK diagnostic logging is off. `.env` and fixtures are ignored by git, and CI runs Gitleaks over the full history.
 - **`claude-cli` sandboxing.** Each call runs in a fresh temporary directory holding only the system prompt file, with built-in tools disabled (`--tools ""`), all MCP servers disabled, one turn, slash commands, hooks and settings sources off, no session persistence, and no permission-bypass flag. The child sees only basic process variables plus `CLAUDE_*` and `ANTHROPIC_*`, so other providers' keys and app settings are excluded. It refuses to run for real in CI.
 
-## Development
+### Providers, keys and backends
+
+`init` writes `~/.lawglass/config.json`. Environment variables win over the file. `init --non-interactive` copies the provider settings and keys currently in your environment into that file (mode 0600) without prompting, which is meant for scripted setups; it prints no keys. Without a configured provider, `ask` and `ingest` fail with a message listing the options. List, remove and the `sponsors` chip work without any key.
+
+| Provider     | Key                 | Notes                                                                                      |
+| ------------ | ------------------- | ------------------------------------------------------------------------------------------ |
+| `anthropic`  | `ANTHROPIC_API_KEY` | Defaults `claude-sonnet-5-5` (answers) and `claude-haiku-5-5` (metadata extraction)        |
+| `openai`     | `OPENAI_API_KEY`    | `OPENAI_BASE_URL` points it at any OpenAI-compatible endpoint (OpenRouter, Ollama, Groq)   |
+| `google`     | `GOOGLE_API_KEY`    | Official Google GenAI SDK                                                                  |
+| `claude-cli` | none                | Opt-in, local development only: `LAWGLASS_LLM_PROVIDER=claude-cli`. Uses your own `claude` |
+| `mock`       | none                | Deterministic, used by tests and CI                                                        |
+
+Keyless HTTP endpoints are accepted only on `localhost`, `127.0.0.1` or `[::1]`. The `claude-cli` provider never reads or forwards credentials and is never chosen automatically ([decision 0003](docs/decisions/0003-claude-cli-provider.md), [provider details](docs/llm-providers.md)). Override models with `LAWGLASS_ANSWER_MODEL` and `LAWGLASS_EXTRACT_MODEL`.
+
+#### Backends
+
+- **local** (default): no Docker, no account. Dense vectors from quantized `bge-small-en-v1.5` (384 dimensions) via transformers.js, sparse search with an explicit BM25 (`k1=1.2`, `b=0.75`), and a quantized MiniLM cross-encoder as reranker. About 59 MB of models download once, from revisions pinned in [`models.lock.json`](models.lock.json). Code: [`src/core/index/local/`](src/core/index/local/).
+- **pinecone**: selected when `PINECONE_API_KEY` resolves; integrated-inference dense and sparse indexes plus hosted rerank ([decision 0001](docs/decisions/0001-pinecone-plus-local-backend.md)). Each document is a namespace. A document counts as indexed only after a completion marker is written once every batch has landed in both indexes, so a half-finished ingest is never mistaken for a finished one. Code: [`src/core/index/pinecone/`](src/core/index/pinecone/). Its live contract suite runs nightly when a key is configured. It passed 21 of 21 on 2026-10-14; a later run hit one eventual-consistency flake, a search issued right after a delete that still returned the deleted record ([#163](https://github.com/ylove/lawglass/issues/163)).
+
+Embeddings never go through the LLM provider.
+
+Pinecone ingest handles rate limits for you. It retries 429 responses with jittered exponential backoff, honors `Retry-After`, splits an over-large batch in half down to one record, and counts a document as indexed only after a completion marker is written. Only 429 is retried; 5xx and 402 (quota) errors fail immediately. Budgets and pacing are tunable with the `LAWGLASS_PINECONE_*` environment variables (`UPSERT_RETRY_BUDGET_MS`, `QUERY_RETRY_BUDGET_MS`, `UPSERT_BATCH_DELAY_MS`, `UPSERT_MAX_BATCH_TOKENS`); defaults are in [`src/core/index/pinecone/`](src/core/index/pinecone/).
+
+### Status
+
+| Piece                                                                   | State on `main`                                                                             |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Fetch, parse, enrich, chunk, local backend, retrieval, answer, chips    | Implemented and tested                                                                      |
+| CLI `init`, `ingest`, `ask`, `list`, `remove`, `serve`, `eval`, `<url>` | Implemented and tested; e2e and package smoke run in CI                                     |
+| Server: REST, SSE, public mode, web UI                                  | Implemented and tested                                                                      |
+| Eval harness and golden sets                                            | Implemented; results in [`eval/results.md`](eval/results.md)                                |
+| Pinecone adapter and CLI runtime                                        | Wired into all commands; live contract suite and five-bill eval run on Starter (2026-10-14) |
+
+### Development
 
 ```sh
 npm ci
@@ -233,19 +265,17 @@ CodeQL, a nightly Pinecone contract check (only with a key) and a local-model of
 
 Conventions are in [`AGENTS.md`](AGENTS.md): the frozen contracts in `src/core/model/`, the product name only in `brand.ts`, tests beside code, and no network in unit tests. The [spec](docs/spec.md) is the source of truth and its Amendments override the rest. Design choices and their reasons are recorded in [`docs/decisions/`](docs/decisions/).
 
+</details>
+
 ## Roadmap
 
 - **v1.5:** resolve a bill from number plus jurisdiction to a URL, then run the same pipeline.
 - **v2:** natural-language discovery search across bills.
-- **v2:** allowlisted official secondary sources only (fiscal notes, nonpartisan analyses). News articles are never used.
+- **v2:** official secondary sources only (fiscal notes, nonpartisan analyses). News articles are never used.
 - Fetch statutes that a bill references, which are listed as "referenced, not loaded" today.
 - Akoma Ntoso export of the normalized document.
-- **Known gaps from the eval:** the forks/flatware miss on large bills (both the local and the Pinecone reranker drop Sec. 842; a stronger reranker did not fix it); a sturdier signal than phrase lists for "is this question about what changed" (#104); before-and-after excerpts for one-word strikes in free-form questions (#102); consistent declines (#109); answers closer to a 7th-grade reading level.
+- **Known gaps from the eval:** the forks/flatware miss on large bills; a sturdier signal for "is this question about what changed" ([#104](https://github.com/ylove/lawglass/issues/104)); before-and-after excerpts for one-word strikes in free-form questions ([#102](https://github.com/ylove/lawglass/issues/102)); consistent declines ([#109](https://github.com/ylove/lawglass/issues/109)); answers closer to a 7th-grade reading level.
 - Not planned for the RC: OCR for scanned PDFs, hosted deployment.
-
-## Disclaimer
-
-Not legal advice. Answers are generated only from the text of the document.
 
 ## License
 
