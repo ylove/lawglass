@@ -26,6 +26,46 @@ These override the original text below where they conflict. Rationale for each i
 7. **Citations on XML/HTML** degrade to section-only, since those formats have no printed line numbers. The UI says so.
 8. **SSRF guard** connects to the validated, pinned IP address, so DNS rebinding can't swap the address between the check and the connect.
 
+## Amendments (2026-10-14, rc.2)
+
+These override the original text below, and the 2026-10-13 amendments above, where they conflict. Numbering continues from the first block. Rationale is in [decision 0007](decisions/0007-official-history-sources.md), [0008](decisions/0008-answer-cache.md) and [0009](decisions/0009-scenario-grounding.md).
+
+9. **Known landing pages (§5.1).** `safeFetch` still never follows a link found in a page. The ingest layer may rewrite a _known_ landing-page URL before any fetch, by pure, anchored string mapping. The rewrite reads nothing from the network and takes nothing from page content. Two mappings exist:
+   - **congress.gov bill URLs**, such as `https://www.congress.gov/bill/118th-congress/house-bill/5009`, map to the GovInfo text URL and to `https://www.govinfo.gov/bulkdata/BILLSTATUS/<congress>/<type>/BILLSTATUS-<congress><type><number>.xml`. congress.gov itself is never fetched. It blocks automated clients, and GovInfo is the official bulk source.
+   - **`https://www.legislature.ohio.gov/legislation/<ga>/<bill>`** maps to the Ohio LIS text, `https://search-prod.lis.state.oh.us/api/v2/general_assembly_<ga>/legislation/<bill>/<version>/pdf/`, plus the Ohio history pages (`/status`, `/documents`, `/committee`).
+
+   A URL that does not match a mapping exactly is handled as before. The rules around these fetches:
+   - Every fetch still goes through `safeFetch`: SSRF guard, pinned IP, and re-validation on every redirect.
+   - History adapters may fetch only from an exact-host allowlist: `www.govinfo.gov`, `www.legislature.ohio.gov`, `search-prod.lis.state.oh.us`, and `unitedstates.github.io` (the legislators directory). No host comes from user input.
+   - A history failure never blocks ingest. The text is still read, and the UI says "history unavailable".
+   - The User-Agent is honest and derived from `BRAND`: name, version and repository URL. We never spoof a browser. On 2026-10-14 Ohio returned 200 to an honest User-Agent and 403 only to curl's default.
+
+10. **Legislative history (new §5.8).** The document screen may show a bill's history: its stages, its committees, and the changes between versions.
+    - **Sources** are official and keyless, and for rc.2 federal and Ohio only. News is still never used.
+    - **Attribution rule.** Name a person or committee only when the official record names them. Otherwise say "an amendment" or "between these versions". A guess at who changed a bill is worse than no name.
+    - **Strike-through is not an amendment.** In an introduced bill, strike-through and underline are the bill rewriting current law. They are not a legislator's amendment. The copy keeps the two apart: "the bill removes this language from current law" is never worded as "an amendment removed it".
+    - **Official summary.** The Congressional Research Service (CRS) summary, read from BILLSTATUS, may be shown with the label "Official summary". This moves part of the "official secondary sources" item in §2 forward, for official government sources only. Fiscal notes and other analyses stay in v2.
+
+11. **Sponsor links.** Sponsors link out only as far as the evidence goes.
+    - Federal sponsors are joined to the `unitedstates/congress-legislators` dataset by `bioguideId` only, never by name. Names collide and change.
+    - Ohio links come only from member links on the bill's own official page.
+    - Everywhere else, Ballotpedia and Wikipedia _search_ links are offered. They are labeled as searches and carry `verified: false`, because we have not confirmed that they reach the right person.
+
+12. **Summary on arrival (§3.2, §3.3).** Opening a document never shows an empty page.
+    - First comes an instant purpose clause or the official title. No LLM call is involved.
+    - Then the plain-language `summary` chip runs once, automatically.
+    - The result is cached on disk (mode 0600) under a key of `docId`, chip, provider, model and prompt version, so it is never paid for twice. Concurrent requests for the same key are de-duplicated into one call.
+    - Public mode (§7) serves cached summaries only. It never starts generation for an anonymous visitor.
+
+13. **Scenarios (new §5.9).** A scenario is an illustrated user story of 3 to 4 frames. Each frame is an avatar, an icon and a short caption. It shows how a bill's effects might land on one made-up person.
+    - **Numbers.** Profile numbers, such as a made-up person's income, home value or tax bill, are invented. They are always visibly labeled "example". Effects use only rates and amounts stated in the bill, each cited, or a calculation shown from those figures plus the labeled assumptions. When the bill states no figure, the frame stays qualitative.
+    - **Validation.** A validator checks every citation and every figure. A frame that fails is made qualitative. A scenario with fewer than 3 surviving frames is dropped.
+    - **Language.** Neutral. Frames describe effects and never judge them.
+    - **When it shows.** With the summary when the bill is focused on one subject. For a bill on many subjects, only alongside answers to questions that benefit from a story, such as "how will this affect me / my family / businesses?".
+    - **Closed lists.** Avatars and icons are chosen from closed lists, and persona names come from a fixed neutral list. The model never produces markup.
+
+14. **Visual direction (§3.2).** The UI has an editorial look, made for interested citizens and self-styled researchers. It uses a trust-building blue palette that is never paired with party red, since red and blue together read as partisan. Fonts are self-hosted, so opening a bill sends nothing to a third party. Struck and inserted text is never shown by color alone: strike-through and underline are always present. The UI meets WCAG AA.
+
 ## 1. Purpose
 
 A local-first tool that takes the URL of any piece of legislation (federal, state, county, municipal), ingests it into Pinecone using structure-aware chunking and hybrid retrieval, and answers questions about it with citations to the exact section, page, and line.
