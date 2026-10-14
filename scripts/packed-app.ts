@@ -124,11 +124,21 @@ export async function startPackedServer(
   binary: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
+  port = 0,
 ): Promise<PackedServer> {
-  // Port 0 is assigned by the OS, avoiding a free-port probe/bind race.
+  // Port 0 is assigned by the OS, avoiding a free-port probe/bind race. A caller that restarts
+  // a server (the server-down e2e) passes the old port back so the open page can reach it again.
   const child = spawn(
     process.execPath,
-    [binary, 'serve', '--backend', 'local', '--port', '0', '--no-open'],
+    [
+      binary,
+      'serve',
+      '--backend',
+      'local',
+      '--port',
+      String(port),
+      '--no-open',
+    ],
     {
       cwd,
       env,
@@ -174,7 +184,7 @@ export async function startPackedServer(
 export interface PackedApp {
   home: string;
   cli(...args: string[]): Promise<string>;
-  serve(): Promise<PackedServer>;
+  serve(port?: number): Promise<PackedServer>;
   dispose(): Promise<void>;
 }
 
@@ -267,8 +277,8 @@ export async function createPackedApp(): Promise<PackedApp> {
     return {
       home,
       cli,
-      async serve() {
-        const server = await startPackedServer(binary, installDir, env);
+      async serve(port) {
+        const server = await startPackedServer(binary, installDir, env, port);
         servers.push(server);
         return server;
       },
