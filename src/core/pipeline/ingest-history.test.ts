@@ -387,7 +387,12 @@ test('eviction deletes history alongside the cached document and namespace', asy
 
 test('an aborted history read is propagated instead of ingesting text', async () => {
   const controller = new AbortController();
-  controller.abort();
+  // Abort once the history read has started (a signal aborted before `ingest` is now refused
+  // by the concurrency limiter without fetching anything).
+  vi.mocked(deps.fetcher).mockImplementationOnce(() => {
+    controller.abort();
+    return Promise.reject(new DOMException('aborted', 'AbortError'));
+  });
   await expect(
     ingest(`${page}/text/ih`, deps, { signal: controller.signal }),
   ).rejects.toThrow();

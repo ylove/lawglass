@@ -16,6 +16,7 @@ import {
 } from '../../../tests/support/pipeline-env.js';
 import { AppError, type AnswerResult } from '../model/index.js';
 import { ingest, type IngestDeps, type IngestProgress } from './ingest.js';
+import { Limits } from './limits.js';
 
 let env: PipelineEnv;
 afterEach(async () => {
@@ -545,4 +546,56 @@ test('metadata text does not repeat header lines that the body already starts wi
   await ingest('https://example.gov/a.txt', deps());
   expect(seen).toHaveLength(1);
   expect(seen[0]?.match(/Short title/g)).toHaveLength(2); // heading line + body, not three times
+});
+
+test('ingest queues beyond its concurrency limit and fails past the per-minute ceiling', async () => {
+  env.serve('https://example.gov/s9001.xml', makeCongressionalBillXml());
+  let running = 0;
+  let peak = 0;
+  const releases: (() => void)[] = [];
+  const realFetch = env.runtime.fetcher;
+  const fetcher: IngestDeps['fetcher'] = async (url, options) => {
+    running += 1;
+    peak = Math.max(peak, running);
+    await new Promise<void>((r) => releases.push(r));
+    running -= 1;
+    return realFetch(url, options);
+  };
+  const limits = new Limits(
+    { maxConcurrentIngest: 1, maxConcurrentAsk: 4, maxCallsPerMinute: 2 },
+    () => 0,
+  );
+  const runs = [1, 2].map(() =>
+    ingest('https://example.gov/s9001.xml', deps({ fetcher, limits })),
+  );
+  await vi.waitFor(() => {
+    expect(running).toBe(1);
+  });
+  // The ceiling counts the queued call too, so a third is refused immediately.
+  await expect(
+    ingest('https://example.gov/s9001.xml', deps({ fetcher, limits })),
+  ).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+  const state = { settled: false };
+  const all = Promise.allSettled(runs).then((r) => {
+    state.settled = true;
+    return r;
+  });
+  while (!state.settled) {
+    releases.shift()?.();
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  expect((await all).map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
+  expect(peak).toBe(1);
+});
+
+test('an already-aborted ingest does nothing', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const fetcher = vi.fn();
+  await expect(
+    ingest('https://example.gov/s9001.xml', deps({ fetcher }), {
+      signal: controller.signal,
+    }),
+  ).rejects.toBeDefined();
+  expect(fetcher).not.toHaveBeenCalled();
 });
