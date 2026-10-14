@@ -152,7 +152,8 @@ const SECTIONS: MockSection[] = [
   },
 ];
 
-const ANSWERS: Record<ChipId, string> = {
+// `history` is not served yet (#128), so it has no canned answer.
+const ANSWERS: Record<Exclude<ChipId, 'history'>, string> = {
   summary:
     'This bill requires water utilities to replace lead pipes and sets fines for missing the deadline [S:sec-4/b]. It takes effect on July 1, 2027 [S:sec-7].\n\nIt also defines the key terms it uses, such as "public water system" and "utility" [S:sec-2/a].',
   'what-changes':
@@ -471,7 +472,7 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
         req.question !== undefined && /moon|recipe|weather/i.test(req.question);
       const text = declined
         ? DECLINE_TEXT
-        : req.chipId
+        : req.chipId && req.chipId !== 'history'
           ? ANSWERS[req.chipId]
           : ANSWERS.penalties;
 

@@ -389,6 +389,40 @@ describe('document flow', () => {
     expect((await screen.findByRole('alert')).textContent).toMatch(/cut off/);
   });
 
+  test('a scenario event is ignored safely until the UI renders it (#131)', async () => {
+    const api = mock();
+    const real = api.ask.bind(api);
+    api.ask = async function* (...args: Parameters<ApiClient['ask']>) {
+      yield {
+        type: 'scenario' as const,
+        scenario: {
+          subject: 'x',
+          profile: {
+            name: 'A',
+            label: 'A renter',
+            assumptions: [],
+            illustrative: true as const,
+          },
+          frames: ['setup', 'rule', 'effect'].map((kind) => ({
+            kind: kind as 'setup',
+            avatar: 'person-a' as const,
+            icon: 'house' as const,
+            caption: 'c',
+            citations: [],
+          })),
+        },
+      };
+      yield* real(...args);
+    };
+    render(<App api={api} />);
+    await ready();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Summarize this bill' }),
+    );
+    expect(await screen.findByText(/lead pipes/)).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
   test('an error event from the server is shown and chips work again', async () => {
     const api = mock(true);
     const [doc] = await api.listDocs();

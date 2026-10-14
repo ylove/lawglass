@@ -15,7 +15,7 @@
  * The shape is the frozen `ChipDefinition` contract. The executor that runs a chip lives in
  * ./chip-runner.ts (re-exported here), so this file stays plain, readable configuration.
  */
-import { ChipDefinition, type ChipId } from './model/index.js';
+import { AppError, ChipDefinition, type ChipId } from './model/index.js';
 
 export { runChip } from './chip-runner.js';
 export type {
@@ -186,9 +186,15 @@ export const CHIPS: readonly ChipDefinition[] = Object.freeze([
   sponsors,
 ]);
 
-/** The chip with this id. Every `ChipId` has one (enforced by a test). */
+/**
+ * The chip with this id. Every served chip has one (enforced by a test). `history` is in the
+ * `ChipId` contract but has no definition until #128, so asking for it is a clear refusal.
+ */
 export function getChip(id: ChipId): ChipDefinition {
   const chip = CHIPS.find((c) => c.id === id);
-  if (!chip) throw new Error(`Unknown chip: ${id}`);
+  if (!chip)
+    throw new AppError('INVALID_INPUT', `Chip not available yet: ${id}`, {
+      userMessage: 'That question chip is not available yet.',
+    });
   return chip;
 }

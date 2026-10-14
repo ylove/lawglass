@@ -10,11 +10,14 @@
  *   GET    /api/docs/:docId                         -> DocDetail
  *   DELETE /api/docs/:docId                         -> 204
  *   GET    /api/docs/:docId/sections/:sectionId     -> SectionExcerpt   (sectionId URL-encoded)
+ *   GET    /api/docs/:docId/summary                 -> SummaryResponse (future)
  *   POST   /api/docs/:docId/ask   AskRequest        -> SSE stream of AskEvent
  */
 import { z } from 'zod';
 import { AnswerResult, ChipId } from './answer.js';
 import { ChunkType } from './chunk.js';
+import { BillHistory } from './history.js';
+import { Scenario } from './scenario.js';
 import {
   BillMetadata,
   DocFormat,
@@ -124,6 +127,16 @@ export const DocDetail = z.object({
   warnings: z.array(z.string()),
   /** False for XML/HTML: citations are section-only (no printed line numbers). */
   hasLineNumbers: z.boolean(),
+  /** Official history (summary, versions, actions, amendments), when available. */
+  history: BillHistory.optional(),
+  /** One-line "what is this bill" shown before any question is asked. */
+  preview: z
+    .object({
+      kind: z.enum(['purpose', 'title']),
+      text: z.string(),
+      sectionId: SectionId.optional(),
+    })
+    .optional(),
 });
 export type DocDetail = z.infer<typeof DocDetail>;
 
@@ -166,7 +179,15 @@ export const AskEvent = z.discriminatedUnion('type', [
     latencyMs: z.number(),
   }),
   z.object({ type: z.literal('token'), text: z.string() }),
+  z.object({ type: z.literal('scenario'), scenario: Scenario }),
   z.object({ type: z.literal('done'), answer: AnswerResult }),
   z.object({ type: z.literal('error'), error: ErrorPayload }),
 ]);
 export type AskEvent = z.infer<typeof AskEvent>;
+
+/** Response for `GET /api/docs/:docId/summary`: a cached summary, one being made, or off. */
+export const SummaryResponse = z.object({
+  status: z.enum(['cached', 'pending', 'disabled']),
+  answer: AnswerResult.optional(),
+});
+export type SummaryResponse = z.infer<typeof SummaryResponse>;
