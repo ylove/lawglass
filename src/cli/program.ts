@@ -222,6 +222,7 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
             ? lazyProvider(() => runtime.answerProvider)
             : runtime.answerProvider;
         const entry = await runtime.registry.findByLabelOrPrefix(doc);
+        const isHistoryChip = chip?.success === true && chip.data === 'history';
         const result = await ask(
           entry.docId,
           chip?.success ? { chipId: chip.data } : { question: question ?? '' },
@@ -234,7 +235,8 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
           },
           {
             onToken: (text) => {
-              write(safeText(unescapeRecordText(text)));
+              // Only the history chip's text was escaped by our code; model text prints unchanged.
+              write(safeText(isHistoryChip ? unescapeRecordText(text) : text));
             },
           },
         );

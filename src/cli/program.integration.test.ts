@@ -258,6 +258,50 @@ test.each([
   expect(seen).toEqual(['local']);
 });
 
+test('ask prints text from other chips and the model unchanged (no unescaping)', async () => {
+  await run(['ingest', 'https://example.gov/gardens.txt', '--name', 'g']);
+  const modelish = {
+    ...env.runtime,
+    chips: (
+      _chip: unknown,
+      _docId: unknown,
+      _ctx: unknown,
+      opts: { onToken?: ((t: string) => void) | undefined },
+    ) => {
+      opts.onToken?.('Saved to C:\\*.txt');
+      return Promise.resolve({
+        answer: {
+          text: 'Saved to C:\\*.txt',
+          citations: [],
+          invalidCitations: [],
+          warnings: [],
+          declined: false,
+          readingGrade: null,
+          provider: 'mock' as const,
+          model: 'm',
+          usage: { inputTokens: 0, outputTokens: 0 },
+        },
+        hits: [],
+        backendUsage: {
+          embedTokens: 0,
+          rerankUnits: 0,
+          readUnits: 0,
+          writeUnits: 0,
+        },
+        mode: 'none' as const,
+      });
+    },
+  };
+  output = '';
+  await createProgram({
+    runtime: () => Promise.resolve(modelish),
+    write: (t) => {
+      output += t;
+    },
+  }).parseAsync(['ask', 'g', '--chip', 'summary'], { from: 'user' });
+  expect(output).toContain('Saved to C:\\*.txt');
+});
+
 test('ask --chip does not require an LLM key until a model call is made', async () => {
   await run(['ingest', 'https://example.gov/gardens.txt', '--name', 'g']);
   const needs: boolean[] = [];
