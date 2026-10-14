@@ -42,7 +42,7 @@ const UNPARSEABLE_QUANTITY = new RegExp(
     '\\b(?:a|an) (?:first|second|third|\\w+th)s? of\\b',
     '\\bquarters? of\\b',
     // Bare "quarter" as a fraction; "each/every/per quarter" is a period.
-    '(?<!\\b(?:each|every|per)[ -])\\bquarter\\s+(?:shares?|portions?|rates?)\\b',
+    '(?<!\\b(?:each|every|per)[ -])\\bquarter[\\s-]+(?:shares?|portions?|rates?)\\b',
     '\\b\\d+(?:\\.\\d{3})+\\b',
     '\\b0x[0-9a-f]+\\b',
     '\\b(?:halves|thirds|quarters|fourths|fifths|sixths|eighths|tenths)\\b',
@@ -60,9 +60,17 @@ const MONTHS =
   'January|February|March|April|May|June|July|August|September|October|November|December';
 const ORDINALS =
   'first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth';
-// "third of May" is a date; "a third of income" (a fraction) is not matched here.
+// An ordinal is only a label when it is not the tail of a spelled fraction ("one third property tax").
+const NOT_SPELLED_FRACTION =
+  '(?<!\\b(?:one|two|three|four|five|six|seven|eight|nine|ten)[ -])';
 const ORDINAL_LABEL = new RegExp(
-  `\\b(?:${ORDINALS})\\s+(?:(?:${ORDINAL_NOUNS})\\b|of\\s+(?:${MONTHS})\\b)`,
+  `${NOT_SPELLED_FRACTION}\\b(?:${ORDINALS})\\s+(?:${ORDINAL_NOUNS})\\b`,
+  'gi',
+);
+// A date only when introduced by "the"/"on" and the month ends the clause or precedes a year;
+// "a third of May taxes" or "the first of January's income" stay fractions.
+const ORDINAL_DATE = new RegExp(
+  `\\b(?:the|on)\\s+(?:${ORDINALS})\\s+of\\s+(?:${MONTHS})(?=\\s*(?:[.,;:!?)]|$)|\\s+\\d{4}\\b)`,
   'gi',
 );
 const ROMAN_GLYPH = /[\u2160-\u2188]/;
@@ -108,6 +116,7 @@ export function numberTokens(
     .replace(/\b(?:first|second|third|fourth)\s+quarter\b/gi, (m) =>
       ' '.repeat(m.length),
     )
+    .replace(ORDINAL_DATE, (m) => ' '.repeat(m.length))
     .replace(ORDINAL_LABEL, (m) => ' '.repeat(m.length))
     .replace(
       /\b(?:Section|Sec\.|Form)\s+\d+(?:\.\d+)*\b|§\s*\d+(?:\.\d+)*/gi,

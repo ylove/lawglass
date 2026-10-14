@@ -1,6 +1,7 @@
 import type { Scenario } from '../model/index.js';
 import { normalizeUnit } from './numbers.js';
 
+// Verbs like pay/apply/owe stay listed: over-dropping a persona is fine, since the validator fails closed.
 // Stems carry explicit inflections and word boundaries: `ban\w*` would also reject "bank" and "banner".
 const CLAIM_WORD = new RegExp(
   `\\b(?:${[

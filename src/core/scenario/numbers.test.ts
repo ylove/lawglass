@@ -148,17 +148,36 @@ describe('fail-closed caption numbers', () => {
     'A third party files.',
     'A second job pays.',
     'The first form is filed.',
-    'The third of May is a date.',
+    'The third of May.',
     'The third vehicle is listed.',
   ])('keeps %s number-free', (caption) => {
     expect(numberTokens(caption)).toEqual([]);
   });
-  it.each(['A third of income.', 'The second of three.', 'A third share.'])(
-    'still counts ordinals not followed by an allowed noun: %s',
-    (caption) => {
-      expect(numberTokens(caption).length).toBeGreaterThan(0);
-    },
-  );
+  it.each([
+    "A third of May's taxes.",
+    'A third of May taxes.',
+    'A third of April income.',
+    'A fifth of May.',
+    "The first of January's income.",
+    'The third of May taxes.',
+    'one third property tax',
+    'one-third property tax',
+    'one fifth time share',
+    'one tenth round',
+    'The quarter-rate applies.',
+    'A third of income.',
+    'The second of three.',
+    'A third share.',
+  ])('still counts ordinals not followed by an allowed noun: %s', (caption) => {
+    expect(numberTokens(caption).length).toBeGreaterThan(0);
+  });
+  it('treats "the/on <ordinal> of <Month>" as a date, leaving only the year', () => {
+    for (const text of [
+      'On the first of January, 2027 it starts.',
+      'It starts on the first of January 2027.',
+    ])
+      expect(textNumbers(text)).toEqual([{ value: 2027, unit: '' }]);
+  });
   it('does not double count a scale already inside a numeral phrase', () => {
     expect(textNumbers('one thousand dollars')).toEqual([
       { value: 1000, unit: 'usd' },
