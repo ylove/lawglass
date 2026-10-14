@@ -6,7 +6,7 @@
 
 Lawglass is a free, open-source bill explainer. Bills are long, written for lawyers, and full of changes to other laws. Lawglass reads the whole text, then helps you answer the questions that matter: What does this bill do? Who does it affect? How might it affect me? Where did it come from? It runs on your own computer, and it answers only from the bill's own text.
 
-![Asking "What does it change?" about a federal bill: a cited plain-language answer, then the source drawer with the exact text](docs/demo.gif)
+![Opening a real federal bill in Lawglass: a plain-language summary on arrival, an illustrated example, its legislative history and sponsor links, then a cited answer to 'Who does it affect?' with the source text.](docs/demo.gif)
 
 _The demo shows a real federal bill, S. 202 of the 119th Congress, answered by Claude._
 
@@ -56,7 +56,7 @@ If the link does not name a text version, Lawglass reads the latest one in the o
 
 `init` asks for the key of an AI provider (Anthropic, OpenAI or Google, or any OpenAI-compatible endpoint). Your keys stay on your machine and go only to their own provider. Your question and the passages needed to answer it are what get sent to the provider. Provider details are in the engineers' section below. `<doc>` above is a label or a document-id prefix, and every flag is defined in [`src/cli/program.ts`](src/cli/program.ts).
 
-`--chip <id>` is one of `summary`, `what-changes`, `who-affected`, `penalties`, `effective-date`, `money`, `definitions`, `sponsors`.
+`--chip <id>` is one of `summary`, `what-changes`, `history`, `who-affected`, `penalties`, `effective-date`, `money`, `definitions`, `sponsors`.
 
 Coming from the earlier `legislation-summary` name? Move `~/.legislation-summary` to `~/.lawglass` to keep your saved keys and documents, and rename any `LEGSUM_*` environment variables to `LAWGLASS_*`.
 
