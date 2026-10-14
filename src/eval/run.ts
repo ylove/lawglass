@@ -26,6 +26,7 @@ import {
   type RetrievalBackend,
   type RetrievalMetrics,
   type RetrievalMode,
+  type SpanStatus,
 } from '../core/model/index.js';
 import { ZERO_USAGE, addUsage } from '../core/model/index.js';
 import { memoryFetcher, type EvalFixture } from './fixtures.js';
@@ -114,13 +115,39 @@ export interface RunEvalResult {
   unmatchedGolden: string[];
 }
 
-/** Text of every struck span in the document: what an answer must not repeat as current law. */
-export function struckSpanTexts(doc: NormalizedDoc): string[] {
+/** Coalesce runs within a section; printing/markup whitespace does not end a run. */
+function spanRunTexts(
+  doc: Pick<NormalizedDoc, 'sections'>,
+  include: (status: SpanStatus) => boolean,
+): string[] {
   const texts: string[] = [];
-  for (const section of walkSections(doc.sections))
-    for (const span of section.spans)
-      if (span.status === 'deleted') texts.push(span.text);
+  for (const section of walkSections(doc.sections)) {
+    let run: string[] = [];
+    const flush = (): void => {
+      if (run.length > 0) texts.push(run.join(' '));
+      run = [];
+    };
+    for (const span of section.spans) {
+      if (!span.text.trim()) continue;
+      if (include(span.status)) run.push(span.text.trim());
+      else flush();
+    }
+    // Never join separate provisions, including a parent and its child.
+    flush();
+  }
   return texts;
+}
+
+/** Contiguous deleted text, including runs split across printed lines. */
+export function struckSpanTexts(
+  doc: Pick<NormalizedDoc, 'sections'>,
+): string[] {
+  return spanRunTexts(doc, (status) => status === 'deleted');
+}
+
+/** Live wording used to reject partial matches shared with unchanged or replacement text. */
+export function liveSpanTexts(doc: Pick<NormalizedDoc, 'sections'>): string[] {
+  return spanRunTexts(doc, (status) => status !== 'deleted');
 }
 
 interface QuestionRetrieval {
@@ -220,13 +247,14 @@ async function collectAnswers(input: {
 export function scoreAnswers(
   outcomes: readonly AnswerOutcome[],
   struckSpans: readonly string[],
+  liveTexts: readonly string[] = [],
 ): { metrics: AnswerMetrics; removalAcknowledgedRate: number } {
   const grades = summarizeGrades(outcomes.map((o) => o.readingGrade));
   return {
     metrics: {
       citationValidity: citationValidity(outcomes),
       declineRate: declineRate(outcomes),
-      deletedLeakageRate: deletedLeakageRate(outcomes, struckSpans),
+      deletedLeakageRate: deletedLeakageRate(outcomes, struckSpans, liveTexts),
       meanReadingGrade: grades.mean,
       answersAboveGrade9: grades.above9,
     },
@@ -270,6 +298,7 @@ export async function runEval(input: RunEvalInput): Promise<RunEvalResult> {
           { label: fixture.name },
         );
         const struck = struckSpanTexts(ingested.normalized);
+        const live = liveSpanTexts(ingested.normalized);
         for (const variant of variants) {
           input.onProgress?.(
             `${target.kind}: ${fixture.name} ${variant.mode}${variant.fusion ? `/${variant.fusion}` : ''}`,
@@ -297,7 +326,7 @@ export async function runEval(input: RunEvalInput): Promise<RunEvalResult> {
               mode: variant.mode,
               provider: input.answerProvider,
             });
-            const scored = scoreAnswers(outcomes, struck);
+            const scored = scoreAnswers(outcomes, struck, live);
             row.answers = scored.metrics;
             row.provider = input.answerProvider.id;
             row.model = input.answerProvider.model;

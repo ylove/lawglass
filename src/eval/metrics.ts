@@ -136,46 +136,116 @@ export function normalizeForMatch(text: string): string {
     .trim();
 }
 
-/** Shortest struck span that counts: shorter ones ("five dollars") collide with live text. */
+/** Minimum contiguous quotation length; shorter phrases collide too easily with live text. */
 export const MIN_LEAK_WORDS = 4;
-
-/**
- * Struck spans (at least four words) that appear verbatim in `answerText`. A match means the
- * model repeated deleted text, which is no longer law, as if it were current.
- */
-export function findLeakedSpans(
-  answerText: string,
-  struckSpans: readonly string[],
-): string[] {
-  const haystack = ` ${normalizeForMatch(answerText)} `;
-  return struckSpans.filter((span) => {
-    const needle = normalizeForMatch(span);
-    return (
-      needle.split(' ').length >= MIN_LEAK_WORDS &&
-      haystack.includes(` ${needle} `)
-    );
-  });
-}
-
-/**
- * Share of answers to non-`removed` questions that leak struck text. Questions about removal
- * are excluded because quoting deleted text is the right answer to them.
- */
-export function deletedLeakageRate(
-  outcomes: readonly AnswerOutcome[],
-  struckSpans: readonly string[],
-): number {
-  const scored = outcomes.filter((o) => o.kind !== 'removed');
-  if (scored.length === 0) return 0;
-  const leaking = scored.filter(
-    (o) => findLeakedSpans(o.text, struckSpans).length > 0,
-  );
-  return leaking.length / scored.length;
-}
 
 /** Words that signal an answer is talking about removal rather than describing current law. */
 const REMOVAL_LANGUAGE =
   /\b(?:remov\w*|struck|strik\w*|delet\w*|repeal\w*|eliminat\w*|no longer|omitted)\b/i;
+
+/** Keep quoted sentences with their introduction or trailing removal acknowledgement. */
+function answerClaims(text: string): string[] {
+  const claims: string[] = [];
+  let start = 0;
+  let quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i] ?? '';
+    if (char === '“') quoted = true;
+    else if (char === '”') quoted = false;
+    else if (char === '"') quoted = !quoted;
+    if (quoted) continue;
+    // A single newline may just wrap a quotation. Paragraphs and list items separate claims.
+    const paragraph =
+      char === '\n' && /^\s*\n|^\s*[-*]\s/.test(text.slice(i + 1));
+    if (/[.!?;]/.test(char) || paragraph) {
+      claims.push(text.slice(start, i));
+      start = i + 1;
+    } else if (i === 0 || /\W/.test(text[i - 1] ?? '')) {
+      const conjunction =
+        /^(?:but|however|yet|and(?=\s+(?:the|this|it|they|currently|now)\b))\b/i.exec(
+          text.slice(i),
+        );
+      if (conjunction) {
+        claims.push(text.slice(start, i));
+        start = i + conjunction[0].length;
+        i = start - 1;
+      }
+    }
+  }
+  claims.push(text.slice(start));
+  return claims;
+}
+
+function acknowledgesRemoval(context: string): boolean {
+  for (const cue of context.matchAll(new RegExp(REMOVAL_LANGUAGE, 'gi'))) {
+    const before = context.slice(0, cue.index);
+    // "Does not remove" still presents the quoted rule as live law.
+    if (!/\b(?:not|never|cannot)\s+(?:\w+\s+){0,2}$/.test(before)) return true;
+  }
+  return false;
+}
+
+/**
+ * Deleted runs quoted as current law, including partial quotations of at least four words.
+ * A quotation must be absent from live text to be distinctive: the old and replacement fee
+ * sentences share most of their words. This is an exact-text heuristic, not a paraphrase judge.
+ */
+export function findLeakedSpans(
+  answerText: string,
+  struckSpans: readonly string[],
+  liveTexts: readonly string[] = [],
+): string[] {
+  const claims = answerClaims(answerText).map((claim) =>
+    normalizeForMatch(claim).split(' '),
+  );
+  const live = liveTexts.map((text) => ` ${normalizeForMatch(text)} `);
+  return struckSpans.filter((span) => {
+    const deleted = normalizeForMatch(span).split(' ');
+    for (const words of claims) {
+      for (let from = 0; from <= words.length - MIN_LEAK_WORDS; from++) {
+        for (
+          let source = 0;
+          source <= deleted.length - MIN_LEAK_WORDS;
+          source++
+        ) {
+          // Only evaluate maximal matches so a removal verb inside the quotation cannot
+          // accidentally become context for one of its shorter subphrases.
+          if (from > 0 && source > 0 && words[from - 1] === deleted[source - 1])
+            continue;
+          let length = 0;
+          while (
+            from + length < words.length &&
+            source + length < deleted.length &&
+            words[from + length] === deleted[source + length]
+          )
+            length++;
+          if (length < MIN_LEAK_WORDS) continue;
+          const quotation = ` ${words.slice(from, from + length).join(' ')} `;
+          if (live.some((text) => text.includes(quotation))) continue;
+          const context = [
+            ...words.slice(0, from),
+            ...words.slice(from + length),
+          ].join(' ');
+          if (!acknowledgesRemoval(context)) return true;
+        }
+      }
+    }
+    return false;
+  });
+}
+
+/** Share of all answers presenting a distinctive deleted quotation as current law. */
+export function deletedLeakageRate(
+  outcomes: readonly AnswerOutcome[],
+  struckSpans: readonly string[],
+  liveTexts: readonly string[] = [],
+): number {
+  if (outcomes.length === 0) return 0;
+  const leaking = outcomes.filter(
+    (o) => findLeakedSpans(o.text, struckSpans, liveTexts).length > 0,
+  );
+  return leaking.length / outcomes.length;
+}
 
 /** Share of `removed` answers that say the text was removed (the spec asks eval to check this). */
 export function removalAcknowledgedRate(

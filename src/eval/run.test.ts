@@ -11,6 +11,7 @@ import {
   scoreAnswers,
   scoreRetrieval,
   struckSpanTexts,
+  liveSpanTexts,
   variantsFor,
   type RunEvalInput,
 } from './run.js';
@@ -80,8 +81,110 @@ test('struckSpanTexts collects deleted spans from nested sections', () => {
   expect(
     struckSpanTexts({
       sections: bill.groundTruth.sections,
-    } as Parameters<typeof struckSpanTexts>[0]),
+    }),
   ).toEqual(bill.groundTruth.deletedStrings);
+});
+
+test.each([false, true])(
+  'coalesces deleted runs across printed lines (whitespace span: %s)',
+  (whitespace) => {
+    const doc: Parameters<typeof struckSpanTexts>[0] = {
+      sections: [
+        {
+          id: 'sec-1',
+          level: 1,
+          children: [],
+          spans: [
+            {
+              text: 'Orchard stewards may',
+              status: 'deleted',
+              page: 1,
+              line: 1,
+            },
+            ...(whitespace
+              ? [{ text: '\n', status: 'unchanged' as const, page: 1, line: 1 }]
+              : []),
+            {
+              text: 'apply any pesticide',
+              status: 'deleted',
+              page: 1,
+              line: 2,
+            },
+          ],
+        },
+      ],
+    };
+    const struck = struckSpanTexts(doc);
+    expect(struck).toEqual(['Orchard stewards may apply any pesticide']);
+    const scored = scoreAnswers(
+      [
+        {
+          kind: 'exact',
+          text: 'Orchard stewards may apply any pesticide.',
+          declined: false,
+          validCitations: 0,
+          invalidCitations: 0,
+          readingGrade: null,
+        },
+      ],
+      struck,
+    );
+    expect(scored.metrics.deletedLeakageRate).toBe(1);
+  },
+);
+
+test('keeps deleted runs separated by live text and section boundaries', () => {
+  const doc: Parameters<typeof struckSpanTexts>[0] = {
+    sections: [
+      {
+        id: 'sec-1',
+        level: 1,
+        spans: [
+          { text: 'Orchard stewards may', status: 'deleted' },
+          { text: 'Live rule.', status: 'inserted' },
+          { text: 'apply any pesticide', status: 'deleted' },
+        ],
+        children: [
+          {
+            id: 'sec-1/a',
+            level: 2,
+            spans: [{ text: 'without advance notice', status: 'deleted' }],
+            children: [],
+          },
+        ],
+      },
+    ],
+  };
+  expect(struckSpanTexts(doc)).toEqual([
+    'Orchard stewards may',
+    'apply any pesticide',
+    'without advance notice',
+  ]);
+});
+
+test('answer scoring excludes wording shared with live runs of the synthetic bill', () => {
+  const doc = { sections: bill.groundTruth.sections };
+  const struck = struckSpanTexts(doc);
+  const live = liveSpanTexts(doc);
+  expect(live).toContain(bill.groundTruth.insertedStrings[0]);
+  const answer = {
+    kind: 'exact' as const,
+    text: bill.groundTruth.insertedStrings[0]!,
+    declined: false,
+    validCitations: 0,
+    invalidCitations: 0,
+    readingGrade: null,
+  };
+  expect(scoreAnswers([answer], struck, live).metrics.deletedLeakageRate).toBe(
+    0,
+  );
+  expect(
+    scoreAnswers(
+      [{ ...answer, text: 'The harvest permit fee is twenty dollars.' }],
+      struck,
+      live,
+    ).metrics.deletedLeakageRate,
+  ).toBe(1);
 });
 
 test('scoreRetrieval skips unanswerable questions and sums usage', () => {

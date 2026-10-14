@@ -159,7 +159,7 @@ describe('deleted-text leakage', () => {
   const struck = [
     'The harvest permit fee is twenty dollars for each steward.',
     'five dollars',
-  ];
+  ] as const;
 
   test('finds a struck span of four or more words, ignoring case and punctuation', () => {
     expect(
@@ -170,20 +170,141 @@ describe('deleted-text leakage', () => {
     ).toEqual([struck[0]]);
   });
 
+  test('detects a distinctive partial quotation of the synthetic deleted fee', () => {
+    const deleted =
+      'The harvest permit fee is twenty dollars for each orchard steward per season.';
+    expect(
+      findLeakedSpans('The harvest permit fee is twenty dollars.', [deleted]),
+    ).toEqual([deleted]);
+    expect(
+      findLeakedSpans('It is twenty dollars for each orchard steward.', [
+        deleted,
+      ]),
+    ).toEqual([deleted]);
+  });
+
+  test('line wrapping cannot hide a copied partial quotation', () => {
+    expect(
+      findLeakedSpans('The harvest permit fee is\n twenty dollars.', struck),
+    ).toEqual([struck[0]]);
+  });
+
+  test('removal context stays with a quoted sentence containing a clause boundary', () => {
+    const deleted = 'Stewards may prune but must harvest every tree.';
+    expect(
+      findLeakedSpans(`The bill removes the sentence: “${deleted}”`, [deleted]),
+    ).toEqual([]);
+    expect(
+      findLeakedSpans(`The bill removes the sentence: "${deleted}"`, [deleted]),
+    ).toEqual([]);
+  });
+
+  test('does not mistake wording shared with the replacement for deleted text', () => {
+    const deleted =
+      'The harvest permit fee is twenty dollars for each orchard steward per season.';
+    const current =
+      'The harvest permit fee is twelve dollars for each orchard steward per season.';
+    expect(findLeakedSpans(current, [deleted], [current])).toEqual([]);
+    expect(
+      findLeakedSpans(
+        'The harvest permit fee is twenty dollars.',
+        [deleted],
+        [current],
+      ),
+    ).toEqual([deleted]);
+  });
+
+  test.each(['exact', 'removed'] as const)(
+    'acknowledged removal is safe for a %s question',
+    (kind) => {
+      expect(
+        deletedLeakageRate(
+          [
+            outcome({
+              kind,
+              text: `The bill removes the sentence: “${struck[0]}”`,
+            }),
+          ],
+          struck,
+        ),
+      ).toBe(0);
+      expect(
+        deletedLeakageRate(
+          [outcome({ kind, text: `“${struck[0]}” was struck by the bill.` })],
+          struck,
+        ),
+      ).toBe(0);
+    },
+  );
+
+  test('a removed answer asserting the deleted fee as current law leaks', () => {
+    expect(
+      deletedLeakageRate(
+        [outcome({ kind: 'removed', text: struck[0] })],
+        struck,
+      ),
+    ).toBe(1);
+  });
+
+  test.each(['. ', '; ', ', but ', ', and ', '\n\n'])(
+    'an unrelated removal claim does not excuse leakage across %j',
+    (separator) => {
+      expect(
+        deletedLeakageRate(
+          [
+            outcome({
+              text: `The bill removes the notice rule${separator}${struck[0]}`,
+            }),
+          ],
+          struck,
+        ),
+      ).toBe(1);
+    },
+  );
+
+  test('scores repeated quotations individually, including an assertion after a removal quote', () => {
+    expect(
+      deletedLeakageRate(
+        [
+          outcome({
+            text: `The bill removes the sentence: ${struck[0]} Currently, ${struck[0]}`,
+          }),
+        ],
+        struck,
+      ),
+    ).toBe(1);
+  });
+
+  test('negated removal and removal words inside the deleted claim do not excuse it', () => {
+    expect(
+      deletedLeakageRate(
+        [
+          outcome({
+            text: `The bill does not remove the sentence: ${struck[0]}`,
+          }),
+        ],
+        struck,
+      ),
+    ).toBe(1);
+    expect(
+      findLeakedSpans('Stewards may remove all trees.', [
+        'Stewards may remove all trees.',
+      ]),
+    ).toEqual(['Stewards may remove all trees.']);
+  });
+
   test('ignores short struck spans that would collide with live text', () => {
     expect(findLeakedSpans('It costs five dollars.', struck)).toEqual([]);
   });
 
   test('matches whole words only', () => {
     expect(
-      findLeakedSpans('the fee is twenty dollars for each stewards', [
-        'the fee is twenty dollars for each steward',
-      ]),
+      findLeakedSpans('a permit costs twenties', ['a permit costs twenty']),
     ).toEqual([]);
   });
 
-  test('rate is over non-removed answers; removed questions may quote struck text', () => {
-    const leaked = struck[0] ?? '';
+  test('rate includes every question kind and judges the answer text', () => {
+    const leaked = struck[0];
     const rate = deletedLeakageRate(
       [
         outcome({ kind: 'exact', text: `It says ${leaked}` }),
@@ -192,7 +313,7 @@ describe('deleted-text leakage', () => {
       ],
       struck,
     );
-    expect(rate).toBe(0.5);
+    expect(rate).toBe(2 / 3);
   });
 
   test('is 0 when there is nothing to score', () => {
