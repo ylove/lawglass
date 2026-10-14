@@ -60,6 +60,11 @@ export async function runChip(
       return runOutlineChip(chip, docId, deps, options);
     case 'definitions':
       return runDefinitionsChip(chip, docId, deps, options);
+    case 'extract':
+      // No chip uses this strategy yet; #202 serves the delegations chip.
+      throw new Error(
+        `Chip strategy 'extract' is not served yet (${chip.id}).`,
+      );
     case 'retrieve':
       // The contract has no "spans" strategy, so what-changes is a `retrieve` chip by label
       // but is answered from the amendment spans (see chip-changes.ts for why).

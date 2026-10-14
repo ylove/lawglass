@@ -175,6 +175,8 @@ const ANSWERS: Record<ChipId, string> = {
     'Here is what the official record says about how this bill got here.\n\nKey actions:\n- 2026-02-03: Introduced in the House.\n- 2026-03-10: Reported by the House Water Committee.\n\nThe record lists no amendments to this bill.',
   sponsors:
     'Sponsored by Rep. A. Rivera, Rep. J. Chen. Cosponsors, if any, are not included.',
+  // Placeholder: the delegations chip is not in the served chip list until #202.
+  delegations: "This document doesn't address that question.",
 };
 
 /** Invented example for the `who-affected` demo. Every frame cites a section the answer cites. */
@@ -363,6 +365,7 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
     provider: 'mock',
     model: 'mock-1',
     chips: CHIPS,
+    scenariosEnabled: !publicMode,
   };
 
   const need = (docId: string): DocSummary => {
