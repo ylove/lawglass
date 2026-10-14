@@ -44,6 +44,7 @@ export type Fetcher = (
     signal?: AbortSignal | undefined;
     validateUrl?: ((url: URL) => void) | undefined;
     refresh?: boolean | undefined;
+    acceptHistoryPage?: boolean | undefined;
   },
 ) => Promise<SafeFetchResult>;
 
@@ -346,6 +347,7 @@ export async function ingest(
             signal,
             validateUrl,
             refresh: true,
+            acceptHistoryPage: true,
           });
           assertHistoryUrl(plan.source, result.finalUrl);
           return result;

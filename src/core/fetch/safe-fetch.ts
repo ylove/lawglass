@@ -19,6 +19,8 @@ import { sniffFormat, type SniffedFormat } from './sniff.js';
 import { findCandidateLinks, isLikelyWrapper } from './wrapper.js';
 
 export interface SafeFetchOptions {
+  /** Read allowlisted history HTML as data, even when it lists document links. */
+  acceptHistoryPage?: boolean | undefined;
   /** Re-read mutable official records while still caching the downloaded snapshot. */
   refresh?: boolean | undefined;
   /** Additional source policy, applied before DNS on every hop, including cached redirects. */
@@ -82,9 +84,10 @@ function makeResult(
   finalUrl: string,
   contentType: string,
   fromCache: boolean,
+  acceptHistoryPage = false,
 ): SafeFetchResult {
   const format = sniffFormat(bytes, contentType, finalUrl);
-  if (format === 'html') {
+  if (format === 'html' && !acceptHistoryPage) {
     const html = new TextDecoder().decode(bytes);
     if (isLikelyWrapper(html)) {
       throw new AppError('WRAPPER_PAGE', undefined, {
@@ -185,7 +188,13 @@ export async function safeFetch(
       if (final.href !== original.href)
         await resolvePublicAddress(final, resolver, signal);
       signal.throwIfAborted();
-      return makeResult(cached.bytes, final.href, cached.contentType, true);
+      return makeResult(
+        cached.bytes,
+        final.href,
+        cached.contentType,
+        true,
+        opts.acceptHistoryPage,
+      );
     }
     for (let redirects = 0; ; redirects++) {
       signal.throwIfAborted();
@@ -224,7 +233,13 @@ export async function safeFetch(
         const bytes = await readBody(response, maxBytes, controller);
         const contentType = response.headers.get('content-type') ?? '';
         signal.throwIfAborted();
-        const result = makeResult(bytes, url.href, contentType, false);
+        const result = makeResult(
+          bytes,
+          url.href,
+          contentType,
+          false,
+          opts.acceptHistoryPage,
+        );
         await writeCache(
           bytes,
           {

@@ -3,6 +3,7 @@ import {
   type BillHistory,
   type SponsorProfile,
 } from '../model/index.js';
+import { chooseOhioVersion, ohioHistorySource } from './ohio-legislature.js';
 import { parseGovinfoBillStatus } from './govinfo-billstatus.js';
 import type { SafeFetchResult } from '../fetch/index.js';
 
@@ -155,6 +156,7 @@ export function resolveGovinfo(url: URL): GovinfoPlan | undefined {
 
 // Adding another jurisdiction requires one adapter file and one registration here.
 export const HISTORY_SOURCES: readonly HistorySource[] = [
+  ohioHistorySource,
   {
     source: 'govinfo',
     hosts: ['www.govinfo.gov'],
@@ -194,6 +196,8 @@ export function resolveHistory(input: string): HistoryPlan | undefined {
   )
     throw billPageError();
   for (const source of HISTORY_SOURCES) {
+    // Preserve the anchored mapping when URL has normalized a raw dot segment or backslash.
+    if (source.source === 'ohio' && /\\|\/(?:\.|\.\.)\//.test(input)) continue;
     const plan = source.resolve(url);
     if (plan) return plan;
   }
@@ -205,6 +209,7 @@ export function chooseVersion(
   history?: BillHistory,
 ): string {
   if (plan.version) return plan.version;
+  if (plan.source === 'ohio') return chooseOhioVersion(history);
   const versions = history?.versions ?? [];
   // GovInfo lists text versions newest-first. List order is authoritative, including
   // equal/inconsistent dates: Enrolled often has <date/>, and a later-dated Public
