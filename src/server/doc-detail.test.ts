@@ -19,7 +19,7 @@ import {
   type BillHistory,
 } from '../core/model/index.js';
 import { readSseEvents } from '../web/sse.js';
-import { createApp } from './app.js';
+import { createSessionTestApp as createApp } from '../../tests/support/session-app.js';
 import { OFFICIAL_SUMMARY_MAX_LENGTH, truncateHistory } from './doc-detail.js';
 
 let env: PipelineEnv;

@@ -410,3 +410,74 @@ test('terminal escapes from document text never reach the output', async () => {
   expect(message).not.toMatch(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/);
   expect(message).not.toContain('evil.example');
 });
+
+test.each(['serve', 'https://example.gov/gardens.txt'])(
+  '%s refuses network binds before ingest or launch unless --public is explicit',
+  async (action) => {
+    const serve = vi.fn(() => Promise.resolve());
+    for (const host of ['0.0.0.0', '::', '10.0.0.1', '192.168.1.1']) {
+      await expect(
+        run([action, '--host', host], { serve }),
+      ).rejects.toMatchObject({
+        code: 'INVALID_INPUT',
+        userMessage: expect.stringContaining(
+          'Local mode has no authentication',
+        ) as string,
+      });
+    }
+    expect(serve).not.toHaveBeenCalled();
+    expect(env.fetches).toEqual([]);
+  },
+);
+
+test.each(['serve', 'https://example.gov/gardens.txt'])(
+  '%s rejects hostnames and malformed IP literals even with --public',
+  async (action) => {
+    const serve = vi.fn(() => Promise.resolve());
+    for (const host of ['evil.example', 'localhost.evil', '[::1]', '127.1']) {
+      await expect(
+        run([action, '--host', host, '--public'], { serve }),
+      ).rejects.toMatchObject({
+        userMessage: '--host must be an IP literal or localhost.',
+      });
+    }
+    expect(serve).not.toHaveBeenCalled();
+    expect(env.fetches).toEqual([]);
+  },
+);
+
+test('bare URL passes explicit public bind and port to the launcher', async () => {
+  const serve = vi.fn(() => Promise.resolve());
+  await run(
+    [
+      'https://example.gov/gardens.txt',
+      '--host',
+      '0.0.0.0',
+      '--public',
+      '--port',
+      '4999',
+    ],
+    { serve },
+  );
+  expect(serve).toHaveBeenCalledWith(env.runtime, {
+    publicMode: true,
+    host: '0.0.0.0',
+    port: 4999,
+  });
+});
+
+test.each([
+  '127.0.0.2',
+  '::1',
+  '0:0:0:0:0:0:0:1',
+  '::ffff:127.0.0.1',
+  'localhost',
+])('serve accepts local bind %s', async (host) => {
+  const serve = vi.fn(() => Promise.resolve());
+  await run(['serve', '--host', host], { serve });
+  expect(serve).toHaveBeenCalledWith(env.runtime, {
+    publicMode: false,
+    host,
+    port: undefined,
+  });
+});

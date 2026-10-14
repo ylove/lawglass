@@ -14,6 +14,7 @@ import { createHttpApi } from '../web/api.js';
 import { envVar } from '../core/brand.js';
 import { createLauncher } from './launch.js';
 import { startServer, type RunningServer } from './serve.js';
+import { SESSION_COOKIE } from './session.js';
 
 let env: PipelineEnv;
 let webRoot: string;
@@ -44,14 +45,29 @@ async function collect<T>(stream: AsyncIterable<T>): Promise<T[]> {
   return out;
 }
 
+async function authenticate(running: RunningServer): Promise<string> {
+  const exchange = await fetch(running.url, { redirect: 'manual' });
+  expect(exchange.status).toBe(302);
+  const cookie = exchange.headers.get('set-cookie')?.split(';')[0];
+  await exchange.arrayBuffer();
+  if (!cookie) throw new Error('No session cookie');
+  return cookie;
+}
+
 describe('a real server on loopback', () => {
   test('binds 127.0.0.1 and serves the web index and the API on one origin', async () => {
     server = await startServer(env.runtime, { port: 0, webRoot });
-    expect(server.url).toMatch(/^http:\/\/localhost:\d+$/);
-    const index = await fetch(`http://127.0.0.1:${String(server.port)}/`);
+    expect(server.url).toMatch(
+      /^http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]{43}$/,
+    );
+    const cookie = await authenticate(server);
+    const index = await fetch(new URL('/', server.url), {
+      headers: { cookie },
+    });
     expect(await index.text()).toContain('<title>UI</title>');
     const health = await fetch(
       `http://127.0.0.1:${String(server.port)}/api/health`,
+      { headers: { cookie } },
     );
     expect(await health.json()).toMatchObject({ ok: true });
   });
@@ -63,7 +79,10 @@ describe('a real server on loopback', () => {
         port: 0,
         webRoot: join(process.cwd(), 'dist/web'),
       });
-      const res = await fetch(`http://127.0.0.1:${String(server.port)}/`);
+      const cookie = await authenticate(server);
+      const res = await fetch(new URL('/', server.url), {
+        headers: { cookie },
+      });
       expect(res.headers.get('content-type')).toContain('text/html');
       const html = await res.text();
       expect(html).toContain('<div id="root">');
@@ -71,42 +90,62 @@ describe('a real server on loopback', () => {
       expect(asset).toBeDefined();
       const js = await fetch(
         `http://127.0.0.1:${String(server.port)}${asset ?? ''}`,
+        { headers: { cookie } },
       );
       expect(js.status).toBe(200);
       await js.arrayBuffer(); // an unread body would hold the pooled socket open
     },
   );
 
-  test.each(['127.0.0.1', '::1'])(
-    'refuses DNS rebinding when bound to %s',
-    async (host) => {
+  test.for([
+    '127.0.0.1',
+    '127.0.0.2',
+    '::1',
+    '0:0:0:0:0:0:0:1',
+    '0000:0000:0000:0000:0000:0000:0000:0001',
+    '::ffff:127.0.0.1',
+    '::ffff:7f00:2',
+    '0:0:0:0:0:ffff:7f00:1',
+  ])('refuses DNS rebinding when bound to %s', async (host, context) => {
+    try {
       server = await startServer(env.runtime, { port: 0, host });
-      // fetch() will not let a caller override Host, so speak raw HTTP to loopback.
-      const status = await new Promise<number>((resolve, reject) => {
-        http
-          .get(
-            {
-              host,
-              port: server?.port,
-              path: '/api/health',
-              headers: { host: 'evil.example', origin: 'http://evil.example' },
-            },
-            (res) => {
-              res.resume();
-              resolve(res.statusCode ?? 0);
-            },
-          )
-          .on('error', reject);
-      });
-      expect(status).toBe(403);
-    },
-  );
+    } catch (error) {
+      // macOS requires loopback aliases to bind 127.0.0.2. The address/Host tables still test
+      // these forms on every platform; exercise real sockets wherever the OS supports them.
+      if ((error as NodeJS.ErrnoException).code === 'EADDRNOTAVAIL') {
+        context.skip();
+        return;
+      }
+      throw error;
+    }
+    // fetch() will not let a caller override Host, so speak raw HTTP to loopback.
+    const status = await new Promise<number>((resolve, reject) => {
+      http
+        .get(
+          {
+            host,
+            port: server?.port,
+            path: '/api/health',
+            headers: { host: 'evil.example', origin: 'http://evil.example' },
+          },
+          (res) => {
+            res.resume();
+            resolve(res.statusCode ?? 0);
+          },
+        )
+        .on('error', reject);
+    });
+    expect(status).toBe(403);
+  });
 
   test('IPv6 loopback has a usable URL and accepts its own Host and Origin', async () => {
     server = await startServer(env.runtime, { port: 0, host: '::1' });
-    expect(server.url).toBe(`http://[::1]:${String(server.port)}`);
-    const res = await fetch(`${server.url}/api/health`, {
-      headers: { origin: server.url },
+    expect(new URL(server.url).origin).toBe(
+      `http://[::1]:${String(server.port)}`,
+    );
+    const cookie = await authenticate(server);
+    const res = await fetch(new URL('/api/health', server.url), {
+      headers: { origin: new URL(server.url).origin, cookie },
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toMatchObject({ ok: true });
@@ -123,8 +162,14 @@ describe('a real server on loopback', () => {
 
   test('the web client works against the real server: ingest, then ask', async () => {
     server = await startServer(env.runtime, { port: 0 });
+    const cookie = await authenticate(server);
     const api = createHttpApi({
-      baseUrl: `http://127.0.0.1:${String(server.port)}`,
+      baseUrl: new URL(server.url).origin,
+      fetchImpl: (input, init) => {
+        const headers = new Headers(init?.headers);
+        headers.set('cookie', cookie);
+        return fetch(input, { ...init, headers });
+      },
     });
 
     const config = await api.getConfig();
@@ -185,7 +230,7 @@ describe('launcher', () => {
   } => {
     const closed = vi.fn();
     return {
-      url: 'http://localhost:4317',
+      url: 'http://127.0.0.1:4317/?k=test-launch-token',
       port: 4317,
       closed,
       close: () => {
@@ -215,7 +260,9 @@ describe('launcher', () => {
     });
     const finished = launch(env.runtime, { publicMode: false, port: 5000 });
     await vi.waitFor(() => {
-      expect(open).toHaveBeenCalledWith('http://localhost:4317');
+      expect(open).toHaveBeenCalledWith(
+        'http://127.0.0.1:4317/?k=test-launch-token',
+      );
     });
     expect(running.closed).not.toHaveBeenCalled();
     stop();
@@ -224,7 +271,7 @@ describe('launcher', () => {
       publicMode: false,
       port: 5000,
     });
-    expect(out).toContain('http://localhost:4317');
+    expect(out).toContain('http://127.0.0.1:4317/?k=test-launch-token');
     expect(running.closed).toHaveBeenCalledOnce();
   });
 
@@ -285,5 +332,117 @@ describe('launcher', () => {
     process.emit('SIGINT');
     await finished;
     expect(running.closed).toHaveBeenCalledOnce();
+  });
+});
+
+describe('launch boundary', () => {
+  test.each(['0.0.0.0', '::', '192.168.1.1'])(
+    'startServer refuses %s without public mode',
+    async (host) => {
+      await expect(
+        startServer(env.runtime, { host, port: 0 }),
+      ).rejects.toMatchObject({
+        code: 'INVALID_INPUT',
+        userMessage: expect.stringContaining(
+          'Local mode has no authentication',
+        ) as string,
+      });
+    },
+  );
+  test('the launcher validates before calling an injected starter', async () => {
+    const start = vi.fn();
+    const launch = createLauncher({ start });
+    await expect(
+      launch(env.runtime, { publicMode: false, host: '0.0.0.0' }),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    await expect(
+      launch(env.runtime, { publicMode: true, host: 'evil.example' }),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    expect(start).not.toHaveBeenCalled();
+  });
+  test('localhost binds and prints IPv4, and each launch rotates its token', async () => {
+    server = await startServer(env.runtime, { host: 'localhost', port: 0 });
+    const first = new URL(server.url);
+    expect(first.hostname).toBe('127.0.0.1');
+    expect(first.searchParams.get('k')).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const port = server.port;
+    await server.close();
+    server = await startServer(env.runtime, { host: 'localhost', port });
+    expect(new URL(server.url).searchParams.get('k')).not.toBe(
+      first.searchParams.get('k'),
+    );
+    const response = await fetch(new URL('/api/health', server.url), {
+      headers: {
+        cookie: `${SESSION_COOKIE}=${first.searchParams.get('k') ?? ''}`,
+      },
+    });
+    expect(response.status).toBe(401);
+    await response.arrayBuffer();
+  });
+  test('public bind works without a token or cookie, including matching non-loopback Host and Origin', async () => {
+    server = await startServer(env.runtime, {
+      host: '0.0.0.0',
+      publicMode: true,
+      port: 0,
+    });
+    expect(server.url).toBe(`http://0.0.0.0:${String(server.port)}`);
+    const response = await new Promise<{
+      status: number;
+      cookie: string[] | undefined;
+    }>((resolve, reject) => {
+      http
+        .get(
+          {
+            host: '127.0.0.1',
+            port: server?.port,
+            path: '/api/health',
+            headers: {
+              host: 'public.example',
+              origin: 'http://public.example',
+            },
+          },
+          (res) => {
+            res.resume();
+            resolve({
+              status: res.statusCode ?? 0,
+              cookie: res.headers['set-cookie'],
+            });
+          },
+        )
+        .on('error', reject);
+    });
+    expect(response).toEqual({ status: 200, cookie: undefined });
+  });
+  test('--no-open prints the launch URL exactly once and never opens it', async () => {
+    const open = vi.fn();
+    let output = '';
+    let url = '';
+    await createLauncher({
+      start: async (runtime, options) => {
+        const running = await startServer(runtime, { ...options, port: 0 });
+        url = running.url;
+        return running;
+      },
+      open,
+      write: (text) => {
+        output += text;
+      },
+      untilStopped: () => Promise.resolve(),
+    })(env.runtime, { publicMode: false, noOpen: true });
+    expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/\?k=[A-Za-z0-9_-]{43}$/);
+    expect(output).toBe(`\nServing at ${url} (press Ctrl+C to stop)\n`);
+    expect(open).not.toHaveBeenCalled();
+  });
+  test('callers cannot override the address-derived localOnly guard', async () => {
+    server = await startServer(env.runtime, {
+      host: '::ffff:127.0.0.1',
+      port: 0,
+      localOnly: false,
+    });
+    const response = await fetch(new URL('/api/health', server.url), {
+      headers: { host: 'evil.example', origin: 'http://evil.example' },
+    });
+    expect(response.status).toBe(403);
+    await response.arrayBuffer();
   });
 });
