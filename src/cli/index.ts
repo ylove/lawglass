@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Commander entrypoint for the local CLI.
 import { createProgram } from './program.js';
+import { safeText } from './sanitize.js';
 import { AppError } from '../core/model/index.js';
 
 try {
@@ -8,7 +9,7 @@ try {
 } catch (error) {
   console.error(
     error instanceof AppError
-      ? error.userMessage
+      ? safeText(error.userMessage)
       : 'The command could not be completed.',
   );
   process.exitCode = 1;

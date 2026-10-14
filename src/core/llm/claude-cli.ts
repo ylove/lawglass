@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { z } from 'zod';
+import { envVar } from '../brand.js';
 import {
   AppError,
   type LlmProvider,
@@ -46,16 +47,24 @@ function cliEnvironment(): NodeJS.ProcessEnv {
     'LANG',
     'TERM',
   ]);
+  // These make the CLI bill the API instead of the user's Claude login, so they pass
+  // through only on explicit opt-in.
+  const apiCredentials = new Set(['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN']);
+  const useApiKey = process.env[envVar('CLAUDE_CLI_USE_API_KEY')] === '1';
   return Object.fromEntries(
     Object.entries(process.env).filter(
       ([name]) =>
-        allowed.has(name) ||
-        name.startsWith('LC_') ||
-        name.startsWith('CLAUDE_') ||
-        name.startsWith('ANTHROPIC_'),
+        (useApiKey || !apiCredentials.has(name)) &&
+        (allowed.has(name) ||
+          name.startsWith('LC_') ||
+          name.startsWith('CLAUDE_') ||
+          name.startsWith('ANTHROPIC_')),
     ),
   );
 }
+
+/** The model goes into argv: a leading "-" would be parsed as a flag. */
+const SAFE_MODEL = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$/;
 const TranscriptEvent = z.object({
   type: z.string(),
   subtype: z.string().optional(),
@@ -92,6 +101,7 @@ export class ClaudeCliProvider implements LlmProvider {
       timeoutSignal?: typeof AbortSignal.timeout;
     } = {},
   ) {
+    if (!SAFE_MODEL.test(config.model)) throw new AppError('INVALID_INPUT');
     this.model = config.model;
     this.spawnChild = deps.spawn ?? defaultSpawn;
     this.timeoutSignal = deps.timeoutSignal;

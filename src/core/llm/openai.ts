@@ -3,6 +3,7 @@ import type {
   ChatCompletionCreateParamsNonStreaming,
   ChatCompletionCreateParamsStreaming,
 } from 'openai/resources/chat/completions';
+import { envVar } from '../brand.js';
 import {
   AppError,
   type LlmProvider,
@@ -21,17 +22,34 @@ import {
   ZERO_LLM_USAGE,
 } from './shared.js';
 
-function localEndpoint(baseURL: string | undefined): boolean {
-  if (!baseURL) return false;
+type EndpointKind = 'loopback' | 'https' | 'insecure' | 'invalid';
+
+/** Classify where a key would travel. Only the URL's scheme and host matter. */
+function classifyEndpoint(baseURL: string | undefined): EndpointKind {
+  if (!baseURL) return 'https'; // The SDK default is https://api.openai.com.
   try {
     const url = new URL(baseURL);
-    return (
-      ['http:', 'https:'].includes(url.protocol) &&
-      ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
-    );
+    if (!['http:', 'https:'].includes(url.protocol)) return 'invalid';
+    if (['localhost', '127.0.0.1', '[::1]'].includes(url.hostname))
+      return 'loopback';
+    return url.protocol === 'https:' ? 'https' : 'insecure';
   } catch {
-    return false;
+    return 'invalid';
   }
+}
+
+/**
+ * Pick the SDK apiKey. A real key goes only over https or to loopback. A plain-http LAN
+ * server (Ollama, LM Studio on another machine) gets a non-secret placeholder instead,
+ * because the key would cross the network in cleartext. The user can opt in explicitly.
+ */
+function sdkApiKey(config: ProviderConfig): string {
+  const kind = classifyEndpoint(config.baseURL);
+  const hasKey = Boolean(config.apiKey?.trim());
+  if (kind === 'loopback') return hasKey ? requireKey(config.apiKey) : 'local';
+  if (kind === 'insecure' && process.env[envVar('ALLOW_INSECURE_KEY')] !== '1')
+    return 'local';
+  return requireKey(config.apiKey);
 }
 
 /** Only feature rejection may downgrade formatting; never retry auth/rate-limit/network failures. */
@@ -65,11 +83,7 @@ export class OpenAIProvider implements LlmProvider {
   ) {
     this.model = config.model;
     this.client = new OpenAI({
-      // Keyless loopback servers (Ollama/LM Studio) still need a non-secret SDK placeholder.
-      apiKey:
-        localEndpoint(config.baseURL) && !config.apiKey?.trim()
-          ? 'local'
-          : requireKey(config.apiKey),
+      apiKey: sdkApiKey(config),
       baseURL: config.baseURL ?? 'https://api.openai.com/v1',
       organization: null,
       project: null,

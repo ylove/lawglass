@@ -40,3 +40,16 @@ test.each([
     expect(process.exitCode).toBe(1);
   },
 );
+
+test('entrypoint strips terminal escapes and bidi controls from user messages', async () => {
+  const { AppError } = await import('../core/model/index.js');
+  parseAsync.mockRejectedValue(
+    new AppError('INVALID_INPUT', 'internal', {
+      userMessage:
+        'Bad \u001b]8;;https://evil.example/\u0007link\u001b]8;;\u0007 \u202egpj\u200b',
+    }),
+  );
+  const output = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  await import('./index.js');
+  expect(output).toHaveBeenCalledExactlyOnceWith('Bad link gpj');
+});

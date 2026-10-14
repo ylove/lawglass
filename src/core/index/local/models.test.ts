@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -76,6 +76,18 @@ describe('lazy Transformers adapters', () => {
   afterEach(async () => {
     await rm(configDir, { recursive: true, force: true });
   });
+
+  it.skipIf(process.platform === 'win32')(
+    'creates the models cache 0700 before the runtime can write to it',
+    async () => {
+      // A cache directory left loose by an older version must be tightened too.
+      await mkdir(join(configDir, 'models'), { mode: 0o755 });
+      await chmod(join(configDir, 'models'), 0o755);
+      const models = createLocalModels({ configDir, logger: vi.fn() });
+      await models.embedder.ensureReady();
+      expect((await stat(join(configDir, 'models'))).mode & 0o777).toBe(0o700);
+    },
+  );
 
   it('uses the brand config directory', () => {
     expect(defaultConfigDir()).toBe(
