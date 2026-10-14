@@ -183,4 +183,32 @@ describe('fail-closed caption numbers', () => {
       { value: 1000, unit: 'usd' },
     ]);
   });
+  it.each([
+    'A first-time homebuyer qualifies.',
+    'The third-party administrator files.',
+    'Second-hand goods are exempt.',
+    'A first-year teacher.',
+    'A second-year student.',
+    'Due in the third-quarter filing.',
+    'A first-degree felony.',
+    'A second-degree relative.',
+    'A first-class vehicle.',
+    'First-Time Homebuyer credit.',
+  ])('treats allow-listed hyphenated ordinal compounds as labels: %s', (t) => {
+    expect(numberTokens(t)).toEqual([]);
+  });
+  it.each([
+    'The first $10,000 is exempt.',
+    'The first 3 months are free.',
+    'A third of income.',
+    'One-third of income.',
+    'A quarter of income.',
+    'The second of three.',
+    'The first-of-month rule.',
+    'one-third-party share',
+    'The first-month rent.',
+    'The third-share rate.',
+  ])('still counts real quantities: %s', (t) => {
+    expect(numberTokens(t).length).toBeGreaterThan(0);
+  });
 });

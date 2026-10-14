@@ -67,6 +67,14 @@ const ORDINAL_LABEL = new RegExp(
   `${NOT_SPELLED_FRACTION}\\b(?:${ORDINALS})\\s+(?:${ORDINAL_NOUNS})\\b`,
   'gi',
 );
+// Hyphenated compounds common in tax, housing and law ("first-time homebuyer", "third-party
+// administrator"). Explicit on purpose: an open "ordinal-anything" rule would hide "first-month rent".
+const ORDINAL_COMPOUND_TAILS =
+  'time|party|parties|hand|year|quarter|degree|class';
+const ORDINAL_COMPOUND = new RegExp(
+  `${NOT_SPELLED_FRACTION}\\b(?:${ORDINALS})-(?:${ORDINAL_COMPOUND_TAILS})\\b`,
+  'gi',
+);
 // A date only when introduced by "the"/"on" and the month ends the clause or precedes a year;
 // "a third of May taxes" or "the first of January's income" stay fractions.
 const ORDINAL_DATE = new RegExp(
@@ -117,6 +125,7 @@ export function numberTokens(
       ' '.repeat(m.length),
     )
     .replace(ORDINAL_DATE, (m) => ' '.repeat(m.length))
+    .replace(ORDINAL_COMPOUND, (m) => ' '.repeat(m.length))
     .replace(ORDINAL_LABEL, (m) => ' '.repeat(m.length))
     .replace(
       /\b(?:Section|Sec\.|Form)\s+\d+(?:\.\d+)*\b|§\s*\d+(?:\.\d+)*/gi,
