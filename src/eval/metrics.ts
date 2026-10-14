@@ -250,10 +250,11 @@ export function deletedLeakageRate(
 /** Share of `removed` answers that say the text was removed (the spec asks eval to check this). */
 export function removalAcknowledgedRate(
   outcomes: readonly AnswerOutcome[],
-): number {
+): number | undefined {
   const removed = outcomes.filter((o) => o.kind === 'removed' && !o.declined);
   const asked = outcomes.filter((o) => o.kind === 'removed');
-  if (asked.length === 0) return 0;
+  // No `removed` questions in the set: the rate is undefined (reported as n/a), not 0%.
+  if (asked.length === 0) return undefined;
   return (
     removed.filter((o) => REMOVAL_LANGUAGE.test(o.text)).length / asked.length
   );

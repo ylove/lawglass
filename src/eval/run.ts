@@ -262,7 +262,7 @@ export function scoreAnswers(
   outcomes: readonly AnswerOutcome[],
   struckSpans: readonly string[],
   liveTexts: readonly string[] = [],
-): { metrics: AnswerMetrics; removalAcknowledgedRate: number } {
+): { metrics: AnswerMetrics; removalAcknowledgedRate: number | undefined } {
   const grades = summarizeGrades(outcomes.map((o) => o.readingGrade));
   return {
     metrics: {
