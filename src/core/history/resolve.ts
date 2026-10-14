@@ -206,15 +206,11 @@ export function chooseVersion(
 ): string {
   if (plan.version) return plan.version;
   const versions = history?.versions ?? [];
-  // Sorting a copy preserves the official record's order for equal dates.
-  const latest = [...versions].sort((a, b) =>
-    (b.date ?? '').localeCompare(a.date ?? ''),
-  )[0];
-  if (
-    !latest?.date ||
-    versions.some((item) => !item.date) ||
-    !historySource(plan.source).isVersion(latest.code)
-  ) {
+  // GovInfo lists text versions newest-first. List order is authoritative, including
+  // equal/inconsistent dates: Enrolled often has <date/>, and a later-dated Public
+  // Law can be appended last. Dates must never override the first listed entry.
+  const latest = versions[0];
+  if (!latest || !historySource(plan.source).isVersion(latest.code)) {
     throw new AppError('FETCH_FAILED', undefined, {
       userMessage:
         'The official record could not identify the latest text version. Paste a specific version URL, such as a congress.gov bill URL ending in /text/ih or a GovInfo BILLS version URL.',

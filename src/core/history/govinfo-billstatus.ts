@@ -72,10 +72,36 @@ const field = (
   element: Element | undefined,
   name: string,
 ): string | undefined => content(child(element, name));
+
+function plainText(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  // CDATA can retain an extra HTML-escape layer that ordinary XML text has already decoded.
+  if (/^&lt;[a-z][\s\S]*?&gt;/i.test(value)) {
+    value = load(value, null, false).root().text();
+  }
+  const $ = load(value, null, false);
+  $('script,style').remove();
+  $('p,li,br,div,ul,ol,h1,h2,h3,h4,h5,h6,tr,td,th').before(' ');
+  return $.root().text().replace(/\s+/g, ' ').trim() || undefined;
+}
+
+const textField = (
+  element: Element | undefined,
+  name: string,
+): string | undefined => plainText(field(element, name));
+
 const items = (element: Element | undefined): Element[] =>
   element?.children.filter(
     (item) => item.name === 'item' || item.name === 'amendment',
   ) ?? [];
+
+function committeeName(element: Element): string | undefined {
+  return (
+    textField(child(element, 'committee'), 'name') ??
+    textField(items(child(element, 'committees'))[0], 'name')
+  );
+}
+
 function date(value: string | undefined): string | undefined {
   return value &&
     /^\d{4}-\d{2}-\d{2}(?:T[\d:.]+Z)?$/.test(value) &&
@@ -95,11 +121,11 @@ function member(
   role: SponsorProfile['role'],
 ): SponsorProfile | undefined {
   const name =
-    field(element, 'fullName') ??
+    textField(element, 'fullName') ??
     [
-      field(element, 'firstName'),
-      field(element, 'middleName'),
-      field(element, 'lastName'),
+      textField(element, 'firstName'),
+      textField(element, 'middleName'),
+      textField(element, 'lastName'),
     ]
       .filter(Boolean)
       .join(' ');
@@ -108,11 +134,11 @@ function member(
     name,
     role,
     links: [],
-    party: field(element, 'party'),
-    state: field(element, 'state'),
-    district: field(element, 'district'),
+    party: textField(element, 'party'),
+    state: textField(element, 'state'),
+    district: textField(element, 'district'),
     chamber:
-      chamber(field(element, 'chamber')) ??
+      chamber(textField(element, 'chamber')) ??
       (name.startsWith('Rep.')
         ? 'house'
         : name.startsWith('Sen.')
@@ -147,7 +173,7 @@ function version(
       continue;
     return {
       code: linked.version,
-      label: field(element, 'type') ?? linked.version,
+      label: textField(element, 'type') ?? linked.version,
       date: date(field(element, 'date')),
       url: govinfoTextUrl(plan, linked.version),
     };
@@ -155,7 +181,7 @@ function version(
   // Preserve an unresolvable entry so latest selection cannot silently choose an older text.
   return {
     code: '',
-    label: field(element, 'type') ?? 'Version unavailable',
+    label: textField(element, 'type') ?? 'Version unavailable',
     date: date(field(element, 'date')),
   };
 }
@@ -171,9 +197,12 @@ function amendmentStatus(
     explicit === 'withdrawn'
   )
     return explicit;
-  const text = field(child(element, 'latestAction'), 'text') ?? '';
+  const text = textField(child(element, 'latestAction'), 'text') ?? '';
   // Do not mistake a vote on a motion (e.g. to table) for a decision on the amendment.
-  if (!/^Amendment\b/i.test(text) || /\bmotion\b/i.test(text)) return 'unknown';
+  const namesAmendment =
+    /^(?:Proposed )?Amendment\b/i.test(text) ||
+    /^On agreeing to\b.*\bamendments?\b/i.test(text);
+  if (!namesAmendment || /\bmotion\b/i.test(text)) return 'unknown';
   if (/\b(?:not agreed to|rejected|not adopted|failed)\b/i.test(text))
     return 'rejected';
   if (/\b(?:agreed to|adopted)\b/i.test(text)) return 'adopted';
@@ -201,14 +230,18 @@ function amendment(
     sponsor: sponsor
       ? { name: sponsor.name, bioguideId: sponsor.bioguideId }
       : undefined,
-    purpose: field(element, 'purpose'),
-    description: field(element, 'description'),
-    committee: field(child(element, 'committee'), 'name'),
+    purpose: textField(element, 'purpose'),
+    description: textField(element, 'description'),
+    committee: committeeName(element),
     date: date(field(child(element, 'latestAction'), 'actionDate')),
   };
 }
 
-/** Parse only official-record fields and validate the final result against frozen schemas. */
+/**
+ * Parse official-record fields as plain text and validate against the frozen schemas.
+ * Consumers must render output as text and quote it as untrusted data in prompts;
+ * HTML stripping does not make upstream wording or literal angle brackets trusted.
+ */
 export function parseGovinfoBillStatus(
   bytes: Uint8Array,
   plan: GovinfoPlan,
@@ -233,28 +266,31 @@ export function parseGovinfoBillStatus(
   const summaries =
     child(child(bill, 'summaries'), 'billSummaries') ??
     child(bill, 'summaries');
-  const summary = items(summaries)
-    .filter((item) => field(item, 'text'))
+  const summaryText = (item: Element): string | undefined =>
+    textField(child(item, 'cdata'), 'text') ?? textField(item, 'text');
+  const summary = (
+    summaries?.children.filter(
+      (item) => item.name === 'summary' || item.name === 'item',
+    ) ?? []
+  )
+    .map((item) => ({ item, text: summaryText(item) }))
+    .filter((summary) => summary.text)
     .sort(
       (a, b) =>
-        (date(field(b, 'actionDate')) ?? '').localeCompare(
-          date(field(a, 'actionDate')) ?? '',
+        (date(field(b.item, 'actionDate')) ?? '').localeCompare(
+          date(field(a.item, 'actionDate')) ?? '',
         ) ||
-        (date(field(b, 'updateDate')) ?? '').localeCompare(
-          date(field(a, 'updateDate')) ?? '',
+        (date(field(b.item, 'updateDate')) ?? '').localeCompare(
+          date(field(a.item, 'updateDate')) ?? '',
         ),
     )[0];
-  const summaryText = field(summary, 'text');
   let officialSummary: BillHistory['officialSummary'];
-  if (summaryText) {
-    const $ = load(summaryText, null, false);
-    $('script,style').remove();
-    $('p,li,br').before(' ');
+  if (summary?.text) {
     officialSummary = {
-      text: $.root().text().replace(/\s+/g, ' ').trim(),
+      text: summary.text,
       source: 'Congressional Research Service',
       url: plan.billStatusUrl,
-      date: date(field(summary, 'actionDate')),
+      date: date(field(summary.item, 'actionDate')),
     };
   }
   const history = BillHistory.parse({
@@ -264,16 +300,16 @@ export function parseGovinfoBillStatus(
     ),
     actions: items(child(bill, 'actions')).flatMap((item) => {
       const actionDate = date(field(item, 'actionDate'));
-      const text = field(item, 'text');
+      const text = textField(item, 'text');
       if (!actionDate || !text) return [];
-      const systemName = field(child(item, 'sourceSystem'), 'name');
+      const systemName = textField(child(item, 'sourceSystem'), 'name');
       return [
         {
           date: actionDate,
           text,
-          committee: field(child(item, 'committee'), 'name'),
+          committee: committeeName(item),
           chamber:
-            field(item, 'chamber') ??
+            textField(item, 'chamber') ??
             (systemName === 'House' || systemName === 'Senate'
               ? systemName
               : undefined),

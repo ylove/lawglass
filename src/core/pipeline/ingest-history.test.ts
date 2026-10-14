@@ -68,10 +68,10 @@ function serveText(version: string, bytes = makeCongressionalBillXml().bytes) {
 
 test('a congress.gov landing page ingests the latest text with history through real safeFetch', async () => {
   serveStatus();
-  serveText('eh');
+  serveText('enr');
   const result = await ingest(page, deps);
-  expect(result.normalized.sourceUrl).toBe(`${origin}${textPath('eh')}`);
-  expect(result.normalized.metadata.version).toBe('Engrossed in House (eh)');
+  expect(result.normalized.sourceUrl).toBe(`${origin}${textPath('enr')}`);
+  expect(result.normalized.metadata.version).toBe('Enrolled Bill (enr)');
   expect(
     result.normalized.metadata.sponsorProfiles?.map((item) => item.bioguideId),
   ).toEqual(['X000001', 'X000002']);
@@ -102,7 +102,7 @@ test.each([
     (await historyStore.readHistory(dir, result.doc.docId))?.versions.map(
       (item) => item.code,
     ),
-  ).toEqual(['ih', 'eh']);
+  ).toEqual(['enr', 'eah', 'eas', 'pcs', 'eh', 'rh', 'ih', '']);
   agent.assertNoPendingInterceptors();
 });
 
@@ -214,10 +214,14 @@ test('ordinary document URLs cannot redirect into congress.gov either', async ()
 });
 
 test('latest text selection refreshes a mutable BILLSTATUS record', async () => {
+  const introducedVersion =
+    /<item><type>Introduced in House<\/type>[\s\S]*?<\/formats><\/item>/.exec(
+      BILLSTATUS_XML,
+    )![0];
   serveStatus(
     BILLSTATUS_XML.replace(
-      /<item><date>2024-06-10T00:00:00Z<\/date>[\s\S]*?<\/formats><\/item>/,
-      '',
+      /<textVersions>[\s\S]*?<\/textVersions>/,
+      `<textVersions>${introducedVersion}</textVersions>`,
     ),
   );
   serveText('ih');
@@ -227,21 +231,21 @@ test('latest text selection refreshes a mutable BILLSTATUS record', async () => 
   );
   serveStatus();
   serveText(
-    'eh',
+    'enr',
     new TextEncoder().encode(
-      `${new TextDecoder().decode(makeCongressionalBillXml().bytes)}\n<!-- Engrossed synthetic version -->`,
+      `${new TextDecoder().decode(makeCongressionalBillXml().bytes)}\n<!-- Enrolled synthetic version -->`,
     ),
   );
-  const engrossed = await ingest(page, deps);
-  expect(engrossed.doc.docId).not.toBe(introduced.doc.docId);
-  expect(engrossed.normalized.metadata.version).toBe('Engrossed in House (eh)');
+  const enrolled = await ingest(page, deps);
+  expect(enrolled.doc.docId).not.toBe(introduced.doc.docId);
+  expect(enrolled.normalized.metadata.version).toBe('Enrolled Bill (enr)');
   agent.assertNoPendingInterceptors();
 });
 
 test('a missing format in the latest version never silently selects an older version', async () => {
   serveStatus(
     BILLSTATUS_XML.replace(
-      'https://www.govinfo.gov/content/pkg/BILLS-118hr9001eh/pdf/BILLS-118hr9001eh.pdf',
+      'https://www.govinfo.gov/content/pkg/BILLS-118hr9001enr/xml/BILLS-118hr9001enr.xml',
       'https://evil.test/bill',
     ),
   );

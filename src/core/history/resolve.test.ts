@@ -1,5 +1,7 @@
 import { expect, test } from 'vitest';
 import { AppError, type BillHistory } from '../model/index.js';
+import { makeBillStatusXml } from '../../../tests/synth/billstatus.js';
+import { parseGovinfoBillStatus } from './govinfo-billstatus.js';
 import {
   assertNoCongressFetch,
   chooseVersion,
@@ -105,7 +107,7 @@ test.each([
   expect(resolveHistory(url)).toBeUndefined();
 });
 
-test('explicit version wins; latest is chronological, independent of XML order', () => {
+test('explicit version wins; latest follows official list order even with missing or inconsistent dates', () => {
   const plan = resolveHistory(page)!;
   const history: BillHistory = {
     versions: [
@@ -120,10 +122,35 @@ test('explicit version wins; latest is chronological, independent of XML order',
   expect(chooseVersion(resolveHistory(`${page}/text/ih`)!, history)).toBe('ih');
   expect(chooseVersion(resolveHistory(`${page}/text/ih`)!)).toBe('ih');
   for (const versions of [
-    [],
-    [{ code: 'ih', label: 'Introduced' }],
     [
+      { code: 'enr', label: 'Enrolled' },
+      { code: 'eh', label: 'Engrossed', date: '2024-06-01' },
+    ],
+    [
+      { code: 'enr', label: 'Enrolled', date: '2024-06-01' },
+      { code: 'eh', label: 'Engrossed', date: '2024-06-02' },
+    ],
+    [
+      { code: 'enr', label: 'Enrolled', date: '2024-06-01' },
+      { code: 'eh', label: 'Engrossed', date: '2024-06-01' },
+    ],
+    [
+      { code: 'enr', label: 'Enrolled', date: '2024-06-01' },
       { code: 'ih', label: 'Introduced' },
+    ],
+  ]) {
+    expect(chooseVersion(plan, { ...history, versions })).toBe('enr');
+  }
+  expect(
+    chooseVersion(plan, {
+      ...history,
+      versions: [{ code: 'ih', label: 'Introduced' }],
+    }),
+  ).toBe('ih');
+  for (const versions of [
+    [],
+    [
+      { code: '', label: 'Unavailable latest' },
       { code: 'eh', label: 'Engrossed', date: '2024-06-01' },
     ],
     [{ code: '../ih', label: 'Bad', date: '2024-01-01' }],
@@ -138,6 +165,28 @@ test('explicit version wins; latest is chronological, independent of XML order',
     expect(error).toBeInstanceOf(AppError);
     expect((error as AppError).userMessage).toContain('specific version URL');
   }
+});
+
+test('hr5009 version-list shape chooses dateless Enrolled first, ahead of the later-dated Public Law', () => {
+  const plan = resolveGovinfo(new URL(page))!;
+  const { history } = parseGovinfoBillStatus(
+    makeBillStatusXml(),
+    plan,
+    '2026-10-14T00:00:00.000Z',
+  );
+  expect(history.versions.map((item) => item.code)).toEqual([
+    'enr',
+    'eah',
+    'eas',
+    'pcs',
+    'eh',
+    'rh',
+    'ih',
+    '',
+  ]);
+  expect(history.versions[0]?.date).toBeUndefined();
+  expect(history.versions.at(-1)?.date).toBe('2024-12-24T04:59:59Z');
+  expect(chooseVersion(plan, history)).toBe('enr');
 });
 
 test('unknown sources and unsafe version codes fail closed', () => {
