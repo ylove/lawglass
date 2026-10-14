@@ -1,6 +1,7 @@
 import { setTimeout as sleep } from 'node:timers/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { AnswerCache } from './answer-cache.js';
 import {
   AppError,
   DocSummary,
@@ -54,6 +55,7 @@ const Entries = z.array(RegistryEntry).superRefine((entries, context) => {
 export interface RegistryOptions {
   fs?: ConfigFileSystem;
   now?: () => Date;
+  answerCache?: Pick<AnswerCache, 'evictDocument'>;
 }
 export interface AddDocumentOptions {
   label: string;
@@ -79,6 +81,7 @@ export class Registry {
   private readonly now: () => Date;
   private readonly path: string;
   private readonly lockPath: string;
+  private readonly answerCache: Pick<AnswerCache, 'evictDocument'>;
 
   constructor(
     readonly configDir: string,
@@ -88,6 +91,11 @@ export class Registry {
     this.now = options.now ?? (() => new Date());
     this.path = join(configDir, 'registry.json');
     this.lockPath = `${this.path}.lock`;
+    this.answerCache =
+      options.answerCache ??
+      new AnswerCache({
+        dir: join(configDir, 'cache', 'answers'),
+      });
   }
 
   private async withFileLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -233,11 +241,14 @@ export class Registry {
     });
   }
 
-  /** Registry/document deletion only; callers also delete the matching backend namespace. */
+  /** Remove document and answers; callers also delete the matching backend namespace. */
   remove(docId: string): Promise<void> {
     return this.exclusive(async () => {
       const path = this.documentPath(docId);
       const entries = await this.readEntries();
+      // Both explicit removal and LRU eviction pass here. Do not publish a removal when
+      // private answers could not be deleted; callers can retry the operation.
+      await this.answerCache.evictDocument(docId);
       await writePrivateJson(
         this.path,
         entries.filter((entry) => entry.docId !== docId),

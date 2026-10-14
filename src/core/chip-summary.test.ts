@@ -2,11 +2,15 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { MemoryBackend } from '../../tests/contracts/memory-backend.js';
 import { ScriptedProvider } from '../../tests/contracts/scripted-provider.js';
 import { getChip, runChip } from './chips.js';
+import { promptVersion } from './answer/prompt.js';
 import {
   MAP_UNITS_PER_CALL,
+  MAP_INSTRUCTION,
   MAX_MAP_UNITS,
   MIN_MAP_UNITS,
   OUTLINE_CHAR_BUDGET,
+  REDUCE_INSTRUCTION,
+  SUMMARY_PROMPT_VERSION,
   buildOutline,
   chooseMapUnits,
 } from './chip-summary.js';
@@ -23,6 +27,18 @@ import {
 } from './model/index.js';
 
 const DOC = 'd'.repeat(64);
+
+it('derives the summary cache version from the question, single-call, map and reduce prompts', () => {
+  const chip = getChip('summary');
+  expect(SUMMARY_PROMPT_VERSION).toBe(
+    promptVersion(
+      chip.label,
+      chip.answerInstruction!,
+      MAP_INSTRUCTION,
+      REDUCE_INSTRUCTION,
+    ),
+  );
+});
 
 const sec = (
   id: string,
