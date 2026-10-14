@@ -1,63 +1,132 @@
-/** Invented names and dates in the structural classes observed on Ohio's pages. */
-export function makeOhioHistoryPages(): {
-  status: string;
-  documents: string;
-  committee: string;
-} {
-  const frame = (
-    kind: string,
-    content: string,
-  ) => `<html><body><main class="legislation">
-    <h1>House Bill 9001 ${kind}</h1><nav class="section-menu">
-    <a href="/legislation/135/hb9001/status">Status</a>
-    <a href="/legislation/135/hb9001/documents">Documents</a>
-    <a href="/legislation/135/hb9001/committee">Committee Activity</a></nav>
-    <section class="legislation-primary-sponsors"><h2>Primary Sponsors</h2>
-      <div class="media-container"><a href="https://ohiohouse.gov/members/alex-example" aria-label="Alex Example"><div>Alex Example</div></a></div>
-      <div class="other-primary-sponsors"><div><span>Archived Example</span></div></div>
-    </section><section class="legislation-cosponsors"><h2>Cosponsors</h2>
-      <div class="legislation-cosponsors-inner"><div class="legislation-cosponsors-header">Senators</div>
-        <div><a href="https://www.ohiosenate.gov/members/sam-sample">Sam Sample</a></div><div><span>Archived Senator</span></div>
-      </div></section><div class="content-area-1">${content}</div></main></body></html>`;
+/**
+ * Invented bills, names and dates in the shape the Ohio LIS JSON API returns
+ * (`/legislation/<bill>/`, `/actions/`, `/meetings/`, `/amendments/`).
+ */
+export interface OhioHistoryJson {
+  versions: string;
+  actions: string;
+  meetings: string;
+  amendments: string;
+}
+
+const member = (
+  first: string,
+  last: string,
+  id: number,
+  party: string,
+  chamber: string,
+) => ({
+  chamber,
+  first_name: first,
+  last_name: last,
+  full_name: `${first} ${last}`,
+  district: '42',
+  member_id: id,
+  member_lpid: `rep_${last.toLowerCase()}_${first.toLowerCase()}_1`,
+  active: true,
+  party,
+});
+
+const STAGES = [
+  ['00', 'IN', 'As Introduced'],
+  ['01', 'RH', 'As Reported by the House Finance Committee'],
+  ['02', 'PH', 'As Passed by the House'],
+  ['03', 'RS', 'As Reported by the Senate Finance Committee'],
+  ['04', 'PS', 'As Passed by the Senate'],
+  ['05', 'CR', 'As Reported by Committee of Conference'],
+  ['06', 'EN', 'As Enrolled'],
+] as const;
+
+/** An HB 33-like record: 7 versions. The API lists them oldest first. */
+export function makeOhioVersionsJson(
+  overrides: Record<string, unknown> = {},
+): unknown[] {
+  return STAGES.map(([formatted, id, label]) => ({
+    name: 'H. B. No. 9001',
+    number: 'hb9001',
+    chamber: 'House',
+    short_title: 'Example operating appropriations',
+    long_title: 'To appropriate example money for fiscal years 2030-2031.',
+    version: label,
+    version_id: id,
+    formatted_version: formatted,
+    effective_date: id === 'EN' ? '2024-07-04' : null,
+    governor_signed_date: id === 'EN' ? '2024-07-03' : null,
+    concurrence_date: id === 'CR' ? '2024-06-30' : null,
+    download: `/api/v2/general_assembly_135/legislation/hb9001/${formatted}_${id}/pdf/`,
+    download_html: `/api/v2/general_assembly_135/legislation/hb9001/${formatted}_${id}/html/`,
+    sponsors: [member('Alex', 'Example', 1001, 'party_republican_1', 'House')],
+    cosponsors: [
+      member('Sam', 'Sample', 1002, 'party_democrat_1', 'Senate'),
+      member('Pat', 'Placeholder', 1003, 'party_independent_1', 'House'),
+      member('Kit', 'Unknown', 1004, 'party_other_9', 'House'),
+    ],
+    subjects: [{ primary: 'Finance', secondary: '' }],
+    ...overrides,
+  }));
+}
+
+export function makeOhioActionsJson(): unknown[] {
   const action = (
-    date: string,
+    occurred: string,
     chamber: string,
     text: string,
-    committee = '',
-  ) =>
-    `<tr><th class="date-cell">${date}</th><td class="chamber-cell">${chamber}</td><td class="action-cell">${text}</td><td class="committee-cell">${committee}</td></tr>`;
-  const link = (code: string, label: string) =>
-    `<li><a href="https://search-prod.lis.state.oh.us/api/v2/general_assembly_135/legislation/hb9001/${code}/pdf/"><span>${label}</span><span class="file-format-icon">PDF</span></a></li>`;
+    cmte: string | null = null,
+  ) => ({
+    occurred: `${occurred}T12:00:00-04:00`,
+    chamber,
+    action: text,
+    description: text,
+    cmte_name: cmte,
+    committee: cmte ?? '',
+  });
+  // The real endpoint lists newest first.
+  return [
+    action('2024-06-30', 'Senate', 'Conference report agreed to'),
+    action('2024-06-15', 'Senate', 'Passed'),
+    action('2024-05-03', 'Senate', 'Refer to Committee', 'Finance'),
+    action('2024-04-26', 'House', 'Passed'),
+    action('2024-02-16', 'House', 'Introduced'),
+  ];
+}
+
+export function makeOhioMeetingsJson(): unknown[] {
+  return [
+    {
+      meeting_date: '2024-03-04',
+      chair: 'Pat Chair',
+      canceled: false,
+      chamber: 'house',
+      committee: 'Finance',
+    },
+    {
+      meeting_date: '2024-03-11',
+      canceled: true,
+      chamber: 'house',
+      committee: 'Finance',
+    },
+  ];
+}
+
+export function makeOhioAmendmentsJson(): unknown[] {
+  return [
+    {
+      amendment_number: 'am0168',
+      legislation_number: 'hb9001',
+      version: 'As Introduced',
+      sponsors: [
+        member('Alex', 'Example', 1001, 'party_republican_1', 'House'),
+      ],
+      link: '/api/v2/general_assembly_135/legislation/hb9001/amendments/am0168/pdf/',
+    },
+  ];
+}
+
+export function makeOhioHistoryJson(): OhioHistoryJson {
   return {
-    status: frame(
-      'Status',
-      `<table class="legislation-status-table"><thead><tr><th>Date</th><th>Chamber</th><th>Action</th><th>Committee</th></tr></thead><tbody>
-      ${action('6-6-2024', '', 'Sent To The Governor')}
-      ${action('6-5-2024', 'Senate', 'Conference report agreed to', 'Conference Committee on H.B. 9001')}
-      ${action('6-4-2024', 'Senate', 'Passed')}
-      ${action('6-3-2024', 'Senate', 'Reported - Substitute', 'Example Finance')}
-      ${action('5-2-2024', 'House', 'Passed')}
-      ${action('5-2-2024', 'House', 'Reported - Substitute', 'Example Finance')}
-      ${action('2-8-2024', 'Senate', 'Introduced')}
-      ${action('2-2-2024', 'House', 'Referred to committee', 'Example Finance')}
-      ${action('2-1-2024', 'House', 'Introduced')}
-    </tbody></table>`,
-    ),
-    documents: frame(
-      'Documents',
-      `<section class="legislation-section"><h2>Legislation Text</h2><ul>
-      ${link('06_EN', 'As Enrolled')}${link('05_CR', 'As Reported By Committee of Conference')}${link('04_PS', 'As Passed By Senate')}${link('03_RS', 'As Reported By Senate Committee')}${link('02_PH', 'As Passed By House')}${link('01_RH', 'As Reported By House Committee')}${link('00_IN', 'As Introduced')}
-      </ul></section><section class="legislation-section"><h2>Analysis</h2><ul><li><a href="/download?key=700">As Introduced<span class="file-format-icon">PDF</span></a></li></ul></section>
-      <section class="legislation-section"><h2>Additional Documents</h2><ul>
-        <li><a href="https://www.legislature.ohio.gov//download?key=701">Synopsis of Committee Amendments<span class="file-format-icon">PDF</span></a></li>
-        <li><a href="/download?key=702">Sub Bill Comparative Synopsis<span class="file-format-icon">PDF</span></a></li>
-      </ul></section>`,
-    ),
-    committee: frame(
-      'Committee Activity',
-      `<h2 class="screen-reader">Committee</h2><h2>House Committees</h2>
-      <table class="committee-meeting-table"><tbody><tr><th class="committee-cell">Example Finance</th><td class="date-cell">March 4, 2024</td><td class="status-cell">1st Hearing</td><td class="bill-text-cell"><a href="https://search-prod.lis.state.oh.us/api/v2/general_assembly_135/legislation/hb9001/00_IN/pdf/">Download</a></td></tr></tbody></table>
-      <div class="committee-meeting-testimony"><table class="committee-meeting-testimony-table"><tbody><tr><th class="witness-cell">Pat Witness</th><td class="witness-type">Sponsor</td><td><a href="/testimony.pdf">Download</a></td></tr></tbody></table></div>`,
-    ),
+    versions: JSON.stringify(makeOhioVersionsJson()),
+    actions: JSON.stringify(makeOhioActionsJson()),
+    meetings: JSON.stringify(makeOhioMeetingsJson()),
+    amendments: '[]',
   };
 }

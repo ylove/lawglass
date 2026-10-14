@@ -1,9 +1,18 @@
-import { load, type CheerioAPI } from 'cheerio';
+import { z } from 'zod';
 import { AppError, BillHistory, SponsorProfile } from '../model/index.js';
 import type { HistoryPlan, HistoryRecord, HistorySource } from './resolve.js';
 
-const PAGE_HOST = 'www.legislature.ohio.gov';
-const TEXT_HOST = 'search-prod.lis.state.oh.us';
+/**
+ * Ohio history comes from the legislature's own LIS JSON API. We never fetch
+ * www.legislature.ohio.gov: it serves the wrong intermediate certificate, so Node
+ * cannot verify it, and we will not weaken TLS. Its bill URLs are only recognised
+ * and mapped to the API.
+ *
+ * Every string returned here comes from a remote record. Consumers must render it
+ * as text, never as HTML. Tags are stripped on the way in as a second line of defence.
+ */
+const LANDING_HOST = 'www.legislature.ohio.gov';
+const API_HOST = 'search-prod.lis.state.oh.us';
 const VERSION = /^[0-9]{2}_[A-Z]{2}$/;
 const BILL = '(?:hb|sb|hjr|sjr|hcr|scr|hr|sr)[1-9][0-9]{0,5}';
 const LANDING = new RegExp(
@@ -17,13 +26,16 @@ export interface OhioPlan extends HistoryPlan {
   source: 'ohio';
   ga: string;
   bill: string;
-  pageUrl: string;
 }
 
-/** Only identities and version codes enter constructed URLs, never page-provided URLs. */
+function apiBase(plan: OhioPlan): string {
+  return `https://${API_HOST}/api/v2/general_assembly_${plan.ga}/legislation/${plan.bill}/`;
+}
+
+/** Only identities and version codes enter constructed URLs, never URLs from the record. */
 export function ohioTextUrl(plan: OhioPlan, version: string): string {
   if (!VERSION.test(version)) throw new AppError('INVALID_INPUT');
-  return `https://${TEXT_HOST}/api/v2/general_assembly_${plan.ga}/legislation/${plan.bill}/${version}/pdf/`;
+  return `${apiBase(plan)}${version}/pdf/`;
 }
 
 export function resolveOhio(url: URL): OhioPlan | undefined {
@@ -36,18 +48,13 @@ export function resolveOhio(url: URL): OhioPlan | undefined {
   )
     return undefined;
   const match =
-    url.hostname === PAGE_HOST
+    url.hostname === LANDING_HOST
       ? LANDING.exec(url.pathname)
-      : url.hostname === TEXT_HOST
+      : url.hostname === API_HOST
         ? TEXT.exec(url.pathname)
         : null;
   if (!match?.[1] || !match[2]) return undefined;
-  const plan: OhioPlan = {
-    source: 'ohio',
-    ga: match[1],
-    bill: match[2],
-    pageUrl: `https://${PAGE_HOST}/legislation/${match[1]}/${match[2]}`,
-  };
+  const plan: OhioPlan = { source: 'ohio', ga: match[1], bill: match[2] };
   if (match[3]) {
     plan.version = match[3];
     plan.textUrl = ohioTextUrl(plan, match[3]);
@@ -55,330 +62,238 @@ export function resolveOhio(url: URL): OhioPlan | undefined {
   return plan;
 }
 
-const clean = (value: string): string => value.replace(/\s+/g, ' ').trim();
-
-/** Ohio prints both M-D-YYYY and Month D, YYYY. Reject rollover dates. */
-function date(value: string): string | undefined {
-  const numeric = /^(\d{1,2})-(\d{1,2})-(\d{4})$/.exec(clean(value));
-  const months = [
-    'January',
-    'February',
-    'March',
-    'April',
-    'May',
-    'June',
-    'July',
-    'August',
-    'September',
-    'October',
-    'November',
-    'December',
-  ];
-  const named = /^([A-Za-z]+) (\d{1,2}), (\d{4})$/.exec(clean(value));
-  const iso = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  const year = Number(numeric?.[3] ?? named?.[3] ?? iso?.[1]);
-  const month = numeric
-    ? Number(numeric[1])
-    : named
-      ? months.indexOf(named[1] ?? '') + 1
-      : Number(iso?.[2]);
-  const day = Number(numeric?.[2] ?? named?.[2] ?? iso?.[3]);
-  const parsed = new Date(Date.UTC(year, month - 1, day));
-  return parsed.getUTCFullYear() === year &&
-    parsed.getUTCMonth() === month - 1 &&
-    parsed.getUTCDate() === day
-    ? parsed.toISOString().slice(0, 10)
-    : undefined;
-}
-
-function page(html: string, plan: OhioPlan, kind: string): CheerioAPI {
-  const $ = load(html);
-  $('script,style,nav:not(.section-menu),header,footer').remove();
-  const names: Readonly<Record<string, string>> = {
-    hb: 'House Bill',
-    sb: 'Senate Bill',
-    hjr: 'House Joint Resolution',
-    sjr: 'Senate Joint Resolution',
-    hcr: 'House Concurrent Resolution',
-    scr: 'Senate Concurrent Resolution',
-    hr: 'House Resolution',
-    sr: 'Senate Resolution',
+/** Drop markup and control characters. Entities are decoded first so none can hide a tag. */
+export function plainText(value: string): string {
+  const entities: Readonly<Record<string, string>> = {
+    amp: '&',
+    lt: '<',
+    gt: '>',
+    quot: '"',
+    apos: "'",
+    nbsp: ' ',
   };
-  const identity = /^([a-z]+)(\d+)$/.exec(plan.bill);
-  const name = names[identity?.[1] ?? ''];
-  const title = `${name ?? ''} ${identity?.[2] ?? ''}`;
-  if (
-    !clean($('.legislation h1').text()).startsWith(`${title} `) ||
-    !$('.section-menu a')
-      .toArray()
-      .some(
-        (anchor) =>
-          $(anchor).attr('href') ===
-          `/legislation/${plan.ga}/${plan.bill}/${kind}`,
-      )
-  )
-    throw new AppError('PARSE_FAILED');
-  return $;
-}
-
-function actions(
-  $: CheerioAPI,
-  selector: string,
-  url: string,
-): BillHistory['actions'] {
-  return $(selector)
-    .toArray()
-    .map((row) => {
-      const cells = $(row);
-      const actionDate = date(cells.find('.date-cell').text());
-      const committee =
-        clean(cells.find('.committee-cell').text()) || undefined;
-      // Ohio leaves some meeting statuses blank. The dated committee row still records a meeting.
-      const text =
-        clean(cells.find('.action-cell,.status-cell').text()) ||
-        (cells.closest('table').hasClass('committee-meeting-table') && committee
-          ? 'Committee meeting'
-          : '');
-      if (!actionDate || !text) throw new AppError('PARSE_FAILED');
-      const heading = clean(
-        cells.closest('table').prevAll('h2').first().text(),
-      );
-      const chamber =
-        clean(cells.find('.chamber-cell').text()) ||
-        (heading === 'House Committees'
-          ? 'House'
-          : heading === 'Senate Committees'
-            ? 'Senate'
-            : undefined);
-      return {
-        date: actionDate,
-        text,
-        chamber,
-        committee,
-        url,
-      };
-    });
-}
-
-function sponsors($: CheerioAPI): SponsorProfile[] {
-  const profiles: SponsorProfile[] = [];
-  for (const [selector, role] of [
-    ['.legislation-primary-sponsors', 'sponsor'],
-    ['.legislation-cosponsors', 'cosponsor'],
-  ] as const) {
-    $(selector)
-      .find(
-        'a[href], .other-primary-sponsors span, .legislation-cosponsors-inner > div > span',
-      )
-      .each((_, element) => {
-        const node = $(element);
-        const name = clean(node.attr('aria-label') ?? node.text());
-        if (!name) return;
-        let memberId: string | undefined;
-        let chamber: SponsorProfile['chamber'];
-        const links: SponsorProfile['links'] = [];
-        try {
-          const url = new URL(node.attr('href') ?? '', `https://${PAGE_HOST}`);
-          const member = /^\/members\/([a-z0-9-]+)\/?$/.exec(url.pathname);
-          if (
-            url.protocol === 'https:' &&
-            !url.port &&
-            !url.username &&
-            !url.password &&
-            member?.[1] &&
-            [
-              'ohiohouse.gov',
-              'www.ohiohouse.gov',
-              'ohiosenate.gov',
-              'www.ohiosenate.gov',
-            ].includes(url.hostname)
-          ) {
-            memberId = member[1];
-            chamber = url.hostname.includes('ohiohouse') ? 'house' : 'senate';
-            links.push({
-              kind: 'legislature',
-              url: url.href,
-              label: 'Ohio legislature member page',
-              verified: true,
-            });
-          }
-        } catch {
-          /* Invalid member anchors retain only the stated name. */
-        }
-        const group = clean(
-          node
-            .closest('.legislation-cosponsors-inner')
-            .find('.legislation-cosponsors-header')
-            .text(),
-        );
-        chamber ??=
-          group === 'Representatives'
-            ? 'house'
-            : group === 'Senators'
-              ? 'senate'
-              : undefined;
-        profiles.push(
-          SponsorProfile.parse({ name, role, memberId, chamber, links }),
-        );
-      });
-  }
-  return profiles;
-}
-
-/** Match a version to its stated stage, not an effective date or a later override vote. */
-function versionDate(
-  code: string,
-  plan: OhioPlan,
-  status: BillHistory['actions'],
-): string | undefined {
-  const stage = code.slice(3);
-  const chamber =
-    stage === 'IN'
-      ? plan.bill.startsWith('h')
-        ? 'House'
-        : 'Senate'
-      : stage.endsWith('H')
-        ? 'House'
-        : stage.endsWith('S')
-          ? 'Senate'
-          : undefined;
-  const patterns: Readonly<Record<string, RegExp>> = {
-    IN: /^Introduced$/,
-    RH: /^Reported(?: - Substitute)?$/,
-    RS: /^Reported(?: - Substitute)?$/,
-    PH: /^Passed$/,
-    PS: /^Passed$/,
-    CR: /^Conference report agreed to$/,
-    EN: /^Sent To The Governor$/i,
-  };
-  const pattern = patterns[stage];
-  return status
-    .filter(
-      (action) =>
-        pattern?.test(action.text) && (!chamber || action.chamber === chamber),
+  const decoded = value.replace(
+    /&(#\d{1,6}|#x[0-9a-f]{1,5}|[a-z]+);/gi,
+    (m, e) => {
+      const name = String(e);
+      if (name.startsWith('#')) {
+        const code =
+          name[1]?.toLowerCase() === 'x'
+            ? parseInt(name.slice(2), 16)
+            : parseInt(name.slice(1), 10);
+        return code > 0 && code < 0x110000 ? String.fromCodePoint(code) : ' ';
+      }
+      return entities[name.toLowerCase()] ?? m;
+    },
+  );
+  return decoded
+    .replace(
+      /<script\b[\s\S]*?<\/script\s*>|<style\b[\s\S]*?<\/style\s*>/gi,
+      ' ',
     )
-    .map((action) => action.date)
-    .sort()[0];
+    .replace(/<[^>]*>?/g, ' ')
+    .replace(/[<>]/g, ' ')
+
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+const Text = z.string().transform(plainText);
+const OptionalText = Text.nullish().transform((v) =>
+  v?.length ? v : undefined,
+);
+const IsoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}/);
+
+const Member = z.object({
+  full_name: Text.pipe(z.string().min(1)),
+  member_id: z.union([z.number(), z.string()]).nullish(),
+  party: OptionalText,
+  district: z.union([z.number(), z.string()]).nullish(),
+  chamber: OptionalText,
+});
+const VersionRecord = z.object({
+  number: OptionalText,
+  version: Text,
+  version_id: z.string().regex(/^[A-Z]{2}$/),
+  formatted_version: z.string().regex(/^[0-9]{2}$/),
+  long_title: OptionalText,
+  effective_date: IsoDate.nullish(),
+  governor_signed_date: IsoDate.nullish(),
+  sponsors: z.array(Member).default([]),
+  cosponsors: z.array(Member).default([]),
+});
+const ActionRecord = z.object({
+  occurred: IsoDate,
+  chamber: OptionalText,
+  action: Text.pipe(z.string().min(1)),
+  cmte_name: OptionalText,
+  committee: OptionalText,
+});
+const MeetingRecord = z.object({
+  meeting_date: IsoDate,
+  committee: Text.pipe(z.string().min(1)),
+  chamber: OptionalText,
+  canceled: z.boolean().nullish(),
+});
+const AmendmentRecord = z.object({
+  amendment_number: z.string().regex(/^am[0-9]{1,8}$/),
+  version: OptionalText,
+});
+const VersionList = z.array(VersionRecord).min(1);
+const ActionList = z.array(ActionRecord);
+const MeetingList = z.array(MeetingRecord);
+const AmendmentList = z.array(AmendmentRecord);
+
+function json<T>(schema: z.ZodType<T>, bytes: Uint8Array): T {
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes));
+  } catch {
+    throw new AppError('PARSE_FAILED');
+  }
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new AppError('PARSE_FAILED');
+  return parsed.data;
+}
+
+const day = (value: string): string => value.slice(0, 10);
+const capitalize = (value: string | undefined): string | undefined =>
+  value
+    ? value.charAt(0).toUpperCase() + value.slice(1).toLowerCase()
+    : undefined;
+
+const PARTIES: Readonly<Record<string, string>> = {
+  democrat: 'Democrat',
+  republican: 'Republican',
+  independent: 'Independent',
+};
+/** `party_democrat_1` becomes "Democrat". An unrecognised code is left out, not guessed. */
+export function partyLabel(code: string | undefined): string | undefined {
+  return PARTIES[/^party_([a-z]+)_\d+$/.exec(code ?? '')?.[1] ?? ''];
+}
+
+function sponsorProfiles(
+  members: readonly z.infer<typeof Member>[],
+  role: SponsorProfile['role'],
+): SponsorProfile[] {
+  return members.map((member) => {
+    const chamber = member.chamber?.toLowerCase();
+    return SponsorProfile.parse({
+      name: member.full_name,
+      role,
+      party: partyLabel(member.party),
+      district: member.district == null ? undefined : String(member.district),
+      chamber:
+        chamber === 'house' || chamber === 'senate' ? chamber : undefined,
+      memberId: member.member_id == null ? undefined : String(member.member_id),
+      // The LIS API gives no member-page URL. The sponsor link builder adds labeled searches.
+      links: [],
+    });
+  });
 }
 
 export function parseOhioHistory(
-  pages: { status: string; documents: string; committee: string },
+  responses: {
+    versions: Uint8Array;
+    actions: Uint8Array;
+    meetings: Uint8Array;
+    amendments: Uint8Array;
+  },
   plan: OhioPlan,
   fetchedAt: string,
 ): HistoryRecord {
-  const status = page(pages.status, plan, 'status');
-  const documents = page(pages.documents, plan, 'documents');
-  const committee = page(pages.committee, plan, 'committee');
-  if (
-    !status('.legislation-status-table').length ||
-    !documents('.legislation-section')
-      .toArray()
-      .some(
-        (section) =>
-          clean(documents(section).children('h2').text()) ===
-          'Legislation Text',
-      ) ||
-    !committee('.content-area-1 > h2').length
-  )
+  const records = json(VersionList, responses.versions);
+  if (records.some((r) => r.number && r.number !== plan.bill))
     throw new AppError('PARSE_FAILED');
-  const statusActions = actions(
-    status,
-    '.legislation-status-table tbody tr',
-    `${plan.pageUrl}/status`,
+  const base = apiBase(plan);
+  // Stage order is the numeric prefix (00 introduced ... enrolled last).
+  const ordered = [...records].sort((a, b) =>
+    `${a.formatted_version}_${a.version_id}`.localeCompare(
+      `${b.formatted_version}_${b.version_id}`,
+    ),
   );
-  if (!statusActions.length) throw new AppError('PARSE_FAILED');
-  const versions: BillHistory['versions'] = [];
-  const amendments: BillHistory['amendments'] = [];
-  documents('.legislation-section a[href]').each((_, element) => {
-    const anchor = documents(element);
-    const labelNode = anchor.clone();
-    labelNode.find('.file-format-icon').remove();
-    const label = clean(labelNode.text());
-    const section = anchor.closest('.legislation-section');
-    const isText = clean(section.children('h2').text()) === 'Legislation Text';
-    if (
-      !isText &&
-      (!/\bamendments?\b/i.test(label) ||
-        /\bcompar(?:ison|e|ative)\b/i.test(label))
-    )
-      return;
-    let url: URL;
-    try {
-      url = new URL(anchor.attr('href') ?? '', plan.pageUrl);
-    } catch {
-      throw new AppError('PARSE_FAILED');
-    }
-    if (
-      url.protocol !== 'https:' ||
-      url.port ||
-      url.username ||
-      url.password ||
-      ![PAGE_HOST, TEXT_HOST].includes(url.hostname)
-    )
-      throw new AppError('PARSE_FAILED');
-    const row = anchor.closest('li,tr');
-    const listedDate = date(
-      row.find('time').attr('datetime') ?? row.find('.date-cell').text(),
-    );
-    if (isText) {
-      const linked = resolveOhio(url);
-      if (
-        !linked?.version ||
-        linked.ga !== plan.ga ||
-        linked.bill !== plan.bill ||
-        !label
-      )
-        throw new AppError('PARSE_FAILED');
-      if (!versions.some((version) => version.code === linked.version))
-        versions.push({
-          code: linked.version,
-          label,
-          date: listedDate ?? versionDate(linked.version, plan, statusActions),
-          url: ohioTextUrl(plan, linked.version),
-        });
-    } else {
-      amendments.push({
-        id: `${url.pathname}${url.search}`
-          .toLowerCase()
-          .replace(/[^a-z0-9]+/g, '-')
-          .replace(/^-|-$/g, ''),
-        status:
-          /\bamendment\b.*\badopted\b/i.test(label) &&
-          !/\bnot adopted\b/i.test(label)
-            ? 'adopted'
-            : 'unknown',
-        description: label,
-        date: listedDate,
-        committee: clean(row.find('.committee-cell').text()) || undefined,
-        url: url.href,
-      });
-    }
+  const versions: BillHistory['versions'] = ordered.map((r) => {
+    const code = `${r.formatted_version}_${r.version_id}`;
+    return { code, label: r.version, url: ohioTextUrl(plan, code) };
   });
-  if (!versions.length) throw new AppError('PARSE_FAILED');
+
+  const actions: BillHistory['actions'] = [
+    ...json(ActionList, responses.actions).map((a) => ({
+      date: day(a.occurred),
+      text: a.action,
+      chamber: a.chamber,
+      committee: a.cmte_name ?? a.committee,
+      url: `${base}actions/`,
+    })),
+    ...json(MeetingList, responses.meetings)
+      .filter((m) => !m.canceled)
+      .map((m) => ({
+        date: day(m.meeting_date),
+        text: `Heard in ${m.committee}`,
+        chamber: capitalize(m.chamber),
+        committee: m.committee,
+        url: `${base}meetings/`,
+      })),
+  ];
+  // Signing and effective dates sit on the version they apply to.
+  for (const r of ordered) {
+    if (r.governor_signed_date)
+      actions.push({
+        date: day(r.governor_signed_date),
+        text: 'Signed by the Governor',
+        url: base,
+      });
+    if (r.effective_date)
+      actions.push({
+        date: day(r.effective_date),
+        text: 'Effective date',
+        url: base,
+      });
+  }
+  // Oldest first; the sort is stable so same-day entries keep the record's order.
+  actions.sort((a, b) => a.date.localeCompare(b.date));
+
+  // The record lists amendment numbers and the version they amend. Nothing else is stated
+  // that we can attribute (no date or committee), so nothing else is claimed.
+  const amendments: BillHistory['amendments'] = json(
+    AmendmentList,
+    responses.amendments,
+  ).map((a) => ({
+    id: a.amendment_number,
+    number: a.amendment_number,
+    status: 'unknown' as const,
+    description: a.version
+      ? `Amendment ${a.amendment_number} (${a.version})`
+      : `Amendment ${a.amendment_number}`,
+    url: `${base}amendments/${a.amendment_number}/pdf/`,
+  }));
+
+  const sponsored = new Map(
+    ordered.map((r) => [`${r.formatted_version}_${r.version_id}`, r]),
+  );
+  // Sponsors can change between versions; the latest version's list is current.
+  const latest = sponsored.get(versions.at(-1)?.code ?? '');
   return {
     history: BillHistory.parse({
       versions,
-      actions: [
-        ...statusActions,
-        ...actions(
-          committee,
-          '.committee-meeting-table tbody tr',
-          `${plan.pageUrl}/committee`,
-        ),
-      ],
+      actions,
       amendments,
-      sources: ['status', 'documents', 'committee'].map((kind) => ({
-        host: PAGE_HOST,
-        url: `${plan.pageUrl}/${kind}`,
+      sources: ['', 'actions/', 'meetings/', 'amendments/'].map((path) => ({
+        host: API_HOST,
+        url: `${base}${path}`,
         fetchedAt,
       })),
     }),
-    sponsorProfiles: sponsors(status),
+    sponsorProfiles: [
+      ...sponsorProfiles(latest?.sponsors ?? [], 'sponsor'),
+      ...sponsorProfiles(latest?.cosponsors ?? [], 'cosponsor'),
+    ],
   };
 }
 
 export function chooseOhioVersion(history?: BillHistory): string {
-  // Documents are listed newest first. Numeric prefixes also order same-day substitutes.
+  // Numeric prefixes give stage order, including same-day substitutes.
   const versions = history?.versions ?? [];
   const latest = [...versions].sort((a, b) => b.code.localeCompare(a.code))[0];
   if (!latest || versions.some((version) => !VERSION.test(version.code)))
@@ -391,23 +306,23 @@ export function chooseOhioVersion(history?: BillHistory): string {
 
 export const ohioHistorySource: HistorySource = {
   source: 'ohio',
-  hosts: [PAGE_HOST, TEXT_HOST],
+  hosts: [API_HOST],
   isVersion: (code) => VERSION.test(code),
   resolve: resolveOhio,
   read: async (plan, fetcher, now) => {
-    const ohio = plan as OhioPlan;
-    const status = await fetcher(`${ohio.pageUrl}/status`);
-    const documents = await fetcher(`${ohio.pageUrl}/documents`);
-    const committee = await fetcher(`${ohio.pageUrl}/committee`);
-    const decode = (bytes: Uint8Array) =>
-      new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    const base = apiBase(plan as OhioPlan);
+    const versions = await fetcher(base);
+    const actions = await fetcher(`${base}actions/`);
+    const meetings = await fetcher(`${base}meetings/`);
+    const amendments = await fetcher(`${base}amendments/`);
     return parseOhioHistory(
       {
-        status: decode(status.bytes),
-        documents: decode(documents.bytes),
-        committee: decode(committee.bytes),
+        versions: versions.bytes,
+        actions: actions.bytes,
+        meetings: meetings.bytes,
+        amendments: amendments.bytes,
       },
-      ohio,
+      plan as OhioPlan,
       now().toISOString(),
     );
   },

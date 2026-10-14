@@ -1,23 +1,47 @@
-import { expect, test } from 'vitest';
-import { makeOhioHistoryPages } from '../../../tests/synth/ohio-history.js';
-import { AppError, BillHistory, SponsorProfile } from '../model/index.js';
+import { expect, test, vi } from 'vitest';
+import {
+  makeOhioActionsJson,
+  makeOhioAmendmentsJson,
+  makeOhioHistoryJson,
+  makeOhioVersionsJson,
+} from '../../../tests/synth/ohio-history.js';
+import { documentId, type SafeFetchResult } from '../fetch/index.js';
+import { AppError, BillHistory } from '../model/index.js';
 import { assertHistoryUrl } from './allowlist.js';
 import { chooseVersion, historySource, resolveHistory } from './resolve.js';
 import {
   chooseOhioVersion,
+  ohioHistorySource,
   ohioTextUrl,
   parseOhioHistory,
+  partyLabel,
+  plainText,
   resolveOhio,
 } from './ohio-legislature.js';
 
 const landing = 'https://www.legislature.ohio.gov/legislation/135/hb9001';
 const plan = resolveOhio(new URL(landing))!;
 const fetchedAt = '2026-10-14T00:00:00.000Z';
-const parse = (pages = makeOhioHistoryPages()) =>
-  parseOhioHistory(pages, plan, fetchedAt);
+const encode = (value: unknown) =>
+  new TextEncoder().encode(
+    typeof value === 'string' ? value : JSON.stringify(value),
+  );
+const parse = (overrides: Partial<Record<string, unknown>> = {}) => {
+  const json = { ...makeOhioHistoryJson(), ...overrides };
+  return parseOhioHistory(
+    {
+      versions: encode(json.versions),
+      actions: encode(json.actions),
+      meetings: encode(json.meetings),
+      amendments: encode(json.amendments),
+    },
+    plan,
+    fetchedAt,
+  );
+};
 
 test.each(['', '/', '/status', '/documents/', '/committee?x=1#top'])(
-  'Ohio mapping accepts bill page suffix %s',
+  'Ohio landing mapping accepts bill page suffix %s',
   (suffix) => {
     expect(resolveHistory(`${landing}${suffix}`)).toEqual(plan);
   },
@@ -35,7 +59,6 @@ test('the LIS URL version wins and the registry constructs text URLs', () => {
   const explicit = resolveHistory(`${url}?x=1#pdf`)!;
   expect(explicit).toMatchObject({ ...plan, version: '00_IN', textUrl: url });
   expect(chooseVersion(explicit, parse().history)).toBe('00_IN');
-  expect(chooseVersion(explicit)).toBe('00_IN');
   expect(historySource('ohio').textUrl(plan, '06_EN')).toBe(
     ohioTextUrl(plan, '06_EN'),
   );
@@ -60,263 +83,233 @@ test.each([
 ])('does not map malformed or unmatched Ohio URL %s', (url) => {
   expect(resolveHistory(url)).toBeUndefined();
 });
-
-test('parses all substitute versions in listed order, dates by stage, status and committee actions', () => {
-  const { history, sponsorProfiles } = parse();
-  expect(BillHistory.safeParse(history).success).toBe(true);
-  expect(history.versions.map((v) => [v.code, v.date])).toEqual([
-    ['06_EN', '2024-06-06'],
-    ['05_CR', '2024-06-05'],
-    ['04_PS', '2024-06-04'],
-    ['03_RS', '2024-06-03'],
-    ['02_PH', '2024-05-02'],
-    ['01_RH', '2024-05-02'],
-    ['00_IN', '2024-02-01'],
-  ]);
-  expect(history.versions[0]!.label).toBe('As Enrolled');
-  expect(history.actions).toHaveLength(10);
-  expect(history.actions.at(-1)).toEqual({
-    date: '2024-03-04',
-    chamber: 'House',
-    committee: 'Example Finance',
-    text: '1st Hearing',
-    url: `${landing}/committee`,
-  });
-  expect(history.sources).toEqual(
-    ['status', 'documents', 'committee'].map((kind) => ({
-      host: 'www.legislature.ohio.gov',
-      url: `${landing}/${kind}`,
-      fetchedAt,
-    })),
-  );
-  expect(history.officialSummary).toBeUndefined();
+test('raw dot segments and backslashes do not normalize into a supported Ohio URL', () => {
   expect(
-    sponsorProfiles.every((p) => SponsorProfile.safeParse(p).success),
-  ).toBe(true);
-  expect(sponsorProfiles[0]).toMatchObject({
-    name: 'Alex Example',
-    role: 'sponsor',
-    memberId: 'alex-example',
-    chamber: 'house',
-    links: [
-      {
-        kind: 'legislature',
-        verified: true,
-        url: 'https://ohiohouse.gov/members/alex-example',
-      },
-    ],
-  });
-  expect(sponsorProfiles[1]).toMatchObject({
-    name: 'Archived Example',
-    role: 'sponsor',
-    links: [],
-  });
-  expect(sponsorProfiles[1]!.memberId).toBeUndefined();
-  expect(sponsorProfiles[2]).toMatchObject({
-    name: 'Sam Sample',
-    role: 'cosponsor',
-    memberId: 'sam-sample',
-    chamber: 'senate',
-  });
-  expect(sponsorProfiles[3]).toMatchObject({
-    name: 'Archived Senator',
-    role: 'cosponsor',
-    links: [],
-    chamber: 'senate',
-  });
+    resolveHistory(
+      'https://www.legislature.ohio.gov/legislation/135/hb9001/../hb9002',
+    ),
+  ).toBeUndefined();
+  expect(
+    resolveHistory('https://www.legislature.ohio.gov/legislation/135\\hb9001'),
+  ).toBeUndefined();
 });
-test('amendment synopsis has its own label and URL without inferred attribution; comparisons are omitted', () => {
-  expect(parse().history.amendments).toEqual([
+
+test('orders the seven versions by stage, with labels, and builds text URLs from identity', () => {
+  const versions = makeOhioVersionsJson().reverse();
+  const { history } = parse({ versions: JSON.stringify(versions) });
+  expect(BillHistory.safeParse(history).success).toBe(true);
+  expect(history.versions.map((v) => v.code)).toEqual([
+    '00_IN',
+    '01_RH',
+    '02_PH',
+    '03_RS',
+    '04_PS',
+    '05_CR',
+    '06_EN',
+  ]);
+  expect(history.versions[1]!.label).toBe(
+    'As Reported by the House Finance Committee',
+  );
+  expect(history.versions[6]!.url).toBe(ohioTextUrl(plan, '06_EN'));
+  expect(chooseOhioVersion(history)).toBe('06_EN');
+  expect(chooseVersion(plan, history)).toBe('06_EN');
+  expect(history.officialSummary).toBeUndefined();
+});
+test('sources list exactly the four LIS endpoints', () => {
+  const { history } = parse();
+  expect(history.sources.map((s) => [s.host, s.url])).toEqual(
+    ['', 'actions/', 'meetings/', 'amendments/'].map((p) => [
+      'search-prod.lis.state.oh.us',
+      `https://search-prod.lis.state.oh.us/api/v2/general_assembly_135/legislation/hb9001/${p}`,
+    ]),
+  );
+});
+test('actions combine the record, meetings (not canceled) and signing dates, oldest first', () => {
+  const { history } = parse();
+  expect(history.actions.map((a) => [a.date, a.text])).toEqual([
+    ['2024-02-16', 'Introduced'],
+    ['2024-03-04', 'Heard in Finance'],
+    ['2024-04-26', 'Passed'],
+    ['2024-05-03', 'Refer to Committee'],
+    ['2024-06-15', 'Passed'],
+    ['2024-06-30', 'Conference report agreed to'],
+    ['2024-07-03', 'Signed by the Governor'],
+    ['2024-07-04', 'Effective date'],
+  ]);
+  expect(history.actions[1]).toMatchObject({
+    chamber: 'House',
+    committee: 'Finance',
+  });
+  expect(history.actions[3]).toMatchObject({ committee: 'Finance' });
+  expect(history.actions[0]!.committee).toBeUndefined();
+});
+test('an empty amendments list gives no amendments', () => {
+  expect(parse().history.amendments).toEqual([]);
+});
+test('amendments keep their number and constructed URL, and name nobody', () => {
+  const { history } = parse({
+    amendments: JSON.stringify(makeOhioAmendmentsJson()),
+  });
+  expect(history.amendments).toEqual([
     {
-      id: 'download-key-701',
+      id: 'am0168',
+      number: 'am0168',
       status: 'unknown',
-      description: 'Synopsis of Committee Amendments',
-      url: 'https://www.legislature.ohio.gov//download?key=701',
+      description: 'Amendment am0168 (As Introduced)',
+      url: 'https://search-prod.lis.state.oh.us/api/v2/general_assembly_135/legislation/hb9001/amendments/am0168/pdf/',
     },
   ]);
 });
-test('only explicit adoption, date and committee are attached to an amendment', () => {
-  const pages = makeOhioHistoryPages();
-  pages.documents = pages.documents
-    .replace('Synopsis of Committee Amendments', 'Amendment adopted')
-    .replace(
-      '</a></li>\n        <li>',
-      '</a><time datetime="2024-05-02"></time><span class="committee-cell">Example Rules</span></li>\n        <li>',
-    );
-  expect(parse(pages).history.amendments[0]).toMatchObject({
-    status: 'adopted',
-    date: '2024-05-02',
-    committee: 'Example Rules',
+test('maps sponsors and cosponsors with party labels and member ids, with no invented links', () => {
+  const { sponsorProfiles } = parse();
+  expect(sponsorProfiles).toEqual([
+    {
+      name: 'Alex Example',
+      role: 'sponsor',
+      party: 'Republican',
+      district: '42',
+      chamber: 'house',
+      memberId: '1001',
+      links: [],
+    },
+    expect.objectContaining({
+      name: 'Sam Sample',
+      role: 'cosponsor',
+      party: 'Democrat',
+      chamber: 'senate',
+      memberId: '1002',
+      links: [],
+    }),
+    expect.objectContaining({ party: 'Independent' }),
+    expect.objectContaining({ name: 'Kit Unknown', party: undefined }),
+  ]);
+});
+test('partyLabel only maps recognised codes', () => {
+  expect(partyLabel('party_democrat_1')).toBe('Democrat');
+  expect(partyLabel('party_green_1')).toBeUndefined();
+  expect(partyLabel(undefined)).toBeUndefined();
+  expect(partyLabel('Democrat')).toBeUndefined();
+});
+test('hostile text is stripped to plain text and never becomes a URL', () => {
+  const versions = makeOhioVersionsJson({
+    version: 'As <b onmouseover="x()">Introduced</b><script>alert(1)</script>',
+    sponsors: [
+      {
+        full_name:
+          '<img src=x onerror=alert(1)>Alex &lt;script&gt;Evil&lt;/script&gt;',
+        member_id: 5,
+        party: 'party_democrat_1',
+        chamber: 'House',
+      },
+    ],
+    cosponsors: [],
   });
-  pages.documents = pages.documents.replace(
-    'Amendment adopted',
-    'Amendment not adopted',
-  );
-  expect(parse(pages).history.amendments[0]!.status).toBe('unknown');
-});
-test('latest version uses numbered stages even when dates are missing or equal', () => {
-  const history = parse().history;
-  expect(chooseVersion(plan, history)).toBe('06_EN');
-  history.versions.forEach((v) => {
-    delete v.date;
+  const actions = [
+    ...makeOhioActionsJson(),
+    {
+      occurred: '2024-07-01',
+      action: 'Passed <a href="https://evil.test">click</a>\u0000',
+    },
+  ];
+  const { history, sponsorProfiles } = parse({
+    versions: JSON.stringify(versions),
+    actions: JSON.stringify(actions),
   });
-  history.versions.reverse();
-  expect(chooseOhioVersion(history)).toBe('06_EN');
-  for (const bad of [
-    undefined,
-    { ...history, versions: [] },
-    { ...history, versions: [{ code: '../EN', label: 'Bad' }] },
-  ]) {
-    expect(() => chooseOhioVersion(bad)).toThrow(AppError);
-  }
-  try {
-    chooseOhioVersion();
-  } catch (error) {
-    expect((error as AppError).userMessage).toContain('specific version URL');
-  }
-});
-test('missing stage dates stay absent; document dates take precedence and repeated formats deduplicate', () => {
-  const pages = makeOhioHistoryPages();
-  pages.status = pages.status.replace(
-    'Sent To The Governor',
-    'Signed By The Governor',
+  expect(history.versions[0]!.label).toBe('As Introduced');
+  expect(history.actions.at(-3)!.text).toBe('Passed click');
+  expect(sponsorProfiles[0]!.name).toBe('Alex');
+  expect(JSON.stringify([history, sponsorProfiles])).not.toMatch(
+    /[<>]|evil\.test/,
   );
-  expect(parse(pages).history.versions[0]!.date).toBeUndefined();
-  pages.documents = pages.documents.replace(
-    '</a></li>',
-    '</a><time datetime="2024-06-07"></time></li>',
-  );
-  const textLink = /<li><a href="https:\/\/search-prod[^]*?<\/li>/.exec(
-    pages.documents,
-  )![0];
-  pages.documents = pages.documents.replace(textLink, textLink + textLink);
-  const history = parse(pages).history;
-  expect(history.versions[0]!.date).toBe('2024-06-07');
-  expect(history.versions).toHaveLength(7);
-});
-test('committee page may have no meetings; testimony never supplies amendments or sponsors', () => {
-  const pages = makeOhioHistoryPages();
-  pages.committee = pages.committee.replace(
-    /<table class="committee-meeting-table">[^]*?<\/table>/,
-    '',
-  );
-  expect(parse(pages).history.actions).toHaveLength(9);
-  expect(parse(pages).sponsorProfiles).toHaveLength(4);
-});
-test.each(['status', 'documents', 'committee'] as const)(
-  'rejects a missing, wrong-bill or wrong-session %s page',
-  (kind) => {
-    for (const invalid of [
-      '',
-      '<html><h1>Access denied</h1></html>',
-      makeOhioHistoryPages()[kind].replace(/hb9001/g, 'hb9002'),
-      makeOhioHistoryPages()[kind].replace(/\/135\//g, '/136/'),
-    ]) {
-      expect(() =>
-        parse({ ...makeOhioHistoryPages(), [kind]: invalid }),
-      ).toThrow(AppError);
-    }
-  },
-);
-test.each(['2-30-2024', '0-2-2024', '2-0-2024', 'garbage'])(
-  'rejects invalid status date %s rather than normalize it',
-  (value) => {
-    const pages = makeOhioHistoryPages();
-    pages.status = pages.status.replace('2-1-2024', value);
-    expect(() => parse(pages)).toThrow(AppError);
-  },
-);
-test.each([
-  'https://evil.test/bill.pdf',
-  'https://www.legislature.ohio.gov/download?key=5',
-  'https://search-prod.lis.state.oh.us/api/v2/general_assembly_135/legislation/hb9002/06_EN/pdf/',
-  'https://search-prod.lis.state.oh.us/api/v2/general_assembly_136/legislation/hb9001/06_EN/pdf/',
-  'https://[bad',
-])('never selects an older text when latest link is unusable: %s', (url) => {
-  const pages = makeOhioHistoryPages();
-  pages.documents = pages.documents.replace(ohioTextUrl(plan, '06_EN'), url);
-  expect(() => parse(pages)).toThrow(AppError);
 });
 test.each([
-  'http://ohiohouse.gov/members/alex-example',
-  'https://ohiohouse.gov.evil.test/members/alex-example',
-  'https://user@ohiohouse.gov/members/alex-example',
-  'https://ohiohouse.gov:444/members/alex-example',
-  'https://[bad',
-])('untrusted member link retains only the name: %s', (url) => {
-  const pages = makeOhioHistoryPages();
-  pages.status = pages.status.replace(
-    'https://ohiohouse.gov/members/alex-example',
-    url,
-  );
-  expect(parse(pages).sponsorProfiles[0]).toMatchObject({
-    name: 'Alex Example',
-    links: [],
-  });
-  expect(parse(pages).sponsorProfiles[0]!.memberId).toBeUndefined();
+  ['an unterminated tag', 'a <b', 'a'],
+  [
+    'entity-encoded markup',
+    '&lt;i&gt;x&lt;/i&gt; &amp; &#60;b&#62;y&#x3c;/b&#x3e;',
+    'x & y',
+  ],
+  [
+    'unknown entities and bad code points',
+    '&bogus; &#0; &#9999999;',
+    '&bogus; &#9999999;',
+  ],
+  ['style blocks', 'k<style>p{}</style>l', 'k l'],
+])('plainText handles %s', (_name, input, expected) => {
+  expect(plainText(input)).toBe(expected);
 });
-test('only exact Ohio history hosts may be fetched; member hosts are links only', () => {
-  for (const host of [
-    'www.legislature.ohio.gov',
-    'search-prod.lis.state.oh.us',
-  ])
-    expect(() => {
-      assertHistoryUrl('ohio', `https://${host}/`);
-    }).not.toThrow();
-  for (const host of [
-    'legislature.ohio.gov',
-    'www.legislature.ohio.gov.evil.test',
-    'search-prod.lis.state.oh.us.evil.test',
-    'ohiohouse.gov',
-    'www.ohiosenate.gov',
-  ])
-    expect(() => {
-      assertHistoryUrl('ohio', `https://${host}/`);
-    }).toThrow(AppError);
+test.each([
+  ['not JSON', 'nope'],
+  ['an object instead of a list', '{}'],
+  ['an empty version list', '[]'],
+  ['a version without a code', JSON.stringify([{ version: 'x' }])],
+  [
+    'a bad version id',
+    JSON.stringify(makeOhioVersionsJson({ version_id: '../' })),
+  ],
+  ['another bill', JSON.stringify(makeOhioVersionsJson({ number: 'hb1' }))],
+])('fails closed on %s', (_name, versions) => {
+  expect(() => parse({ versions })).toThrow(
+    expect.objectContaining({ code: 'PARSE_FAILED' }) as unknown,
+  );
+});
+test.each([
+  ['actions', { actions: '[{"occurred":"soon","action":"x"}]' }],
+  ['meetings', { meetings: '[{"committee":"x"}]' }],
+  ['amendments', { amendments: '[{"amendment_number":"../x"}]' }],
+])('fails closed on malformed %s', (_name, overrides) => {
+  expect(() => parse(overrides)).toThrow(AppError);
+});
+test('latest version fails clearly when none is known', () => {
+  expect(() => chooseOhioVersion()).toThrow(
+    expect.objectContaining({ code: 'FETCH_FAILED' }) as unknown,
+  );
 });
 
-test('blank committee statuses record the meeting without inventing a numbered hearing', () => {
-  const pages = makeOhioHistoryPages();
-  pages.committee = pages.committee.replace('1st Hearing', '');
-  expect(parse(pages).history.actions.at(-1)).toMatchObject({
-    text: 'Committee meeting',
-    date: '2024-03-04',
-    committee: 'Example Finance',
-    chamber: 'House',
-  });
-  pages.committee = pages.committee.replace(
-    'House Committees',
-    'Senate Committees',
-  );
-  expect(parse(pages).history.actions.at(-1)!.chamber).toBe('Senate');
-  pages.committee = pages.committee.replace(
-    'Senate Committees',
-    'Other Committees',
-  );
-  expect(parse(pages).history.actions.at(-1)!.chamber).toBeUndefined();
-});
-test('raw dot segments and backslashes do not normalize into a supported Ohio URL', () => {
+test('only the LIS API host may be fetched; the landing host and member hosts may not', () => {
+  assertHistoryUrl('ohio', ohioTextUrl(plan, '00_IN'));
   for (const url of [
-    `${landing}/../hb9001`,
-    landing.replace('/legislation/', '/legislation\\'),
-    `${landing}/documents/../status`,
+    landing,
+    `${landing}/status`,
+    'https://ohiohouse.gov/members/alex-example',
+    'https://search-prod.lis.state.oh.us.evil.test/api/v2/',
+    'http://search-prod.lis.state.oh.us/api/v2/',
   ])
-    expect(resolveHistory(url)).toBeUndefined();
+    expect(() => {
+      assertHistoryUrl('ohio', url);
+    }).toThrow(AppError);
 });
-test('missing parser landmarks, action text or versions fail closed', () => {
-  for (const [kind, before, after] of [
-    ['status', 'legislation-status-table', 'unrecognized'],
-    ['documents', 'Legislation Text', 'Other Text'],
-    [
-      'documents',
-      /<section class="legislation-section"><h2>Legislation Text<\/h2>[^]*?<\/section>/,
-      '<section class="legislation-section"><h2>Legislation Text</h2></section>',
-    ],
-    ['committee', /<h2[^]*?<\/h2><h2>House Committees<\/h2>/, ''],
-    ['status', 'Sent To The Governor', ''],
-  ] as const) {
-    const pages = makeOhioHistoryPages();
-    pages[kind] = pages[kind].replace(before, after);
-    expect(() => parse(pages)).toThrow(AppError);
-  }
+test('reading history fetches the four API endpoints and never www.legislature.ohio.gov', async () => {
+  const json = makeOhioHistoryJson();
+  const body: Record<string, string> = {
+    '': json.versions,
+    'actions/': json.actions,
+    'meetings/': json.meetings,
+    'amendments/': json.amendments,
+  };
+  const base =
+    'https://search-prod.lis.state.oh.us/api/v2/general_assembly_135/legislation/hb9001/';
+  const fetcher = vi.fn((url: string): Promise<SafeFetchResult> => {
+    const bytes = encode(body[url.slice(base.length)] ?? 'x');
+    return Promise.resolve({
+      bytes,
+      docId: documentId(bytes),
+      finalUrl: url,
+      contentType: 'application/json',
+      format: 'unknown',
+      fromCache: false,
+    });
+  });
+  const record = await ohioHistorySource.read(
+    plan,
+    fetcher,
+    () => new Date(fetchedAt),
+  );
+  expect(fetcher.mock.calls.map(([url]) => url)).toEqual(
+    ['', 'actions/', 'meetings/', 'amendments/'].map((p) => `${base}${p}`),
+  );
+  for (const [url] of fetcher.mock.calls)
+    expect(new URL(url).hostname).not.toBe('www.legislature.ohio.gov');
+  expect(record.history.versions).toHaveLength(7);
+  expect(record.sponsorProfiles).toHaveLength(4);
 });

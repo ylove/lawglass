@@ -5,7 +5,7 @@ import { MockAgent } from 'undici';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { MemoryBackend } from '../../../tests/contracts/memory-backend.js';
 import { ScriptedProvider } from '../../../tests/contracts/scripted-provider.js';
-import { makeOhioHistoryPages } from '../../../tests/synth/ohio-history.js';
+import { makeOhioHistoryJson } from '../../../tests/synth/ohio-history.js';
 import { makeCongressionalBillXml } from '../../../tests/synth/index.js';
 import { safeFetch } from '../fetch/index.js';
 import { BRAND } from '../brand.js';
@@ -13,8 +13,7 @@ import { readHistory } from '../history/history-store.js';
 import { Registry } from '../registry.js';
 import { ingest, type IngestDeps, type Fetcher } from './ingest.js';
 
-const origin = 'https://www.legislature.ohio.gov';
-const landing = `${origin}/legislation/135/hb9001`;
+const landing = 'https://www.legislature.ohio.gov/legislation/135/hb9001';
 const textOrigin = 'https://search-prod.lis.state.oh.us';
 const textPath = (version: string) =>
   `/api/v2/general_assembly_135/legislation/hb9001/${version}/pdf/`;
@@ -46,32 +45,37 @@ afterEach(async () => {
   await agent.close();
   await rm(dir, { recursive: true, force: true });
 });
+const ENDPOINTS = ['', 'actions/', 'meetings/', 'amendments/'] as const;
+const apiPath = (endpoint: string) =>
+  `/api/v2/general_assembly_135/legislation/hb9001/${endpoint}`;
 function servePages(
   options: {
-    failure?: 'status' | 'documents' | 'committee';
+    failure?: (typeof ENDPOINTS)[number];
     parseFailure?: boolean;
     redirect?: string;
   } = {},
 ) {
-  const pages = makeOhioHistoryPages();
-  for (const kind of ['status', 'documents', 'committee'] as const) {
-    const request = agent.get(origin).intercept({
-      path: `/legislation/135/hb9001/${kind}`,
+  const json = makeOhioHistoryJson();
+  const bodies = [json.versions, json.actions, json.meetings, json.amendments];
+  for (const [index, endpoint] of ENDPOINTS.entries()) {
+    const request = agent.get(textOrigin).intercept({
+      path: apiPath(endpoint),
       headers: { 'user-agent': ua },
     });
-    if (options.failure === kind) {
+    if (options.failure === endpoint) {
       if (options.redirect)
         request.reply(302, '', { headers: { location: options.redirect } });
       else
         request.reply(
           options.parseFailure ? 200 : 503,
-          options.parseFailure ? '<html>Blocked</html>' : 'Unavailable',
+          options.parseFailure ? '{"blocked":true}' : 'Unavailable',
+          { headers: { 'content-type': 'application/json' } },
         );
-      // Transport failures stop before the remaining pages are read.
+      // Transport failures stop before the remaining endpoints are read.
       if (!options.parseFailure) break;
     } else
-      request.reply(200, pages[kind], {
-        headers: { 'content-type': 'text/html' },
+      request.reply(200, bodies[index], {
+        headers: { 'content-type': 'application/json' },
       });
   }
 }
@@ -84,7 +88,7 @@ function serveText(version: string) {
     });
 }
 test.each(['', '/status', '/documents', '/committee'])(
-  'Ohio landing URL %s selects latest text, stores history and official sponsor links',
+  'Ohio landing URL %s selects latest text via the LIS API and stores history and sponsors',
   async (suffix) => {
     servePages();
     serveText('06_EN');
@@ -94,8 +98,9 @@ test.each(['', '/status', '/documents', '/committee'])(
     );
     expect(result.normalized.metadata.version).toBe('As Enrolled (06_EN)');
     expect(result.normalized.metadata.sponsorProfiles?.[0]).toMatchObject({
-      memberId: 'alex-example',
-      links: [{ kind: 'legislature', verified: true }],
+      memberId: '1001',
+      party: 'Republican',
+      links: [],
     });
     expect((await readHistory(dir, result.doc.docId))?.versions).toHaveLength(
       7,
@@ -104,9 +109,9 @@ test.each(['', '/status', '/documents', '/committee'])(
       'History unavailable',
     );
     expect(vi.mocked(deps.fetcher).mock.calls.map(([url]) => url)).toEqual(
-      ['status', 'documents', 'committee']
-        .map((kind) => `${landing}/${kind}`)
-        .concat(`${textOrigin}${textPath('06_EN')}`),
+      ENDPOINTS.map((endpoint) => `${textOrigin}${apiPath(endpoint)}`).concat(
+        `${textOrigin}${textPath('06_EN')}`,
+      ),
     );
     agent.assertNoPendingInterceptors();
   },
@@ -116,13 +121,13 @@ test('explicit LIS version wins over newer listed versions', async () => {
   serveText('00_IN');
   const result = await ingest(`${textOrigin}${textPath('00_IN')}`, deps);
   expect(result.normalized.metadata.version).toBe('As Introduced (00_IN)');
-  expect((await readHistory(dir, result.doc.docId))?.versions[0]!.code).toBe(
-    '06_EN',
-  );
+  expect(
+    (await readHistory(dir, result.doc.docId))?.versions.at(-1)!.code,
+  ).toBe('06_EN');
   agent.assertNoPendingInterceptors();
 });
-test.each(['status', 'documents', 'committee'] as const)(
-  'any %s download failure preserves explicit text ingest with history unavailable',
+test.each(ENDPOINTS)(
+  'any %j download failure preserves explicit text ingest with history unavailable',
   async (failure) => {
     servePages({ failure });
     serveText('00_IN');
@@ -136,8 +141,8 @@ test.each(['status', 'documents', 'committee'] as const)(
     agent.assertNoPendingInterceptors();
   },
 );
-test.each(['status', 'documents', 'committee'] as const)(
-  'any %s parse failure also discards the complete history attachment',
+test.each(ENDPOINTS)(
+  'any %j parse failure also discards the complete history attachment',
   async (failure) => {
     servePages({ failure, parseFailure: true });
     serveText('00_IN');
@@ -150,7 +155,7 @@ test.each(['status', 'documents', 'committee'] as const)(
   },
 );
 test('versionless landing fails clearly when history is unavailable', async () => {
-  servePages({ failure: 'documents' });
+  servePages({ failure: 'actions/' });
   await expect(ingest(landing, deps)).rejects.toMatchObject({
     code: 'FETCH_FAILED',
     userMessage: expect.stringContaining('specific version URL') as unknown,
@@ -163,8 +168,9 @@ test.each([
   'https://ohiohouse.gov/members/alex-example',
   'https://www.legislature.ohio.gov.evil.test/status',
   'http://www.legislature.ohio.gov/status',
+  'https://www.legislature.ohio.gov/legislation/135/hb9001/status',
 ])('blocks history redirect %s before transport', async (redirect) => {
-  servePages({ failure: 'status', redirect });
+  servePages({ failure: '', redirect });
   serveText('00_IN');
   const result = await ingest(`${textOrigin}${textPath('00_IN')}`, deps);
   expect(result.normalized.warnings.join(' ')).toContain('History unavailable');

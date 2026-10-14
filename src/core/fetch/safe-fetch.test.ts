@@ -629,26 +629,3 @@ describe('safeFetch', () => {
     ).rejects.toMatchObject({ code: 'FETCH_FAILED' });
   });
 });
-
-it('reads history HTML as data on request, never follows its links, and retains default wrapper detection', async () => {
-  const html = '<html><a href="https://other.gov/bill.pdf">PDF</a></html>';
-  agent.get(origin).intercept({ path: '/documents' }).reply(200, html);
-  const result = await safeFetch(`${origin}/documents`, {
-    ...opts,
-    acceptHistoryPage: true,
-  });
-  expect(new TextDecoder().decode(result.bytes)).toBe(html);
-  expect(result.format).toBe('html');
-  expect(
-    (
-      await safeFetch(`${origin}/documents`, {
-        ...opts,
-        acceptHistoryPage: true,
-      })
-    ).fromCache,
-  ).toBe(true);
-  await expect(safeFetch(`${origin}/documents`, opts)).rejects.toMatchObject({
-    code: 'WRAPPER_PAGE',
-  });
-  agent.assertNoPendingInterceptors();
-});

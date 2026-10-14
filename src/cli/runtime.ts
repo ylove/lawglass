@@ -106,7 +106,6 @@ export const createRuntimeFrom =
           signal: options?.signal,
           validateUrl: options?.validateUrl,
           refresh: options?.refresh,
-          acceptHistoryPage: options?.acceptHistoryPage,
         }),
       now: () => new Date(),
       maxDocs: config.maxDocs,
