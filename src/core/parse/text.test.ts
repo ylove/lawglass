@@ -8,6 +8,7 @@ import {
   walkSections,
 } from '../model/index.js';
 import { detectSections, parseText } from './index.js';
+import { breadcrumb, chunkDocument } from '../chunk/index.js';
 
 const options = {
   sourceUrl: 'https://example.gov/bill.txt',
@@ -15,6 +16,48 @@ const options = {
 };
 
 describe('parseText', () => {
+  it('keeps headingless subdivisions out of breadcrumbs and merges their printed lead-ins once', () => {
+    const input = [
+      'Sec. 4.',
+      '(b) Except as otherwise provided, applicants shall comply.',
+      '(1) "Applicant" means a resident.',
+      '',
+      '',
+      '(2) "Board" means the public board.',
+    ].join('\n');
+    const doc = parseText(input, options);
+    const [root, division, first, second] = [...walkSections(doc.sections)];
+    expect([root!.id, division!.id, first!.id, second!.id]).toEqual([
+      'sec-4',
+      'sec-4/b',
+      'sec-4/b/1',
+      'sec-4/b/2',
+    ]);
+    expect([division!.heading, first!.heading, second!.heading]).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    expect(breadcrumb([root!, division!, second!])).toBe('Sec. 4 > (b) > (2)');
+    const chunks = chunkDocument(doc);
+    const merged = chunks.find((c) => c.coveredSectionIds?.includes(first!.id));
+    expect(merged?.text).toBe(
+      '(1) "Applicant" means a resident.\n\n(2) "Board" means the public board.',
+    );
+    for (const chunk of chunks) {
+      expect(
+        chunk.text.match(/\(b\) Except/g)?.length ?? 0,
+      ).toBeLessThanOrEqual(1);
+      expect(
+        chunk.text.match(/\(1\) "Applicant"/g)?.length ?? 0,
+      ).toBeLessThanOrEqual(1);
+      expect(
+        chunk.text.match(/\(2\) "Board"/g)?.length ?? 0,
+      ).toBeLessThanOrEqual(1);
+      expect(chunk.text).not.toMatch(/\n{3,}/);
+    }
+  });
+
   it('returns a contract-valid document with deterministic identity and no invented metadata', () => {
     const input =
       'A bill\nSection 4. Grants\n(a) Eligibility\n(1) A town qualifies.';

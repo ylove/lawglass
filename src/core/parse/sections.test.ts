@@ -20,6 +20,29 @@ const ids = (source: SourceLine[]): string[] =>
 
 describe('section heading patterns', () => {
   it.each([
+    [
+      '(1) Short title.— This Act may be cited as the Test Act.',
+      'Short title.—',
+    ],
+    ['(a) In general.— The board shall report.', 'In general.—'],
+    ['(a) IN GENERAL.', 'IN GENERAL.'],
+    ['(a) Except as otherwise provided in division (H)(2) of', undefined],
+    ['(3) "Gun show promoter" means a person who organizes or', undefined],
+    ['(a) As used in this section:', undefined],
+    ['(a) The board shall report.', undefined],
+    ['(a) Eligibility', undefined],
+    ['(a)', undefined],
+  ])('separates printed titles from subdivision prose: %s', (text, heading) => {
+    const [root] = detectSections(lines('Sec. 4.', text));
+    const child = root!.children[0]!;
+    expect(child.id).toBe(
+      `sec-4/${text.slice(1, text.indexOf(')')).toLowerCase()}`,
+    );
+    expect(child.heading).toBe(heading);
+    expect(sectionText(child, { includeDeleted: true })).toBe(text);
+  });
+
+  it.each([
     ['Section 1. Short title', 'sec-1', '1', 'Short title'],
     ['Section 1 Short title', 'sec-1', '1', 'Short title'],
     ['Sec 2. Foo', 'sec-2', '2', 'Foo'],
@@ -181,7 +204,7 @@ describe('review layout regressions', () => {
       'sec-5747.01/b',
     ]);
     expect(sections[0]?.heading).toBeUndefined();
-    expect(sections[0]?.children[0]?.heading).toBe('As used in this chapter:');
+    expect(sections[0]?.children[0]?.heading).toBeUndefined();
   });
 
   it('separates federal heading text and inline enumerators while retaining source coordinates', () => {
@@ -197,7 +220,7 @@ describe('review layout regressions', () => {
     expect(nodes.map((section) => section.heading)).toEqual([
       'DEFINITIONS.',
       'In General.—',
-      'foo',
+      undefined,
     ]);
     expect(nodes.map((section) => section.level)).toEqual([1, 2, 3]);
     expect(
@@ -329,7 +352,7 @@ describe('review layout regressions', () => {
     ]);
     expect(nodes[1]?.children).toEqual([]);
     expect(sectionText(nodes[1]!, { includeDeleted: false })).toBe(text);
-    expect(nodes[1]?.heading).toBe(text.slice(marker.length + 2).trim());
+    expect(nodes[1]?.heading).toBeUndefined();
   });
 
   it.each([
@@ -899,7 +922,7 @@ describe('issue #51 edge cases', () => {
       '(3) z.\n',
       '(b) Next',
     ]);
-    expect(nodes[3]?.heading).toBe('y; and');
+    expect(nodes[3]?.heading).toBeUndefined();
   });
 
   it.each([
@@ -1073,7 +1096,6 @@ describe('structure is read from the text as amended (struck text never names a 
     expect(division).toMatchObject({
       id: 'sec-7/b',
       num: '(B)',
-      heading: 'The fee is due.',
     });
     expect(division.spans.map((span) => [span.text, span.status])).toEqual([
       ['(C)', 'deleted'],
@@ -1103,7 +1125,8 @@ describe('structure is read from the text as amended (struck text never names a 
     const [division] = sections[0]!.children;
     const item = division!.children[0]!;
     expect(division!.heading).toBeUndefined();
-    expect(item).toMatchObject({ num: '(1)', heading: 'fresh item' });
+    expect(item).toMatchObject({ num: '(1)' });
+    expect(item.heading).toBeUndefined();
     expect(division!.spans.map((span) => [span.text, span.status])).toEqual([
       ['(a) ', 'unchanged'],
       ['Old intro:', 'deleted'],

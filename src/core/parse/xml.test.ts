@@ -367,15 +367,36 @@ describe('metadata', () => {
     });
   });
 
-  it('lists sponsors and cosponsors in document order', () => {
+  it('lists only sponsors in document order, excluding interleaved cosponsors', () => {
     const doc = parse(
       '<resolution resolution-stage="Introduced"><form><session>2nd Session</session>' +
-        '<action-desc><cosponsor>Mr. A</cosponsor> and <sponsor>Ms. B</sponsor></action-desc></form>' +
+        '<action-desc><cosponsor>Mr. A</cosponsor> and <sponsor>Ms. B</sponsor>' +
+        '<cosponsor>Ms. C</cosponsor><sponsor>Mr. D</sponsor><cosponsor>Mr. E</cosponsor></action-desc></form>' +
         '<legis-body><section><enum>1.</enum><text>x</text></section></legis-body></resolution>',
     );
-    expect(doc.metadata.sponsors).toEqual(['Mr. A', 'Ms. B']);
+    expect(doc.metadata.sponsors).toEqual(['Ms. B', 'Mr. D']);
     expect(doc.metadata.session).toBe('2nd Session');
     expect(doc.metadata.version).toBe('Introduced');
+  });
+
+  it('reports sponsors as null when the form lists only cosponsors', () => {
+    const doc = parse(
+      '<bill><form><action-desc><cosponsor>Mr. A</cosponsor>' +
+        '<cosponsor>Ms. B</cosponsor></action-desc></form>' +
+        '<legis-body><section><enum>1.</enum><text>x</text></section></legis-body></bill>',
+    );
+    expect(doc.metadata.sponsors).toBeNull();
+    expect(doc.metadata.source).toBe('structured');
+  });
+
+  it('normalizes sponsor text and drops empty names without admitting cosponsors', () => {
+    const doc = parse(
+      '<bill><form><action-desc><sponsor/> <sponsor> \n </sponsor>' +
+        '<sponsor> Ms. <bold>B</bold> \n Example </sponsor>' +
+        '<cosponsor>Mr. A</cosponsor></action-desc></form>' +
+        '<legis-body><section><enum>1.</enum><text>x</text></section></legis-body></bill>',
+    );
+    expect(doc.metadata.sponsors).toEqual(['Ms. B Example']);
   });
 });
 
@@ -670,7 +691,7 @@ describeWithFixture('us-s202-119-is', () => {
       billNumber: 'S. 202',
       session: '119th Congress, 1st Session',
       version: 'Introduced-in-Senate',
-      sponsors: ['Mrs. Shaheen', 'Mr. Cassidy'],
+      sponsors: ['Mrs. Shaheen'],
       source: 'structured',
     });
     expect(doc.metadata.title).toMatch(

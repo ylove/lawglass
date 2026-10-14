@@ -26,6 +26,37 @@ import { parsePdf } from './index.js';
 
 const normalize = (text: string): string => text.replace(/\s+/g, ' ').trim();
 
+function checkSubdivisionChunks(doc: () => NormalizedDoc): void {
+  it('never repeats a subdivision lead-in ahead of its source text', () => {
+    const sections = new Map(
+      [...walkSections(doc().sections)].map((s) => [s.id, s]),
+    );
+    const chunks = chunkDocument(doc());
+    expect(chunks.some((c) => c.coveredSectionIds)).toBe(true);
+    for (const chunk of chunks.filter((c) => c.amendmentStatus !== 'deleted')) {
+      expect(chunk.text).not.toMatch(/\n{3,}/);
+      const covered = (chunk.coveredSectionIds ?? [chunk.sectionId]).map((id) =>
+        sections.get(id)!,
+      );
+      const source = normalize(
+        covered.map((s) => sectionText(s, { includeDeleted: false })).join(' '),
+      );
+      for (const section of covered.filter((s) => s.num?.startsWith('('))) {
+        const lead = normalize(sectionText(section, { includeDeleted: false }))
+          .split(' ')
+          .slice(0, 8)
+          .join(' ');
+        if (!lead) continue;
+        const occurrences = (text: string) => text.split(lead).length - 1;
+        expect(
+          occurrences(normalize(chunk.text)),
+          `${section.id}: ${lead}`,
+        ).toBeLessThanOrEqual(occurrences(source));
+      }
+    }
+  });
+}
+
 function load(name: string): () => NormalizedDoc {
   let doc: NormalizedDoc | undefined;
   beforeAll(async () => {
@@ -77,6 +108,7 @@ function expectDocumentBasics(
 
 describeWithFixture('oh-sb113-136-in', () => {
   const doc = load('oh-sb113-136-in');
+  checkSubdivisionChunks(doc);
 
   it('parses the bill: pages, numbering, structure, no struck text', () => {
     expectDocumentBasics(doc(), 17, 459, [
@@ -129,6 +161,7 @@ describeWithFixture('oh-sb113-136-in', () => {
 
 describeWithFixture('oh-sb203-133-in', () => {
   const doc = load('oh-sb203-133-in');
+  checkSubdivisionChunks(doc);
 
   it('parses the bill: pages, numbering, structure, no struck text', () => {
     expectDocumentBasics(doc(), 21, 598, [
@@ -199,6 +232,7 @@ describeWithFixture('oh-sb203-133-in', () => {
 
 describeWithFixture('oh-hb62-135-in', () => {
   const doc = load('oh-hb62-135-in');
+  checkSubdivisionChunks(doc);
   /** Status runs on one printed line, whitespace normalized and blank runs dropped. */
   const line = (page: number, number: number) =>
     spans(doc())
@@ -231,10 +265,8 @@ describeWithFixture('oh-hb62-135-in', () => {
       ['deleted', 'meaning'],
     ]);
     expect(line(1, 8)[0]).toEqual(['inserted', 'meanings']);
-    // The division's heading is the amended text, without the struck "has".
-    expect(section(doc(), 'sec-2307.601/a/1').heading).toBe(
-      '"Residence" and "vehicle" have the same',
-    );
+    // This is a definition sentence, not a printed heading.
+    expect(section(doc(), 'sec-2307.601/a/1').heading).toBeUndefined();
   });
 
   it('p. 2, lines 20-21: "lawfully", "a right" and "be" struck; "retreat before using force" inserted', () => {

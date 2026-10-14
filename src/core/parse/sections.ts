@@ -18,6 +18,8 @@ export interface SourceLine {
    * starts at the left margin), so it never opens a section even if it begins "(F) of ...".
    */
   continuation?: boolean;
+  /** An HTML heading element explicitly marks this line as a printed heading. */
+  printedHeading?: boolean;
 }
 
 export type HeadingKind = 'article' | 'chapter' | 'section';
@@ -83,6 +85,7 @@ const sourceLines = z.array(
       x: z.number().optional(),
       statuses: z.array(SpanStatus).optional(),
       continuation: z.boolean().optional(),
+      printedHeading: z.boolean().optional(),
     })
     .refine(
       ({ text, statuses }) => !statuses || statuses.length === text.length,
@@ -439,6 +442,20 @@ function recordLocation(section: Section, line: SourceLine): void {
   }
 }
 
+/** Subdivision body sentences are not titles; only explicit heading signals name them. */
+export function subdivisionHeading(
+  body: string,
+  printedHeading = false,
+): string | undefined {
+  const text = body.trim();
+  if (!text) return undefined;
+  const dashed = /^([^.—–\n]+\.[—–])(?:\s|$)/.exec(text);
+  if (dashed) return dashed[1];
+  if (printedHeading || (/[A-Z]/.test(text) && text === text.toUpperCase()))
+    return text;
+  return undefined;
+}
+
 /**
  * Infer a section tree without changing source text. Inline markers split a line into unchanged
  * spans; newlines between lines make sectionText() readable. Parent ranges include descendants,
@@ -552,11 +569,15 @@ export function detectSections(
           const prefix = kind === 'section' ? 'sec' : kind;
           base = `${parent ? `${parent.id}/` : ''}${prefix}-${match.marker.toLowerCase()}`;
         }
+        const heading =
+          match.kind === 'enumeration'
+            ? subdivisionHeading(match.heading, line.printedHeading)
+            : match.heading;
         current = {
           id: uniqueId(base),
           num:
             match.kind === 'enumeration' ? `(${match.marker})` : match.marker,
-          ...(match.heading ? { heading: match.heading } : {}),
+          ...(heading ? { heading } : {}),
           level: (parent?.level ?? 0) + 1,
           spans: [],
           children: [],
