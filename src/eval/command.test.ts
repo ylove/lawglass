@@ -8,8 +8,10 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, expect, test } from 'vitest';
-import { AppError } from '../core/model/index.js';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { createRuntimeFrom } from '../cli/runtime.js';
+import { fakePineconeClient } from '../../tests/contracts/fake-pinecone-client.js';
+import { AppError, GoldenSet } from '../core/model/index.js';
 import { DetailedEvalRun } from './details.js';
 import {
   makePipelineEnv,
@@ -46,6 +48,7 @@ beforeEach(async () => {
   );
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   await env.cleanup();
   await rm(dir, { recursive: true, force: true });
 });
@@ -69,6 +72,26 @@ function deps(overrides: Partial<EvalCommandDeps> = {}): EvalCommandDeps {
 /** Directories the test fixtures live in, relative to the command's cwd. */
 const where = { golden: 'golden', fixtures: 'fixtures' };
 
+test('retrieval-only eval uses the Pinecone runtime with a fake client and no LLM key', async () => {
+  vi.spyOn(console, 'info').mockImplementation(() => undefined);
+  const sdk = fakePineconeClient();
+  const runtime = createRuntimeFrom({
+    env: { PINECONE_API_KEY: 'pcsk_synthetic_eval_key' },
+    homeDir: dir,
+    isTTY: false,
+    createPineconeClient: () => sdk.client,
+  });
+  await runEvalCommand({ ...where, backend: 'pinecone' }, deps({ runtime }));
+  const md = await readFile(join(dir, 'eval', 'results.md'), 'utf8');
+  expect(md).toContain('| pinecone | hybrid_rerank (rrf) |');
+  expect(md).not.toContain('pending (');
+  expect(output).toContain('5 rows, 0 pending backends');
+  expect(sdk.dense.search).toHaveBeenCalled();
+  expect(sdk.sparse.search).toHaveBeenCalled();
+  expect(sdk.rerank).toHaveBeenCalled();
+  expect(output).not.toContain('pcsk_synthetic_eval_key');
+});
+
 test('writes results.md and a run JSON, listing pinecone as pending', async () => {
   await runEvalCommand({ ...where }, deps());
   const md = await readFile(join(dir, 'eval', 'results.md'), 'utf8');
@@ -89,6 +112,101 @@ test('writes results.md and a run JSON, listing pinecone as pending', async () =
   expect(md).not.toContain('top10');
   expect(output).toContain('Wrote ');
 });
+
+test.each([
+  ['rejected key', Object.assign(new Error('secret-key'), { status: 401 })],
+  ['network outage', new Error('network secret-key')],
+  [
+    'index limit',
+    Object.assign(new Error('index limit secret-key'), { status: 403 }),
+  ],
+])(
+  'backend initialization failure (%s) keeps a pending row and writes local results',
+  async (_name, failure) => {
+    vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const sdk = fakePineconeClient();
+    sdk.create.mockRejectedValueOnce(failure);
+    const pinecone = createRuntimeFrom({
+      env: { PINECONE_API_KEY: 'secret-key' },
+      homeDir: dir,
+      isTTY: false,
+      createPineconeClient: () => sdk.client,
+    });
+    await runEvalCommand(
+      where,
+      deps({
+        runtime: (options) =>
+          options.backend === 'pinecone'
+            ? pinecone(options)
+            : Promise.resolve(env.runtime),
+      }),
+    );
+    const md = await readFile(join(dir, 'eval', 'results.md'), 'utf8');
+    expect(md).toContain('| pinecone | all | pending (backend unavailable) |');
+    expect(md).toContain('| local | hybrid_rerank (rrf) |');
+    const runs = await readdir(join(dir, 'eval', 'runs'));
+    const saved = DetailedEvalRun.parse(
+      JSON.parse(
+        await readFile(join(dir, 'eval', 'runs', runs[0] ?? ''), 'utf8'),
+      ),
+    );
+    expect(saved.rows).toHaveLength(5);
+    expect(
+      saved.rows.every(
+        (row) => row.backend === 'local' && row.questions.length > 0,
+      ),
+    ).toBe(true);
+    expect(output).toContain('5 rows, 1 pending backends');
+    expect(md + output + JSON.stringify(saved)).not.toContain('secret-key');
+  },
+);
+
+test.each([
+  ['pinecone', undefined, false, true, 101],
+  [undefined, 'hybrid_rerank', true, true, 205],
+  ['local', undefined, false, true, undefined],
+  ['pinecone', 'dense', false, true, undefined],
+  ['pinecone', 'hybrid', true, true, undefined],
+  ['pinecone', undefined, false, false, undefined],
+] as const)(
+  'rerank quota estimate: backend=%s mode=%s answers=%s downloaded=%s',
+  async (backend, mode, answers, downloaded, estimate) => {
+    const path = join(dir, 'golden', 'orchard.json');
+    const golden = GoldenSet.parse(JSON.parse(await readFile(path, 'utf8')));
+    const answerable = golden.questions.find((q) => q.kind !== 'unanswerable')!;
+    const unanswerable = golden.questions.find(
+      (q) => q.kind === 'unanswerable',
+    )!;
+    golden.questions = [
+      ...Array.from({ length: 101 }, (_, n) => ({
+        ...answerable,
+        id: `q-${String(n)}`,
+      })),
+      ...Array.from({ length: 3 }, (_, n) => ({
+        ...unanswerable,
+        id: `missing-${String(n)}`,
+      })),
+    ];
+    await writeFile(path, JSON.stringify(golden));
+    if (!downloaded)
+      await rm(join(dir, 'fixtures', 'downloads', 'orchard.html'));
+    const runtime = vi.fn(() => {
+      if (estimate !== undefined) {
+        expect(output).toContain(
+          `estimated ${String(estimate)} Pinecone rerank calls`,
+        );
+        expect(output).toContain('500 BGE rerank requests/month');
+        expect(output.trim().split('\n')).toHaveLength(1);
+      } else expect(output).not.toContain('rerank calls');
+      return Promise.reject(new AppError('BACKEND_UNAVAILABLE'));
+    });
+    await runEvalCommand(
+      { ...where, backend, mode, answers },
+      deps({ runtime }),
+    );
+    expect(runtime).toHaveBeenCalled();
+  },
+);
 
 test('a missing key is pending (no key); --mode and --backend narrow the run', async () => {
   await runEvalCommand(
@@ -117,6 +235,23 @@ test('--answers without a key fails instead of printing a pending row', async ()
     runEvalCommand(
       { ...where, answers: true, backend: 'local' },
       deps({ runtime: () => Promise.reject(new AppError('MISSING_KEY')) }),
+    ),
+  ).rejects.toMatchObject({ code: 'MISSING_KEY' });
+});
+
+test('--answers still requires an LLM key when the runtime provider getter fails', async () => {
+  await expect(
+    runEvalCommand(
+      { ...where, answers: true, backend: 'local' },
+      deps({
+        runtime: () =>
+          Promise.resolve({
+            ...env.runtime,
+            get answerProvider(): never {
+              throw new AppError('MISSING_KEY');
+            },
+          }),
+      }),
     ),
   ).rejects.toMatchObject({ code: 'MISSING_KEY' });
 });

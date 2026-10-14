@@ -312,6 +312,8 @@ async function ingestLocked(
     };
   }
 
+  await backend.ensureReady(signal);
+
   // Known entry whose namespace vanished: the registry's cached document already has the
   // metadata, so no parse and no LLM call. Re-embedding is the only cost (and the local
   // backend skips unchanged vectors). Residual cost elsewhere: a namespace left by a crash
@@ -360,7 +362,6 @@ async function ingestLocked(
   let entry: RegistryEntry;
   let embedTokens = 0;
   try {
-    await backend.ensureReady(signal);
     progress({ stage: 'embedding', done: 0, total: chunks.length });
     const { usage } = await backend.upsertChunks(docId, chunks, (p) => {
       progress({ stage: 'embedding', done: p.done, total: p.total });

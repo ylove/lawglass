@@ -295,6 +295,7 @@ export async function runEval(input: RunEvalInput): Promise<RunEvalResult> {
       if (!fixture) continue;
       const docId = createHash('sha256').update(fixture.bytes).digest('hex');
       // Leave documents the user already had indexed alone; remove only what eval added.
+      await target.backend.ensureReady();
       const existed = await target.backend.hasDocument(docId);
       try {
         input.onProgress?.(`${target.kind}: ingesting ${fixture.name}`);

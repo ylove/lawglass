@@ -102,6 +102,8 @@ export type SecretPrompt = (
   request: SecretPromptRequest,
 ) => Promise<string | undefined>;
 export interface ConfigOptions {
+  /** False for store-only commands; provider credentials are checked only if later used. */
+  needsLlm?: boolean;
   env?: Readonly<Record<string, string | undefined>>;
   homeDir?: string;
   fs?: ConfigFileSystem;
@@ -263,12 +265,19 @@ export async function resolveConfig(
       }
     }
     // claude-cli is opt-in: it is never chosen just because the binary exists.
-    if (!provider && (options.isTTY ?? process.stdin.isTTY) && options.choose) {
+    if (
+      !provider &&
+      options.needsLlm !== false &&
+      (options.isTTY ?? process.stdin.isTTY) &&
+      options.choose
+    ) {
       provider = await chooseProvider(options.choose);
     }
   }
+  // Keep complete model defaults for lazy provider access without choosing or prompting for an LLM.
+  if (!provider && options.needsLlm === false) provider = 'anthropic';
   if (!provider) throw missingKey();
-  if (provider in providerKeys) {
+  if (options.needsLlm !== false && provider in providerKeys) {
     const field = providerKeys[provider as keyof typeof providerKeys];
     settings[field] ??= await promptKey(field, options);
     if (!settings[field]) throw missingKey(keyNames[field]);

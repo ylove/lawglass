@@ -70,6 +70,53 @@ it('resolves defaults without keys for an explicitly selected mock', async () =>
   });
 });
 
+it.each([undefined, 'anthropic', 'openai', 'google'])(
+  'store-only resolution keeps Pinecone settings without prompting for provider=%s',
+  async (provider) => {
+    const prompt = vi.fn();
+    const choose = vi.fn();
+    const config = await resolveConfig({
+      ...options,
+      env: {
+        PINECONE_API_KEY: secret,
+        ...(provider ? { [envVar('LLM_PROVIDER')]: provider } : {}),
+        [envVar('MAX_DOCS')]: '9',
+      },
+      needsLlm: false,
+      isTTY: true,
+      prompt,
+      choose,
+    });
+    expect(config).toMatchObject({
+      backend: 'pinecone',
+      pineconeApiKey: secret,
+      maxDocs: 9,
+      llmProvider: provider ?? 'anthropic',
+      rerankModel: DEFAULT_RERANK_MODELS.pinecone,
+    });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(choose).not.toHaveBeenCalled();
+  },
+);
+
+it('store-only resolution still prompts for a required Pinecone key', async () => {
+  const prompt = vi.fn().mockResolvedValue(secret);
+  const config = await resolveConfig({
+    ...options,
+    backend: 'pinecone',
+    needsLlm: false,
+    isTTY: true,
+    prompt,
+  });
+  expect(config.pineconeApiKey).toBe(secret);
+  expect(prompt).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
+      name: 'PINECONE_API_KEY',
+      masked: true,
+    }),
+  );
+});
+
 it('resolves every environment setting before file values', async () => {
   await file({
     anthropicApiKey: 'file-anthropic',

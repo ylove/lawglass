@@ -127,17 +127,39 @@ export async function runEvalCommand(
       });
   }
 
+  if (kinds.includes('pinecone') && modes.includes('hybrid_rerank')) {
+    const available = new Set(fixtures.map((fixture) => fixture.name));
+    // Only hybrid_rerank calls rerank; retrieval skips unanswerables, answers include them.
+    const rerankCalls = golden
+      .filter((set) => available.has(set.fixture))
+      .reduce(
+        (total, set) =>
+          total +
+          set.questions.filter((q) => q.kind !== 'unanswerable').length +
+          (options.answers ? set.questions.length : 0),
+        0,
+      );
+    if (rerankCalls > 100)
+      deps.write(
+        `Warning: estimated ${String(rerankCalls)} Pinecone rerank calls; Starter includes 500 BGE rerank requests/month.\n`,
+      );
+  }
+
   const scratch = await mkdtemp(join(tmpdir(), 'eval-'));
   try {
     const backends: EvalBackendInput[] = [];
     const pending: PendingBackend[] = [];
     let answerProvider: LlmProvider | undefined;
     for (const kind of kinds) {
+      let initializingBackend = false;
       try {
         const runtime = await deps.runtime({
           backend: kind,
           needsLlm: options.answers === true,
         });
+        initializingBackend = true;
+        await runtime.backend.ensureReady();
+        initializingBackend = false;
         if (options.answers) answerProvider ??= runtime.answerProvider;
         backends.push({
           kind,
@@ -150,9 +172,19 @@ export async function runEvalCommand(
           !['BACKEND_UNAVAILABLE', 'MISSING_KEY'].includes(error.code)
         )
           throw error;
-        // `--answers` needs a key everywhere; for retrieval only, a missing backend is pending.
-        if (options.answers && error.code === 'MISSING_KEY') throw error;
-        pending.push({ backend: kind, reason: pendingReason(error) });
+        // Missing LLM configuration blocks answers; backend init failures stay pending.
+        if (
+          options.answers &&
+          error.code === 'MISSING_KEY' &&
+          !initializingBackend
+        )
+          throw error;
+        pending.push({
+          backend: kind,
+          reason: initializingBackend
+            ? 'backend unavailable'
+            : pendingReason(error),
+        });
       }
     }
 

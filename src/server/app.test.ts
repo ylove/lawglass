@@ -225,7 +225,11 @@ describe('ingest and documents', () => {
   test('DELETE removes the doc from the registry and backend', async () => {
     const a = app();
     const doc = await ingestDoc(a);
+    const embedReady = vi.spyOn(env.embedder, 'ensureReady');
+    const rerankReady = vi.spyOn(env.reranker, 'ensureReady');
     const res = await a.request(`/api/docs/${doc.docId}`, { method: 'DELETE' });
+    expect(embedReady).not.toHaveBeenCalled();
+    expect(rerankReady).not.toHaveBeenCalled();
     expect(res.status).toBe(204);
     expect(await env.registry.list()).toHaveLength(0);
     expect(await env.backend.hasDocument(doc.docId)).toBe(false);
@@ -233,6 +237,21 @@ describe('ingest and documents', () => {
     expect(
       (await a.request(`/api/docs/${doc.docId}`, { method: 'DELETE' })).status,
     ).toBe(404);
+  });
+
+  test('DELETE preserves the registry entry when backend deletion fails', async () => {
+    const a = app();
+    const doc = await ingestDoc(a);
+    const remove = vi
+      .spyOn(env.backend, 'deleteDocument')
+      .mockRejectedValue(new AppError('BACKEND_UNAVAILABLE'));
+    const res = await a.request(`/api/docs/${doc.docId}`, { method: 'DELETE' });
+    expect(res.status).toBe(500);
+    expect(await res.json()).toMatchObject({
+      error: { code: 'BACKEND_UNAVAILABLE' },
+    });
+    expect(remove).toHaveBeenCalledOnce();
+    expect(await env.registry.list()).toHaveLength(1);
   });
 
   test('unknown doc and unknown section are 404 with a plain message', async () => {

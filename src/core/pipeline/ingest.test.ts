@@ -37,6 +37,23 @@ beforeEach(async () => {
   env = await makePipelineEnv();
 });
 
+test('backend initialization failure stops before metadata extraction or writes', async () => {
+  env.serve('https://example.gov/s9001.xml', makeCongressionalBillXml());
+  vi.spyOn(env.backend, 'ensureReady').mockRejectedValue(
+    new AppError('BACKEND_UNAVAILABLE'),
+  );
+  const exists = vi.spyOn(env.backend, 'hasDocument');
+  const extract = vi.spyOn(env.provider, 'generateObject');
+  const write = vi.spyOn(env.backend, 'upsertChunks');
+  await expect(
+    ingest('https://example.gov/s9001.xml', deps()),
+  ).rejects.toMatchObject({ code: 'BACKEND_UNAVAILABLE' });
+  expect(exists).toHaveBeenCalledOnce();
+  expect(extract).not.toHaveBeenCalled();
+  expect(write).not.toHaveBeenCalled();
+  expect(await env.registry.list()).toEqual([]);
+});
+
 test('ingests XML, reports every stage and fills structured metadata', async () => {
   env.serve('https://example.gov/s9001.xml', makeCongressionalBillXml());
   const stages: IngestProgress[] = [];
@@ -114,6 +131,8 @@ test('re-ingesting the same document spends zero tokens and touches the registry
   env.serve('https://example.gov/s9001.xml', makeCongressionalBillXml());
   const first = await ingest('https://example.gov/s9001.xml', deps());
   const [before] = await env.registry.list();
+  const embedReady = vi.spyOn(env.embedder, 'ensureReady');
+  const rerankReady = vi.spyOn(env.reranker, 'ensureReady');
   const embedCalls = env.embedder.calls.length;
   const generate = vi.spyOn(env.provider, 'generateObject');
   const upsert = vi.spyOn(env.backend, 'upsertChunks');
@@ -122,6 +141,8 @@ test('re-ingesting the same document spends zero tokens and touches the registry
   env.serve('https://mirror.example.gov/copy.xml', makeCongressionalBillXml());
   const second = await ingest('https://mirror.example.gov/copy.xml', deps());
 
+  expect(embedReady).not.toHaveBeenCalled();
+  expect(rerankReady).not.toHaveBeenCalled();
   expect(second.stats.reused).toBe(true);
   expect(second.stats.embedTokens).toBe(0);
   expect(second.usage).toEqual({

@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, test } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import {
   makePipelineEnv,
   type PipelineEnv,
@@ -24,7 +24,10 @@ let env: PipelineEnv;
 beforeEach(async () => {
   env = await makePipelineEnv();
 });
-afterEach(() => env.cleanup());
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await env.cleanup();
+});
 
 const bill = makeEvalBillHtml();
 const fixture: EvalFixture = {

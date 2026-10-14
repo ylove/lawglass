@@ -41,7 +41,7 @@ npx legislation-summary serve --port 4317          # local web UI; --public allo
 `<doc>` is a label or a doc-id prefix. Flags are defined in [`src/cli/program.ts`](src/cli/program.ts).
 
 - `--chip <id>` is one of `summary`, `what-changes`, `who-affected`, `penalties`, `effective-date`, `money`, `definitions`, `sponsors`. Each chip has its own retrieval strategy in [`src/core/chips.ts`](src/core/chips.ts). `sponsors` reads metadata only and makes no LLM call.
-- `--backend pinecone|local` overrides backend selection on `ingest`, `ask`, `list`, `remove` and `eval`.
+- `--backend pinecone|local` overrides backend selection on `ingest`, `ask`, `list`, `remove`, `serve` and `eval`.
 - A local path or `file://` URL is read directly, with the same 50 MB cap and format sniffing as a download. Only the file name is recorded, never the directory. The web server accepts only `http(s)` URLs, so a web request can never name a local file.
 - If an HTML page only wraps the real bill, ingest lists the candidate PDF/XML links and stops. It never follows them on its own.
 - Re-ingesting the same bytes is a no-op: the `docId` is the SHA-256 of the raw bytes. The default cap is 5 documents, evicting the least recently used.
@@ -69,13 +69,13 @@ Embeddings never go through the LLM provider.
 
 ### Status
 
-| Piece                                                                   | State on `main`                                               |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------- |
-| Fetch, parse, enrich, chunk, local backend, retrieval, answer, chips    | Implemented and tested                                        |
-| CLI `init`, `ingest`, `ask`, `list`, `remove`, `serve`, `eval`, `<url>` | Implemented and tested; e2e and package smoke run in CI       |
-| Server: REST, SSE, public mode, web UI                                  | Implemented and tested                                        |
-| Eval harness and golden sets                                            | Implemented; results in [`eval/results.md`](eval/results.md)  |
-| Pinecone adapter                                                        | Implemented and tested against a fake; live run pending a key |
+| Piece                                                                   | State on `main`                                                           |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| Fetch, parse, enrich, chunk, local backend, retrieval, answer, chips    | Implemented and tested                                                    |
+| CLI `init`, `ingest`, `ask`, `list`, `remove`, `serve`, `eval`, `<url>` | Implemented and tested; e2e and package smoke run in CI                   |
+| Server: REST, SSE, public mode, web UI                                  | Implemented and tested                                                    |
+| Eval harness and golden sets                                            | Implemented; results in [`eval/results.md`](eval/results.md)              |
+| Pinecone adapter and CLI runtime                                        | Wired into all commands and tested against a fake; live run pending a key |
 
 ## Architecture
 
@@ -192,6 +192,7 @@ node dist/cli.js --help
 ```
 
 - `npm run fixtures:fetch` downloads the six public documents in [`fixtures/manifest.json`](fixtures/manifest.json) into the gitignored `fixtures/downloads/`, checking SHA-256 and size. Fixtures are never committed; local fixture tests skip when the files are absent, and CI uses generated samples from [`tests/synth/`](tests/synth/). See [`fixtures/README.md`](fixtures/README.md).
+- Pinecone Starter includes 500 BGE rerank requests per month. `eval --backend pinecone` estimates the rerank calls before starting and warns above 100; the default run reranks answerable questions in `hybrid_rerank`, and `--answers` adds a rerank call for every question in that mode. Narrow the run with `--fixture` or choose `--mode dense`, `sparse` or `hybrid` to avoid rerank calls.
 - `node dist/cli.js eval --backend local` reruns the eval on the downloaded fixtures and writes `eval/results.md` (add `--answers` to score answers with your configured provider; it makes one model call per question and mode).
 - `npm run models:fetch` pre-downloads the local models. `npm run test:models` runs the offline suite against the real models (not part of `check`, which uses fakes).
 - `npm run test:live` runs key-gated provider contract tests and spends tokens. It never runs the Claude CLI.
