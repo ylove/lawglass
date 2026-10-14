@@ -37,6 +37,8 @@
     "fixtures:fetch": "tsx scripts/fetch-fixtures.ts",
     "eval:smoke": "tsx scripts/eval-smoke.ts",
     "models:fetch": "tsx scripts/fetch-models.ts",
+    "models:hash": "tsx scripts/hash-models.ts",
+    "lockfile:check": "tsx scripts/check-lockfile.ts",
     "test:models": "LOCAL_MODELS=1 vitest run src/core/index/local/models.integration.test.ts",
     "check": "npm run lint && npm run typecheck && npm run format:check && npm run test:coverage",
     "smoke:package": "tsx scripts/package-smoke.ts",
