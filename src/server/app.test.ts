@@ -351,17 +351,16 @@ describe('error events carry the plain-language message', () => {
     });
   });
 
-  test('a chip with no runner explains itself', async () => {
+  test('chips run by default (sponsors needs no model or retrieval)', async () => {
     const a = app();
     const doc = await ingestDoc(a);
     const evs = await events(
-      await post(a, `/api/docs/${doc.docId}/ask`, { chipId: 'summary' }),
+      await post(a, `/api/docs/${doc.docId}/ask`, { chipId: 'sponsors' }),
       AskEvent,
     );
-    expect(evs.at(-1)).toMatchObject({
-      type: 'error',
-      error: { code: 'INVALID_INPUT' },
-    });
+    const last = evs.at(-1);
+    expect(last?.type).toBe('done');
+    if (last?.type === 'done') expect(last.answer.provider).toBe('none');
   });
 });
 
