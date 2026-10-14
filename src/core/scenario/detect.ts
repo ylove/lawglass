@@ -50,6 +50,13 @@ const STOP_WORDS = new Set([
   'other',
 ]);
 
+/** Heading-less bills (Ohio) are judged by section number when this share of sections has no heading. */
+export const HEADINGLESS_SHARE = 0.5;
+/** Single-subject when this share of code sections is in one Revised Code title (33 = Education)... */
+export const TITLE_SHARE = 0.6;
+/** ...or this share is in one chapter (the part before the dot, e.g. 3314). */
+export const CHAPTER_SHARE = 0.5;
+
 export type BillShape = 'single-subject' | 'omnibus';
 
 /** Sections after descending through division/title containers, with the container count. */
@@ -77,11 +84,36 @@ function subjectWords(heading: string): Set<string> {
 }
 
 /**
+ * Ohio-style bills have no section headings; each section is a Revised Code number such as
+ * `3314.03`. The chapter is the part before the dot. The title is the chapter's first two digits
+ * (the first digit for three-digit chapters like 109). Sections that are not code numbers (the
+ * enacting clause, "repeal existing sections", uncodified law) are ignored.
+ */
+function codeSections(
+  sections: readonly Section[],
+): { chapter: string; title: string }[] {
+  return sections.flatMap((s) => {
+    const chapter = /^(\d{3,4})\.\d/.exec(s.num ?? '')?.[1];
+    if (!chapter) return [];
+    return [{ chapter, title: chapter.slice(0, chapter.length === 3 ? 1 : 2) }];
+  });
+}
+
+function topShare(values: readonly string[]): number {
+  const counts = new Map<string, number>();
+  for (const v of values) counts.set(v, (counts.get(v) ?? 0) + 1);
+  return Math.max(...counts.values()) / values.length;
+}
+
+/**
  * Single-subject versus omnibus, from the outline (the rules run in this order):
  *
  *   - no substantive sections: omnibus (no basis for a story)
  *   - `OMNIBUS_MIN_DIVISIONS` or more top-level divisions/titles: omnibus
  *   - more than `OMNIBUS_MAX_SECTIONS` substantive sections: omnibus
+ *   - at least `HEADINGLESS_SHARE` of sections without headings and at least one Revised Code
+ *     section number: single-subject when `TITLE_SHARE` of them share a title or
+ *     `CHAPTER_SHARE` share a chapter (this replaces the two rules below)
  *   - at most `SHORT_BILL_MAX_SECTIONS` substantive sections: single-subject
  *   - otherwise: single-subject only if one heading word recurs in at least
  *     `DOMINANT_TERM_SHARE` of the substantive section headings
@@ -97,6 +129,13 @@ export function classifyBill(sections: readonly Section[]): BillShape {
   if (substantive.length === 0) return 'omnibus';
   if (topLevelContainers >= OMNIBUS_MIN_DIVISIONS) return 'omnibus';
   if (substantive.length > OMNIBUS_MAX_SECTIONS) return 'omnibus';
+  const headingless = substantive.filter((s) => !s.heading?.trim()).length;
+  const codes = codeSections(substantive);
+  if (headingless / substantive.length >= HEADINGLESS_SHARE && codes.length > 0)
+    return topShare(codes.map((c) => c.title)) >= TITLE_SHARE ||
+      topShare(codes.map((c) => c.chapter)) >= CHAPTER_SHARE
+      ? 'single-subject'
+      : 'omnibus';
   if (substantive.length <= SHORT_BILL_MAX_SECTIONS) return 'single-subject';
 
   const counts = new Map<string, number>();
@@ -119,7 +158,13 @@ const GROUP =
  */
 const STORY_PATTERNS: readonly RegExp[] = [
   // "how will this affect me", "does it apply to my family", "what does this mean for us".
-  /\b(?:affect|impact|apply to|mean for|matter to|change things for|help|hurt)\s+(?:\w+\s+){0,2}(?:me|us|my|our)\b/i,
+  /\b(?:affect|impact|apply to|mean for|matter to|change things for|hurt)\s+(?:\w+\s+){0,2}(?:me|us|my|our)\b/i,
+  // "help" is too common elsewhere ("help us understand"), so it counts only as "help me/us?".
+  /\bhelp\s+(?:me|us)\s*[?.!]*$/i,
+  // "what changes for me", "what's in it for me".
+  /\bfor\s+(?:me|us)\b/i,
+  // "my property taxes", "my county's tax rate": my, up to two words, then a money noun.
+  /\b(?:my|our)\s+(?:[\w'’]+\s+){0,2}(?:taxes|tax|rent|rates?|pay|paycheck|salary|income|mortgage|bills?|fees?|costs?|premiums?)\b/i,
   /\bwhat\s+(?:does|would|will)\s+(?:this|it|the\s+(?:bill|law|act))\s+mean\s+for\b/i,
   // "my family", "our household", "my rent", "my small business".
   /\b(?:my|our)\s+(?:family|household|kids?|children|parents|home|rent|taxes|paycheck|job|(?:small\s+)?business|mortgage|bills?)\b/i,
@@ -128,6 +173,8 @@ const STORY_PATTERNS: readonly RegExp[] = [
     `\\b(?:how|what)\\b[^.?!]{0,40}\\b${GROUP}\\b[^.?!]{0,25}\\b(?:affect|impact|respond|pay|owe|change|mean|handle|comply)`,
     'i',
   ),
+  // "what changes for homeowners".
+  new RegExp(`\\bchanges?\\s+for\\s+(?:the\\s+)?${GROUP}\\b`, 'i'),
   new RegExp(
     `\\b(?:mean|means|affect|affects|impact|impacts)\\s+(?:for\\s+)?(?:the\\s+)?${GROUP}\\b`,
     'i',
