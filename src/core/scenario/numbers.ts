@@ -81,6 +81,11 @@ const ORDINAL_DATE = new RegExp(
   `\\b(?:the|on)\\s+(?:${ORDINALS})\\s+of\\s+(?:${MONTHS})(?=\\s*(?:[.,;:!?)]|$)|\\s+\\d{4}\\b)`,
   'gi',
 );
+// A number may not continue a word or a decimal (a letter/digit, or digit-then-dot, before it).
+// "_" and a bare "." do not shield: "rate_4" and "rate.4" are audited. A hyphen never shields it: after a letter
+// ("rate-4 percent") it is a separator, and after a digit ("5-10 days") the range tail is its own
+// number. A genuine minus sign is matched by the amount group, which starts at the hyphen.
+const NOT_AFTER_WORD_OR_DOT = '(?<![A-Za-z0-9])(?<!\\d\\.)';
 const ROMAN_GLYPH = /[\u2160-\u2188]/;
 
 export function normalizeUnit(unit: string): string {
@@ -132,7 +137,7 @@ export function numberTokens(
       (match) => ' '.repeat(match.length),
     );
   const pattern = new RegExp(
-    `(?<![\\w.\\-])(?<currency>\\$)?(?<amount>[+-]?(?:${DIGITS})(?:e[+-]?\\d+)?(?:st|nd|rd|th)?|${SPELLED}|${[...WORDS.keys()].filter((w) => w.endsWith('th') || ['first', 'second', 'third'].includes(w)).join('|')}|doubles?)(?<scale>\\s*(?:[KMB]\\b|(?:thousand|million|billion)\\b))?(?!\\w|\\.\\d|,\\d)(?:[\\s-]*(?<unit>${UNIT}))?`,
+    `${NOT_AFTER_WORD_OR_DOT}(?<currency>\\$)?(?<amount>[+-]?(?:${DIGITS})(?:e[+-]?\\d+)?(?:st|nd|rd|th)?|${SPELLED}|${[...WORDS.keys()].filter((w) => w.endsWith('th') || ['first', 'second', 'third'].includes(w)).join('|')}|doubles?)(?<scale>\\s*(?:[KMB]\\b|(?:thousand|million|billion)\\b))?(?!\\w|\\.\\d|,\\d)(?:[\\s-]*(?<unit>${UNIT}))?`,
     'gi',
   );
   const numbers: NumberToken[] = [];

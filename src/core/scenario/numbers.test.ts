@@ -37,7 +37,9 @@ describe('figure normalization', () => {
     expect(billContains(5, 'USD', '$500')).toBe(false);
     expect(billContains(4, 'percent', '4 days')).toBe(false);
     expect(billContains(500, 'USD', '$50,00')).toBe(false);
-    expect(textNumbers('sec-1 abc123 income_2')).toEqual([]);
+    expect(textNumbers('abc123')).toEqual([]);
+    // A raw section id is not exempt: it fails closed rather than hiding amounts.
+    expect(numberTokens('sec-1').length).toBeGreaterThan(0);
   });
   it('normalizes spelled-out scales without treating one hundred as one', () => {
     expect(billContains(100, 'percent', 'one hundred percent')).toBe(true);
@@ -210,5 +212,57 @@ describe('fail-closed caption numbers', () => {
     'The third-share rate.',
   ])('still counts real quantities: %s', (t) => {
     expect(numberTokens(t).length).toBeGreaterThan(0);
+  });
+  it.each([
+    'The rate-4 percent applies.',
+    'A flat-500 dollar fee.',
+    'the tax-twenty percent',
+    'a non-4 percent',
+    'Pay re-5 dollars',
+    'A tax-half applies.',
+  ])('audits a number joined to a word by a hyphen: %s', (t) => {
+    expect(numberTokens(t).length).toBeGreaterThan(0);
+  });
+  it.each([
+    ['a 4-percent rate', 4],
+    ['a 500-dollar fee', 500],
+    ['5-10 days', 5],
+  ])('still catches %s', (t, v) => {
+    expect(textNumbers(t).map((n) => n.value)).toContain(v);
+  });
+  it.each([
+    'sec-500 dollar fee',
+    'Sec-500 dollars',
+    'SEC-4 percent',
+    'sec-4%',
+    'sec-5 percent fee',
+    'sec-50 days',
+    'sec-1 dollars',
+  ])('does not hide an amount behind a section-id look-alike: %s', (t) => {
+    expect(textNumbers(t).some((n) => n.unit !== '')).toBe(true);
+  });
+  it('audits the tail of a numeric range', () => {
+    expect(textNumbers('The window is 5-10 days.')).toContainEqual({
+      value: 10,
+      unit: 'day',
+    });
+    expect(textNumbers('The rate is 4-60 percent.')).toContainEqual({
+      value: 60,
+      unit: 'percent',
+    });
+    expect(textNumbers('a -4 percent change')).toEqual([
+      { value: -4, unit: 'percent' },
+    ]);
+  });
+  it.each(['rate_4 percent', 'rate.4 percent', 'rate_-4 percent'])(
+    'does not let _ or . shield a number: %s',
+    (t) => {
+      expect(textNumbers(t).some((n) => n.unit === 'percent')).toBe(true);
+    },
+  );
+  it('keeps a decimal as one token', () => {
+    expect(textNumbers('1.5 percent')).toEqual([
+      { value: 1.5, unit: 'percent' },
+    ]);
   });
 });

@@ -307,6 +307,20 @@ describe('scenario validation', () => {
     );
   });
 
+  it('drops a range whose tail is not declared', () => {
+    const scenario = exampleScenario();
+    scenario.frames[1] = {
+      ...scenario.frames[1]!,
+      caption: 'The window is 5-10 days.',
+      figures: [{ source: 'bill', value: 5, unit: 'days' }],
+    };
+    const result = validateScenario(
+      scenario,
+      scenarioExcerpts('The window is 5 days.'),
+    );
+    expect(result.dropped).toEqual([{ frameIndex: 1, reason: 'figure' }]);
+  });
+
   it('recomputes structured calculations whose results are displayed', () => {
     const scenario = exampleScenario();
     scenario.frames[2] = calculated();
