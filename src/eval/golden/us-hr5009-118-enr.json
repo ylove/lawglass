@@ -1,0 +1,207 @@
+{
+  "fixture": "us-hr5009-118-enr",
+  "frozenAtCommit": "7639f1834cb50bdbd84506716639f9166f44f629",
+  "questions": [
+    {
+      "id": "hr5009-01",
+      "question": "What is the full short title of this Act?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-1/a"],
+      "notes": "Servicemember Quality of Life Improvement and National Defense Authorization Act for Fiscal Year 2025."
+    },
+    {
+      "id": "hr5009-02",
+      "question": "What does the Act say about garlic classified under subheading 0703.20.00 of the Harmonized Tariff Schedule?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-641/a"],
+      "notes": "Commissary stores may not sell fresh or chilled garlic under that subheading that originated from, or was processed in, the People's Republic of China."
+    },
+    {
+      "id": "hr5009-03",
+      "question": "What is the authorized active-duty end strength for the Space Force as of September 30, 2025?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-401", "sec-401/5"],
+      "notes": "9,800."
+    },
+    {
+      "id": "hr5009-04",
+      "question": "Can Defense Department money go to EcoHealth Alliance or the Wuhan Institute of Virology?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-1055", "sec-1055/1", "sec-1055/5"],
+      "notes": "No FY2025 DoD funds may go, directly or indirectly, to EcoHealth Alliance (or its subsidiaries, controlled organizations, subgrantees) or to the Wuhan Institute of Virology."
+    },
+    {
+      "id": "hr5009-05",
+      "question": "What award does the Act give the Hello Girls?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-5703/b/1"],
+      "notes": "A single Congressional gold medal honoring the female telephone operators of the Army Signal Corps."
+    },
+    {
+      "id": "hr5009-06",
+      "question": "Until what date does the Act extend the ban on transferring Guantanamo Bay detainees to the United States?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-1041"],
+      "notes": "Strikes December 31, 2024 and inserts December 31, 2025."
+    },
+    {
+      "id": "hr5009-07",
+      "question": "When do titles XXI through XXVII of the Act take effect?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-2003", "sec-2003/1", "sec-2003/2"],
+      "notes": "The later of October 1, 2024, or the date of enactment."
+    },
+    {
+      "id": "hr5009-08",
+      "question": "For how many years must the Navy brief Congress on the effort against the coconut rhinoceros beetle?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-318/c"],
+      "notes": "A briefing within 180 days of enactment, then annually for each of the next three years."
+    },
+    {
+      "id": "hr5009-09",
+      "question": "Starting when can't stores on military bases sell garlic from China?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-641/b"],
+      "notes": "January 1, 2026."
+    },
+    {
+      "id": "hr5009-10",
+      "question": "Will horse-drawn funerals come back at Arlington National Cemetery?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-1088/a", "sec-1088/b"],
+      "notes": "At least 20 caisson funerals a week once the stables are renovated and the herd is ready; limited services may resume earlier."
+    },
+    {
+      "id": "hr5009-11",
+      "question": "Can a veteran who never signed up for the draft still get a federal job?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-1108/3"],
+      "notes": "Yes, if a veteran shows active duty service and the registration requirement no longer applies due to age."
+    },
+    {
+      "id": "hr5009-12",
+      "question": "Can the Defense Department hire people for new diversity, equity, and inclusion jobs right now?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-1115/a/1", "sec-1115/a/2"],
+      "notes": "No new DEI positions and no filling DEI vacancies during the freeze period."
+    },
+    {
+      "id": "hr5009-13",
+      "question": "Does the military now have to buy American-made forks, spoons, and dishes?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-842/a"],
+      "notes": "Adds stainless steel flatware and dinnerware to the domestic-source list in 10 U.S.C. 4862(b)."
+    },
+    {
+      "id": "hr5009-14",
+      "question": "Do high schools now need fewer students in junior ROTC to keep a unit?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-543/1", "sec-543/2"],
+      "notes": "Old minimum: lesser of 10 percent or 100. New: lesser of 10 percent or 50 for schools under 1,000 students; 50 (or a Secretary-set number up to 100) for larger schools."
+    },
+    {
+      "id": "hr5009-15",
+      "question": "How many days of military leave can federal workers get each year now?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-1109"],
+      "notes": "20 days instead of 15."
+    },
+    {
+      "id": "hr5009-16",
+      "question": "Can the military show a huge American flag laid flat, like across a football field, at a patriotic event?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-1703/a", "sec-1703/b/2"],
+      "notes": "Yes, in limited circumstances and done respectfully as part of a military or patriotic observance, including horizontally, as long as it never touches anything beneath it."
+    },
+    {
+      "id": "hr5009-17",
+      "question": "When does the new military pay chart start?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-601"],
+      "notes": "April 1, 2025."
+    },
+    {
+      "id": "hr5009-18",
+      "question": "Does the Western Hemisphere part of this law count Venezuela as part of the Western Hemisphere?",
+      "kind": "definition",
+      "expectedSectionIds": ["sec-5118"],
+      "notes": "No: in that subtitle, Western Hemisphere excludes Cuba, Nicaragua and Venezuela."
+    },
+    {
+      "id": "hr5009-19",
+      "question": "How many horses does the Army need in the caisson herd before it must restart full caisson funerals?",
+      "kind": "definition",
+      "expectedSectionIds": [
+        "sec-1088/c/1",
+        "sec-1088/c/1/A",
+        "sec-1088/c/1/B",
+        "sec-1088/c/1/C"
+      ],
+      "notes": "Fully constituted means at least four caisson squads of eleven horses each, 14 caparison horses and four outreach horses."
+    },
+    {
+      "id": "hr5009-20",
+      "question": "Does a company's lender count as a beneficial owner under the Secure Adjacent Federal Property Act?",
+      "kind": "definition",
+      "expectedSectionIds": ["sec-5602/2/B", "sec-5602/2/B/v"],
+      "notes": "No: a creditor is excluded unless it also meets the control or 25 percent ownership test."
+    },
+    {
+      "id": "hr5009-21",
+      "question": "What counts as drop-in fuel in the new yearly fuel report?",
+      "kind": "definition",
+      "expectedSectionIds": ["sec-315/b"],
+      "notes": "A neat or blended liquid hydrocarbon fuel designed as a direct replacement for a traditional fuel, with comparable performance and compatible with existing infrastructure."
+    },
+    {
+      "id": "hr5009-22",
+      "question": "Which law limiting the Pentagon's purchases of drop-in fuels does this Act repeal?",
+      "kind": "removed",
+      "expectedSectionIds": ["sec-315/a"],
+      "notes": "Repeal language (XML has no struck spans): section 2922h of title 10 is repealed."
+    },
+    {
+      "id": "hr5009-23",
+      "question": "Does this Act remove marriage as a defense to article 120b offenses?",
+      "kind": "removed",
+      "expectedSectionIds": ["sec-565/1", "sec-565/3"],
+      "notes": "Repeal language: strikes subsection (f) of 10 U.S.C. 920b and the phrase 'not legally married to the person committing the sexual act, lewd act, or use of force'."
+    },
+    {
+      "id": "hr5009-24",
+      "question": "What does the Act strike from the report requirement for the Financial Improvement and Audit Remediation Plan?",
+      "kind": "removed",
+      "expectedSectionIds": ["sec-1002"],
+      "notes": "Repeal language: strikes clause (ix) of 10 U.S.C. 240b(b)(1)(B), the audit incentive element."
+    },
+    {
+      "id": "hr5009-25",
+      "question": "Which intelligence report about foreign investment risks does the Act repeal?",
+      "kind": "removed",
+      "expectedSectionIds": ["sec-6901/d"],
+      "notes": "Repeal language: section 6716 of the Damon Paul Nelson and Matthew Young Pollard Intelligence Authorization Act for FYs 2018-2020 (50 U.S.C. 3370a)."
+    },
+    {
+      "id": "hr5009-26",
+      "question": "Does this bill raise the federal minimum wage?",
+      "kind": "unanswerable",
+      "expectedSectionIds": [],
+      "notes": "Not addressed anywhere in the Act."
+    },
+    {
+      "id": "hr5009-27",
+      "question": "Does this law make marijuana legal?",
+      "kind": "unanswerable",
+      "expectedSectionIds": [],
+      "notes": "Not addressed anywhere in the Act."
+    },
+    {
+      "id": "hr5009-28",
+      "question": "Does this bill change daylight saving time?",
+      "kind": "unanswerable",
+      "expectedSectionIds": [],
+      "notes": "Not addressed anywhere in the Act."
+    }
+  ]
+}

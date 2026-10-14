@@ -1,0 +1,175 @@
+{
+  "fixture": "oh-hb62-135-in",
+  "frozenAtCommit": "7639f1834cb50bdbd84506716639f9166f44f629",
+  "questions": [
+    {
+      "id": "hb62-01",
+      "question": "What does the bill cross out about the places where a person has no duty to retreat?",
+      "kind": "removed",
+      "expectedSectionIds": ["sec-2307.601/b", "sec-2901.09/b"],
+      "notes": "Struck: no duty to retreat 'if that person is in a place in which the person lawfully has a right to be'. Replaced by: lawfully in the person's residence, or a lawful occupant of the person's vehicle or a vehicle owned by an immediate family member."
+    },
+    {
+      "id": "hb62-02",
+      "question": "Does the bill get rid of the rule that a jury can't consider whether the person could have retreated?",
+      "kind": "removed",
+      "expectedSectionIds": ["sec-2307.601/b", "sec-2901.09/b"],
+      "notes": "Yes: division (C) ('A trier of fact shall not consider the possibility of retreat...') is struck in both sections. The parser keeps the struck (C) in the spans of the (B) section."
+    },
+    {
+      "id": "hb62-03",
+      "question": "What word does the bill strike from division (A) of section 2901.05?",
+      "kind": "removed",
+      "expectedSectionIds": ["sec-2901.05/a"],
+      "notes": "'presented' (in 'defense of the accused's residence presented as described in division (B)(1)')."
+    },
+    {
+      "id": "hb62-04",
+      "question": "What old wording is crossed out where the bill says what \"residence\" means?",
+      "kind": "removed",
+      "expectedSectionIds": ["sec-2307.601/a/1", "sec-2901.09/a"],
+      "notes": "Old: '\"Residence\" has the same meaning'. New: '\"Residence\" and \"vehicle\" have the same meanings' as in section 2901.05."
+    },
+    {
+      "id": "hb62-05",
+      "question": "Which existing sections of the Ohio Revised Code does this bill repeal?",
+      "kind": "removed",
+      "expectedSectionIds": ["sec-2"],
+      "notes": "Existing sections 2307.601, 2901.05 and 2901.09 (replaced by the amended versions)."
+    },
+    {
+      "id": "hb62-06",
+      "question": "What does section 2901.09 of the Revised Code say about the duty to retreat?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-2901.09/b"],
+      "notes": "For criminal offenses: no duty to retreat when lawfully in one's residence, or a lawful occupant of one's vehicle or an immediate family member's vehicle."
+    },
+    {
+      "id": "hb62-07",
+      "question": "What does the bill say about the rebuttable presumption and how it can be rebutted?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-2901.05/b/4"],
+      "notes": "The (B)(2) presumption may be rebutted by a preponderance of the evidence; the prosecution's burden stays proof beyond a reasonable doubt."
+    },
+    {
+      "id": "hb62-08",
+      "question": "Who is the main sponsor of H. B. No. 62?",
+      "kind": "exact",
+      "expectedSectionIds": ["preamble"],
+      "notes": "Representative Humphrey."
+    },
+    {
+      "id": "hb62-09",
+      "question": "Which section of the Revised Code does the bill use for the meaning of \"tort action\"?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-2307.601/a/2"],
+      "notes": "Section 2307.60."
+    },
+    {
+      "id": "hb62-10",
+      "question": "Does a tent count as a home under these self-defense rules?",
+      "kind": "definition",
+      "expectedSectionIds": ["sec-2901.05/d/2", "sec-2901.05/d/3"],
+      "notes": "Residence means a dwelling where a person resides or is a guest; a dwelling includes a tent."
+    },
+    {
+      "id": "hb62-11",
+      "question": "Does a bicycle count as a \"vehicle\" in this bill?",
+      "kind": "definition",
+      "expectedSectionIds": ["sec-2901.05/d/4"],
+      "notes": "Vehicle means a conveyance of any kind, motorized or not, designed to transport people or property."
+    },
+    {
+      "id": "hb62-12",
+      "question": "If I'm staying at a friend's house as a guest, is that my \"residence\"?",
+      "kind": "definition",
+      "expectedSectionIds": ["sec-2901.05/d/3"],
+      "notes": "Yes: residence includes a dwelling where the person is visiting as a guest."
+    },
+    {
+      "id": "hb62-13",
+      "question": "What does \"reasonable doubt\" mean?",
+      "kind": "definition",
+      "expectedSectionIds": ["sec-2901.05/e"],
+      "notes": "When jurors, after carefully considering all the evidence, cannot say they are firmly convinced of the charge; it is based on reason and common sense, not mere possible doubt."
+    },
+    {
+      "id": "hb62-14",
+      "question": "What counts as an \"affirmative defense\"?",
+      "kind": "definition",
+      "expectedSectionIds": [
+        "sec-2901.05/d/1",
+        "sec-2901.05/d/1/a",
+        "sec-2901.05/d/1/b"
+      ],
+      "notes": "A defense expressly designated as affirmative, or one involving an excuse or justification peculiarly within the accused's knowledge."
+    },
+    {
+      "id": "hb62-15",
+      "question": "Do I have to try to get away before defending myself inside my own house?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-2307.601/b", "sec-2901.09/b"],
+      "notes": "No duty to retreat when lawfully in one's residence (civil and criminal)."
+    },
+    {
+      "id": "hb62-16",
+      "question": "If I'm riding in my mom's car and someone attacks me, do I have to try to escape first?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-2307.601/b", "sec-2901.09/b"],
+      "notes": "No duty to retreat for a lawful occupant of a vehicle owned by an immediate family member."
+    },
+    {
+      "id": "hb62-17",
+      "question": "At a trial, who has to prove whether it was self-defense?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-2901.05/b/1"],
+      "notes": "Once evidence tends to support self-defense, the prosecution must prove beyond a reasonable doubt that it was not."
+    },
+    {
+      "id": "hb62-18",
+      "question": "If someone breaks into my house and I hurt them badly, does the law assume I was defending myself?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-2901.05/b/2"],
+      "notes": "Yes, subject to (B)(3): a person using deadly force against someone unlawfully entering (or who entered) the residence or vehicle they occupy is presumed to have acted in self-defense."
+    },
+    {
+      "id": "hb62-19",
+      "question": "When does the law NOT assume self-defense against someone breaking into a home or car?",
+      "kind": "paraphrase",
+      "expectedSectionIds": [
+        "sec-2901.05/b/3",
+        "sec-2901.05/b/3/a",
+        "sec-2901.05/b/3/b"
+      ],
+      "notes": "When the intruder has a right to be there or lives there, or the defender is unlawfully in that residence or vehicle."
+    },
+    {
+      "id": "hb62-20",
+      "question": "What does the judge have to read to the jury in a criminal case?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-2901.05/c"],
+      "notes": "The definitions of 'reasonable doubt' and 'proof beyond a reasonable doubt' from division (E)."
+    },
+    {
+      "id": "hb62-21",
+      "question": "Does this bill change the rules for buying a gun?",
+      "kind": "unanswerable",
+      "expectedSectionIds": [],
+      "notes": "Not addressed."
+    },
+    {
+      "id": "hb62-22",
+      "question": "When does this law take effect?",
+      "kind": "unanswerable",
+      "expectedSectionIds": [],
+      "notes": "The bill states no effective date."
+    },
+    {
+      "id": "hb62-23",
+      "question": "How long can someone go to jail for using too much force?",
+      "kind": "unanswerable",
+      "expectedSectionIds": [],
+      "notes": "The bill sets no penalties."
+    }
+  ]
+}
