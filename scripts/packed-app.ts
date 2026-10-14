@@ -21,10 +21,17 @@ export function assertPackageFiles(paths: readonly string[]): void {
   for (const required of ['dist/cli.js', 'dist/web/index.html']) {
     assert(files.includes(required), `Tarball is missing ${required}`);
   }
-  const forbidden = files.filter((path) =>
-    /(^|\/)(tests|fixtures)(\/|$)|\.test\.|(^|\/)\.env[^/]*|(^|\/)eval\/goldens?(\/|$)/i.test(
-      path,
-    ),
+  // An allowlist, so widening package.json#files can't quietly ship scripts, e2e or src. Source
+  // maps stay out too: they would add ~15 MB (bundled dependency sources) to every npx install.
+  const allowed = (path: string): boolean =>
+    /^(package\.json|README\.md|LICENSE)$/.test(path) ||
+    (path.startsWith('dist/') && !path.endsWith('.map'));
+  const forbidden = files.filter(
+    (path) =>
+      !allowed(path) ||
+      /(^|\/)(tests|fixtures)(\/|$)|\.test\.|(^|\/)\.env[^/]*|(^|\/)eval\/goldens?(\/|$)/i.test(
+        path,
+      ),
   );
   assert.deepEqual(
     forbidden,

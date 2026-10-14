@@ -16,12 +16,14 @@ import {
 const required = ['package/dist/cli.js', 'package/dist/web/index.html'];
 
 describe('packed archive guard', () => {
-  it('accepts runtime files and production source maps', () => {
+  it('accepts runtime files', () => {
     expect(() => {
       assertPackageFiles([
         ...required,
-        'package/dist/server.js.map',
+        'package/dist/server.js',
+        'package/package.json',
         'package/README.md',
+        'package/LICENSE',
       ]);
     }).not.toThrow();
   });
@@ -36,6 +38,11 @@ describe('packed archive guard', () => {
     'eval/goldens/sample.json',
     'src/eval/golden/sample.json',
     'dist/tests/source.js.map',
+    // Outside the allowlist: source maps, and anything outside dist/.
+    'dist/server.js.map',
+    'scripts/package-smoke.ts',
+    'e2e/legislation.spec.ts',
+    'src/cli/index.ts',
   ])('rejects %s', (path) => {
     expect(() => {
       assertPackageFiles([...required, `package/${path}`]);
