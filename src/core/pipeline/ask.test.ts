@@ -414,7 +414,12 @@ function scenarioDeps(
   overrides: Partial<AskDeps> = {},
 ): AskDeps & { provider: ScenarioProvider } {
   const provider = scenarioProvider(env.provider);
-  return { ...askDeps(), provider, ...overrides } as AskDeps & {
+  return {
+    ...askDeps(),
+    provider,
+    scenario: { enabled: true },
+    ...overrides,
+  } as AskDeps & {
     provider: ScenarioProvider;
   };
 }
@@ -461,6 +466,80 @@ test('an affect-me question gets a scenario after the answer text, and its usage
   expect(result.answer.usage.inputTokens).toBeGreaterThanOrEqual(5);
   const [entry] = await env.registry.list();
   expect(entry?.usage.llmInputTokens).toBe(result.answer.usage.inputTokens);
+});
+
+test('scenarios are off unless a caller turns them on (fails closed)', async () => {
+  const docId = await load(BILL_URL, makeCongressionalBillXml());
+  const deps = scenarioDeps({ scenario: undefined });
+  const result = await ask(
+    docId,
+    { question: 'How will garden grants affect me?' },
+    deps,
+  );
+  expect(deps.provider.scenarioCalls).toBe(0);
+  expect(result.answer.scenario).toBeUndefined();
+});
+
+test('deferScenario returns the answer first and delivers the scenario later', async () => {
+  const docId = await load(BILL_URL, makeCongressionalBillXml());
+  const deps = scenarioDeps();
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const inner = deps.provider;
+  const real = inner.generateObject.bind(inner);
+  deps.provider.behavior = async (req) => {
+    await gate;
+    deps.provider.behavior = undefined;
+    return (await real(req)) as never;
+  };
+  const result = await ask(
+    docId,
+    { question: 'How will garden grants affect me?' },
+    deps,
+    { deferScenario: true },
+  );
+  // The answer is complete while generation is still blocked.
+  expect(result.answer.declined).toBe(false);
+  expect(result.answer.scenario).toBeUndefined();
+  expect(result.scenario).toBeInstanceOf(Promise);
+  release();
+  const late = await result.scenario;
+  expect(late?.frames.length).toBeGreaterThanOrEqual(3);
+  const [entry] = await env.registry.list();
+  expect(entry?.usage.llmInputTokens).toBeGreaterThanOrEqual(5);
+});
+
+test('deferScenario gives no promise when no scenario is wanted or enabled', async () => {
+  const docId = await load(BILL_URL, makeCongressionalBillXml());
+  const plain = await ask(
+    docId,
+    { question: 'What are the garden grants?' },
+    scenarioDeps(),
+    { deferScenario: true },
+  );
+  expect(plain.scenario).toBeUndefined();
+  const off = await ask(
+    docId,
+    { question: 'How will garden grants affect me?' },
+    scenarioDeps({ scenario: { enabled: false } }),
+    { deferScenario: true },
+  );
+  expect(off.scenario).toBeUndefined();
+});
+
+test('a deferred scenario that fails resolves to undefined', async () => {
+  const docId = await load(BILL_URL, makeCongressionalBillXml());
+  const deps = scenarioDeps();
+  deps.provider.behavior = () => Promise.reject(new AppError('PROVIDER_ERROR'));
+  const result = await ask(
+    docId,
+    { question: 'How will garden grants affect me?' },
+    deps,
+    { deferScenario: true },
+  );
+  await expect(result.scenario).resolves.toBeUndefined();
 });
 
 test('a plain question makes no scenario call', async () => {

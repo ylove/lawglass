@@ -12,6 +12,8 @@ import { exampleScenario } from '../synth/scenario.js';
 
 export interface ScenarioProvider extends LlmProvider {
   scenarioCalls: number;
+  /** Prompts of every scenario generation. */
+  prompts: string[];
   /** Called at the start of each scenario generation. */
   onScenario?: () => void;
   /** Replace the default behaviour, e.g. to throw or hang. */
@@ -23,10 +25,12 @@ export function scenarioProvider(base: LlmProvider): ScenarioProvider {
     id: base.id,
     model: base.model,
     scenarioCalls: 0,
+    prompts: [],
     streamText: (req) => base.streamText(req),
     generateObject: <T>(req: ObjectRequest<T>) => {
       if (req.schemaName !== 'scenario') return base.generateObject(req);
       provider.scenarioCalls++;
+      provider.prompts.push(req.prompt);
       provider.onScenario?.();
       if (provider.behavior) return provider.behavior(req);
       const name =

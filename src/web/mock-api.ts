@@ -538,12 +538,12 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
         answer.warnings = ['INVALID_CITATIONS_REMOVED'];
         answer.invalidCitations = ['sec-99'];
       }
-      if (req.chipId === 'who-affected' && !declined && !publicMode) {
-        // Same order as the real server: the scenario event comes just before `done`.
-        answer.scenario = SAMPLE_SCENARIO;
-        yield { type: 'scenario', scenario: SAMPLE_SCENARIO };
-      }
       yield { type: 'done', answer };
+      if (req.chipId === 'who-affected' && !declined && !publicMode) {
+        // Same order as the real server: the scenario arrives after `done`.
+        await sleep(delay, signal);
+        yield { type: 'scenario', scenario: structuredClone(SAMPLE_SCENARIO) };
+      }
     },
   };
 }

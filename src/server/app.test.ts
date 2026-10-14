@@ -421,7 +421,7 @@ describe('ask', () => {
     });
   });
 
-  test('emits the scenario after retrieval and just before done, and done carries it too', async () => {
+  test('emits retrieval and done first, then the scenario after done', async () => {
     const a = app();
     const doc = await ingestDoc(a);
     const provider = scenarioProvider(env.provider);
@@ -433,12 +433,13 @@ describe('ask', () => {
       AskEvent,
     );
     const types = evs.map((e) => e.type);
-    expect(types.slice(-3)).toEqual(['retrieval', 'scenario', 'done']);
+    expect(types.slice(-3)).toEqual(['retrieval', 'done', 'scenario']);
     const scenario = evs.find((e) => e.type === 'scenario');
-    const done = evs.at(-1);
+    const done = evs.find((e) => e.type === 'done');
     if (scenario?.type !== 'scenario' || done?.type !== 'done')
       throw new Error('expected scenario and done');
-    expect(done.answer.scenario).toEqual(scenario.scenario);
+    // The answer does not wait for, or carry, the scenario.
+    expect(done.answer.scenario).toBeUndefined();
     expect(provider.scenarioCalls).toBe(1);
   });
 

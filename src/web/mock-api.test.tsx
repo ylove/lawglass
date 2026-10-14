@@ -105,17 +105,16 @@ describe('mock API', () => {
     });
   });
 
-  test('who-affected emits a sample scenario just before done; other chips and public mode do not', async () => {
+  test('who-affected emits a sample scenario after done; other chips and public mode do not', async () => {
     const m = api();
     const [sample] = await m.listDocs();
     const id = sample!.docId;
     const events = await collect(m.ask(id, { chipId: 'who-affected' }));
-    expect(events.slice(-2).map((e) => e.type)).toEqual(['scenario', 'done']);
-    const done = events.at(-1);
-    const scenario = events.at(-2);
-    expect(done).toMatchObject({
-      answer: { scenario: expect.anything() as unknown },
-    });
+    expect(events.slice(-2).map((e) => e.type)).toEqual(['done', 'scenario']);
+    const done = events.at(-2);
+    const scenario = events.at(-1);
+    expect(done).toMatchObject({ type: 'done' });
+    expect(done?.type === 'done' && done.answer.scenario).toBeUndefined();
     expect(
       scenario?.type === 'scenario' && AskEvent.safeParse(scenario).success,
     ).toBe(true);

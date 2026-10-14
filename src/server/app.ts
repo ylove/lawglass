@@ -445,6 +445,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
           },
           {
             signal,
+            deferScenario: true,
             onToken: (text) => {
               emit({ type: 'token', text });
             },
@@ -456,12 +457,14 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
           refs: result.refs,
           latencyMs: result.latencyMs,
         });
-        // Order: tokens (streamed), retrieval, scenario, done. The scenario goes just BEFORE `done` so a
-        // client that stops reading at `done` still receives it. `done.answer.scenario` carries
-        // the same object, for clients (and cached answers) that only keep the final answer.
-        if (result.answer.scenario)
-          emit({ type: 'scenario', scenario: result.answer.scenario });
+        // Event order: token* (while writing), retrieval, done, then scenario (only when one was
+        // made). The answer is complete at `done`, so it never waits for the scenario; the
+        // scenario is generated afterwards (bounded by its own timeout) and sent before the
+        // stream closes. `done.answer` carries no scenario. Clients must keep reading after
+        // `done` (#131 renders the late event).
         emit({ type: 'done', answer: result.answer });
+        const scenario = await result.scenario;
+        if (scenario) emit({ type: 'scenario', scenario });
       },
       (error) => ({ type: 'error', error }),
     );

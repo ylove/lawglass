@@ -14,8 +14,8 @@ import {
 } from '../model/index.js';
 import { createScenario } from './index.js';
 
-/** A story is optional, so it may not hold the answer's `done` event up for long. */
-export const SCENARIO_TIMEOUT_MS = 20_000;
+/** A story is optional and arrives after `done`, but a hung provider should still be cut off. */
+export const SCENARIO_TIMEOUT_MS = 12_000;
 /** Excerpts shown to the scenario model; bounds the prompt for chips with many hits. */
 export const MAX_SCENARIO_EXCERPTS = 8;
 
@@ -23,6 +23,11 @@ export interface AttachScenarioInput {
   provider: LlmProvider;
   /** The excerpts the answer was written from, best first. */
   hits: readonly SearchHit[];
+  /**
+   * Sections the answer cited. Hits from these sections are shown to the scenario model first, so
+   * a summary built from many units still gets a story about what it actually cited.
+   */
+  citedSectionIds?: readonly string[] | undefined;
   question?: string | undefined;
   signal?: AbortSignal | undefined;
   timeoutMs?: number | undefined;
@@ -52,9 +57,19 @@ export async function attachScenario(
       return result;
     },
   };
-  const hits = input.hits
-    .filter((hit) => hit.chunk.amendmentStatus !== 'deleted')
-    .slice(0, MAX_SCENARIO_EXCERPTS);
+  const live = input.hits.filter(
+    (hit) => hit.chunk.amendmentStatus !== 'deleted',
+  );
+  const cited = new Set(input.citedSectionIds ?? []);
+  const isCited = (hit: SearchHit): boolean =>
+    [hit.chunk.sectionId, ...(hit.chunk.coveredSectionIds ?? [])].some((id) =>
+      cited.has(id),
+    );
+  // Cited excerpts first, then the rest in their original (best-first) order, up to the cap.
+  const hits = [
+    ...live.filter(isCited),
+    ...live.filter((hit) => !isCited(hit)),
+  ].slice(0, MAX_SCENARIO_EXCERPTS);
   if (hits.length === 0) return { usage };
 
   const timeout = AbortSignal.timeout(input.timeoutMs ?? SCENARIO_TIMEOUT_MS);

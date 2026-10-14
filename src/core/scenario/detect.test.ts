@@ -195,16 +195,12 @@ describe('classifyBill on heading-less (Ohio-style) bills', () => {
   });
 
   it('is omnibus when a long bill has neither headings nor code numbers', () => {
-    const bare = Array.from(
-      { length: 8 },
-      (_, i) =>
-        ({
-          id: `s${String(i)}`,
-          level: 1,
-          spans: [],
-          children: [],
-        }) as unknown as Section,
-    );
+    const bare = Array.from({ length: 8 }, (_, i) => ({
+      id: `s${String(i)}`,
+      level: 1,
+      spans: [],
+      children: [],
+    }));
     expect(classifyBill(bare)).toBe('omnibus');
   });
 

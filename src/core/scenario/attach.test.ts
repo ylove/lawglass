@@ -91,6 +91,66 @@ describe('attachScenario', () => {
   });
 });
 
+describe('excerpt choice', () => {
+  const many = () =>
+    Array.from({ length: 10 }, (_, i) => {
+      const [hit] = scenarioExcerpts(`Text number ${String(i + 1)}.`);
+      return {
+        ...hit!,
+        chunk: {
+          ...hit!.chunk,
+          id: `d:sec-${String(i + 1)}:0`,
+          sectionId: `sec-${String(i + 1)}`,
+        },
+      };
+    });
+
+  it('prefers hits from cited sections, then tops up in order', async () => {
+    const p = provider();
+    await attachScenario({
+      provider: p,
+      hits: many(),
+      citedSectionIds: ['sec-9', 'sec-10'],
+    });
+    const prompt = p.prompts[0]!;
+    const sections = [...prompt.matchAll(/section="([^"]+)"/g)].map(
+      (m) => m[1],
+    );
+    expect(sections).toEqual([
+      'sec-9',
+      'sec-10',
+      'sec-1',
+      'sec-2',
+      'sec-3',
+      'sec-4',
+      'sec-5',
+      'sec-6',
+    ]);
+  });
+
+  it('keeps the first eight when nothing is cited', async () => {
+    const p = provider();
+    await attachScenario({ provider: p, hits: many() });
+    const sections = [...p.prompts[0]!.matchAll(/section="([^"]+)"/g)].map(
+      (m) => m[1],
+    );
+    expect(sections).toHaveLength(8);
+    expect(sections[0]).toBe('sec-1');
+  });
+
+  it('matches a cited section covered by a synthetic excerpt', async () => {
+    const p = provider();
+    const hits = many();
+    hits[9]!.chunk = {
+      ...hits[9]!.chunk,
+      sectionId: 'unit',
+      coveredSectionIds: ['unit', 'sec-77'],
+    };
+    await attachScenario({ provider: p, hits, citedSectionIds: ['sec-77'] });
+    expect(p.prompts[0]).toMatch(/^[\s\S]*?section="unit"/);
+  });
+});
+
 it('adds usage without mutating', () => {
   const a = { inputTokens: 1, outputTokens: 2 };
   expect(addScenarioUsage(a, { inputTokens: 3, outputTokens: 4 })).toEqual({
