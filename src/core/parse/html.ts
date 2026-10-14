@@ -10,7 +10,11 @@ import {
   walkSections,
   type SpanStatus,
 } from '../model/index.js';
-import { detectSections, subdivisionHeading } from './sections.js';
+import {
+  detectSections,
+  sectionHeading,
+  subdivisionHeading,
+} from './sections.js';
 import type { TextParseOptions } from './text.js';
 
 export type HtmlParseOptions = TextParseOptions & {
@@ -541,7 +545,9 @@ function refineHeading(
       .replace(/^[.:]\s*/, '');
     const title = enumeration
       ? subdivisionHeading(cleaned, printedHeadings.has(raw))
-      : cleaned;
+      : /(?:^|\/)sec-/.test(section.id)
+        ? sectionHeading(cleaned, section.num, printedHeadings.has(raw))
+        : cleaned;
     if (title) section.heading = title;
     else delete section.heading;
   }
