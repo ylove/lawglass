@@ -1,3 +1,5 @@
+import { SaxesParser } from 'saxes';
+import { vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -721,4 +723,48 @@ describeWithFixture('us-hr5009-118-enr', () => {
     expect(doc.metadata.billNumber).toBe('H. R. 5009');
     expect(doc.metadata.sponsors).toBeNull();
   });
+});
+
+it('stops between XML input chunks on ingest cancellation', () => {
+  const controller = new AbortController();
+  // eslint-disable-next-line @typescript-eslint/unbound-method -- explicitly called with the parser as this below
+  const original = SaxesParser.prototype.write;
+  const write = vi
+    .spyOn(SaxesParser.prototype, 'write')
+    .mockImplementation(function (this: SaxesParser, chunk) {
+      const result = original.call(this, chunk);
+      controller.abort();
+      return result;
+    });
+  try {
+    expect(() =>
+      parseXml('<root>' + '<p>Bill text.</p>'.repeat(10_000) + '</root>', {
+        sourceUrl: 'https://example.gov/bill.xml',
+        fetchedAt: '2026-10-13T00:00:00.000Z',
+        signal: controller.signal,
+      }),
+    ).toThrow(/aborted/);
+    expect(write).toHaveBeenCalledOnce();
+  } finally {
+    write.mockRestore();
+  }
+});
+
+it('rejects XML when its synchronous parse exceeds the deadline', () => {
+  const clock = vi
+    .spyOn(performance, 'now')
+    .mockReturnValueOnce(0)
+    .mockReturnValueOnce(0)
+    .mockReturnValue(11);
+  try {
+    expect(() =>
+      parseXml('<root>Bill</root>', {
+        sourceUrl: 'https://example.gov/bill.xml',
+        fetchedAt: '2026-10-13T00:00:00.000Z',
+        timeoutMs: 10,
+      }),
+    ).toThrow(/time budget/);
+  } finally {
+    clock.mockRestore();
+  }
 });

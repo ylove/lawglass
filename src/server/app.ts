@@ -24,6 +24,7 @@ import {
   type IngestEvent,
 } from '../core/model/index.js';
 import { parsePdf as defaultParsePdf } from '../core/parse/index.js';
+import { readParseLimits } from '../core/parse/limits.js';
 import { ask, ingest, sectionExcerpt } from '../core/pipeline/index.js';
 import type { RegistryEntry } from '../core/registry.js';
 import { buildDocDetail } from './doc-detail.js';
@@ -388,7 +389,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     )
       throw new AppError('DOC_CAP_REACHED');
 
-    // The pipeline defaults to core/parse's parsePdf, so the cap must wrap that too.
+    // Resource policy reaches both the default parser and runtime-injected parsers.
     const parsePdf = runtime.parsePdf ?? defaultParsePdf;
     ingestsInFlight++;
     return sse<IngestEvent>(
@@ -405,16 +406,11 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
               now: runtime.now,
               // Public servers never evict: a visitor must not push out someone else's document.
               maxDocs: publicMode ? limits.maxDocs : runtime.maxDocs,
-              parsePdf: publicMode
-                ? async (bytes, context) => {
-                    const doc = await parsePdf(bytes, context);
-                    if ((doc.pageCount ?? 0) > limits.maxPages)
-                      throw new AppError('TOO_LARGE', undefined, {
-                        userMessage: `This public server accepts documents up to ${String(limits.maxPages)} pages.`,
-                      });
-                    return doc;
-                  }
-                : parsePdf,
+              parseLimits: {
+                ...readParseLimits(publicMode),
+                ...(publicMode ? { maxPages: limits.maxPages } : {}),
+              },
+              parsePdf,
             },
             {
               ...(body.label === undefined ? {} : { label: body.label }),

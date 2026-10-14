@@ -4,8 +4,15 @@
  * sections over the whole document (sections.ts). Design: docs/decisions/0006.
  */
 import { createHash } from 'node:crypto';
+import { setImmediate } from 'node:timers/promises';
 import type { PDFPageProxy } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { z } from 'zod';
+import {
+  assertPageLimit,
+  ParseBudget,
+  readParseLimits,
+  type ParseControl,
+} from './limits.js';
 import { AppError, EMPTY_METADATA, NormalizedDoc } from '../model/index.js';
 import {
   collectGlyphWidths,
@@ -22,7 +29,9 @@ import {
   type SourceLine,
 } from './sections.js';
 
-export interface PdfParseOptions extends SectionDetectionOptions {
+export interface PdfParseOptions extends SectionDetectionOptions, ParseControl {
+  maxPages?: number | undefined;
+  publicMode?: boolean | undefined;
   sourceUrl: string;
   /** Supplied by the fetch step so parsing is deterministic. */
   fetchedAt: string;
@@ -111,8 +120,9 @@ async function extractPage(
   page: PDFPageProxy,
   pageNumber: number,
   { OPS, AnnotationMode }: PdfJs,
+  budget: ParseBudget,
 ): Promise<ExtractedPage> {
-  const content = await page.getTextContent();
+  const content = await budget.wait(page.getTextContent());
   const items: PdfTextItem[] = [];
   let characters = 0;
   let skippedRotated = false;
@@ -139,22 +149,26 @@ async function extractPage(
   }
   // Annotations are reader markup (a reviewer's strikeout), never the bill's own amendments;
   // only link areas are read, to tell a hyperlink's underline from an insertion.
-  const operators = await page.getOperatorList({
-    annotationMode: AnnotationMode.DISABLE,
-  });
-  const links: Rect[] = (await page.getAnnotations()).flatMap((annotation) => {
-    const link = linkAnnotation.safeParse(annotation);
-    if (!link.success) return [];
-    const [x0, y0, x1, y1] = link.data.rect;
-    return [
-      {
-        x0: Math.min(x0, x1),
-        y0: Math.min(y0, y1),
-        x1: Math.max(x0, x1),
-        y1: Math.max(y0, y1),
-      },
-    ];
-  });
+  const operators = await budget.wait(
+    page.getOperatorList({
+      annotationMode: AnnotationMode.DISABLE,
+    }),
+  );
+  const links: Rect[] = (await budget.wait(page.getAnnotations())).flatMap(
+    (annotation) => {
+      const link = linkAnnotation.safeParse(annotation);
+      if (!link.success) return [];
+      const [x0, y0, x1, y1] = link.data.rect;
+      return [
+        {
+          x0: Math.min(x0, x1),
+          y0: Math.min(y0, y1),
+          x1: Math.max(x0, x1),
+          y1: Math.max(y0, y1),
+        },
+      ];
+    },
+  );
   const imageOps = new Set<number>([
     OPS.paintImageXObject,
     OPS.paintInlineImageXObject,
@@ -180,8 +194,12 @@ async function extractPage(
   };
 }
 
-async function extractPages(bytes: Uint8Array): Promise<ExtractedPage[]> {
-  const api = await loadPdfJs();
+async function extractPages(
+  bytes: Uint8Array,
+  options: PdfParseOptions,
+  budget: ParseBudget,
+): Promise<ExtractedPage[]> {
+  const api = await budget.wait(loadPdfJs());
   // A worker per call keeps parses independent; in Node it runs on this thread.
   const worker = new api.PDFWorker();
   const task = api.getDocument({
@@ -193,13 +211,19 @@ async function extractPages(bytes: Uint8Array): Promise<ExtractedPage[]> {
     // and extraction is identical without them across every fixture. `useSystemFonts` stops
     // PDF.js fetching them (and warning that no font path was given).
     useSystemFonts: true,
+    // PDF.js silently drops images over maxImageSize (ignoreErrors is true).
+    // OCR-scan work (#192) must account for these missing images.
+    maxImageSize: 40_000_000,
+    isOffscreenCanvasSupported: false,
+    isImageDecoderSupported: false,
     verbosity: api.VerbosityLevel.ERRORS,
   });
   try {
     let document;
     try {
-      document = await task.promise;
+      document = await budget.wait(task.promise);
     } catch (cause) {
+      if (cause instanceof AppError) throw cause;
       throw new AppError(
         'PARSE_FAILED',
         cause instanceof api.PasswordException
@@ -208,17 +232,31 @@ async function extractPages(bytes: Uint8Array): Promise<ExtractedPage[]> {
         { cause },
       );
     }
+    assertPageLimit(
+      document.numPages,
+      options.maxPages ?? readParseLimits().maxPages,
+      options.publicMode,
+    );
     const pages: ExtractedPage[] = [];
     for (let number = 1; number <= document.numPages; number++) {
-      const page = await document.getPage(number);
-      pages.push(await extractPage(page, number, api));
-      // Keep only the extracted geometry; long bills run to thousands of pages.
-      page.cleanup();
+      // Node cancellation events and timers need a turn between page extractions,
+      // even when the in-process PDF worker resolves entirely through microtasks.
+      await budget.wait(setImmediate());
+      const page = await budget.wait(document.getPage(number));
+      try {
+        pages.push(await extractPage(page, number, api, budget));
+      } finally {
+        // Keep only the extracted geometry; long bills run to thousands of pages.
+        page.cleanup();
+      }
     }
     return pages;
   } finally {
-    await task.destroy();
-    worker.destroy();
+    try {
+      await task.destroy();
+    } finally {
+      worker.destroy();
+    }
   }
 }
 
@@ -238,9 +276,10 @@ export async function parsePdf(
       'Invalid PDF document source or fetch timestamp.',
     );
   }
+  const budget = new ParseBudget(options);
   // Hash the original bytes, before PDF.js sees (and may detach) a copy.
   const docId = createHash('sha256').update(bytes).digest('hex');
-  const pages = await extractPages(bytes);
+  const pages = await extractPages(bytes, options, budget);
   const images = pages.some((page) => page.images > 0);
   if (
     images &&
@@ -281,7 +320,10 @@ export async function parsePdf(
     warnings,
     pageCount: pages.length,
   };
-  return NormalizedDoc.parse(doc);
+  budget.check();
+  const normalized = NormalizedDoc.parse(doc);
+  budget.check();
+  return normalized;
 }
 
 /** Indents within this many points are the same indent. */
