@@ -392,4 +392,31 @@ describe('claude subprocess budget', () => {
     hold.abort();
     await first;
   });
+
+  it('releases the permit even when temp-directory cleanup throws', async () => {
+    vi.stubEnv(envVar('MAX_CONCURRENT_CLAUDE_CLI'), '1');
+    resetClaudeCliPool();
+    const { rm: realRm } = await import('node:fs/promises');
+    const failingRm: typeof realRm = async (path, options) => {
+      await realRm(path, options); // do not leak the temp dir from the test itself
+      throw new Error('EACCES: permission denied');
+    };
+    const broken = new ClaudeCliProvider(config, {
+      ...fakeCli(),
+      rm: failingRm,
+    });
+    await expect(drain(broken)).rejects.toThrow('EACCES');
+    // With a pool of one, this would queue forever if the permit had leaked.
+    const healthy = new ClaudeCliProvider(config, fakeCli());
+    await expect(
+      Promise.race([
+        drain(healthy),
+        new Promise((_, reject) =>
+          setTimeout(() => {
+            reject(new Error('permit leaked: next call is stuck in the queue'));
+          }, 2000),
+        ),
+      ]),
+    ).resolves.toBeDefined();
+  });
 });

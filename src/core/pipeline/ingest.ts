@@ -355,11 +355,17 @@ export async function ingest(
   deps: IngestDeps,
   opts: IngestOptions = {},
 ): Promise<IngestResult> {
-  return (deps.limits ?? sharedLimits()).run(
-    'ingest',
-    () => ingestWithinLimits(url, deps, opts),
-    opts.signal,
-  );
+  const limits = deps.limits ?? sharedLimits();
+  const release = await limits.acquire('ingest', opts.signal);
+  try {
+    return await ingestWithinLimits(
+      url,
+      { ...deps, provider: limits.meter(deps.provider) },
+      opts,
+    );
+  } finally {
+    release();
+  }
 }
 
 async function ingestWithinLimits(
