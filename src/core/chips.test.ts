@@ -167,20 +167,36 @@ describe('runChip: sponsors (metadata only)', () => {
   it('formats sponsors without retrieval or an LLM call', async () => {
     const run = await runChip(getChip('sponsors'), DOC, deps);
     expect(run.answer.text).toBe(
-      'Sponsor and cosponsors listed on the bill: Rep. Ada Lovelace, Sen. Grace Hopper.',
+      'Listed on the bill as sponsor or cosponsor: Rep. Ada Lovelace, Sen. Grace Hopper.',
     );
     expect(run.answer.declined).toBe(false);
     expect(run.answer.provider).toBe('none');
     expect(run.hits).toEqual([]);
+    expect(run.mode).toBe('none');
     expect(provider.calls).toHaveLength(0);
     expect(retrieveSpy).not.toHaveBeenCalled();
+  });
+
+  it('streams its text so the CLI and UI show it', async () => {
+    const tokens: string[] = [];
+    const run = await runChip(getChip('sponsors'), DOC, deps, {
+      onToken: (t) => tokens.push(t),
+    });
+    expect(tokens.join('')).toBe(run.answer.text);
+    const none = { ...SPONSORS, sponsors: null };
+    deps.doc.metadata = none;
+    tokens.length = 0;
+    await runChip(getChip('sponsors'), DOC, deps, {
+      onToken: (t) => tokens.push(t),
+    });
+    expect(tokens.join('')).toBe("This document doesn't say who sponsored it.");
   });
 
   it('uses the singular for one sponsor', async () => {
     deps.doc.metadata = { ...SPONSORS, sponsors: ['Rep. Ada Lovelace'] };
     const run = await runChip(getChip('sponsors'), DOC, deps);
     expect(run.answer.text).toBe(
-      'Sponsor listed on the bill: Rep. Ada Lovelace.',
+      'Listed on the bill as sponsor or cosponsor: Rep. Ada Lovelace.',
     );
   });
 
@@ -285,6 +301,22 @@ describe('runChip: retrieve chips', () => {
     await expect(
       runChip(getChip('money'), DOC, deps, { signal: controller.signal }),
     ).rejects.toThrow();
+  });
+});
+
+describe('ChipRun.mode', () => {
+  it.each([
+    ['who-affected', 'hybrid_rerank'],
+    ['penalties', 'hybrid'],
+    ['effective-date', 'hybrid'],
+    ['money', 'hybrid'],
+    ['definitions', 'dense'],
+    ['summary', 'none'],
+    ['what-changes', 'none'],
+    ['sponsors', 'none'],
+  ] as const)('%s reports %s', async (id, mode) => {
+    const run = await runChip(getChip(id), DOC, deps);
+    expect(run.mode).toBe(mode);
   });
 });
 

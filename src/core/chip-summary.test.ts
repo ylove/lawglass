@@ -175,12 +175,46 @@ describe('buildOutline', () => {
     expect(buildOutline(sec('odd-1')).text).toBe('odd-1');
   });
 
-  it('stops at whole depth levels within the character budget and counts what is left', () => {
+  it('lists whole levels that fit, then fills the next level in document order under the right parents', () => {
     const [division] = ndaaShaped(1, 3, 400);
     const { text, listed } = buildOutline(division!);
-    expect(text.length).toBeLessThanOrEqual(OUTLINE_CHAR_BUDGET + 200);
-    expect(listed).toHaveLength(1 + 3); // division + titles; sections did not fit
-    expect(text).toContain('(1200 more sections not listed)');
+    const lines = text.split('\n');
+    // The "N more" trailer is not counted against the budget.
+    expect(text.length).toBeLessThanOrEqual(OUTLINE_CHAR_BUDGET + 40);
+    // The budget is spent: well over division + titles, but not all 1200 sections.
+    expect(listed.length).toBeGreaterThan(50);
+    expect(listed.length).toBeLessThan(1200);
+    expect(text.length).toBeGreaterThan(OUTLINE_CHAR_BUDGET - 100);
+    // Depth-first: the first title is followed by its own sections, then comes title 2.
+    const titleLines = lines
+      .map((l, i) => [l, i] as const)
+      .filter(([l]) => /^ {2}Title \d/.test(l));
+    expect(titleLines).toHaveLength(3);
+    const [t1, t2] = titleLines;
+    expect(lines[t1![1] + 1]).toMatch(/^ {4}0\d+ Rule 0\.0\.0/);
+    expect(t2![1]).toBeGreaterThan(t1![1] + 1);
+    // Sections between title 1 and title 2 all belong to title 1.
+    for (const l of lines.slice(t1![1] + 1, t2![1])) {
+      expect(l).toMatch(/Rule 0\.0\./);
+    }
+    expect(text).toMatch(
+      new RegExp(
+        `\\(${String(1204 - listed.length)} more sections not listed\\)$`,
+      ),
+    );
+  });
+
+  it('prints the full tree depth-first when everything fits', () => {
+    const [division] = ndaaShaped(1, 2, 2);
+    expect(buildOutline(division!).text.split('\n')).toEqual([
+      'Division A Division A matters',
+      '  Title 1 Title 1 of division-A',
+      '    000 Rule 0.0.0',
+      '    001 Rule 0.0.1',
+      '  Title 2 Title 2 of division-A',
+      '    010 Rule 0.1.0',
+      '    011 Rule 0.1.1',
+    ]);
   });
 
   it('counts a single leftover as singular', () => {
@@ -212,7 +246,10 @@ describe('summary chip', () => {
     const user = userOf(provider.calls[0] as TextRequest);
     expect(user).toContain('1 Short title');
     expect(user).toContain('The Clean Act.');
-    expect(run.hits).toHaveLength(4);
+    // Outline excerpts are built for the prompt; only stored chunks are returned.
+    expect(run.hits).toHaveLength(2);
+    expect(run.mode).toBe('none');
+    expect(run.hits.every((h) => !h.chunk.id.includes(':~'))).toBe(true);
     expect(user).toContain('Summarize the whole bill');
   });
 
@@ -331,7 +368,7 @@ describe('summary chip', () => {
       /\n\nThis summary covers the first 60 parts of the bill\. 5 more parts are not included\.$/,
     );
     expect(tokens.join('')).toContain('5 more parts are not included');
-    expect(run.hits).toHaveLength(MAX_MAP_UNITS * 2);
+    expect(run.hits).toHaveLength(MAX_MAP_UNITS);
   });
 
   it('uses the singular for one uncovered part', async () => {

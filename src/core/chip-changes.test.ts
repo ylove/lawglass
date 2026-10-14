@@ -4,11 +4,13 @@ import { ScriptedProvider } from '../../tests/contracts/scripted-provider.js';
 import {
   MAX_CHANGED_SECTIONS,
   MAX_CHANGE_EXCERPT_CHARS,
+  pickFairly,
 } from './chip-changes.js';
 import { getChip, runChip } from './chips.js';
 import type { ChipDeps } from './chip-types.js';
 import {
   EMPTY_METADATA,
+  type SearchHit,
   type Section,
   type Span,
   type TextRequest,
@@ -22,48 +24,35 @@ const section = (
   over: Partial<Section> = {},
 ): Section => ({ id, level: 1, spans, children: [], ...over });
 
-const same = (text: string, page?: number, line?: number): Span => ({
-  text,
-  status: 'unchanged',
-  ...(page && { page }),
-  ...(line && { line }),
-});
-const struck = (text: string, page?: number, line?: number): Span => ({
-  text,
-  status: 'deleted',
-  ...(page && { page }),
-  ...(line && { line }),
-});
-const added = (text: string, page?: number, line?: number): Span => ({
-  text,
-  status: 'inserted',
-  ...(page && { page }),
-  ...(line && { line }),
-});
-
-/** Mixed bill: every third section is unchanged, struck-only, or both struck and underlined. */
-function mixedBill(n: number): Section[] {
-  return Array.from({ length: n }, (_, i) => {
-    const id = `sec-${String(i + 1)}`;
-    const base = same(
-      `Existing law ${id}. `,
-      1 + Math.floor(i / 10),
-      1 + (i % 10),
-    );
-    if (i % 3 === 0) return section(id, [base]);
-    if (i % 3 === 1)
-      return section(id, [base, struck(`OLD ${id} wording`), same(' end.')]);
-    return section(id, [
-      base,
-      struck(`OLD ${id} wording`),
-      added(`NEW ${id} wording`),
-    ]);
+const mark =
+  (status: Span['status']) =>
+  (text: string, page?: number, line?: number): Span => ({
+    text,
+    status,
+    ...(page && { page }),
+    ...(line && { line }),
   });
-}
+const same = mark('unchanged');
+const struck = mark('deleted');
+const added = mark('inserted');
 
 const userOf = (req: TextRequest): string => req.messages[0]!.content;
 const lastPrompt = (p: ScriptedProvider): string =>
   userOf(p.calls.at(-1) as TextRequest);
+
+/** Parsed `<excerpt ...>` elements of the last prompt: section, status, heading, text. */
+function excerptsOf(p: ScriptedProvider) {
+  return [
+    ...lastPrompt(p).matchAll(
+      /<excerpt id="\d+" section="([^"]+)" heading="([^"]*)" status="([^"]+)"[^>]*>([^<]*)<\/excerpt>/g,
+    ),
+  ].map((m) => ({
+    section: m[1]!,
+    heading: m[2]!,
+    status: m[3]!,
+    text: m[4]!,
+  }));
+}
 
 function makeDeps(sections: Section[], provider: ScriptedProvider): ChipDeps {
   return {
@@ -73,212 +62,320 @@ function makeDeps(sections: Section[], provider: ScriptedProvider): ChipDeps {
   };
 }
 
+const run = (sections: Section[], provider: ScriptedProvider, opts = {}) =>
+  runChip(getChip('what-changes'), DOC, makeDeps(sections, provider), opts);
+
+/** Shape of Ohio HB 62 sec-2307.601/b: amended word by word inside one sentence. */
+const retreat = section('sec-2307.601', [same('Intro text. ')], {
+  num: '2307.601',
+  heading: 'Duty to retreat',
+  children: [
+    section(
+      'sec-2307.601/b',
+      [
+        same('An unchanged first sentence. A person in a '),
+        struck('place in which'),
+        added('vehicle owned by a family member of'),
+        same(' the person '),
+        struck('lawfully'),
+        added(', the person'),
+        same(' has '),
+        struck('a right'),
+        added('no duty'),
+        same(' to '),
+        struck('be'),
+        added('retreat'),
+        same(' before using force. A closing unchanged sentence.'),
+      ],
+      { num: '(b)', level: 2 },
+    ),
+  ],
+});
+
 describe('what-changes chip (built from spans)', () => {
-  it('shows one deleted and one inserted excerpt per changed section, in document order', async () => {
-    const provider = new ScriptedProvider({ reply: 'Changes [S:sec-2].' });
-    const run = await runChip(
-      getChip('what-changes'),
-      DOC,
-      makeDeps(mixedBill(9), provider),
-    );
-    const prompt = lastPrompt(provider);
-    // Unchanged sections (sec-1, sec-4, sec-7) and unchanged text never reach the prompt.
-    expect(prompt).not.toContain('section="sec-1"');
-    expect(prompt).not.toContain('Existing law');
-    expect(prompt).not.toContain(' end.');
-    expect(
-      [...prompt.matchAll(/section="([^"]+)"[^>]*status="([^"]+)"/g)].map(
-        (m) => `${m[1] ?? ''}:${m[2] ?? ''}`,
-      ),
-    ).toEqual([
-      'sec-2:deleted',
-      'sec-3:deleted',
-      'sec-3:inserted',
-      'sec-5:deleted',
-      'sec-6:deleted',
-      'sec-6:inserted',
-      'sec-8:deleted',
-      'sec-9:deleted',
-      'sec-9:inserted',
+  it('gives each change its sentence as a before/after pair with the changed words marked', async () => {
+    const provider = new ScriptedProvider({
+      reply: 'It changes [S:sec-2307.601/b].',
+    });
+    const r = await run([retreat], provider);
+    const ex = excerptsOf(provider);
+    expect(ex.map((e) => [e.section, e.status])).toEqual([
+      ['sec-2307.601/b', 'deleted'],
+      ['sec-2307.601/b', 'inserted'],
     ]);
-    // Each excerpt holds exactly its own runs.
-    expect(prompt).toContain('>OLD sec-3 wording</excerpt>');
-    expect(prompt).toContain('>NEW sec-3 wording</excerpt>');
-    expect(run.hits).toHaveLength(9);
-    expect(prompt).toContain('Group your answer by section');
-  });
-
-  it('never presents struck text as live or underlined text as struck', async () => {
-    const provider = new ScriptedProvider({ reply: 'x [S:sec-3].' });
-    await runChip(
-      getChip('what-changes'),
-      DOC,
-      makeDeps(mixedBill(3), provider),
+    expect(ex[0]!.text).toBe(
+      'A person in a [-place in which-] the person [-lawfully-] has [-a right-] to [-be-] before using force.',
     );
-    const excerpts = [
-      ...lastPrompt(provider).matchAll(
-        /status="([^"]+)"[^>]*>([^<]*)<\/excerpt>/g,
-      ),
-    ];
-    for (const [, status, text] of excerpts) {
-      if (text!.startsWith('OLD')) expect(status).toBe('deleted');
-      if (text!.startsWith('NEW')) expect(status).toBe('inserted');
-      expect(status).not.toBe('unchanged');
-    }
+    expect(ex[1]!.text).toBe(
+      'A person in a [+vehicle owned by a family member of+] the person [+, the person+] has [+no duty+] to [+retreat+] before using force.',
+    );
+    // Sentences without a change are left out.
+    expect(lastPrompt(provider)).not.toContain('unchanged first sentence');
+    expect(lastPrompt(provider)).not.toContain('Intro text');
+    // Struck words appear only in the deleted excerpt, new words only in the inserted one.
+    expect(ex[1]!.text).not.toMatch(/place in which|lawfully|a right/);
+    expect(ex[0]!.text).not.toMatch(/no duty|retreat|vehicle/);
+    expect(lastPrompt(provider)).toContain('Only the marked words changed');
+    expect(r.answer.invalidCitations).toEqual([]);
   });
 
-  it('takes citation locations from the spans', async () => {
+  it('builds breadcrumbs from the ancestor path, never "Sec. (b)"', async () => {
+    const provider = new ScriptedProvider({ reply: 'x [S:sec-2307.601/b].' });
+    await run([retreat], provider);
+    const [first] = excerptsOf(provider);
+    expect(first!.heading).toBe('Sec. 2307.601 Duty to retreat &gt; (b)');
+    expect(lastPrompt(provider)).not.toContain('Sec. (b)');
+  });
+
+  it('shows a pure insertion only as an AFTER sentence and a pure strike only as BEFORE', async () => {
+    const provider = new ScriptedProvider({ reply: 'x [S:sec-1].' });
+    await run(
+      [
+        section('sec-1', [
+          same('Keep this. Remove '),
+          struck('this word'),
+          same(' now. Add '),
+          added('that word'),
+          same(' here.'),
+        ]),
+      ],
+      provider,
+    );
+    expect(excerptsOf(provider).map((e) => [e.status, e.text])).toEqual([
+      ['deleted', 'Remove [-this word-] now.'],
+      ['inserted', 'Add [+that word+] here.'],
+    ]);
+  });
+
+  it('collapses a newly enacted section to one excerpt so amended sections still appear (SB 203 shape)', async () => {
+    const newSection = section(
+      'sec-2923.27',
+      [added('Offenses involving the new thing. ')],
+      {
+        num: '2923.27',
+        heading: 'New offense',
+        children: Array.from({ length: 74 }, (_, i) =>
+          section(
+            `sec-2923.27/${String(i)}`,
+            [added(`New rule ${String(i)}.`)],
+            {
+              num: `(${String(i)})`,
+            },
+          ),
+        ),
+      },
+    );
+    const fines = section('sec-2929.28', [], {
+      num: '2929.28',
+      heading: 'Fines',
+      children: [
+        section(
+          'sec-2929.28/a',
+          [same('The fine is '), struck('$1,000'), added('$5,000'), same('.')],
+          { num: '(A)' },
+        ),
+      ],
+    });
+    const other = section(
+      'sec-5122.311',
+      [same('A hospital '), struck('may'), added('shall'), same(' report.')],
+      { num: '5122.311' },
+    );
+    const provider = new ScriptedProvider({ reply: 'x [S:sec-2929.28/a].' });
+    const r = await run([newSection, fines, other], provider);
+    const ex = excerptsOf(provider);
+    expect(ex.map((e) => e.section)).toEqual([
+      'sec-2923.27',
+      'sec-2929.28/a',
+      'sec-2929.28/a',
+      'sec-5122.311',
+      'sec-5122.311',
+    ]);
+    expect(ex[0]!.text).toMatch(
+      /^Newly enacted: all of this section's text is new \(74 subdivisions\)\. It begins: \[\+Offenses involving the new thing\./,
+    );
+    expect(ex[0]!.status).toBe('inserted');
+    expect(ex[1]!.text).toBe('The fine is [-$1,000-].');
+    expect(r.answer.text).not.toContain('not covered');
+  });
+
+  it('collapses a wholly new subtree inside an amended section', async () => {
+    const tree = section(
+      'sec-1',
+      [same('Old '), added('new'), same(' text.')],
+      {
+        children: [
+          section('sec-1/z', [added('Whole new subsection.')], { num: '(Z)' }),
+        ],
+      },
+    );
+    const provider = new ScriptedProvider({ reply: 'x [S:sec-1].' });
+    await run([tree], provider);
+    expect(excerptsOf(provider).map((e) => e.text)).toEqual([
+      'Old [+new+] text.',
+      "Newly enacted: all of this section's text is new. It begins: [+Whole new subsection.+]",
+    ]);
+  });
+
+  it('shares the budget round-robin across top-level sections and says how many more change', async () => {
+    const amended = (n: number): Section =>
+      section(`sec-${String(n)}`, [
+        same('Law '),
+        struck(`old${String(n)}`),
+        same('.'),
+      ]);
+    // 1 section with 40 changed subsections, then 12 single-change sections.
+    const big = section('sec-big', [], {
+      children: Array.from({ length: 40 }, (_, i) =>
+        section(`sec-big/${String(i)}`, [added(`n${String(i)} `), same('x.')]),
+      ),
+    });
+    const tree = [big, ...Array.from({ length: 12 }, (_, i) => amended(i))];
+    const provider = new ScriptedProvider({ reply: 'x [S:sec-0].' });
+    const tokens: string[] = [];
+    const r = await run(tree, provider, {
+      onToken: (t: string) => tokens.push(t),
+    });
+    const sections = excerptsOf(provider).map((e) => e.section);
+    // Every small section is covered; the big one gets the remaining slots.
+    for (let i = 0; i < 12; i++) expect(sections).toContain(`sec-${String(i)}`);
+    expect(new Set(sections.map((s) => s.split('/')[0])).size).toBe(13);
+    expect(r.answer.text).toMatch(
+      /\n\n27 more changed sections are not covered here\.$/,
+    );
+    expect(tokens.join('')).toContain('27 more changed sections');
+    // Shown in document order: the big section comes first.
+    expect(sections[0]).toMatch(/^sec-big/);
+  });
+
+  it('uses singular wording for one hidden section', async () => {
+    const tree = Array.from({ length: MAX_CHANGED_SECTIONS + 1 }, (_, i) =>
+      section(`sec-${String(i + 1)}`, [
+        added(`New ${String(i)}`),
+        same(' end.'),
+      ]),
+    );
+    const provider = new ScriptedProvider({ reply: 'x [S:sec-1].' });
+    const r = await run(tree, provider);
+    expect(r.answer.text).toContain(
+      '1 more changed section is not covered here.',
+    );
+  });
+
+  it('takes citation locations from the shown sentences', async () => {
     const provider = new ScriptedProvider({
       reply: 'It strikes a rule [S:sec-9] and adds one [S:sec-9].',
     });
     const tree = [
       section('sec-9', [
         same('Intro. ', 1, 1),
-        struck('old part one', 2, 5),
-        same(' mid '),
-        struck('old part two', 2, 9),
+        same('Keep ', 2, 4),
+        struck('old part', 2, 5),
         added('new part', 3, 2),
+        same(' end.'),
       ]),
     ];
-    const run = await runChip(
-      getChip('what-changes'),
-      DOC,
-      makeDeps(tree, provider),
-    );
-    const [deleted, inserted] = run.hits;
-    expect(deleted?.chunk.text).toBe('old part one … old part two');
-    expect(deleted?.chunk).toMatchObject({
+    const r = await run(tree, provider);
+    expect(r.answer.invalidCitations).toEqual([]);
+    expect(r.answer.citations[0]?.location).toMatchObject({
       pageStart: 2,
-      pageEnd: 2,
-      lineStart: 5,
-      lineEnd: 9,
-    });
-    expect(inserted?.chunk).toMatchObject({
-      pageStart: 3,
       pageEnd: 3,
-      lineStart: 2,
-      lineEnd: 2,
-    });
-    expect(run.answer.invalidCitations).toEqual([]);
-    expect(run.answer.citations[0]?.location).toMatchObject({
-      pageStart: 2,
-      lineStart: 5,
+      lineStart: 4,
     });
   });
 
-  it('omits the last line when a run spans pages, and falls back to the section range', async () => {
+  it('falls back to the section page range when spans carry no location', async () => {
     const provider = new ScriptedProvider({ reply: 'a [S:sec-1].' });
     const tree = [
-      section(
-        'sec-1',
-        [struck('a', 1, 20), same('-'), struck('b', 2, 3), added('plain')],
-        { pageStart: 7, pageEnd: 8, num: '1', heading: 'Rules' },
-      ),
-    ];
-    const run = await runChip(
-      getChip('what-changes'),
-      DOC,
-      makeDeps(tree, provider),
-    );
-    const [deleted, inserted] = run.hits;
-    expect(deleted?.chunk).toMatchObject({
-      pageStart: 1,
-      pageEnd: 2,
-      lineStart: 20,
-    });
-    expect(deleted?.chunk.lineEnd).toBeUndefined();
-    expect(deleted?.chunk.breadcrumb).toBe('Sec. 1 > Rules');
-    // No page/line on the underlined run: the section's own range is used.
-    expect(inserted?.chunk).toMatchObject({ pageStart: 7, pageEnd: 8 });
-  });
-
-  it('merges adjacent spans of one status into one run and ignores blank runs', async () => {
-    const provider = new ScriptedProvider({ reply: 'a [S:sec-1].' });
-    const tree = [
-      section('sec-1', [
-        struck('one '),
-        struck('two'),
-        same('x'),
-        struck('  '),
-      ]),
-    ];
-    const run = await runChip(
-      getChip('what-changes'),
-      DOC,
-      makeDeps(tree, provider),
-    );
-    expect(run.hits.map((h) => h.chunk.text)).toEqual(['one two']);
-  });
-
-  it('finds changes in nested subsections', async () => {
-    const provider = new ScriptedProvider({ reply: 'a [S:sec-1/a].' });
-    const tree = [
-      section('sec-1', [same('Top.')], {
-        children: [section('sec-1/a', [added('Nested new text.')])],
+      section('sec-1', [struck('gone'), same(' x.')], {
+        pageStart: 7,
+        pageEnd: 8,
       }),
     ];
-    const run = await runChip(
-      getChip('what-changes'),
-      DOC,
-      makeDeps(tree, provider),
-    );
-    expect(run.hits.map((h) => h.chunk.sectionId)).toEqual(['sec-1/a']);
+    const r = await run(tree, provider);
+    expect(r.answer.citations[0]?.location).toMatchObject({
+      pageStart: 7,
+      pageEnd: 8,
+    });
   });
 
-  it('caps the sections shown and says how many more change', async () => {
-    const provider = new ScriptedProvider({ reply: 'Many changes [S:sec-2].' });
-    const tokens: string[] = [];
-    const run = await runChip(
-      getChip('what-changes'),
-      DOC,
-      makeDeps(mixedBill(3 * (MAX_CHANGED_SECTIONS + 4)), provider),
-      { onToken: (t) => tokens.push(t) },
-    );
-    const sections = new Set(run.hits.map((h) => h.chunk.sectionId));
-    expect(sections.size).toBe(MAX_CHANGED_SECTIONS);
-    // 2 of every 3 sections change: 2 * 29 = 58 changed, 25 shown.
-    expect(run.answer.text).toMatch(
-      /\n\n33 more sections also change and are not covered here\.$/,
-    );
-    expect(tokens.join('')).toContain('33 more sections also change');
+  it('never returns synthetic chunk ids in citations or hits', async () => {
+    const provider = new ScriptedProvider({ reply: 'a [S:sec-2307.601/b].' });
+    const r = await run([retreat], provider);
+    expect(r.hits).toEqual([]);
+    expect(r.mode).toBe('none');
+    for (const c of r.answer.citations) {
+      expect(c.chunkIds.some((id) => id.includes(':~'))).toBe(false);
+    }
   });
 
-  it('uses singular wording for one hidden section', async () => {
+  it('truncates one huge sentence so it cannot crowd out other sections', async () => {
     const provider = new ScriptedProvider({ reply: 'x [S:sec-1].' });
-    const tree = Array.from({ length: MAX_CHANGED_SECTIONS + 1 }, (_, i) =>
-      section(`sec-${String(i + 1)}`, [added(`New ${String(i)}`)]),
+    await run(
+      [section('sec-1', [struck('w'.repeat(MAX_CHANGE_EXCERPT_CHARS * 3))])],
+      provider,
     );
-    const run = await runChip(
-      getChip('what-changes'),
-      DOC,
-      makeDeps(tree, provider),
-    );
-    expect(run.answer.text).toContain(
-      '1 more section also changes and is not covered here.',
-    );
+    const [e] = excerptsOf(provider);
+    expect(e!.text.length).toBe(MAX_CHANGE_EXCERPT_CHARS + 1); // plus the ellipsis
+    expect(e!.text.endsWith('…')).toBe(true);
   });
 
-  it('truncates one huge run so it cannot crowd out other sections', async () => {
+  it('stops adding sentences to an excerpt at the character cap', async () => {
+    const spans: Span[] = Array.from({ length: 10 }, (_, i) => [
+      same('Keep. '),
+      struck(`${'z'.repeat(600)}${String(i)}`),
+      same(' end. '),
+    ]).flat();
     const provider = new ScriptedProvider({ reply: 'x [S:sec-1].' });
-    const tree = [
-      section('sec-1', [struck('w'.repeat(MAX_CHANGE_EXCERPT_CHARS * 3))]),
-    ];
-    const run = await runChip(
-      getChip('what-changes'),
-      DOC,
-      makeDeps(tree, provider),
-    );
-    expect(run.hits[0]?.chunk.text).toHaveLength(MAX_CHANGE_EXCERPT_CHARS + 1);
-    expect(run.hits[0]?.chunk.text.endsWith('…')).toBe(true);
+    await run([section('sec-1', spans)], provider);
+    const [e] = excerptsOf(provider);
+    expect(e!.text.endsWith('\n…')).toBe(true);
+    expect(e!.text.length).toBeLessThanOrEqual(MAX_CHANGE_EXCERPT_CHARS + 2);
   });
 
   it('declines without a model call or retrieval when nothing is marked up', async () => {
     const provider = new ScriptedProvider();
-    const deps = makeDeps([section('sec-1', [same('Plain.')])], provider);
-    const run = await runChip(getChip('what-changes'), DOC, deps);
-    expect(run.answer.declined).toBe(true);
+    const r = await run([section('sec-1', [same('Plain.')])], provider);
+    expect(r.answer.declined).toBe(true);
     expect(provider.calls).toHaveLength(0);
-    expect(run.backendUsage.embedTokens).toBe(0);
-    expect(run.answer.text).not.toContain('more section');
+    expect(r.backendUsage.embedTokens).toBe(0);
+  });
+
+  it('ignores blank runs when deciding whether a section changed', async () => {
+    const provider = new ScriptedProvider();
+    const r = await run(
+      [section('sec-1', [same('x.'), struck('   '), added('')])],
+      provider,
+    );
+    expect(r.answer.declined).toBe(false);
+    expect(provider.calls).toHaveLength(1);
+  });
+});
+
+describe('pickFairly', () => {
+  const entry = (name: string): SearchHit[] => [
+    { chunk: { id: name } as SearchHit['chunk'], score: 1 },
+  ];
+  it('takes one entry per group in turn and keeps document order', () => {
+    const groups = [
+      ['a1', 'a2', 'a3', 'a4', 'a5'].map(entry),
+      [entry('b1')],
+      [entry('c1')],
+    ];
+    const { picked, hidden } = pickFairly(groups, 5);
+    expect(picked.map((h) => h.chunk.id)).toEqual([
+      'a1',
+      'a2',
+      'a3',
+      'b1',
+      'c1',
+    ]);
+    expect(hidden).toBe(2);
+  });
+  it('shows everything when under budget', () => {
+    expect(pickFairly([[entry('a')], [entry('b')]], 10)).toMatchObject({
+      hidden: 0,
+    });
+    expect(pickFairly([], 10)).toEqual({ picked: [], hidden: 0 });
   });
 });

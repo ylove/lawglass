@@ -47,7 +47,7 @@ export async function runChip(
 ): Promise<ChipRun> {
   switch (chip.strategy) {
     case 'metadata':
-      return runMetadataChip(chip, deps.doc.metadata);
+      return runMetadataChip(chip, deps.doc.metadata, options.onToken);
     case 'outline':
       return runOutlineChip(chip, docId, deps, options);
     case 'definitions':
@@ -68,6 +68,7 @@ export async function runChip(
 function runMetadataChip(
   chip: ChipDefinition,
   metadata: BillMetadata,
+  onToken: ((text: string) => void) | undefined,
 ): ChipRun {
   // Structured sources (XML) merge sponsors and cosponsors into one list, so the wording must
   // be true either way: it says "listed on the bill", not "the sponsors are".
@@ -75,9 +76,8 @@ function runMetadataChip(
   const text =
     names.length === 0
       ? "This document doesn't say who sponsored it."
-      : names.length === 1
-        ? `Sponsor listed on the bill: ${names[0] ?? ''}.`
-        : `Sponsor and cosponsors listed on the bill: ${names.join(', ')}.`;
+      : `Listed on the bill as sponsor or cosponsor: ${names.join(', ')}.`;
+  onToken?.(text); // the CLI and UI print only streamed text
   return {
     answer: {
       text,
@@ -92,6 +92,7 @@ function runMetadataChip(
     },
     hits: [],
     backendUsage: ZERO_USAGE,
+    mode: 'none',
   };
 }
 
@@ -169,7 +170,12 @@ async function runRetrieveChip(
     onToken: options.onToken,
     maxTokens: options.maxTokens,
   });
-  return { answer: result, hits: [...ranked, ...injected], backendUsage };
+  return {
+    answer: result,
+    hits: [...ranked, ...injected],
+    backendUsage,
+    mode: chip.retrieval?.mode ?? 'hybrid_rerank',
+  };
 }
 
 /**
@@ -260,5 +266,6 @@ async function runDefinitionsChip(
     answer: appendNote(result, note, options.onToken),
     hits: shown,
     backendUsage: context.usage,
+    mode: context.mode,
   };
 }

@@ -21,6 +21,7 @@
 import { answer } from './answer/index.js';
 import {
   appendNote,
+  realHits,
   syntheticHit,
   withoutSyntheticChunks,
   type ChipDeps,
@@ -92,30 +93,59 @@ function lineOf(s: Section, depth: number): string {
   return `${'  '.repeat(depth)}${label}`;
 }
 
-/** Outline of one unit: whole depth levels, shallowest first, until the character budget. */
+/**
+ * Outline of one unit. The depth is chosen by budget: every level that fits whole is listed,
+ * and the next level is filled as far as the budget allows (in document order). Lines are
+ * printed depth-first so each child sits under its own parent.
+ */
 export function buildOutline(unit: Section): {
   text: string;
   listed: string[];
 } {
+  const levels: Section[][] = [[unit]];
+  for (let next = unit.children; next.length > 0;) {
+    levels.push(next);
+    next = next.flatMap((s) => s.children);
+  }
+  const cost = (level: readonly Section[], depth: number): number =>
+    level.reduce((n, s) => n + lineOf(s, depth).length + 1, 0);
+
+  // The unit itself is always listed; a deeper level is added only if all of it fits.
+  let used = cost(levels[0] ?? [], 0);
+  let fullDepth = 0;
+  while (
+    fullDepth + 1 < levels.length &&
+    used + cost(levels[fullDepth + 1] ?? [], fullDepth + 1) <=
+      OUTLINE_CHAR_BUDGET
+  ) {
+    fullDepth++;
+    used += cost(levels[fullDepth] ?? [], fullDepth);
+  }
+
+  // Spend what is left on a prefix of the next level.
+  const partial = new Set<string>();
+  for (const s of levels[fullDepth + 1] ?? []) {
+    const c = lineOf(s, fullDepth + 1).length + 1;
+    if (used + c > OUTLINE_CHAR_BUDGET) break;
+    used += c;
+    partial.add(s.id);
+  }
+
   const lines: string[] = [];
   const listed: string[] = [];
-  let used = 0;
-  let level: Section[] = [unit];
-  for (let depth = 0; level.length > 0; depth++) {
-    const levelLines = level.map((s) => lineOf(s, depth));
-    const cost = levelLines.reduce((n, l) => n + l.length + 1, 0);
-    // The unit itself is always listed; deeper levels only if the whole level fits.
-    if (depth > 0 && used + cost > OUTLINE_CHAR_BUDGET) {
-      const remaining = [...walkSections(level)].length;
-      lines.push(
-        `${'  '.repeat(depth)}(${String(remaining)} more ${remaining === 1 ? 'section' : 'sections'} not listed)`,
-      );
-      break;
-    }
-    lines.push(...levelLines);
-    listed.push(...level.map((s) => s.id));
-    used += cost;
-    level = level.flatMap((s) => s.children);
+  const visit = (s: Section, depth: number): void => {
+    if (depth > fullDepth && !partial.has(s.id)) return;
+    lines.push(lineOf(s, depth));
+    listed.push(s.id);
+    for (const child of s.children) visit(child, depth + 1);
+  };
+  visit(unit, 0);
+
+  const remaining = levels.flat().length - listed.length;
+  if (remaining > 0) {
+    lines.push(
+      `  (${String(remaining)} more ${remaining === 1 ? 'section' : 'sections'} not listed)`,
+    );
   }
   return { text: lines.join('\n'), listed };
 }
@@ -282,7 +312,8 @@ export async function runOutlineChip(
   };
   return {
     answer: appendNote(finished, note, options.onToken),
-    hits: allHits,
+    hits: realHits(allHits, docId),
     backendUsage: ZERO_USAGE,
+    mode: 'none',
   };
 }

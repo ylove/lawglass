@@ -67,7 +67,7 @@ const whatChanges = defineChip({
   strategy: 'retrieve',
   queries: [],
   answerInstruction:
-    'Each changed section has up to two excerpts. An excerpt with status="deleted" holds only text the bill strikes out. An excerpt with status="inserted" holds only the new wording the bill adds. Group your answer by section, in the order given. For each section say what the bill removes and what it adds, keeping the two apart. Never describe removed text as something the bill requires.',
+    'Each changed section has up to two excerpts that show only the sentences containing a change. status="deleted" is the BEFORE text: words in [-this form-] are struck out by the bill. status="inserted" is the AFTER text: words in [+this form+] are added by the bill. Only the marked words changed; all other words are existing law that stays as it is. A section marked "Newly enacted" is entirely new. Group your answer by section, in the order given. For each section say, in plain words, what the bill removes and what it adds, keeping the two apart. Never describe struck words as something the bill requires.',
 });
 
 /**

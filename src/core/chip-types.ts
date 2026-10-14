@@ -10,6 +10,7 @@ import type {
   Definition,
   LlmProvider,
   RetrievalBackend,
+  RetrievalMode,
   SearchHit,
   Section,
   StoredChunk,
@@ -41,6 +42,8 @@ export interface ChipRun {
   answer: AnswerResult;
   /** The excerpts the model was shown, best first. Empty for `sponsors`. */
   hits: SearchHit[];
+  /** The retrieval mode actually used; `none` for chips that do not search (summary, what-changes, sponsors). */
+  mode: RetrievalMode | 'none';
   /** Embedding and rerank usage for retrieval (LLM usage is inside `answer.usage`). */
   backendUsage: BackendUsage;
 }
@@ -113,4 +116,13 @@ export function appendNote(
   if (result.declined || note === '') return result;
   onToken?.(`\n\n${note}`);
   return { ...result, text: `${result.text}\n\n${note}` };
+}
+
+/** Hits that are stored chunks, i.e. without the synthetic excerpts built for a prompt. */
+export function realHits(
+  hits: readonly SearchHit[],
+  docId: string,
+): SearchHit[] {
+  const prefix = `${docId}:~`;
+  return hits.filter((h) => !h.chunk.id.startsWith(prefix));
 }
