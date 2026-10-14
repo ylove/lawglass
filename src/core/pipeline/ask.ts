@@ -28,7 +28,7 @@ import {
   type AttachedScenario,
 } from '../scenario/attach.js';
 import { withoutSyntheticChunks } from '../chip-types.js';
-import { classifyBill, wantsScenario } from '../scenario/detect.js';
+import { wantsScenario } from '../scenario/detect.js';
 
 /**
  * Chip dispatch seam, shaped like `runChip` from core/chips.ts. The default is
@@ -265,12 +265,9 @@ export async function ask(
       },
       { signal, onToken: opts.onToken },
     );
-    // `who-affected` always tries; `summary` only for a single-subject bill, since an omnibus
-    // summary stays descriptive (spec amendment 13).
-    const wanted =
-      input.chipId === 'who-affected' ||
-      (input.chipId === 'summary' &&
-        classifyBill(doc.sections) === 'single-subject');
+    // Only `who-affected` carries an inline scenario. The summary's default scenario is its own
+    // targeted call (`runScenario`, spec amendment 17), so no bill shape gates it here.
+    const wanted = input.chipId === 'who-affected';
     const settled = await settleScenario(
       ran.answer,
       startScenario(ran.answer, ran.hits, wanted, deps, undefined, signal),

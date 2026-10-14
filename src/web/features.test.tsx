@@ -340,3 +340,33 @@ describe('server-not-running state', () => {
     await screen.findByRole('button', { name: 'Retry' });
   });
 });
+
+describe('summary with a pending example', () => {
+  test('shows the summary at once and keeps polling until the example arrives', async () => {
+    const api = mock();
+    const real = api.getSummary.bind(api);
+    let calls = 0;
+    api.getSummary = async (id) => {
+      const r = await real(id);
+      if (++calls > 1 || !r.answer) return r;
+      // First look: summary ready, example still being made.
+      const { scenario: _scenario, ...answer } = r.answer;
+      return { status: 'pending', answer };
+    };
+    const { doc, detail } = await sampleDetail(api);
+    render(
+      <SummaryPanel
+        api={api}
+        docId={doc.docId}
+        preview={detail.preview}
+        officialSummary={undefined}
+        publicMode={false}
+        onOpenSection={() => undefined}
+        pollMs={5}
+      />,
+    );
+    await screen.findByRole('button', { name: 'Summary source 1' });
+    await screen.findByRole('region', { name: /What it could mean for/ });
+    expect(calls).toBeGreaterThan(1);
+  });
+});

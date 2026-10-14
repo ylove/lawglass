@@ -692,7 +692,7 @@ describe('chip attachment', () => {
 
   test.each([
     ['who-affected', true],
-    ['summary', true],
+    ['summary', false],
     ['penalties', false],
     ['effective-date', false],
   ] as const)('%s on a focused bill: scenario=%s', async (chipId, expected) => {
@@ -717,7 +717,7 @@ describe('chip attachment', () => {
     expect(deps.provider.scenarioCalls).toBe(expected ? 1 : 0);
   });
 
-  test('summary of an omnibus bill stays descriptive, but who-affected still tries', async () => {
+  test('summary never carries an inline scenario (it is a separate default call); who-affected still tries', async () => {
     const docId = await load(BILL_URL, makeCongressionalBillXml());
     const chips = await runnerFor(docId);
     const doc = await env.registry.getDocument(docId);

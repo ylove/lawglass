@@ -54,6 +54,12 @@ export function SummaryPanel({
           if (!live) return;
           if (r.status === 'cached' && r.answer) {
             setState({ kind: 'cached', answer: r.answer });
+          } else if (r.status === 'pending' && r.answer) {
+            // The summary is ready but its example is still being made: show the text now and
+            // keep polling until the example arrives or the wait runs out.
+            setState({ kind: 'cached', answer: r.answer });
+            if (Date.now() - started < maxWaitMs)
+              timer = setTimeout(look, pollMs);
           } else if (r.status === 'disabled') {
             setState({ kind: 'disabled' });
           } else if (Date.now() - started >= maxWaitMs) {
