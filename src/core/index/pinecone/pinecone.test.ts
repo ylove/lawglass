@@ -845,8 +845,12 @@ describe('PineconeBackend', () => {
     await expect(settle(backend, DOC_A, 99)).rejects.toThrow('did not settle');
     await backend.deleteDocument(DOC_A);
     await backend.settle();
+    // A long timeout, so only the abort can end the wait: with 3 ms the deadline can win under
+    // load and the wait rejects with "did not settle" instead.
+    const patient = setup({ timeoutMs: 60_000 });
+    await patient.backend.ensureReady();
     const controller = new AbortController();
-    const waiting = settle(backend, DOC_A, 99, controller.signal);
+    const waiting = settle(patient.backend, DOC_A, 99, controller.signal);
     controller.abort('secret-key');
     await expect(waiting).rejects.toMatchObject({ name: 'AbortError' });
   });
