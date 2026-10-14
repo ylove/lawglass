@@ -5,6 +5,9 @@
  *   describeBackendContract('local', async () => ({ backend: await makeLocalBackend(tmpDir) }));
  *
  * `settle` lets eventually-consistent backends (Pinecone) wait after writes.
+ * `eventuallyConsistent` additionally lets the post-delete assertions retry for a bounded time,
+ * because serverless deletes can stay visible to queries after they are acknowledged. It is
+ * opt-in so the memory and local backends keep asserting immediately.
  * Semantic quality (does dense find paraphrases?) is measured by the eval harness, not here;
  * this suite checks behavior every adapter must share. Every assertion is written so that a
  * backend which ignores a feature (filters, stored fields, rerank) fails, rather than passing
@@ -75,10 +78,43 @@ const FILTER_CASES: {
   },
 ];
 
+const EVENTUAL_WAIT_MS = 30_000;
+const EVENTUAL_POLL_MS = 1_500;
+
+/**
+ * Runs `assertion` once when `eventual` is false (strict). When true, retries it every
+ * EVENTUAL_POLL_MS until it passes or EVENTUAL_WAIT_MS elapses, then rethrows the last failure.
+ */
+export async function assertEventually(
+  eventual: boolean,
+  assertion: () => Promise<void>,
+  waitMs = EVENTUAL_WAIT_MS,
+  pollMs = EVENTUAL_POLL_MS,
+): Promise<void> {
+  if (!eventual) {
+    await assertion();
+    return;
+  }
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    try {
+      await assertion();
+      return;
+    } catch (error) {
+      if (Date.now() + pollMs > deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+  }
+}
+
 export function describeBackendContract(
   name: string,
   makeFixture: () => Promise<BackendFixture>,
-  opts: { skip?: boolean; timeoutMs?: number } = {},
+  opts: {
+    skip?: boolean;
+    timeoutMs?: number;
+    eventuallyConsistent?: boolean;
+  } = {},
 ): void {
   const suite = opts.skip ? describe.skip : describe;
   suite(
@@ -288,19 +324,21 @@ export function describeBackendContract(
         await fx.backend.deleteDocument(DOC_B);
         await fx.backend.deleteDocument(DOC_B);
         await settle();
-        expect(await fx.backend.hasDocument(DOC_B)).toBe(false);
-        for (const index of INDEXES) {
-          const { hits } = await fx.backend.search({
-            docId: DOC_B,
-            index,
-            query: 'zoning',
-            topK: 5,
-          });
-          expect(hits).toEqual([]);
-        }
-        expect(await fx.backend.getChunks(DOC_B, [CHUNKS_B[0]!.id])).toEqual(
-          [],
-        );
+        await assertEventually(!!opts.eventuallyConsistent, async () => {
+          expect(await fx.backend.hasDocument(DOC_B)).toBe(false);
+          for (const index of INDEXES) {
+            const { hits } = await fx.backend.search({
+              docId: DOC_B,
+              index,
+              query: 'zoning',
+              topK: 5,
+            });
+            expect(hits).toEqual([]);
+          }
+          expect(await fx.backend.getChunks(DOC_B, [CHUNKS_B[0]!.id])).toEqual(
+            [],
+          );
+        });
       });
     },
   );

@@ -51,5 +51,5 @@ describeBackendContract(
     });
     return Promise.resolve({ backend, settle: () => backend.settle() });
   },
-  { skip: !apiKey, timeoutMs: 180_000 },
+  { skip: !apiKey, timeoutMs: 180_000, eventuallyConsistent: true },
 );
