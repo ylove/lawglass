@@ -118,7 +118,7 @@ const optionsOf = (call: number): Record<string, unknown> =>
 describe('chip definitions', () => {
   it('refuses the history chip until it is implemented', () => {
     expect(CHIPS.some((c) => c.id === 'history')).toBe(false);
-    expect(() => getChip('history')).toThrow(/not available yet/);
+    expect(() => getChip('history')).toThrow(/Unknown chip.*not available yet/);
   });
 
   it('defines exactly the eight spec chips, each valid against the contract', () => {

@@ -193,8 +193,12 @@ export const CHIPS: readonly ChipDefinition[] = Object.freeze([
 export function getChip(id: ChipId): ChipDefinition {
   const chip = CHIPS.find((c) => c.id === id);
   if (!chip)
-    throw new AppError('INVALID_INPUT', `Chip not available yet: ${id}`, {
-      userMessage: 'That question chip is not available yet.',
-    });
+    throw new AppError(
+      'INVALID_INPUT',
+      `Unknown chip (not available yet): ${id}`,
+      {
+        userMessage: 'That question chip is not available yet.',
+      },
+    );
   return chip;
 }
