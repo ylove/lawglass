@@ -135,7 +135,7 @@ export function Ingest({
     : -1;
 
   return (
-    <section aria-labelledby="ingest-title" className="card">
+    <section aria-labelledby="ingest-title" className="card ingest">
       <h2 id="ingest-title">Add a bill</h2>
       <p>
         Paste the web address of a bill or ordinance. We will read it and then

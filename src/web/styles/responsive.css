@@ -3,6 +3,9 @@
     display: block;
     text-align: left;
   }
+  .layout {
+    padding-inline: 1rem;
+  }
   .sidebar-panel:not(.open) {
     display: none;
   }
@@ -21,7 +24,7 @@
     max-height: 85vh;
     border-left: 0;
     border-top: 1px solid var(--line);
-    border-radius: 0.75rem 0.75rem 0 0;
+    border-radius: var(--radius) var(--radius) 0 0;
   }
   .row > .btn {
     flex: 1 1 100%;

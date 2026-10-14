@@ -1,0 +1,27 @@
+/* Self-hosted Instrument Sans (OFL-1.1), latin subset, woff2 only (every current browser reads
+   it, and fontsource's own CSS would also bundle an unused .woff). The family ships 400-700,
+   so the light chip weight (300) resolves to 400; the selected chip's 500 still reads heavier. */
+@font-face {
+  font-family: 'Instrument Sans';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url('../../node_modules/@fontsource/instrument-sans/files/instrument-sans-latin-400-normal.woff2')
+    format('woff2');
+}
+@font-face {
+  font-family: 'Instrument Sans';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 500;
+  src: url('../../node_modules/@fontsource/instrument-sans/files/instrument-sans-latin-500-normal.woff2')
+    format('woff2');
+}
+@font-face {
+  font-family: 'Instrument Sans';
+  font-style: normal;
+  font-display: swap;
+  font-weight: 600;
+  src: url('../../node_modules/@fontsource/instrument-sans/files/instrument-sans-latin-600-normal.woff2')
+    format('woff2');
+}
