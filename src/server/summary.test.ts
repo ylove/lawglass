@@ -223,6 +223,10 @@ describe('GET /api/docs/:docId/summary', () => {
     await vi.waitFor(() => {
       expect(chips).toHaveBeenCalledTimes(2);
     });
+    // Let the second run finish before the temp directory is removed.
+    await vi.waitFor(async () => {
+      expect(await summary(a, docId)).toEqual({ status: 'disabled' });
+    });
     const dir = join(env.registry.configDir, 'cache', 'answers', docId);
     await expect(readdir(dir)).rejects.toMatchObject({ code: 'ENOENT' });
   });

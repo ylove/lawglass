@@ -1,3 +1,5 @@
+import { writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import {
   makePipelineEnv,
@@ -117,8 +119,6 @@ describe('GET /api/docs/:docId detail', () => {
   test('a corrupt history sidecar is the same as none', async () => {
     const docId = await ingestDoc('https://example.gov/a.txt');
     await writeHistory(env.registry.configDir, docId, history('ok'));
-    const { writeFile } = await import('node:fs/promises');
-    const { join } = await import('node:path');
     await writeFile(
       join(env.registry.configDir, 'history', `${docId}.json`),
       '{not json',
