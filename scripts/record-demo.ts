@@ -4,7 +4,7 @@
  * Real recording (server running with a real LLM provider, document ingested, summary pre-warmed):
  *
  *   npx tsx scripts/record-demo.ts --url http://127.0.0.1:4317 --doc "s202" \
- *     --chip "Who does it affect?" --out docs/demo.gif --width 960 --max-seconds 90
+ *     --chip "Who does it affect?" --out docs/demo.gif --width 720 --max-seconds 240
  *
  * Dry run (no server or model needed): serves the built `dist/web` with the scripted mock UI
  * (`?mock=1`), so run `npm run build` first. Write somewhere other than docs/demo.gif:
@@ -31,7 +31,7 @@ const { values } = parseArgs({
     doc: { type: 'string' },
     chip: { type: 'string' },
     out: { type: 'string', default: 'docs/demo.gif' },
-    width: { type: 'string', default: '960' },
+    width: { type: 'string', default: '720' },
     'max-seconds': { type: 'string', default: '90' },
     'dry-run': { type: 'boolean', default: false },
   },
@@ -190,13 +190,15 @@ const [video] = (await readdir(videoDir)).filter((f) => f.endsWith('.webm'));
 if (!video) throw new Error('Playwright did not write a video.');
 const out = resolve(values.out);
 await mkdir(dirname(out), { recursive: true });
-// Two-pass palette keeps text crisp at a small file size.
+// Two-pass palette keeps text crisp at a small file size. 6 fps, 64 colours and rectangle diffs
+// (only the changed region is stored per frame) keep a ~30 s story near 4 MB at 720 px; the UI
+// is mostly static between scrolls, so the low frame rate costs little.
 await run('ffmpeg', [
   '-y',
   '-i',
   join(videoDir, video),
   '-vf',
-  `fps=10,scale=${values.width}:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=96[p];[b][p]paletteuse=dither=bayer:bayer_scale=4`,
+  `fps=6,scale=${values.width}:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=64:stats_mode=diff[p];[b][p]paletteuse=dither=bayer:bayer_scale=4:diff_mode=rectangle`,
   '-loop',
   '0',
   out,
