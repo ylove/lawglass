@@ -21,6 +21,7 @@ import {
   DocSummary,
   IngestEvent,
   SectionExcerpt,
+  walkSections,
   type AnswerResult,
   type NormalizedDoc,
 } from '../core/model/index.js';
@@ -181,7 +182,11 @@ describe('ingest and documents', () => {
     const a = app();
     const doc = await ingestDoc(a);
     const stored: NormalizedDoc = await env.registry.getDocument(doc.docId);
-    const parent = stored.sections.find((s) => s.children.length > 0);
+    const parent = [...walkSections(stored.sections)].find(
+      (s) =>
+        s.children.length > 0 &&
+        s.children.every((c) => c.children.length === 0),
+    );
     if (!parent) throw new Error('fixture has no nested section');
     const excerpt = SectionExcerpt.parse(
       await (

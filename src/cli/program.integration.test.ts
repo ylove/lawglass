@@ -220,6 +220,7 @@ test.each([
       return Promise.resolve(env.runtime);
     },
     write: () => undefined,
+    serve: () => Promise.resolve(),
   }).parseAsync(args, { from: 'user' });
   expect(seen).toEqual(['local']);
 });
