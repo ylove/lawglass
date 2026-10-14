@@ -170,7 +170,10 @@ test('server-down card appears when the server stops, and Retry recovers', async
 
   // Same port, so the open page's relative requests reach the restarted server.
   const second = await packedApp.serve(port);
-  expect(second.url).toBe(first.url);
+  expect(new URL(second.url).origin).toBe(new URL(first.url).origin);
+  expect(second.url).not.toBe(first.url);
+  // Each launch rotates the token, so re-open its link before the old page retries.
+  await page.context().request.get(second.url);
   await card.getByRole('button', { name: 'Retry', exact: true }).click();
   await expect(card).toHaveCount(0);
   await expect(page.getByRole('region', { name: 'In brief' })).toBeVisible();

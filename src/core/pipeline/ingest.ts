@@ -4,6 +4,14 @@
  * dedupe, eviction or cleanup-on-failure.
  */
 import { createHash } from 'node:crypto';
+import {
+  assertChunkLimit,
+  assertPageLimit,
+  readParseLimits,
+  type ParseLimits,
+  type ParseControl,
+} from '../parse/limits.js';
+import type { PreparedHtml } from '../parse/html.js';
 import { chunkDocument } from '../chunk/index.js';
 import {
   enrichDocument,
@@ -45,10 +53,16 @@ export type Fetcher = (
     signal?: AbortSignal | undefined;
     validateUrl?: ((url: URL) => void) | undefined;
     refresh?: boolean | undefined;
+    parseLimits?: ParseLimits | undefined;
   },
 ) => Promise<SafeFetchResult>;
 
-export interface ParseContext {
+export interface ParseContext extends ParseControl {
+  maxPages?: number | undefined;
+  publicMode?: boolean | undefined;
+  maxHtmlBytes?: number | undefined;
+  contentType?: string;
+  preparedHtml?: PreparedHtml | undefined;
   sourceUrl: string;
   fetchedAt: string;
 }
@@ -59,6 +73,7 @@ export type PdfParser = (
 ) => NormalizedDoc | Promise<NormalizedDoc>;
 
 export interface IngestDeps {
+  parseLimits?: ParseLimits | undefined;
   backend: RetrievalBackend;
   /** Used for metadata extraction (the cheap "extract" model). */
   provider: LlmProvider;
@@ -238,10 +253,24 @@ function metered(provider: LlmProvider): {
 async function parseFetched(
   fetched: SafeFetchResult,
   deps: IngestDeps,
+  signal: AbortSignal | undefined,
 ): Promise<NormalizedDoc> {
+  const limits = deps.parseLimits ?? readParseLimits();
+  if (
+    fetched.format !== 'pdf' &&
+    fetched.bytes.byteLength > limits.maxNonPdfBytes
+  )
+    throw new AppError('TOO_LARGE');
   const context: ParseContext = {
     sourceUrl: fetched.finalUrl,
     fetchedAt: deps.now().toISOString(),
+    signal,
+    timeoutMs: limits.timeoutMs,
+    maxPages: limits.maxPages,
+    publicMode: limits.publicMode,
+    maxHtmlBytes: limits.maxHtmlBytes,
+    contentType: fetched.contentType,
+    preparedHtml: fetched.preparedHtml,
   };
   try {
     switch (fetched.format) {
@@ -251,8 +280,12 @@ async function parseFetched(
         return parseHtml(fetched.bytes, context);
       case 'text':
         return parseText(fetched.bytes, context);
-      case 'pdf':
-        return await (deps.parsePdf ?? parsePdf)(fetched.bytes, context);
+      case 'pdf': {
+        const doc = await (deps.parsePdf ?? parsePdf)(fetched.bytes, context);
+        // Also protect injected parsers and cached documents; the real parser checks before extraction.
+        assertPageLimit(doc.pageCount ?? 0, limits.maxPages, limits.publicMode);
+        return doc;
+      }
       default:
         throw new AppError('UNSUPPORTED_FORMAT');
     }
@@ -302,11 +335,26 @@ function chooseLabel(doc: NormalizedDoc, taken: ReadonlySet<string>): string {
 }
 
 /** Chunk and enrich is deterministic and free, so reuse recomputes it to report stats. */
-function chunkAndEnrich(doc: NormalizedDoc): {
+function chunkAndEnrich(
+  doc: NormalizedDoc,
+  deps: IngestDeps,
+  signal?: AbortSignal,
+): {
   doc: NormalizedDoc;
   chunks: Chunk[];
 } {
-  return enrichDocument(doc, chunkDocument(doc));
+  const limits = deps.parseLimits ?? readParseLimits();
+  assertPageLimit(doc.pageCount ?? 0, limits.maxPages, limits.publicMode);
+  const chunks = chunkDocument(doc, {
+    maxChunks: limits.maxChunks,
+    timeoutMs: limits.timeoutMs,
+    signal,
+  });
+  assertChunkLimit(chunks.length, limits.maxChunks);
+  const enriched = enrichDocument(doc, chunks);
+  // Definition enrichment may split chunks further. Count the final indexed records too.
+  assertChunkLimit(enriched.chunks.length, limits.maxChunks);
+  return enriched;
 }
 
 // Ingests of the same document run one at a time: two racing ingests of one docId could
@@ -353,6 +401,7 @@ export async function ingest(
   opts: IngestOptions = {},
 ): Promise<IngestResult> {
   const { signal } = opts;
+  deps = { ...deps, parseLimits: deps.parseLimits ?? readParseLimits() };
   opts.onProgress?.({ stage: 'fetching', detail: url });
   // WRAPPER_PAGE (with candidate links in `details`) propagates untouched for callers to offer.
   const plan = resolveHistory(url);
@@ -389,7 +438,11 @@ export async function ingest(
     validateUrl(new URL(fetchUrl));
     attachment = { version, ...(record ? { record } : {}) };
   }
-  const fetched = await deps.fetcher(fetchUrl, { signal, validateUrl });
+  const fetched = await deps.fetcher(fetchUrl, {
+    signal,
+    validateUrl,
+    parseLimits: deps.parseLimits,
+  });
   validateUrl(new URL(fetched.finalUrl));
   signal?.throwIfAborted();
   const docId = createHash('sha256').update(fetched.bytes).digest('hex');
@@ -436,7 +489,7 @@ async function ingestLocked(
       await saveHistory(cached, deps, attachment);
       touched = await registry.updateDocument(cached);
     }
-    const { chunks } = chunkAndEnrich(cached);
+    const { chunks } = chunkAndEnrich(cached, deps, signal);
     progress({ stage: 'done', detail: 'reused' });
     return {
       doc: summarize(touched),
@@ -460,10 +513,10 @@ async function ingestLocked(
   let chunks: Chunk[];
   if (cachedDoc) {
     progress({ stage: 'chunking' });
-    ({ doc, chunks } = chunkAndEnrich(cachedDoc));
+    ({ doc, chunks } = chunkAndEnrich(cachedDoc, deps, signal));
   } else {
     progress({ stage: 'parsing' });
-    const parsed = await parseFetched(fetched, deps);
+    const parsed = await parseFetched(fetched, deps, signal);
     signal?.throwIfAborted();
     let withMetadata = parsed;
     if (alreadyIndexed) {
@@ -489,7 +542,7 @@ async function ingestLocked(
       };
     }
     progress({ stage: 'chunking' });
-    ({ doc, chunks } = chunkAndEnrich(withMetadata));
+    ({ doc, chunks } = chunkAndEnrich(withMetadata, deps, signal));
   }
   doc = await enrichSponsors(
     attachHistory(doc, attachment),

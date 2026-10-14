@@ -5,9 +5,21 @@ import tls from 'node:tls';
 import { syncBuiltinESMExports } from 'node:module';
 import { afterAll } from 'vitest';
 import './setup.fetch.js';
+import ipaddr from 'ipaddr.js';
+import { isIP } from 'node:net';
 
 function assertLoopback(host: string): void {
-  if (!/^(localhost|127\.0\.0\.1|\[?::1\]?)$/.test(host)) {
+  const address = host.replace(/^\[|\]$/g, '');
+  const canonical =
+    isIP(address) === 6 && !address.includes('%')
+      ? new URL(`http://[${address}]`).hostname.slice(1, -1)
+      : address;
+  if (
+    host !== 'localhost' &&
+    (!isIP(address) ||
+      address.includes('%') ||
+      ipaddr.process(canonical).range() !== 'loopback')
+  ) {
     throw new Error(`Network access is blocked in unit tests (${host})`);
   }
 }

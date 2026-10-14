@@ -28,7 +28,7 @@ A scenario is a short illustrated story: a made-up person, 3 to 4 frames, each w
 
 **Neutral, diverse personas.** Avatars are drawn to be neutral and diverse. Names come from a fixed neutral list, so the model does not choose a name, and a name cannot signal a group.
 
-**When a scenario shows** is in spec Amendment 13: with the summary for a single-subject bill, and otherwise only beside answers that ask for a story.
+**When a scenario shows** is in spec Amendment 13, as amended by Amendment 17 (rc.3): a default scenario for every bill, plus scenarios on demand. Amendment 13 first limited it to single-subject bills.
 
 ## Failure modes this guards against
 

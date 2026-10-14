@@ -10,7 +10,7 @@ import { envVar } from '../core/brand.js';
 import { initConfig, pineconeConfig } from '../core/config.js';
 import { PineconeBackend } from '../core/index/index.js';
 import { AppError } from '../core/model/index.js';
-import { createApp } from '../server/app.js';
+import { createSessionTestApp as createApp } from '../../tests/support/session-app.js';
 import { createProgram } from './program.js';
 import { createPineconeClient, createRuntimeFrom } from './runtime.js';
 import * as prompts from './secret-prompt.js';

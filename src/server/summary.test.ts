@@ -18,7 +18,8 @@ import type {
 import { defaultChipRunner } from '../core/pipeline/ask.js';
 import type { ChipRunner } from '../core/pipeline/index.js';
 import { readSseEvents } from '../web/sse.js';
-import { createApp, type AppOptions } from './app.js';
+import { createSessionTestApp as createApp } from '../../tests/support/session-app.js';
+import type { AppOptions } from './app.js';
 import { FAILED_RETRY_MS, SUMMARY_CACHE_VERSION } from './summary.js';
 import { AnswerCache } from '../core/answer-cache.js';
 import { SUMMARY_PROMPT_VERSION } from '../core/chip-summary.js';

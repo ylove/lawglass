@@ -210,6 +210,16 @@ Caveats: 21 to 28 questions per bill means one question moves recall@5 by about 
 
 Keyless HTTP endpoints are accepted only on `localhost`, `127.0.0.1` or `[::1]`. The `claude-cli` provider never reads or forwards credentials and is never chosen automatically ([decision 0003](docs/decisions/0003-claude-cli-provider.md), [provider details](docs/llm-providers.md)). Override models with `LAWGLASS_ANSWER_MODEL` and `LAWGLASS_EXTRACT_MODEL`.
 
+Ingest limits are set through environment variables, outside `config.json`:
+
+| Variable                    | Local default | Public default |
+| --------------------------- | ------------- | -------------- |
+| `LAWGLASS_MAX_PAGES`        | 5,000         | Fixed at 200   |
+| `LAWGLASS_PARSE_TIMEOUT_MS` | 120,000 ms    | 30,000 ms      |
+| `LAWGLASS_MAX_CHUNKS`       | 20,000        | 3,000          |
+
+Values must be positive integers. HTML is limited to 15 MiB locally and 5 MiB publicly, with a conservative nesting ceiling of 512 levels checked before DOM construction. Other non-PDF formats keep the 50 MiB local byte cap and use 10 MiB publicly; PDF downloads keep the 50 MiB byte cap. PDF page limits are checked before page extraction. Parse deadlines and cancellation are cooperative for synchronous HTML/XML work, with checks between input chunks or DOM nodes; PDF waits can also be cancelled. The chunk ceiling includes definition records added during enrichment.
+
 #### Backends
 
 - **local** (default): no Docker, no account. Dense vectors from quantized `bge-small-en-v1.5` (384 dimensions) via transformers.js, sparse search with an explicit BM25 (`k1=1.2`, `b=0.75`), and a quantized MiniLM cross-encoder as reranker. About 59 MB of models download once, from revisions pinned in [`models.lock.json`](models.lock.json). Code: [`src/core/index/local/`](src/core/index/local/).

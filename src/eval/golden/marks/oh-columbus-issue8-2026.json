@@ -1,0 +1,764 @@
+{
+  "$comment": "Hand labels for struck and inserted words in Franklin County ballot Issue 8 (Columbus City Charter amendment, 2026). No document text is stored: lines are identified by baseline y (PDF points, page 2) and a hash of their whitespace tokens. Every token on the page not listed here is unchanged. Labeled 2026-10-14 by the orchestrator from the page image (ClearScan background), the vector underlines, and the current Charter text for Secs. 3 and 4.",
+  "fixture": "oh-columbus-issue8-2026",
+  "sha256": "06faa06bf25c373b0d94ef2853282ece9af78386e822e0cf542e9a5bd49f9cb1",
+  "page": 2,
+  "tokenization": "pdfjs getTextContent items with non-blank str, grouped into lines when baselines are within 2.5pt, ordered by x, joined with single spaces, split on whitespace",
+  "evidence": {
+    "vector-underline": "a stroked path drawn by ClearScan under the word",
+    "raster-underline": "an underline visible only in the page image",
+    "raster-dash": "short dark dashes on the x-height row in the gaps around the word (ClearScan erased the strike line where it crossed glyphs)",
+    "none": "no visible mark survives; labeled from the struck/inserted wording (the replacement text and the current Charter)"
+  },
+  "lines": [
+    {
+      "y": 643,
+      "tokenCount": 17,
+      "lineHash": "6e0cf86f96ad233c",
+      "marks": [
+        {
+          "token": 8,
+          "status": "struck",
+          "evidence": "raster-dash"
+        },
+        {
+          "token": 9,
+          "status": "struck",
+          "evidence": "raster-dash"
+        },
+        {
+          "token": 10,
+          "status": "struck",
+          "evidence": "raster-dash"
+        },
+        {
+          "token": 11,
+          "status": "struck",
+          "evidence": "raster-dash"
+        },
+        {
+          "token": 12,
+          "status": "struck",
+          "evidence": "raster-dash"
+        },
+        {
+          "token": 13,
+          "status": "struck",
+          "evidence": "raster-dash",
+          "chars": [0, 4]
+        },
+        {
+          "token": 13,
+          "status": "inserted",
+          "evidence": "raster-underline",
+          "chars": [4, 6]
+        },
+        {
+          "token": 14,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        },
+        {
+          "token": 15,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        },
+        {
+          "token": 16,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        }
+      ]
+    },
+    {
+      "y": 627.5,
+      "tokenCount": 5,
+      "lineHash": "e19f2454aa22d9ad",
+      "marks": [
+        {
+          "token": 0,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 1,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 2,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 3,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 4,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        }
+      ]
+    },
+    {
+      "y": 581.1,
+      "tokenCount": 18,
+      "lineHash": "db5d20a8f84ef7d9",
+      "marks": [
+        {
+          "token": 16,
+          "status": "struck",
+          "evidence": "none"
+        },
+        {
+          "token": 17,
+          "status": "struck",
+          "evidence": "raster-dash",
+          "chars": [0, 4]
+        },
+        {
+          "token": 17,
+          "status": "inserted",
+          "evidence": "raster-underline",
+          "chars": [4, 8]
+        }
+      ]
+    },
+    {
+      "y": 565.8,
+      "tokenCount": 12,
+      "lineHash": "6d1283f13d54c3ca",
+      "marks": [
+        {
+          "token": 0,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        }
+      ]
+    },
+    {
+      "y": 520,
+      "tokenCount": 18,
+      "lineHash": "23966ce9107fd72c",
+      "marks": [
+        {
+          "token": 0,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 1,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 2,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 3,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 4,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 5,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 6,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 7,
+          "status": "inserted",
+          "evidence": "vector-underline",
+          "chars": [0, 5]
+        },
+        {
+          "token": 7,
+          "status": "struck",
+          "evidence": "none",
+          "chars": [5, 10]
+        }
+      ]
+    },
+    {
+      "y": 504.6,
+      "tokenCount": 14,
+      "lineHash": "bc2cdf6105e32379",
+      "marks": [
+        {
+          "token": 9,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 10,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 11,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 12,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 13,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        }
+      ]
+    },
+    {
+      "y": 489,
+      "tokenCount": 16,
+      "lineHash": "72aea6b55692ddd4",
+      "marks": [
+        {
+          "token": 0,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 1,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 2,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 3,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 4,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 5,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 6,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 7,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 8,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 9,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 10,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 11,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        }
+      ]
+    },
+    {
+      "y": 413.4,
+      "tokenCount": 17,
+      "lineHash": "147f222f7d72e634",
+      "marks": [
+        {
+          "token": 2,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 3,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 4,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 5,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 6,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 7,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 8,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 9,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 10,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 11,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 12,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 13,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 14,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 15,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 16,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        }
+      ]
+    },
+    {
+      "y": 397.5,
+      "tokenCount": 17,
+      "lineHash": "59615b04c4772fe6",
+      "marks": [
+        {
+          "token": 0,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 1,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 2,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 3,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        }
+      ]
+    },
+    {
+      "y": 306.1,
+      "tokenCount": 17,
+      "lineHash": "4c5e5d998499973d",
+      "marks": [
+        {
+          "token": 9,
+          "status": "ambiguous",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 10,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 11,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 12,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 13,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 14,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 15,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 16,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        }
+      ]
+    },
+    {
+      "y": 290.7,
+      "tokenCount": 15,
+      "lineHash": "9661007fc1114456",
+      "marks": [
+        {
+          "token": 0,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 1,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 2,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 3,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 4,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 5,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 6,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 7,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 8,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 9,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 10,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 11,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 12,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 13,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 14,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        }
+      ]
+    },
+    {
+      "y": 275.6,
+      "tokenCount": 18,
+      "lineHash": "59a4f6d6756d6657",
+      "marks": [
+        {
+          "token": 0,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 1,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 2,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 3,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 4,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 5,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 6,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 7,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 8,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 9,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 10,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 11,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 12,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 13,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 14,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 15,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 16,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 17,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        }
+      ]
+    },
+    {
+      "y": 260.2,
+      "tokenCount": 16,
+      "lineHash": "e7dcbbfac125b44d",
+      "marks": [
+        {
+          "token": 0,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 1,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 2,
+          "status": "inserted",
+          "evidence": "vector-underline"
+        },
+        {
+          "token": 3,
+          "status": "inserted",
+          "evidence": "vector-underline",
+          "chars": [0, 5]
+        }
+      ]
+    },
+    {
+      "y": 166.3,
+      "tokenCount": 21,
+      "lineHash": "bef3114061d3183b",
+      "marks": [
+        {
+          "token": 18,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        },
+        {
+          "token": 19,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        },
+        {
+          "token": 20,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        }
+      ]
+    },
+    {
+      "y": 153.7,
+      "tokenCount": 8,
+      "lineHash": "37583ba77d223c77",
+      "marks": [
+        {
+          "token": 0,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        },
+        {
+          "token": 1,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        },
+        {
+          "token": 2,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        },
+        {
+          "token": 3,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        },
+        {
+          "token": 4,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        }
+      ]
+    },
+    {
+      "y": 151.1,
+      "tokenCount": 9,
+      "lineHash": "91053178d4770da6",
+      "marks": [
+        {
+          "token": 0,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        },
+        {
+          "token": 1,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        },
+        {
+          "token": 2,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        },
+        {
+          "token": 3,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        },
+        {
+          "token": 4,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        },
+        {
+          "token": 5,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        },
+        {
+          "token": 6,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        },
+        {
+          "token": 7,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        },
+        {
+          "token": 8,
+          "status": "inserted",
+          "evidence": "raster-underline"
+        }
+      ]
+    }
+  ]
+}
