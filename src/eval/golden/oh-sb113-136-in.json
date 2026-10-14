@@ -1,0 +1,153 @@
+{
+  "fixture": "oh-sb113-136-in",
+  "frozenAtCommit": null,
+  "questions": [
+    {
+      "id": "sb113-01",
+      "question": "Under section 3313.475, which kinds of school districts must adopt the new policy?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-3313.475/a"],
+      "notes": "City, local, exempted village and joint vocational school districts."
+    },
+    {
+      "id": "sb113-02",
+      "question": "Does section 3326.11 now make STEM schools follow section 3313.475?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-3326.11"],
+      "notes": "Yes: 3313.475 is inserted into the list STEM schools must comply with."
+    },
+    {
+      "id": "sb113-03",
+      "question": "Do college-preparatory boarding schools have to follow the new rule in section 3313.475?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-3328.24"],
+      "notes": "Yes: 3313.475 is inserted into section 3328.24's list."
+    },
+    {
+      "id": "sb113-04",
+      "question": "Where does the bill add section 3313.475 to the list of laws community schools must follow?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-3314.03/a/11/d"],
+      "notes": "Division (A)(11)(d) of section 3314.03."
+    },
+    {
+      "id": "sb113-05",
+      "question": "Who is the primary sponsor of S. B. No. 113?",
+      "kind": "exact",
+      "expectedSectionIds": ["preamble"],
+      "notes": "Senator Brenner."
+    },
+    {
+      "id": "sb113-06",
+      "question": "What does the bill say about the Family Educational Rights and Privacy Act of 1974?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-3314.03/a/28"],
+      "notes": "Attendance and participation records go to the department, auditor of state and sponsor as permitted under FERPA (existing law)."
+    },
+    {
+      "id": "sb113-07",
+      "question": "Which bills of the 135th General Assembly amended section 3326.11?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-3"],
+      "notes": "H.B. 47, H.B. 214 and S.B. 168."
+    },
+    {
+      "id": "sb113-08",
+      "question": "How long do school districts have to put the new rule in place?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-3313.475/a"],
+      "notes": "Not later than ninety days after the section's effective date."
+    },
+    {
+      "id": "sb113-09",
+      "question": "Can a school just give its diversity office a new name and keep it going?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-3313.475/a/6"],
+      "notes": "No: replacing a prohibited office under a different designation serving the same purposes is prohibited."
+    },
+    {
+      "id": "sb113-10",
+      "question": "If a parent thinks the school broke this rule, what can they do?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-3313.475/b"],
+      "notes": "Submit a complaint; the board investigates and holds a fair and impartial hearing."
+    },
+    {
+      "id": "sb113-11",
+      "question": "Can schools hire outside companies to help hire or promote people based on race or gender?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-3313.475/a/5"],
+      "notes": "No: contracting with consultants or third parties whose role is to promote admissions, hiring or promotion based on race, ethnicity, religion, sex, sexual orientation, gender identity or gender expression is prohibited."
+    },
+    {
+      "id": "sb113-12",
+      "question": "Can a school keep the diversity department it already has?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-3313.475/a/2"],
+      "notes": "No: continuing existing DEI offices or departments is prohibited."
+    },
+    {
+      "id": "sb113-13",
+      "question": "Can staff still be required to take diversity training?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-3313.475/a/1"],
+      "notes": "No: any orientation or training course regarding DEI is prohibited."
+    },
+    {
+      "id": "sb113-14",
+      "question": "Can job postings at a school mention diversity, equity, and inclusion?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-3313.475/a/4"],
+      "notes": "No: using DEI in job descriptions is prohibited."
+    },
+    {
+      "id": "sb113-15",
+      "question": "How much can a community school pay its sponsor for oversight?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-3314.03/c"],
+      "notes": "Not more than three per cent of the state operating payments the school receives (existing law)."
+    },
+    {
+      "id": "sb113-16",
+      "question": "What is the smallest number of students a community school must serve, and for how many hours a year?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-3314.03/a/11/a"],
+      "notes": "Twenty-five students for nine hundred twenty hours per school year (existing law)."
+    },
+    {
+      "id": "sb113-17",
+      "question": "What happens if a new community school doesn't open by the end of September?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-3314.03/a/25"],
+      "notes": "In its first year, the contract is void (unless it solely serves dropouts) (existing law)."
+    },
+    {
+      "id": "sb113-18",
+      "question": "Which existing sections of the Revised Code does this bill repeal?",
+      "kind": "removed",
+      "expectedSectionIds": ["sec-2"],
+      "notes": "Repeal language (no struck text in this bill): existing sections 3314.03, 3326.11 and 3328.24, replaced by the amended versions."
+    },
+    {
+      "id": "sb113-19",
+      "question": "How much extra money will schools get to follow this rule?",
+      "kind": "unanswerable",
+      "expectedSectionIds": [],
+      "notes": "The bill has no funding provisions."
+    },
+    {
+      "id": "sb113-20",
+      "question": "Does this bill change the rules for school lunches?",
+      "kind": "unanswerable",
+      "expectedSectionIds": [],
+      "notes": "Not addressed."
+    },
+    {
+      "id": "sb113-21",
+      "question": "Does this bill change the rules for school sports teams?",
+      "kind": "unanswerable",
+      "expectedSectionIds": [],
+      "notes": "Not addressed."
+    }
+  ]
+}

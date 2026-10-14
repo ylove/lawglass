@@ -1,0 +1,182 @@
+{
+  "fixture": "oh-sb203-133-in",
+  "frozenAtCommit": null,
+  "questions": [
+    {
+      "id": "sb203-01",
+      "question": "Is a small sale with only 10 guns and 2 sellers a \"gun show\" under this bill?",
+      "kind": "definition",
+      "expectedSectionIds": [
+        "sec-2923.27/a/2",
+        "sec-2923.27/a/2/a",
+        "sec-2923.27/a/2/b"
+      ],
+      "notes": "No: a gun show needs twenty-five or more firearms exhibited or offered, or at least three gun show vendors."
+    },
+    {
+      "id": "sb203-02",
+      "question": "Who counts as a \"gun show promoter\"?",
+      "kind": "definition",
+      "expectedSectionIds": ["sec-2923.27/a/3"],
+      "notes": "A person who organizes or operates a gun show."
+    },
+    {
+      "id": "sb203-03",
+      "question": "For a gun show held inside a city, who is the \"point of contact agency\"?",
+      "kind": "definition",
+      "expectedSectionIds": [
+        "sec-2923.27/a/6",
+        "sec-2923.27/a/6/a",
+        "sec-2923.27/a/6/b"
+      ],
+      "notes": "Either the sheriff with jurisdiction over the place, or the law enforcement agency of that municipal corporation."
+    },
+    {
+      "id": "sb203-04",
+      "question": "Does trading one gun for another count as a \"transfer\"?",
+      "kind": "definition",
+      "expectedSectionIds": ["sec-2923.27/a/7"],
+      "notes": "Yes: transfer means any sale, exchange, trade, barter or other transfer."
+    },
+    {
+      "id": "sb203-05",
+      "question": "I'm not a licensed dealer. What has to happen before I can sell my rifle to another private person at a gun show?",
+      "kind": "definition",
+      "expectedSectionIds": ["sec-2923.27/a/9", "sec-2923.27/b/2"],
+      "notes": "As an unlicensed transferor, the sale must go through a federally licensed dealer or point of contact agency that gives the (C)(4)(a) all-clear notice."
+    },
+    {
+      "id": "sb203-06",
+      "question": "Who has to follow 18 U.S.C. 922(t) when helping with a sale at a gun show?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-2923.27/c/1", "sec-2923.27/c/2"],
+      "notes": "The assisting federally licensed firearms dealer or point of contact agency."
+    },
+    {
+      "id": "sb203-07",
+      "question": "What does the bill change in section 5122.311 of the Revised Code?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-5122.311/b", "sec-5122.311/d"],
+      "notes": "Incompetency records checks may be requested by dealers and point of contact agencies under 2923.27, answered immediately; adds definitions by reference to 2923.27."
+    },
+    {
+      "id": "sb203-08",
+      "question": "What does new division (A)(4) of section 2929.28 require?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-2929.28/a/4"],
+      "notes": "A mandatory fine in the amount set by 2923.27(H)(1), (2) or (3) for a misdemeanor violation of 2923.27."
+    },
+    {
+      "id": "sb203-09",
+      "question": "What does the bill say about transfers approved under 26 U.S.C 5812?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-2923.27/g/2"],
+      "notes": "They are exempt from division (B)."
+    },
+    {
+      "id": "sb203-10",
+      "question": "Who are the sponsors of S. B. No. 203?",
+      "kind": "exact",
+      "expectedSectionIds": ["preamble"],
+      "notes": "Senators Thomas and Lehner."
+    },
+    {
+      "id": "sb203-11",
+      "question": "What is the most a court can fine someone for a misdemeanor of the first degree under section 2929.28?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-2929.28/a/2/a/i"],
+      "notes": "Not more than one thousand dollars (existing law)."
+    },
+    {
+      "id": "sb203-12",
+      "question": "How much can a dealer charge to help with a background check at a gun show?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-2923.27/d"],
+      "notes": "Not more than ten dollars per firearm transfer."
+    },
+    {
+      "id": "sb203-13",
+      "question": "Can kids go to a gun show?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-2923.27/f/2/c"],
+      "notes": "Under eighteen only with a parent, guardian or custodian."
+    },
+    {
+      "id": "sb203-14",
+      "question": "Do guns have to be unloaded before they're brought into the show?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-2923.27/f/2/b"],
+      "notes": "Yes: cleared of ammunition and tagged for identification."
+    },
+    {
+      "id": "sb203-15",
+      "question": "Can I give my grandson a gun at a gun show without a background check?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-2923.27/g", "sec-2923.27/g/1"],
+      "notes": "Yes: a bona fide gift between immediate family members (including grandchildren) is exempt from division (B)."
+    },
+    {
+      "id": "sb203-16",
+      "question": "How big is the fine the first time someone sells a gun at a show without a background check?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-2923.27/h/1/a"],
+      "notes": "Misdemeanor with a five thousand dollar fine."
+    },
+    {
+      "id": "sb203-17",
+      "question": "What sign has to be posted at the parking lot entrances?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-2923.27/f/2/e"],
+      "notes": "That parking-area transfers must be completed the same way as inside, and other parking-area transfers are a crime."
+    },
+    {
+      "id": "sb203-18",
+      "question": "How quickly does the attorney general have to answer a mental-health records check from a gun dealer?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-5122.311/b"],
+      "notes": "Immediately upon receipt of the request."
+    },
+    {
+      "id": "sb203-19",
+      "question": "Does the person running a gun show need permission from the sheriff?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-2923.27/e/3", "sec-2923.27/f/1/e"],
+      "notes": "Yes: a permit from the sheriff, obtained 30 to 60 days before the show."
+    },
+    {
+      "id": "sb203-20",
+      "question": "Can the buyer get in trouble too, or only the seller?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-2923.27/b/4", "sec-2923.27/h/2"],
+      "notes": "The unlicensed transferee can be charged with a misdemeanor: $250 fine, $500 for a repeat."
+    },
+    {
+      "id": "sb203-21",
+      "question": "Which existing sections of the Revised Code does this bill repeal?",
+      "kind": "removed",
+      "expectedSectionIds": ["sec-2"],
+      "notes": "Repeal language (no struck text in this bill): existing sections 2929.28 and 5122.311, replaced by the amended versions."
+    },
+    {
+      "id": "sb203-22",
+      "question": "Does this bill ban assault weapons?",
+      "kind": "unanswerable",
+      "expectedSectionIds": [],
+      "notes": "Not addressed."
+    },
+    {
+      "id": "sb203-23",
+      "question": "Does this bill change the rules for carrying a concealed handgun?",
+      "kind": "unanswerable",
+      "expectedSectionIds": [],
+      "notes": "Not addressed."
+    },
+    {
+      "id": "sb203-24",
+      "question": "How much does a hunting license cost?",
+      "kind": "unanswerable",
+      "expectedSectionIds": [],
+      "notes": "Not addressed."
+    }
+  ]
+}

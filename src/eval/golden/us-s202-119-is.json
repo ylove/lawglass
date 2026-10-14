@@ -1,0 +1,167 @@
+{
+  "fixture": "us-s202-119-is",
+  "frozenAtCommit": null,
+  "questions": [
+    {
+      "id": "s202-01",
+      "question": "What does THRIVE stand for in the name of this Act?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-1"],
+      "notes": "Helping Small Businesses To Hedge Risk and Insure against Volatile Expenses Act."
+    },
+    {
+      "id": "s202-02",
+      "question": "What does the bill say about section 1a of the Commodity Exchange Act (7 U.S.C. 1a)?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-2/2"],
+      "notes": "Commission, commodity, commodity pool, commodity trading advisor, future delivery and futures commission merchant take their meanings from 7 U.S.C. 1a."
+    },
+    {
+      "id": "s202-03",
+      "question": "Where does the bill mention the Gramm-Leach-Bliley Act, and why?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-2/4/B", "sec-2/4/B/i"],
+      "notes": "A business that is (or is owned or controlled by) a financial institution as defined in section 509 of Gramm-Leach-Bliley is not an eligible entity."
+    },
+    {
+      "id": "s202-04",
+      "question": "What is a call option purchase agreement under this bill, and when does it protect a business?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-4/a/2/D/i"],
+      "notes": "Protects the eligible entity when the covered commodity's price rises by more than 5 percent."
+    },
+    {
+      "id": "s202-05",
+      "question": "Does the bill require gasoline and diesel gasoline to be covered commodities?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-4/b/2/A"],
+      "notes": "Yes: the Administrator shall ensure they are covered commodities."
+    },
+    {
+      "id": "s202-06",
+      "question": "What does the bill say about the total notional value of covered commodities?",
+      "kind": "exact",
+      "expectedSectionIds": ["sec-5/b/1/C"],
+      "notes": "Annual reports include the total notional value of covered commodities under agreements, disaggregated by commodity."
+    },
+    {
+      "id": "s202-07",
+      "question": "When does the program have to start?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-3/a"],
+      "notes": "Not later than 1 year after enactment."
+    },
+    {
+      "id": "s202-08",
+      "question": "Who has to pay the costs of one of these deals, and when is the first payment due?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-4/a/2/D/ii/I", "sec-4/a/2/D/ii/II"],
+      "notes": "The eligible entity pays all costs; initial costs are paid when it enters the agreement."
+    },
+    {
+      "id": "s202-09",
+      "question": "What happens to any money the program makes?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-4/d/1", "sec-4/d/2"],
+      "notes": "Proceeds offset that fiscal year's operating costs; anything beyond goes to the general fund of the Treasury."
+    },
+    {
+      "id": "s202-10",
+      "question": "Will the government ever actually take a truckload of the fuel it buys?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-3/d/2/A"],
+      "notes": "No taking delivery of any physical commodity except in extreme and exigent circumstances."
+    },
+    {
+      "id": "s202-11",
+      "question": "Is there a phone line or website where a business owner can ask questions about the program?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-3/c/3", "sec-3/c/3/B"],
+      "notes": "Yes: outreach includes a website and telephone line for questions and help deciding whether to participate."
+    },
+    {
+      "id": "s202-12",
+      "question": "How much warning do businesses get before a commodity is dropped from the program?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-4/b/2/C"],
+      "notes": "Not less than 90 days notice to participants."
+    },
+    {
+      "id": "s202-13",
+      "question": "How long will the money for this program last?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-3/e"],
+      "notes": "Such sums as necessary, available until 5 years after enactment."
+    },
+    {
+      "id": "s202-14",
+      "question": "Could things like electricity or natural gas be added later?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-4/b/3/B"],
+      "notes": "The Administrator must give particular consideration to classifying standard utilities such as electricity and natural gas as covered commodities."
+    },
+    {
+      "id": "s202-15",
+      "question": "What is the shortest and the longest time one of these deals can last?",
+      "kind": "paraphrase",
+      "expectedSectionIds": ["sec-4/a/2/E/i"],
+      "notes": "Not less than 60 days and not more than 3 years."
+    },
+    {
+      "id": "s202-16",
+      "question": "Can a bank sign up for this program?",
+      "kind": "definition",
+      "expectedSectionIds": ["sec-2/4/B", "sec-2/4/B/i"],
+      "notes": "No: the eligible entity definition excludes financial institutions and businesses they own or control."
+    },
+    {
+      "id": "s202-17",
+      "question": "My business opened six months ago. Can it apply?",
+      "kind": "definition",
+      "expectedSectionIds": ["sec-2/4/B", "sec-2/4/B/v"],
+      "notes": "No: businesses in operation less than 1 year when they apply are not eligible entities."
+    },
+    {
+      "id": "s202-18",
+      "question": "Will the SBA share information about the program through women's business centers?",
+      "kind": "definition",
+      "expectedSectionIds": ["sec-3/c/1", "sec-2/6/B"],
+      "notes": "Outreach distributes materials through resource partners, and resource partners include women's business centers."
+    },
+    {
+      "id": "s202-19",
+      "question": "Who is the Administrator that runs this program?",
+      "kind": "definition",
+      "expectedSectionIds": ["sec-2/1"],
+      "notes": "The Administrator of the Small Business Administration."
+    },
+    {
+      "id": "s202-20",
+      "question": "What makes something a covered commodity?",
+      "kind": "definition",
+      "expectedSectionIds": ["sec-2/3"],
+      "notes": "A commodity the Administrator determines under section 4(b) is eligible for an agreement under section 4(a)."
+    },
+    {
+      "id": "s202-21",
+      "question": "Does this bill lower taxes for small businesses?",
+      "kind": "unanswerable",
+      "expectedSectionIds": [],
+      "notes": "The bill has no tax provisions."
+    },
+    {
+      "id": "s202-22",
+      "question": "What is the punishment if a business lies on its application?",
+      "kind": "unanswerable",
+      "expectedSectionIds": [],
+      "notes": "The bill sets no penalties."
+    },
+    {
+      "id": "s202-23",
+      "question": "Can a small business get a loan through this program?",
+      "kind": "unanswerable",
+      "expectedSectionIds": [],
+      "notes": "The bill does not mention loans."
+    }
+  ]
+}
