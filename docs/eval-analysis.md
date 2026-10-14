@@ -56,7 +56,7 @@ Average MRR went from 0.797 to 0.841; average recall@5 barely moved (0.924 to 0.
 
 ## Pinecone backend (2026-10-14)
 
-The same five golden sets, run against a live Pinecone Starter index (commit `3a0851a`; `llama-text-embed-v2` dense, `pinecone-sparse-english-v0` sparse, `bge-reranker-v2-m3` reranker). The full table is [`eval/results-pinecone.md`](../eval/results-pinecone.md). The run used 104 rerank calls; Starter includes 500 a month.
+The same five golden sets, run against a live Pinecone Starter index (commit `3a0851a`; `llama-text-embed-v2` dense, `pinecone-sparse-english-v0` sparse, `bge-reranker-v2-m3` reranker). The full table is [`eval/results-pinecone.md`](../eval/results-pinecone.md). The run used 104 rerank calls; Starter includes 500 a month ([limits](https://docs.pinecone.io/reference/api/database-limits)).
 
 ### Pinecone against local, `hybrid_rerank`
 
@@ -81,7 +81,7 @@ What we can rule out: the candidate pool. The reranker is given the top 64 fused
 
 ### Engineering lesson: a batch that could never succeed
 
-The first NDAA ingest stalled on 429 responses at the same batch, twice. Batches were 96 records, and that one batch alone was larger than Starter's per-minute embedding-token limit, so no amount of waiting would let it through. Retrying harder was the wrong fix. The fix (`3a0851a`) budgets each batch by estimated tokens (20,000 by default), halves a batch that keeps getting 429s, and uses jittered backoff that honors `Retry-After`. After that, the whole five-bill eval, NDAA included, finished in about five minutes.
+The first NDAA ingest stalled on 429 responses at the same batch, twice. Batches were 96 records, and that one batch alone was larger than Starter's per-minute embedding-token limit, so no amount of waiting would let it through. Retrying harder was the wrong fix. The fix (`3a0851a`) budgets each batch by estimated tokens (20,000 by default), halves a batch that keeps getting 429s, and uses jittered backoff that honors `Retry-After`. After that, the whole five-bill eval, NDAA included, finished in about five minutes on 2026-10-14 (one run).
 
 ## Answers
 

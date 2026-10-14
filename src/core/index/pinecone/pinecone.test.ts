@@ -228,7 +228,7 @@ describe('PineconeBackend', () => {
         expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([1_000]);
       },
     );
-    it('honors a long retry-after without any single wait exceeding 30 seconds', async () => {
+    it('splits an injected retry-after header value so no single wait exceeding 30 seconds', async () => {
       const { mock, run, sleep } = await retrySetup('search', {
         queryRetryBudgetMs: 90_000,
       });
@@ -242,11 +242,11 @@ describe('PineconeBackend', () => {
       ]);
       expect(mock).toHaveBeenCalledTimes(2);
     });
-    it('stops at the budget when retry-after exceeds it', async () => {
+    it('fails fast when a retry-after exceeds the remaining budget', async () => {
       const { mock, run, sleep } = await retrySetup('search');
       mock.mockRejectedValueOnce({ status: 429, retryAfter: 120 });
       await expect(run()).rejects.toMatchObject({ code: 'RATE_LIMITED' });
-      expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([30_000, 30_000]);
+      expect(sleep).not.toHaveBeenCalled();
       expect(mock).toHaveBeenCalledTimes(1);
     });
     it('caps exponential waits and applies jitter', async () => {
@@ -363,6 +363,47 @@ describe('PineconeBackend', () => {
         ).rejects.toMatchObject({ code: 'RATE_LIMITED' });
         expect(batchSizes(sdk.dense.upsert)).toEqual([2, 2, 2, 1, 1, 1]);
       });
+      it('keeps the shrunken size for the rest of the ingest', async () => {
+        const { backend, sdk } = setup({ upsertMaxBatchTokens: 28 });
+        const tooBig = (options: unknown) =>
+          (options as { records: unknown[] }).records.length > 2;
+        const ok = sdk.dense.upsert.getMockImplementation()!;
+        sdk.dense.upsert.mockImplementation((docId, options) =>
+          tooBig(options)
+            ? Promise.reject(Object.assign(new Error('429'), { status: 429 }))
+            : ok(docId, options),
+        );
+        await backend.upsertChunks(
+          DOC_A,
+          Array.from({ length: 16 }, (_, n) => wordy(n, 5)),
+        );
+        // Batch 1 (4 records) fails three times, then is halved; the other 12 records go out at the size that worked.
+        // The last call is the completion marker.
+        expect(batchSizes(sdk.dense.upsert).slice(0, -1)).toEqual([
+          4, 4, 4, 2, 2, 2, 2, 2, 2, 2, 2,
+        ]);
+      });
+      it('clears leftover namespaces before a first ingest', async () => {
+        const { backend, sdk } = setup();
+        await backend.upsertChunks(DOC_A, CHUNKS_A);
+        expect(sdk.dense.deleteNamespace).toHaveBeenCalledWith(DOC_A);
+        expect(sdk.sparse.deleteNamespace).toHaveBeenCalledWith(DOC_A);
+        const order = sdk.dense.deleteNamespace.mock.invocationCallOrder[0]!;
+        expect(order).toBeLessThan(
+          sdk.dense.upsert.mock.invocationCallOrder[0]!,
+        );
+      });
+      it.each(['0', '-5', 'abc', '1.5'])(
+        'rejects an invalid token cap %s from the environment',
+        (value) => {
+          expect(() =>
+            pineconeConfig(
+              {},
+              { LAWGLASS_PINECONE_UPSERT_MAX_BATCH_TOKENS: value },
+            ),
+          ).toThrow(/Invalid Pinecone configuration/);
+        },
+      );
       it('aborts while splitting', async () => {
         const controller = new AbortController();
         const { backend, sdk } = setup();
@@ -682,7 +723,8 @@ describe('PineconeBackend', () => {
         await expect(backend.upsertChunks(DOC_A, CHUNKS_A)).resolves.toEqual({
           usage: ZERO_USAGE,
         });
-        expect(sdk.dense.deleteNamespace).not.toHaveBeenCalled();
+        // Only the pre-ingest clear (completion marker, chunks); polling must not delete data.
+        expect(sdk.dense.deleteNamespace).toHaveBeenCalledTimes(2);
       } else {
         await backend.upsertChunks(DOC_A, CHUNKS_A);
         sdk.dense.consistency.deleteReads = Infinity;
@@ -733,8 +775,9 @@ describe('PineconeBackend', () => {
       expect(await backend.recordCounts(DOC_A)).toEqual(
         operation === 'upsert' ? [CHUNKS_A.length, CHUNKS_A.length] : [0, 0],
       );
+      // Only the pre-ingest clear ran; the abort rolled nothing back.
       if (operation === 'upsert')
-        expect(sdk.dense.deleteNamespace).not.toHaveBeenCalled();
+        expect(sdk.dense.deleteNamespace).toHaveBeenCalledTimes(2);
     },
   );
   it('keeps the completion namespace within the documented 512 ASCII character limit', async () => {
@@ -884,7 +927,10 @@ describe('PineconeBackend', () => {
           sdk.sparse.upsert.getMockImplementation()!,
         );
       sdk.sparse.upsert.mockRejectedValueOnce({ status: 429 });
+      // Two dense calls (completion, chunks) for the pre-ingest clear, then one for cleanup.
       sdk.dense.deleteNamespace
+        .mockResolvedValueOnce(undefined)
+        .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce(undefined)
         .mockRejectedValueOnce(new Error('cleanup secret'));
       const progress = vi.fn<(p: UpsertProgress) => void>();
@@ -931,7 +977,9 @@ describe('PineconeBackend', () => {
       .mockImplementationOnce(sdk.dense.upsert.getMockImplementation()!)
       .mockRejectedValueOnce({ status: 429 });
     sdk.dense.deleteNamespace
-      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(undefined) // pre-ingest clear: completion marker
+      .mockResolvedValueOnce(undefined) // pre-ingest clear: chunks
+      .mockResolvedValueOnce(undefined) // failure cleanup: completion marker
       .mockRejectedValueOnce(new Error('cleanup secret'));
     await expect(backend.upsertChunks(DOC_A, CHUNKS_A)).rejects.toMatchObject({
       code: 'RATE_LIMITED',
@@ -982,7 +1030,8 @@ describe('PineconeBackend', () => {
     expect(await backend.upsertChunks(DOC_B, [])).toEqual({
       usage: ZERO_USAGE,
     });
-    expect(sdk.dense.deleteNamespace).not.toHaveBeenCalled();
+    // Nothing was written for DOC_B, so only DOC_A's first ingest cleared namespaces (completion marker and chunks).
+    expect(sdk.dense.deleteNamespace).toHaveBeenCalledTimes(2);
   });
   it('handles absent completion records and idempotent not-found on deletion/search/fetch', async () => {
     const { backend, sdk } = setup();
@@ -1229,9 +1278,10 @@ describe('PineconeBackend', () => {
       ),
     ).toHaveLength(CHUNKS_A.length);
     sdk.sparse.upsert.mockRejectedValueOnce({ status: 429 });
-    sdk.dense.deleteNamespace.mockRejectedValueOnce(
-      new Error('cleanup secret'),
-    );
+    sdk.dense.deleteNamespace
+      .mockResolvedValueOnce(undefined) // pre-ingest clear: completion marker
+      .mockResolvedValueOnce(undefined) // pre-ingest clear: chunks
+      .mockRejectedValueOnce(new Error('cleanup secret'));
     await expect(backend.upsertChunks(DOC_B, CHUNKS_B)).rejects.toMatchObject({
       code: 'RATE_LIMITED',
     });

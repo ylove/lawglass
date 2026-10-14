@@ -179,6 +179,15 @@ class PersistentRateLimit extends Error {}
 const SHRINK_AFTER_429S = 3;
 const SHRINK_AFTER_MS = 60_000;
 const MAX_UPSERT_RECORDS = 96;
+// Batch size limits for one ingest. They start at the configured caps and only ever shrink:
+// once a batch had to be halved, later batches start at the size that worked, so only the
+// first throttled batch pays for the search. Worst case that search is about 2 * 96 - 1
+// requests, each 429 costing 1 s + 2 s of backoff before it gives up (about 10 minutes), plus
+// the single-record fallback's own 10-minute budget.
+interface BatchLimits {
+  records: number;
+  tokens: number;
+}
 function nextBackoffMs(ms: number): number {
   return Math.min(ms * 2, 30_000);
 }
@@ -456,6 +465,8 @@ export class PineconeBackend implements RetrievalBackend {
       } catch (error) {
         abortIfNeeded(signal);
         if (!hasStatus(error, 429, 'PineconeRateLimitError')) throw error;
+        // Only 429 is retried. 5xx and 402 (quota) surface at once: retrying them would
+        // either hide an outage or burn the budget on something that cannot recover.
         wasRateLimited = true;
         rateLimits += 1;
         if (
@@ -464,9 +475,14 @@ export class PineconeBackend implements RetrievalBackend {
             this.now() - startedAt >= SHRINK_AFTER_MS)
         )
           throw new PersistentRateLimit();
+        // SDK v9's 429 error currently exposes no headers, so Retry-After is rarely visible
+        // and jittered backoff is the real path; the header is honored if a future SDK adds it.
+        const serverWaitMs = retryAfterMs(error, this.now());
+        // A server-requested wait longer than what is left cannot succeed: fail now.
+        if (serverWaitMs !== undefined && serverWaitMs > deadline - this.now())
+          throw rateLimited();
         const waitMs =
-          retryAfterMs(error, this.now()) ??
-          Math.min(30_000, backoffMs * (0.5 + this.random()));
+          serverWaitMs ?? Math.min(30_000, backoffMs * (0.5 + this.random()));
         // A server-requested wait may exceed our per-wait cap. Split it without
         // retrying early, while still bounding the total operation and allowing abort.
         const retryAt = this.now() + Math.max(1, waitMs);
@@ -491,7 +507,8 @@ export class PineconeBackend implements RetrievalBackend {
     index: PineconeIndex,
     docId: string,
     batch: readonly IntegratedRecord[],
-    signal?: AbortSignal,
+    signal: AbortSignal | undefined,
+    limits: BatchLimits,
   ): Promise<unknown[]> {
     try {
       const response = await this.retryRateLimit(
@@ -504,15 +521,27 @@ export class PineconeBackend implements RetrievalBackend {
     } catch (error) {
       if (!(error instanceof PersistentRateLimit)) throw error;
       const middle = Math.ceil(batch.length / 2);
-      return [
-        ...(await this.upsertBatch(
-          index,
-          docId,
-          batch.slice(0, middle),
-          signal,
-        )),
-        ...(await this.upsertBatch(index, docId, batch.slice(middle), signal)),
-      ];
+      const batchTokens = batch.reduce(
+        (sum, r) => sum + estimateTokens(String(r.embed_text)),
+        0,
+      );
+      limits.records = Math.min(limits.records, middle);
+      limits.tokens = Math.min(limits.tokens, Math.ceil(batchTokens / 2));
+      const first = await this.upsertBatch(
+        index,
+        docId,
+        batch.slice(0, middle),
+        signal,
+        limits,
+      );
+      const second = await this.upsertBatch(
+        index,
+        docId,
+        batch.slice(middle),
+        signal,
+        limits,
+      );
+      return [...first, ...second];
     }
   }
   private async remove(docId: string): Promise<void> {
@@ -547,7 +576,14 @@ export class PineconeBackend implements RetrievalBackend {
       const wasComplete = await this.isComplete(docId);
       // A failed update can leave the indexes inconsistent, including across restarts.
       if (wasComplete) await this.removeCompletion(docId);
+      // A late in-flight write from an earlier failed attempt must not leave orphans, so a
+      // first ingest starts from empty namespaces. (An update was handled above.)
+      if (!wasComplete) await this.remove(docId);
       let usage = { ...ZERO_USAGE };
+      const limits: BatchLimits = {
+        records: MAX_UPSERT_RECORDS,
+        tokens: this.config.upsertMaxBatchTokens,
+      };
       try {
         // 96 text records; NDJSON must also stay below 2 MB, including UTF-8 and separators.
         let offset = 0;
@@ -560,7 +596,7 @@ export class PineconeBackend implements RetrievalBackend {
           let tokens = 0;
           while (
             offset + batch.length < records.length &&
-            batch.length < MAX_UPSERT_RECORDS
+            batch.length < limits.records
           ) {
             const record = records[offset + batch.length];
             if (!record) break;
@@ -568,10 +604,7 @@ export class PineconeBackend implements RetrievalBackend {
             const recordTokens = estimateTokens(String(record.embed_text));
             if (bytes + size > 2_000_000) break;
             // An oversized single record still goes alone; the token cap only groups records.
-            if (
-              batch.length > 0 &&
-              tokens + recordTokens > this.config.upsertMaxBatchTokens
-            )
+            if (batch.length > 0 && tokens + recordTokens > limits.tokens)
               break;
             batch.push(record);
             bytes += size;
@@ -584,6 +617,7 @@ export class PineconeBackend implements RetrievalBackend {
               docId,
               batch,
               signal,
+              limits,
             );
             // SDK 9.0.0 returns void here. Unreported usage stays zero; never estimate billed tokens.
             for (const response of responses)
