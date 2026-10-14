@@ -13,6 +13,8 @@
   --band-muted: #c9d8ec;
   --accent: #1d6fb0;
   --accent-ink: #ffffff;
+  --btn: #0f3b6e;
+  --btn-ink: #ffffff;
   --soft: #e5eef8;
   --chip: #c3cedc;
   --focus: #1d6fb0;
@@ -39,6 +41,8 @@
     --band-muted: #a9c1e0;
     --accent: #6db3ee;
     --accent-ink: #0a111d;
+    --btn: #6db3ee;
+    --btn-ink: #0a111d;
     --soft: #142338;
     --chip: #2e3f58;
     --focus: #6db3ee;
