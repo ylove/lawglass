@@ -3,6 +3,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BRAND } from '../core/brand.js';
 import { App } from './App.js';
+import './styles.css';
 
 document.title = BRAND.displayName;
 const root = document.getElementById('root');
