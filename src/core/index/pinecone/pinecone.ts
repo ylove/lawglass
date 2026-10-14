@@ -66,6 +66,7 @@ export interface PineconeBackendOptions {
   config?: Partial<PineconeSettings>;
   client?: PineconeClient;
   now?: () => number;
+  random?: () => number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   logUsage?: (event: {
     backend: 'pinecone';
@@ -160,6 +161,81 @@ function abortIfNeeded(signal?: AbortSignal): void {
   if (signal?.aborted)
     throw new DOMException('The operation was aborted.', 'AbortError');
 }
+function rateLimited(): AppError {
+  return new AppError(
+    'RATE_LIMITED',
+    'Pinecone rate-limit retry budget exhausted.',
+    {
+      userMessage:
+        "Pinecone's Starter tier is rate-limited for requests or embedding tokens. Please retry later.",
+    },
+  );
+}
+function nextBackoffMs(ms: number): number {
+  return Math.min(ms * 2, 30_000);
+}
+function retryAfterMs(error: unknown, now: number): number | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  let value: unknown = 'retryAfter' in error ? error.retryAfter : undefined;
+  const response = 'response' in error ? error.response : undefined;
+  const headers =
+    'headers' in error
+      ? error.headers
+      : typeof response === 'object' &&
+          response !== null &&
+          'headers' in response
+        ? response.headers
+        : undefined;
+  if (value === undefined) {
+    if (headers instanceof Headers) value = headers.get('retry-after');
+    else if (typeof headers === 'object' && headers !== null)
+      value = Object.entries(headers).find(
+        ([key]) => key.toLowerCase() === 'retry-after',
+      )?.[1];
+  }
+  if (typeof value !== 'number' && typeof value !== 'string') return undefined;
+  const seconds =
+    typeof value === 'number'
+      ? value
+      : /^[+-]?\d+(\.\d+)?$/.test(value.trim())
+        ? Number(value)
+        : NaN;
+  if (Number.isFinite(seconds))
+    return seconds >= 0 ? seconds * 1_000 : undefined;
+  const date = typeof value === 'string' ? Date.parse(value) : NaN;
+  return Number.isFinite(date) ? Math.max(0, date - now) : undefined;
+}
+// The SDK records API has no signal option. Stop waiting promptly; an in-flight
+// write may still finish remotely, but must never publish ingest completion here.
+async function boundedAttempt<T>(
+  run: () => Promise<T>,
+  remainingMs: number,
+  timeoutError: AppError,
+  signal?: AbortSignal,
+): Promise<T> {
+  abortIfNeeded(signal);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const interrupted = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(timeoutError);
+    }, remainingMs);
+    onAbort = () => {
+      reject(new DOMException('The operation was aborted.', 'AbortError'));
+    };
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    const attempt = Promise.resolve().then(() => {
+      abortIfNeeded(signal);
+      return run();
+    });
+    return await Promise.race([attempt, interrupted]);
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
+  }
+}
 async function safe<T>(run: () => Promise<T>): Promise<T> {
   try {
     return await run();
@@ -173,8 +249,7 @@ async function safe<T>(run: () => Promise<T>): Promise<T> {
         userMessage:
           'Pinecone rejected the API key in PINECONE_API_KEY (or your saved config). Check it and try again.',
       });
-    if (hasStatus(error, 429, 'PineconeRateLimitError'))
-      throw new AppError('RATE_LIMITED');
+    if (hasStatus(error, 429, 'PineconeRateLimitError')) throw rateLimited();
     throw new AppError('BACKEND_UNAVAILABLE');
   }
 }
@@ -185,6 +260,7 @@ export class PineconeBackend implements RetrievalBackend {
   readonly indexNames: { dense: string; sparse: string };
   private readonly client: PineconeClient;
   private readonly now: () => number;
+  private readonly random: () => number;
   private readonly sleep: NonNullable<PineconeBackendOptions['sleep']>;
   private readonly logUsage: NonNullable<PineconeBackendOptions['logUsage']>;
   private initialization:
@@ -200,9 +276,11 @@ export class PineconeBackend implements RetrievalBackend {
     };
     const apiKey = (options.apiKey ?? process.env.PINECONE_API_KEY)?.trim();
     if (!options.client && !apiKey) throw new AppError('MISSING_KEY');
+    // The adapter owns the retry budget and cancellation; don't stack SDK retries.
     this.client =
       options.client ?? new Pinecone({ apiKey: apiKey ?? '', maxRetries: 0 });
     this.now = options.now ?? Date.now;
+    this.random = options.random ?? Math.random;
     this.sleep =
       options.sleep ?? ((ms, signal) => delay(ms, undefined, { signal }));
     this.logUsage =
@@ -340,7 +418,51 @@ export class PineconeBackend implements RetrievalBackend {
       // The write succeeded; delayed visibility must not turn it into a failed ingest/delete.
       if (remainingMs <= 0) return;
       await this.sleep(Math.min(backoffMs, remainingMs), signal);
-      backoffMs *= 2;
+      backoffMs = nextBackoffMs(backoffMs);
+    }
+  }
+  private async retryRateLimit<T>(
+    run: () => Promise<T>,
+    budgetMs: number,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const deadline = this.now() + budgetMs;
+    let backoffMs = 1_000;
+    let wasRateLimited = false;
+    for (;;) {
+      abortIfNeeded(signal);
+      const remainingMs = deadline - this.now();
+      if (remainingMs <= 0) throw rateLimited();
+      try {
+        const result = await boundedAttempt(
+          run,
+          remainingMs,
+          wasRateLimited ? rateLimited() : new AppError('BACKEND_UNAVAILABLE'),
+          signal,
+        );
+        abortIfNeeded(signal);
+        return result;
+      } catch (error) {
+        abortIfNeeded(signal);
+        if (!hasStatus(error, 429, 'PineconeRateLimitError')) throw error;
+        wasRateLimited = true;
+        const waitMs =
+          retryAfterMs(error, this.now()) ??
+          Math.min(30_000, backoffMs * (0.5 + this.random()));
+        // A server-requested wait may exceed our per-wait cap. Split it without
+        // retrying early, while still bounding the total operation and allowing abort.
+        const retryAt = this.now() + Math.max(1, waitMs);
+        while (this.now() < retryAt) {
+          abortIfNeeded(signal);
+          const remainingMs = deadline - this.now();
+          if (remainingMs <= 0) throw rateLimited();
+          await this.sleep(
+            Math.min(30_000, retryAt - this.now(), remainingMs),
+            signal,
+          );
+        }
+        backoffMs = nextBackoffMs(backoffMs);
+      }
     }
   }
   private async remove(docId: string): Promise<void> {
@@ -380,6 +502,9 @@ export class PineconeBackend implements RetrievalBackend {
         // 96 text records; NDJSON must also stay below 2 MB, including UTF-8 and separators.
         let offset = 0;
         while (offset < records.length) {
+          if (offset > 0 && this.config.upsertBatchDelayMs > 0) {
+            await this.sleep(this.config.upsertBatchDelayMs, signal);
+          }
           const batch: typeof records = [];
           let bytes = 0;
           while (offset + batch.length < records.length && batch.length < 96) {
@@ -392,9 +517,14 @@ export class PineconeBackend implements RetrievalBackend {
           }
           for (const kind of ['dense', 'sparse'] as const) {
             abortIfNeeded(signal);
-            const response = await indexes[kind]
-              .namespace(docId)
-              .upsertRecords({ records: batch });
+            const response = await this.retryRateLimit(
+              () =>
+                indexes[kind]
+                  .namespace(docId)
+                  .upsertRecords({ records: batch }),
+              this.config.upsertRetryBudgetMs,
+              signal,
+            );
             // SDK 9.0.0 returns void here. Unreported usage stays zero; never estimate billed tokens.
             usage = addUsage(usage, this.report(`upsert:${kind}`, response));
           }
@@ -403,18 +533,21 @@ export class PineconeBackend implements RetrievalBackend {
         }
         // Publish durable completion only after every batch succeeds in both indexes.
         abortIfNeeded(signal);
-        const response = await indexes.dense
-          .namespace(completionNamespace(docId))
-          .upsertRecords({
-            records: [
-              {
-                _id: COMPLETION_ID,
-                embed_text: 'Document ingest complete.',
-                doc_id: docId,
-                version: 1,
-              },
-            ],
-          });
+        const response = await this.retryRateLimit(
+          () =>
+            indexes.dense.namespace(completionNamespace(docId)).upsertRecords({
+              records: [
+                {
+                  _id: COMPLETION_ID,
+                  embed_text: 'Document ingest complete.',
+                  doc_id: docId,
+                  version: 1,
+                },
+              ],
+            }),
+          this.config.upsertRetryBudgetMs,
+          signal,
+        );
         usage = addUsage(usage, this.report('upsert:completion', response));
         const ids = this.expectedIds.get(docId) ?? new Set<string>();
         for (const record of records) ids.add(String(record._id));
@@ -440,14 +573,19 @@ export class PineconeBackend implements RetrievalBackend {
       const indexes = await this.readyIndexes(req.signal);
       let response: unknown;
       try {
-        response = await indexes[req.index].namespace(req.docId).searchRecords({
-          query: {
-            topK: req.topK,
-            inputs: { text: req.query },
-            ...(filter ? { filter } : {}),
-          },
-          fields: STORED_FIELDS,
-        });
+        response = await this.retryRateLimit(
+          () =>
+            indexes[req.index].namespace(req.docId).searchRecords({
+              query: {
+                topK: req.topK,
+                inputs: { text: req.query },
+                ...(filter ? { filter } : {}),
+              },
+              fields: STORED_FIELDS,
+            }),
+          this.config.queryRetryBudgetMs,
+          req.signal,
+        );
       } catch (error) {
         if (!hasStatus(error, 404, 'PineconeNotFoundError')) throw error;
         return { hits: [], usage: { ...ZERO_USAGE } };
@@ -508,18 +646,23 @@ export class PineconeBackend implements RetrievalBackend {
           'Rerank accepts at most 100 chunks.',
         );
       const topN = Math.min(req.topN, req.hits.length);
-      const response = await this.client.inference.rerank({
-        model: this.config.rerankModel,
-        query: req.query,
-        documents: req.hits.map((hit) => ({
-          id: hit.chunk.id,
-          text: contextualText(hit.chunk),
-        })),
-        rankFields: ['text'],
-        topN,
-        returnDocuments: false,
-        parameters: { truncate: 'END' },
-      });
+      const response = await this.retryRateLimit(
+        () =>
+          this.client.inference.rerank({
+            model: this.config.rerankModel,
+            query: req.query,
+            documents: req.hits.map((hit) => ({
+              id: hit.chunk.id,
+              text: contextualText(hit.chunk),
+            })),
+            rankFields: ['text'],
+            topN,
+            returnDocuments: false,
+            parameters: { truncate: 'END' },
+          }),
+        this.config.queryRetryBudgetMs,
+        req.signal,
+      );
       abortIfNeeded(req.signal);
       const parsed = RerankResponse.parse(response);
       const seen = new Set<number>();

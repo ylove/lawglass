@@ -67,6 +67,8 @@ Keyless HTTP endpoints are accepted only on `localhost`, `127.0.0.1` or `[::1]`.
 
 Embeddings never go through the LLM provider.
 
+Pinecone retries 429 responses with jittered exponential backoff, honors exposed `Retry-After` values, and supports cancellation. Each write request (including the completion marker) has a 10-minute budget; searches and reranking have a 60-second budget. Set `LEGSUM_PINECONE_UPSERT_RETRY_BUDGET_MS` or `LEGSUM_PINECONE_QUERY_RETRY_BUDGET_MS` to override these budgets. Optional `LEGSUM_PINECONE_UPSERT_BATCH_DELAY_MS` pacing waits between chunk batches after both indexes have accepted the previous batch. It defaults to zero and never delays a single-batch bill. These environment names use the prefix from [`BRAND.envPrefix`](src/core/brand.ts).
+
 ### Status
 
 | Piece                                                                   | State on `main`                                                           |

@@ -45,10 +45,51 @@ function setup(
     logUsage,
     config: { ...defaults, pollIntervalMs: 1, timeoutMs: 20, ...config },
     now: () => timeMs,
+    random: () => 0.5,
     sleep,
     ...timing,
   });
   return { backend, sdk, logUsage, sleep };
+}
+
+type RetriedOperation = 'upsert' | 'search' | 'rerank';
+async function retrySetup(
+  operation: RetriedOperation,
+  config: Parameters<typeof pineconeConfig>[0] = {},
+  timing: Pick<PineconeBackendOptions, 'now' | 'sleep'> = {},
+) {
+  const state = setup(config, timing);
+  const { backend, sdk } = state;
+  await backend.ensureReady();
+  if (operation !== 'upsert') await backend.upsertChunks(DOC_A, CHUNKS_A);
+  const mock =
+    operation === 'upsert'
+      ? sdk.sparse.upsert
+      : operation === 'search'
+        ? sdk.dense.search
+        : sdk.rerank;
+  mock.mockClear();
+  state.logUsage.mockClear();
+  state.sleep.mockClear();
+  const run = (signal?: AbortSignal) => {
+    if (operation === 'upsert')
+      return backend.upsertChunks(DOC_A, CHUNKS_A, undefined, signal);
+    if (operation === 'search')
+      return backend.search({
+        docId: DOC_A,
+        index: 'dense',
+        query: 'town',
+        topK: 2,
+        signal,
+      });
+    return backend.rerank({
+      query: 'town',
+      hits: CHUNKS_A.slice(0, 2).map((chunk) => ({ chunk, score: 1 })),
+      topN: 1,
+      signal,
+    });
+  };
+  return { ...state, mock, run };
 }
 
 // Reuse the real behavioral contract and MemoryBackend to drive fake SDK scoring.
@@ -66,6 +107,264 @@ describeBackendContract('pinecone (mock SDK)', () => {
 });
 
 describe('PineconeBackend', () => {
+  describe('rate-limit retries', () => {
+    it.each(['upsert', 'search', 'rerank'] as const)(
+      'retries %s with exponential jittered waits and reports only successful usage',
+      async (operation) => {
+        const { mock, run, sleep, logUsage } = await retrySetup(operation);
+        mock
+          .mockRejectedValueOnce({ status: 429, message: 'secret-key' })
+          .mockRejectedValueOnce({
+            name: 'PineconeRateLimitError',
+            message: 'secret-key',
+          })
+          .mockRejectedValueOnce(
+            new Errors.PineconeUnmappedHttpError({
+              status: 429,
+              body: 'secret-key',
+            }),
+          );
+        await expect(run()).resolves.toHaveProperty('usage');
+        expect(mock).toHaveBeenCalledTimes(4);
+        expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([
+          1_000, 2_000, 4_000,
+        ]);
+        expect(logUsage.mock.calls).toHaveLength(
+          operation === 'upsert' ? 5 : 1,
+        );
+        expect(JSON.stringify(logUsage.mock.calls)).not.toContain('secret-key');
+      },
+    );
+    it.each(['upsert', 'search', 'rerank'] as const)(
+      'bounds the total %s retry time and sanitizes the error',
+      async (operation) => {
+        const { mock, run, sleep } = await retrySetup(operation, {
+          upsertRetryBudgetMs: 2_500,
+          queryRetryBudgetMs: 2_500,
+        });
+        mock.mockRejectedValue({ status: 429, message: 'secret-key' });
+        const error: unknown = await run().catch((error: unknown) => error);
+        expect(error).toMatchObject({
+          code: 'RATE_LIMITED',
+          cause: undefined,
+        });
+        expect((error as AppError).userMessage).toMatch(
+          /Starter tier.*retry later/,
+        );
+        expect(mock).toHaveBeenCalledTimes(2);
+        expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([1_000, 1_500]);
+        expect(String(error) + JSON.stringify(error)).not.toContain(
+          'secret-key',
+        );
+      },
+    );
+    it.each(['upsert', 'search', 'rerank'] as const)(
+      'aborts %s during a retry wait without another request',
+      async (operation) => {
+        const controller = new AbortController();
+        const sleep = vi.fn((_ms: number, signal?: AbortSignal) => {
+          expect(signal).toBe(controller.signal);
+          controller.abort('secret-key');
+          return Promise.resolve();
+        });
+        const { mock, run } = await retrySetup(operation, {}, { sleep });
+        mock.mockRejectedValue({ status: 429 });
+        await expect(run(controller.signal)).rejects.toMatchObject({
+          name: 'AbortError',
+          message: 'The operation was aborted.',
+        });
+        expect(mock).toHaveBeenCalledTimes(1);
+        expect(sleep).toHaveBeenCalledTimes(1);
+      },
+    );
+    it.each(['upsert', 'search', 'rerank'] as const)(
+      'aborts %s while the SDK request is in flight',
+      async (operation) => {
+        const controller = new AbortController();
+        const { mock, run } = await retrySetup(operation);
+        mock.mockImplementationOnce(() => {
+          controller.abort('secret-key');
+          return new Promise<never>(() => undefined);
+        });
+        await expect(run(controller.signal)).rejects.toMatchObject({
+          name: 'AbortError',
+          message: 'The operation was aborted.',
+        });
+        expect(mock).toHaveBeenCalledTimes(1);
+      },
+    );
+    it.each([
+      { retryAfter: 3 },
+      { headers: { 'Retry-After': '3' } },
+      { response: { headers: new Headers({ 'retry-after': '3' }) } },
+      { headers: { 'retry-after': new Date(3_000).toUTCString() } },
+    ])('honors retry-after in the exposed SDK error: %j', async (fields) => {
+      const { mock, run, sleep } = await retrySetup('search');
+      mock.mockRejectedValueOnce({ status: 429, ...fields });
+      await run();
+      expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([3_000]);
+    });
+    it('handles synchronous SDK failure during abort without an unhandled rejection', async () => {
+      const controller = new AbortController();
+      const { mock, run } = await retrySetup('search');
+      mock.mockImplementationOnce(() => {
+        controller.abort('secret-key');
+        throw new Error('secret-key');
+      });
+      await expect(run(controller.signal)).rejects.toMatchObject({
+        name: 'AbortError',
+        message: 'The operation was aborted.',
+      });
+      expect(mock).toHaveBeenCalledTimes(1);
+    });
+    it.each(['secret-key', '-1', Infinity, {}])(
+      'ignores invalid retry-after values: %j',
+      async (retryAfter) => {
+        const { mock, run, sleep } = await retrySetup('search');
+        mock.mockRejectedValueOnce({ status: 429, retryAfter });
+        await run();
+        expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([1_000]);
+      },
+    );
+    it('honors a long retry-after without any single wait exceeding 30 seconds', async () => {
+      const { mock, run, sleep } = await retrySetup('search', {
+        queryRetryBudgetMs: 90_000,
+      });
+      mock.mockRejectedValueOnce({
+        status: 429,
+        headers: { 'retry-after': '70' },
+      });
+      await run();
+      expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([
+        30_000, 30_000, 10_000,
+      ]);
+      expect(mock).toHaveBeenCalledTimes(2);
+    });
+    it('stops at the budget when retry-after exceeds it', async () => {
+      const { mock, run, sleep } = await retrySetup('search');
+      mock.mockRejectedValueOnce({ status: 429, retryAfter: 120 });
+      await expect(run()).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+      expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([30_000, 30_000]);
+      expect(mock).toHaveBeenCalledTimes(1);
+    });
+    it('caps exponential waits and applies jitter', async () => {
+      const random = vi.spyOn(Math, 'random').mockReturnValue(0.75);
+      // Use the production random source while retaining a simulated clock.
+      const sdk = fakeSdk();
+      let time = 0;
+      const waits: number[] = [];
+      const backend = new PineconeBackend({
+        client: sdk.client,
+        config: { ...defaults, queryRetryBudgetMs: 300_000 },
+        logUsage: () => undefined,
+        now: () => time,
+        sleep: (ms) => {
+          waits.push(ms);
+          time += ms;
+          return Promise.resolve();
+        },
+      });
+      for (let n = 0; n < 8; n++)
+        sdk.dense.search.mockRejectedValueOnce({ status: 429 });
+      await backend.search({
+        docId: DOC_A,
+        index: 'dense',
+        query: 'q',
+        topK: 1,
+      });
+      expect(waits).toEqual([
+        1_250, 2_500, 5_000, 10_000, 20_000, 30_000, 30_000, 30_000,
+      ]);
+      expect(random).toHaveBeenCalledTimes(8);
+    });
+    it.each([7, 97, 193])(
+      'paces only between batches for %i chunks when configured',
+      async (count) => {
+        const { backend, sleep } = setup({ upsertBatchDelayMs: 50 });
+        const chunks = Array.from({ length: count }, (_, n) => ({
+          ...CHUNKS_A[0]!,
+          id: `${DOC_A}:sec-1:${String(n)}`,
+        }));
+        await backend.upsertChunks(DOC_A, chunks);
+        expect(sleep.mock.calls.map(([ms]) => ms)).toEqual(
+          Array.from({ length: Math.ceil(count / 96) - 1 }, () => 50),
+        );
+      },
+    );
+    it('enforces the query budget even when a retry request never settles', async () => {
+      vi.useFakeTimers();
+      try {
+        const sdk = fakeSdk();
+        const backend = new PineconeBackend({
+          client: sdk.client,
+          config: { ...defaults, queryRetryBudgetMs: 2_000 },
+          logUsage: () => undefined,
+          now: Date.now,
+          random: () => 0.5,
+          sleep: (ms) =>
+            new Promise((resolve) => {
+              setTimeout(resolve, ms);
+            }),
+        });
+        sdk.dense.search
+          .mockRejectedValueOnce({ status: 429 })
+          .mockImplementationOnce(() => new Promise<never>(() => undefined));
+        const result = backend.search({
+          docId: DOC_A,
+          index: 'dense',
+          query: 'q',
+          topK: 1,
+        });
+        const rejected = expect(result).rejects.toMatchObject({
+          code: 'RATE_LIMITED',
+        });
+        await vi.advanceTimersByTimeAsync(2_000);
+        await rejected;
+        expect(sdk.dense.search).toHaveBeenCalledTimes(2);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+    it('retries dense chunk writes and the completion marker before declaring completion', async () => {
+      const { backend, sdk, sleep } = setup();
+      const write = sdk.dense.upsert.getMockImplementation()!;
+      sdk.dense.upsert
+        .mockRejectedValueOnce({ status: 429 })
+        .mockImplementationOnce(write)
+        .mockRejectedValueOnce({ status: 429 });
+      await backend.upsertChunks(DOC_A, CHUNKS_A);
+      expect(sdk.dense.upsert).toHaveBeenCalledTimes(4);
+      expect(sleep.mock.calls.map(([ms]) => ms)).toEqual([1_000, 1_000]);
+      expect(await backend.hasDocument(DOC_A)).toBe(true);
+    });
+    it('retries sparse searches too', async () => {
+      const { backend, sdk } = setup();
+      sdk.sparse.search.mockRejectedValueOnce({ status: 429 });
+      await backend.search({
+        docId: DOC_A,
+        index: 'sparse',
+        query: 'q',
+        topK: 1,
+      });
+      expect(sdk.sparse.search).toHaveBeenCalledTimes(2);
+    });
+    it.each([401, 404, 500])(
+      'does not retry other HTTP statuses: %i',
+      async (status) => {
+        const { mock, run, sleep } = await retrySetup('search');
+        mock.mockRejectedValueOnce({ status, message: 'secret-key' });
+        if (status === 404)
+          await expect(run()).resolves.toEqual({ hits: [], usage: ZERO_USAGE });
+        else
+          await expect(run()).rejects.toMatchObject({
+            code: status === 401 ? 'MISSING_KEY' : 'BACKEND_UNAVAILABLE',
+          });
+        expect(mock).toHaveBeenCalledTimes(1);
+        expect(sleep).not.toHaveBeenCalled();
+      },
+    );
+  });
   it('creates both branded model indexes idempotently and uses their hosts', async () => {
     const { backend, sdk } = setup();
     await Promise.all([backend.ensureReady(), backend.ensureReady()]);
@@ -211,7 +510,7 @@ describe('PineconeBackend', () => {
     },
   );
   it('batches at 96 records with identical IDs and namespaces, progress only after both writes', async () => {
-    const { backend, sdk, logUsage } = setup();
+    const { backend, sdk, logUsage, sleep } = setup();
     await backend.ensureReady();
     const chunks = Array.from({ length: 193 }, (_, n) => ({
       ...CHUNKS_A[0]!,
@@ -233,6 +532,7 @@ describe('PineconeBackend', () => {
     ]);
     expect(response.usage).toEqual(ZERO_USAGE);
     expect(logUsage).toHaveBeenCalledTimes(9);
+    expect(sleep).not.toHaveBeenCalled();
     await backend.settle();
   });
   it('also batches by NDJSON byte size, including multibyte text', async () => {
@@ -462,7 +762,7 @@ describe('PineconeBackend', () => {
     });
   });
   it('cleans up partial first ingests and never reports a failed batch as done', async () => {
-    const { backend, sdk } = setup();
+    const { backend, sdk } = setup({ upsertRetryBudgetMs: 1 });
     await backend.ensureReady();
     sdk.sparse.upsert.mockRejectedValueOnce({ status: 429 });
     const progress = vi.fn();
@@ -477,7 +777,7 @@ describe('PineconeBackend', () => {
   it.each([7, 97])(
     'recovers %i chunks after sparse failure and failed cleanup, including a backend restart',
     async (count) => {
-      const { backend, sdk } = setup();
+      const { backend, sdk } = setup({ upsertRetryBudgetMs: 1 });
       await backend.ensureReady();
       const chunks =
         count === 7
@@ -533,7 +833,7 @@ describe('PineconeBackend', () => {
     },
   );
   it('does not report completion when publishing the marker and cleaning up both fail', async () => {
-    const { backend, sdk } = setup();
+    const { backend, sdk } = setup({ upsertRetryBudgetMs: 1 });
     await backend.ensureReady();
     sdk.dense.upsert
       .mockImplementationOnce(sdk.dense.upsert.getMockImplementation()!)
@@ -639,7 +939,7 @@ describe('PineconeBackend', () => {
   ])(
     'maps SDK errors and drops all raw detail and causes',
     async (error, code) => {
-      const { backend, sdk, logUsage } = setup();
+      const { backend, sdk, logUsage } = setup({ queryRetryBudgetMs: 1 });
       await backend.ensureReady();
       sdk.dense.search.mockRejectedValueOnce(error);
       const failure: unknown = await backend
@@ -822,7 +1122,7 @@ describe('PineconeBackend', () => {
     expect(hits.map((hit) => hit.score)).toEqual([2, 1]);
   });
   it('keeps existing chunks after a failed re-upsert, invalidates completion, and sanitizes cleanup errors', async () => {
-    const { backend, sdk } = setup();
+    const { backend, sdk } = setup({ upsertRetryBudgetMs: 1 });
     await backend.ensureReady();
     await backend.upsertChunks(DOC_A, CHUNKS_A);
     sdk.sparse.upsert.mockRejectedValueOnce(new Error('network'));

@@ -403,6 +403,11 @@ export const PineconeSettings = z.object({
     .default(BRAND.indexPrefix),
   pollIntervalMs: z.number().int().positive().default(1_000),
   timeoutMs: z.number().int().positive().default(120_000),
+  // Each SDK write gets its own budget, so a large document can span minute limits.
+  upsertRetryBudgetMs: z.number().int().positive().default(600_000),
+  queryRetryBudgetMs: z.number().int().positive().default(60_000),
+  // Opt-in pacing between chunk batches; a single-batch bill never waits.
+  upsertBatchDelayMs: z.number().int().nonnegative().default(0),
 });
 export type PineconeSettings = z.infer<typeof PineconeSettings>;
 
@@ -418,9 +423,19 @@ export function pineconeConfig(
     cloud: env[envVar('PINECONE_CLOUD')],
     region: env[envVar('PINECONE_REGION')],
   };
+  const numericEnv = {
+    upsertRetryBudgetMs: env[envVar('PINECONE_UPSERT_RETRY_BUDGET_MS')],
+    queryRetryBudgetMs: env[envVar('PINECONE_QUERY_RETRY_BUDGET_MS')],
+    upsertBatchDelayMs: env[envVar('PINECONE_UPSERT_BATCH_DELAY_MS')],
+  };
   const parsed = PineconeSettings.safeParse({
     ...Object.fromEntries(
       Object.entries(fromEnv).filter(([, value]) => value?.trim()),
+    ),
+    ...Object.fromEntries(
+      Object.entries(numericEnv)
+        .filter(([, value]) => value?.trim())
+        .map(([key, value]) => [key, Number(value)]),
     ),
     ...overrides,
   });

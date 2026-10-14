@@ -12,6 +12,9 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { createRuntimeFrom } from '../cli/runtime.js';
 import { fakePineconeClient } from '../../tests/contracts/fake-pinecone-client.js';
 import { AppError, GoldenSet } from '../core/model/index.js';
+import { pineconeConfig } from '../core/config.js';
+import { MODEL_LOCK } from '../core/index/local/models.js';
+import { envVar } from '../core/brand.js';
 import { DetailedEvalRun } from './details.js';
 import {
   makePipelineEnv,
@@ -84,6 +87,11 @@ test('retrieval-only eval uses the Pinecone runtime with a fake client and no LL
   await runEvalCommand({ ...where, backend: 'pinecone' }, deps({ runtime }));
   const md = await readFile(join(dir, 'eval', 'results.md'), 'utf8');
   expect(md).toContain('| pinecone | hybrid_rerank (rrf) |');
+  const config = pineconeConfig({}, {});
+  expect(md).toContain(
+    `- Retrieval models: pinecone backend: ${config.denseModel} (dense), ${config.sparseModel} (sparse), ${config.rerankModel} (reranker)`,
+  );
+  expect(md).not.toContain('local backend:');
   expect(md).not.toContain('pending (');
   expect(output).toContain('5 rows, 0 pending backends');
   expect(sdk.dense.search).toHaveBeenCalled();
@@ -99,6 +107,10 @@ test('writes results.md and a run JSON, listing pinecone as pending', async () =
   expect(md).toContain('## orchard');
   expect(md).toContain('| local | hybrid_rerank (rrf) |');
   expect(md).toContain('| pinecone | all | pending (backend unavailable) |');
+  expect(md).toContain(
+    `- Retrieval models: local backend: ${MODEL_LOCK.embedding.id} (embedding), ${MODEL_LOCK.reranker.id} (reranker)`,
+  );
+  expect(md).not.toContain('pinecone backend:');
   const runs = await readdir(join(dir, 'eval', 'runs'));
   expect(runs).toEqual(['2026-10-13T12-00-00-000Z.json']);
   const saved = DetailedEvalRun.parse(
@@ -111,6 +123,43 @@ test('writes results.md and a run JSON, listing pinecone as pending', async () =
   expect(md).not.toContain('firstRelevantRank');
   expect(md).not.toContain('top10');
   expect(output).toContain('Wrote ');
+});
+
+test('the mixed-backend header includes actual Pinecone model overrides', async () => {
+  vi.spyOn(console, 'info').mockImplementation(() => undefined);
+  const config = pineconeConfig(
+    {
+      denseModel: 'test-dense',
+      sparseModel: 'test-sparse',
+      rerankModel: 'test-reranker',
+    },
+    {},
+  );
+  const sdk = fakePineconeClient(config);
+  const pinecone = createRuntimeFrom({
+    env: {
+      PINECONE_API_KEY: 'synthetic-key',
+      [envVar('DENSE_MODEL')]: config.denseModel,
+      [envVar('SPARSE_MODEL')]: config.sparseModel,
+      [envVar('RERANK_MODEL')]: config.rerankModel,
+    },
+    homeDir: dir,
+    isTTY: false,
+    createPineconeClient: () => sdk.client,
+  });
+  await runEvalCommand(
+    where,
+    deps({
+      runtime: (options) =>
+        options.backend === 'pinecone'
+          ? pinecone(options)
+          : Promise.resolve(env.runtime),
+    }),
+  );
+  const md = await readFile(join(dir, 'eval', 'results.md'), 'utf8');
+  expect(md).toContain(
+    `- Retrieval models: local backend: ${MODEL_LOCK.embedding.id} (embedding), ${MODEL_LOCK.reranker.id} (reranker); pinecone backend: test-dense (dense), test-sparse (sparse), test-reranker (reranker)`,
+  );
 });
 
 test.each([
@@ -217,6 +266,7 @@ test('a missing key is pending (no key); --mode and --backend narrow the run', a
   );
   const md = await readFile(join(dir, 'out', 'r.md'), 'utf8');
   expect(md).toContain('pending (no key)');
+  expect(md).toContain('- Retrieval models: none ran');
   expect(md).not.toContain('| local |');
 });
 
