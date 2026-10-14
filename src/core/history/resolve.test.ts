@@ -111,8 +111,8 @@ test('explicit version wins; latest follows official list order even with missin
   const plan = resolveHistory(page)!;
   const history: BillHistory = {
     versions: [
-      { code: 'enr', label: 'Enrolled', date: '2024-06-01' },
       { code: 'ih', label: 'Introduced', date: '2024-01-01' },
+      { code: 'enr', label: 'Enrolled', date: '2024-06-01' },
     ],
     actions: [],
     amendments: [],
@@ -139,7 +139,9 @@ test('explicit version wins; latest follows official list order even with missin
       { code: 'ih', label: 'Introduced' },
     ],
   ]) {
-    expect(chooseVersion(plan, { ...history, versions })).toBe('enr');
+    expect(
+      chooseVersion(plan, { ...history, versions: [...versions].reverse() }),
+    ).toBe('enr');
   }
   expect(
     chooseVersion(plan, {
@@ -149,15 +151,12 @@ test('explicit version wins; latest follows official list order even with missin
   ).toBe('ih');
   for (const versions of [
     [],
-    [
-      { code: '', label: 'Unavailable latest' },
-      { code: 'eh', label: 'Engrossed', date: '2024-06-01' },
-    ],
+    [{ code: '', label: 'Unavailable' }],
     [{ code: '../ih', label: 'Bad', date: '2024-01-01' }],
   ]) {
-    expect(() => chooseVersion(plan, { ...history, versions })).toThrow(
-      'The document could not be downloaded.',
-    );
+    expect(() =>
+      chooseVersion(plan, { ...history, versions: [...versions].reverse() }),
+    ).toThrow('The document could not be downloaded.');
   }
   try {
     chooseVersion(plan);
@@ -165,6 +164,25 @@ test('explicit version wins; latest follows official list order even with missin
     expect(error).toBeInstanceOf(AppError);
     expect((error as AppError).userMessage).toContain('specific version URL');
   }
+});
+
+test('an unresolvable newest entry is never skipped for an older text', () => {
+  const plan = resolveHistory(page)!;
+  const history: BillHistory = {
+    versions: [
+      { code: 'eh', label: 'Engrossed' },
+      { code: '', label: 'Enrolled, link missing' },
+    ],
+    actions: [],
+    amendments: [],
+    sources: [],
+  };
+  expect(() => chooseVersion(plan, history)).toThrow(
+    expect.objectContaining({
+      code: 'FETCH_FAILED',
+      userMessage: expect.stringContaining('specific version URL') as unknown,
+    }) as unknown,
+  );
 });
 
 test('hr5009 version-list shape chooses dateless Enrolled first, ahead of the later-dated Public Law', () => {
@@ -175,17 +193,19 @@ test('hr5009 version-list shape chooses dateless Enrolled first, ahead of the la
     '2026-10-14T00:00:00.000Z',
   );
   expect(history.versions.map((item) => item.code)).toEqual([
-    'enr',
-    'eah',
-    'eas',
-    'pcs',
-    'eh',
-    'rh',
     'ih',
-    '',
+    'rh',
+    'eh',
+    'pcs',
+    'eas',
+    'eah',
+    'enr',
   ]);
-  expect(history.versions[0]?.date).toBeUndefined();
-  expect(history.versions.at(-1)?.date).toBe('2024-12-24T04:59:59Z');
+  // The Public Law entry is not bill text, so it is not a version at all.
+  expect(history.versions.some((item) => item.label === 'Public Law')).toBe(
+    false,
+  );
+  expect(history.versions.at(-1)?.date).toBeUndefined();
   expect(chooseVersion(plan, history)).toBe('enr');
 });
 
