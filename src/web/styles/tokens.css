@@ -1,38 +1,55 @@
-/* Calm, neutral styling. One teal accent; no party-coded red or blue. Tokens are CSS variables
-   so light and dark themes only change values. Contrast targets WCAG AA or better. */
+/* "Civic modern": blue on cool gray under a deep-navy masthead. Blue is never paired with
+   party red; edits are carried by shape (strike / underline) as well as color. Tokens are CSS
+   variables so light and dark themes only change values. Contrast ratios are listed in the PR. */
 :root {
   color-scheme: light dark;
-  --bg: #f6f5f1;
+  --bg: #f2f5f9;
   --surface: #ffffff;
-  --ink: #1d2529;
-  --muted: #55616a;
-  --line: #cfd5d8;
-  --accent: #0b6560;
+  --ink: #0e1b2e;
+  --muted: #4f5d73;
+  --line: #d5dde8;
+  --band: #0f3b6e;
+  --band-ink: #ffffff;
+  --band-muted: #c9d8ec;
+  --accent: #1d6fb0;
   --accent-ink: #ffffff;
-  --accent-soft: #e2f0ee;
-  --focus: #0b6560;
-  --ins-bg: #e3efe9;
-  --del-bg: #ece8e1;
-  --warn-bg: #f4eedd;
+  --btn: #0f3b6e;
+  --btn-ink: #ffffff;
+  --soft: #e5eef8;
+  --chip: #c3cedc;
+  --focus: #1d6fb0;
+  --del-bg: #f8e5c4;
+  --del-ink: #6b4200;
+  --ins-bg: #dce9f8;
+  --warn-bg: #eef2f8;
   --err-ink: #8a2d12;
+  --radius: 1rem;
+  --radius-sm: 0.75rem;
   --font:
-    system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial,
-    sans-serif;
+    'Instrument Sans', system-ui, -apple-system, 'Segoe UI', Roboto,
+    'Helvetica Neue', Arial, sans-serif;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #121819;
-    --surface: #1b2326;
-    --ink: #e8edee;
-    --muted: #aab5ba;
-    --line: #36424a;
-    --accent: #5fc2b8;
-    --accent-ink: #0c1415;
-    --accent-soft: #1f3331;
-    --focus: #8fd8d0;
-    --ins-bg: #1f3329;
-    --del-bg: #2c2a27;
-    --warn-bg: #332e1f;
+    --bg: #0a111d;
+    --surface: #111b2c;
+    --ink: #e7edf6;
+    --muted: #9ba9be;
+    --line: #23324a;
+    --band: #0d2a4d;
+    --band-ink: #f2f6fb;
+    --band-muted: #a9c1e0;
+    --accent: #6db3ee;
+    --accent-ink: #0a111d;
+    --btn: #6db3ee;
+    --btn-ink: #0a111d;
+    --soft: #142338;
+    --chip: #2e3f58;
+    --focus: #6db3ee;
+    --del-bg: #3b2c10;
+    --del-ink: #f2c47c;
+    --ins-bg: #16304f;
+    --warn-bg: #142338;
     --err-ink: #f0a98f;
   }
 }

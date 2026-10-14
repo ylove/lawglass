@@ -1,5 +1,6 @@
 /* Entry point: partials are imported in cascade order. Keep this order; later files may
    override earlier ones at equal specificity. */
+@import './fonts.css';
 @import './styles/tokens.css';
 @import './styles/base.css';
 @import './styles/layout.css';

@@ -1,14 +1,26 @@
-.doc-header dl {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
-  gap: 0.5rem 1rem;
+/* The bill's identity lives in the masthead band (see MetadataHeader). */
+.doc-header h2 {
   margin: 0 0 0.75rem;
+  font-size: clamp(1.9rem, 5vw, 3.25rem);
+  font-weight: 500;
+  line-height: 1.05;
+  letter-spacing: -0.03em;
+  color: var(--band-ink);
+}
+.doc-header dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 2rem;
+  margin: 0;
 }
 .doc-header dt {
-  color: var(--muted);
-  font-size: 0.875rem;
+  color: var(--band-muted);
+  font-size: 0.85rem;
 }
 .doc-header dd {
   margin: 0;
-  font-weight: 600;
+  font-weight: 500;
+}
+.doc-notes .note:first-child {
+  margin-top: 0;
 }
