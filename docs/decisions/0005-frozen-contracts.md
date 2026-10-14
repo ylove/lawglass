@@ -23,3 +23,13 @@ The RC is built by several agents working in parallel, each in its own branch: p
 
 - Parallel tracks can build and unit-test against the doubles before the real adapters exist.
 - A change to anything exported from `src/core/model/` needs a `contract-change` issue and a review by the orchestrator. Feature PRs must not edit these files.
+
+## Amendment 2026-10-14 (#117)
+
+The rc.2 round grew the contracts. Every change is additive and every new field is optional, so RC-era registries, doc stores and answers still parse (pinned by `src/core/model/rc2.test.ts`).
+
+- **`doc.ts`:** `SponsorLink`, `SponsorProfile` and `BillMetadata.sponsorProfiles?`. Profiles come only from official records, never from the model, so the metadata extraction schema deliberately omits them. Links must be `https:`, and a `search` link can never be `verified`.
+- **`history.ts` (new):** `BillHistory` (official summary, versions, actions, amendments, sources). Rule: name a person or committee only when the official record does.
+- **`scenario.ts` (new):** `Scenario` with closed `AvatarId` and `IconId` enums, so the model picks ids and can never emit SVG or HTML. A `computed` figure must carry its `expr`, `illustrative` is always `true`, and a scenario has 3 to 4 frames.
+- **`answer.ts` / `api.ts`:** `AnswerResult.scenario?`, an `AskEvent` `scenario` variant, `DocDetail.history?` and `DocDetail.preview?`, `SummaryResponse` (for a future `GET /api/docs/:id/summary`), and the `history` `ChipId`.
+- **`history` chip is not served yet.** It is in the enum so #128 needs no second contract change, but the served chip list stays at 8 and `getChip('history')` refuses until #128 lands. The web client ignores `scenario` events until #131.
