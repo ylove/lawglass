@@ -27,15 +27,31 @@
 sup {
   line-height: 0;
 }
-.sources ol {
-  padding-left: 1.25rem;
-}
 
 .answer-body {
   overflow-wrap: anywhere;
 }
-/* Inline, so a long breadcrumb wraps as text and the list marker sits on its first line. */
-.sources .link-btn {
-  display: inline;
+/* A button is always one box, so inside a plain list item a long breadcrumb would push the
+   marker to its last line. A flex row aligned on the first baseline keeps the number on line
+   one and still lets the label wrap; the suffix drops below when there is no room. */
+.sources ol {
+  list-style: none;
   padding: 0;
+  counter-reset: source;
+}
+.sources li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: first baseline;
+  gap: 0 0.35rem;
+  counter-increment: source;
+}
+.sources li::before {
+  content: counter(source) '.';
+}
+.sources .link-btn {
+  padding: 0;
+  /* Leave room for the number so the label wraps instead of dropping below it. */
+  max-width: calc(100% - 1.75rem);
+  min-width: 0;
 }
