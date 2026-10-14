@@ -29,6 +29,9 @@ export interface AttachScenarioInput {
    */
   citedSectionIds?: readonly string[] | undefined;
   question?: string | undefined;
+  /** A reader-requested subject, already vetted; see `ScenarioInput.subject`. */
+  subject?: string | undefined;
+  docId?: string | undefined;
   signal?: AbortSignal | undefined;
   timeoutMs?: number | undefined;
 }
@@ -81,6 +84,9 @@ export async function attachScenario(
       provider: counting,
       excerpts: hits,
       question: input.question,
+      ...(input.subject === undefined
+        ? {}
+        : { subject: input.subject, docId: input.docId ?? '' }),
       signal,
     });
     return scenario ? { scenario, usage } : { usage };

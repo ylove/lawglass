@@ -48,14 +48,15 @@ const EVALUATIVE =
 const LEGAL_PHRASES =
   /\b(?:good cause|fair market value|fair use|fair housing|burden of proof|in good standing|bad faith|good faith|benefits? (?:plans?|eligibility|amount|payments?|recipients?)|(?:receives?|claims?|pays?|provides?) benefits?|eligible for benefits?|applies for benefits?|employee benefits?|social security benefits?|unemployment benefits?)\b/gi;
 
-function evaluative(text: string): boolean {
+/** Exported so a requested subject is vetted by the very rules the model's output must pass. */
+export function evaluative(text: string): boolean {
   // Proper act names can contain otherwise evaluative terms, e.g. Tax Relief Act.
   const neutral = text
     .replace(/\b(?:[A-Z][A-Za-z'-]* +)+Act\b/g, '')
     .replace(LEGAL_PHRASES, '');
   return EVALUATIVE.test(neutral);
 }
-function markup(text: string): boolean {
+export function markup(text: string): boolean {
   return MARKUP.test(text.normalize('NFKC'));
 }
 

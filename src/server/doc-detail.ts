@@ -68,6 +68,71 @@ function hasLineNumbers(sections: readonly Section[]): boolean {
   );
 }
 
+/**
+ * Suggested subjects for a targeted scenario, picked by keyword from the bill's own words. The
+ * list is deterministic and fixed: nothing here comes from a model, and every entry passes
+ * `checkScenarioSubject`. Order is by relevance rules below, capped at five.
+ */
+export const PERSONA_RULES: readonly {
+  match: RegExp;
+  personas: readonly string[];
+}[] = [
+  {
+    match: /\b(?:elections?|voters?|voting|ballots?|council|candidates?)\b/i,
+    personas: [
+      'a voter in a council district',
+      'someone running for city council',
+    ],
+  },
+  {
+    match: /\b(?:tenants?|renters?|landlords?|leases?|rent)\b/i,
+    personas: ['a renter', 'a landlord'],
+  },
+  {
+    match: /\b(?:tax|taxes|taxation|levy|levies|assessments?)\b/i,
+    personas: ['a taxpayer'],
+  },
+  {
+    match: /\b(?:homeowners?|mortgages?|property)\b/i,
+    personas: ['a homeowner'],
+  },
+  {
+    match: /\b(?:employees?|workers?|wages?|employers?|labor)\b/i,
+    personas: ['a worker', 'a small business owner'],
+  },
+  {
+    match: /\b(?:students?|schools?|tuition)\b/i,
+    personas: ['a student', 'a parent'],
+  },
+  {
+    match: /\b(?:pensions?|retire\w*|public employees?)\b/i,
+    personas: ['a public employee', 'a retiree'],
+  },
+  { match: /\b(?:drivers?|vehicles?|licenses?)\b/i, personas: ['a driver'] },
+];
+const MAX_PERSONAS = 5;
+
+function sectionWords(sections: readonly Section[]): string[] {
+  return sections.flatMap((s) => [
+    s.heading ?? '',
+    ...s.spans.filter((span) => span.status !== 'deleted').map((x) => x.text),
+    ...sectionWords(s.children),
+  ]);
+}
+
+/** Empty when no keyword matches; the screen then offers no suggestions. */
+export function scenarioPersonasFor(doc: NormalizedDoc): string[] {
+  const text = [doc.metadata.title ?? '', ...sectionWords(doc.sections)].join(
+    '\n',
+  );
+  const found: string[] = [];
+  for (const rule of PERSONA_RULES)
+    if (rule.match.test(text))
+      for (const persona of rule.personas)
+        if (!found.includes(persona)) found.push(persona);
+  return found.slice(0, MAX_PERSONAS);
+}
+
 export async function buildDocDetail(
   runtime: Pick<CliRuntime, 'registry'>,
   summary: DocSummary,
@@ -85,6 +150,7 @@ export async function buildDocDetail(
   const preview: DocDetail['preview'] = officialTitle
     ? { kind: 'purpose', text: compact(officialTitle) }
     : documentPreview(doc);
+  const personas = scenarioPersonasFor(doc);
   return {
     doc: summary,
     metadata: doc.metadata,
@@ -94,5 +160,6 @@ export async function buildDocDetail(
     hasLineNumbers: hasLineNumbers(doc.sections),
     ...(history ? { history: truncateHistory(history) } : {}),
     ...(preview ? { preview } : {}),
+    ...(personas.length ? { scenarioPersonas: personas } : {}),
   };
 }

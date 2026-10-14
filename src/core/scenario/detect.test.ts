@@ -251,6 +251,11 @@ describe('wantsScenario', () => {
     'How are families affected?',
     'What does the bill mean for the household?',
     'What would this do for my rent',
+    'What does this mean for voters?',
+    'How are residents affected?',
+    'What changes for candidates?',
+    'What does this mean for public employees?',
+    'How are officials affected?',
   ])('says yes to %s', (question) => {
     expect(wantsScenario(question)).toBe(true);
   });
