@@ -18,8 +18,15 @@ import {
   type RetrievalBackend,
   type RetrievalMode,
   type RetrievedRef,
+  type Scenario,
 } from '../model/index.js';
 import type { Registry } from '../registry.js';
+import {
+  addScenarioUsage,
+  attachScenario,
+  type AttachedScenario,
+} from '../scenario/attach.js';
+import { classifyBill, wantsScenario } from '../scenario/detect.js';
 
 /**
  * Chip dispatch seam, shaped like `runChip` from core/chips.ts. The default is
@@ -62,6 +69,11 @@ export interface AskDeps {
   /** Defaults to `defaultChipRunner`. */
   chips?: ChipRunner | undefined;
   now?: (() => number) | undefined;
+  /**
+   * Scenario attachment (#127). Defaults to OFF so a new caller fails closed; the server passes
+   * `!publicMode`, because public mode makes no extra model call for a visitor. `timeoutMs` bounds the generation.
+   */
+  scenario?: { enabled?: boolean; timeoutMs?: number } | undefined;
 }
 
 export type AskInput = { chipId: ChipId } | { question: string };
@@ -69,10 +81,18 @@ export type AskInput = { chipId: ChipId } | { question: string };
 export interface AskOptions {
   onToken?: ((text: string) => void) | undefined;
   signal?: AbortSignal | undefined;
+  /**
+   * Return the answer without waiting for its scenario; `AskResult.scenario` then resolves to
+   * it (or `undefined`). The server uses this to emit `done` first. Default false: the CLI and
+   * eval get `answer.scenario` set before `ask` returns.
+   */
+  deferScenario?: boolean | undefined;
 }
 
 export interface AskResult {
   answer: AnswerResult;
+  /** Present only with `deferScenario` and when a scenario was attempted. Never rejects. */
+  scenario?: Promise<Scenario | undefined>;
   refs: RetrievedRef[];
   /** 'none' when the answer needed no retrieval (e.g. the sponsors chip). */
   mode: RetrievalMode | 'none';
@@ -137,6 +157,80 @@ function guarded(
   return { backend: wrapped, used: () => ready !== undefined };
 }
 
+/**
+ * Start generating a scenario for a finished answer; resolves to `undefined` when none is
+ * wanted. Runs after the answer text, so streaming is never delayed, and never rejects (see
+ * `attachScenario`).
+ */
+function startScenario(
+  result: AnswerResult,
+  hits: readonly SearchHit[],
+  wanted: boolean,
+  deps: AskDeps,
+  question: string | undefined,
+  signal: AbortSignal | undefined,
+): Promise<AttachedScenario> | undefined {
+  // Off unless a caller turns it on: the server passes `!publicMode` explicitly.
+  if (!wanted || deps.scenario?.enabled !== true) return undefined;
+  // A declined or uncited answer has nothing for a story to stand on.
+  if (result.declined || !result.citations.some((c) => c.valid))
+    return undefined;
+  return attachScenario({
+    provider: deps.provider,
+    hits,
+    citedSectionIds: result.citations
+      .filter((c) => c.valid)
+      .map((c) => c.sectionId),
+    question,
+    signal,
+    timeoutMs: deps.scenario.timeoutMs,
+  });
+}
+
+/** Records deferred scenario tokens; `touch` adds deltas, so it can run after the answer's own. */
+function recorder(
+  registry: Registry,
+  docId: string,
+): (usage: AttachedScenario['usage']) => Promise<void> {
+  return async (usage) => {
+    await registry.touch(docId, {
+      llmInputTokens: usage.inputTokens,
+      llmOutputTokens: usage.outputTokens,
+    });
+  };
+}
+
+/**
+ * Finish a scenario run. Inline (default): wait for it and fold scenario and usage into the
+ * answer. Deferred: return the answer now and a promise for the scenario, recording its usage
+ * when it settles.
+ */
+async function settleScenario(
+  result: AnswerResult,
+  pending: Promise<AttachedScenario> | undefined,
+  deferred: boolean,
+  record: (usage: AttachedScenario['usage']) => Promise<void>,
+): Promise<{
+  answer: AnswerResult;
+  scenario?: Promise<Scenario | undefined>;
+}> {
+  if (!pending) return { answer: result };
+  if (deferred) {
+    const scenario = pending.then(async (attached) => {
+      await record(attached.usage).catch(() => undefined);
+      return attached.scenario;
+    });
+    return { answer: result, scenario };
+  }
+  const attached = await pending;
+  const usage = addScenarioUsage(result.usage, attached.usage);
+  return {
+    answer: attached.scenario
+      ? { ...result, usage, scenario: attached.scenario }
+      : { ...result, usage },
+  };
+}
+
 export async function ask(
   docId: string,
   input: AskInput,
@@ -169,14 +263,27 @@ export async function ask(
       },
       { signal, onToken: opts.onToken },
     );
+    // `who-affected` always tries; `summary` only for a single-subject bill, since an omnibus
+    // summary stays descriptive (spec amendment 13).
+    const wanted =
+      input.chipId === 'who-affected' ||
+      (input.chipId === 'summary' &&
+        classifyBill(doc.sections) === 'single-subject');
+    const settled = await settleScenario(
+      ran.answer,
+      startScenario(ran.answer, ran.hits, wanted, deps, undefined, signal),
+      opts.deferScenario === true,
+      recorder(registry, docId),
+    );
     await registry.touch(docId, {
       embedTokens: ran.backendUsage.embedTokens,
       rerankUnits: ran.backendUsage.rerankUnits,
-      llmInputTokens: ran.answer.usage.inputTokens,
-      llmOutputTokens: ran.answer.usage.outputTokens,
+      llmInputTokens: settled.answer.usage.inputTokens,
+      llmOutputTokens: settled.answer.usage.outputTokens,
     });
     return {
-      answer: ran.answer,
+      answer: settled.answer,
+      ...(settled.scenario && { scenario: settled.scenario }),
       refs: refsOf(ran.hits),
       // Chips report the mode they used; an injected runner that doesn't falls back here.
       mode:
@@ -220,15 +327,29 @@ export async function ask(
     onToken: opts.onToken,
   });
 
+  const settled = await settleScenario(
+    result,
+    startScenario(
+      result,
+      usable.filter((hit) => !hit.injected),
+      wantsScenario(question),
+      deps,
+      question,
+      signal,
+    ),
+    opts.deferScenario === true,
+    recorder(registry, docId),
+  );
   await registry.touch(docId, {
     embedTokens: retrieved.usage.embedTokens,
     rerankUnits: retrieved.usage.rerankUnits,
-    llmInputTokens: result.usage.inputTokens,
-    llmOutputTokens: result.usage.outputTokens,
+    llmInputTokens: settled.answer.usage.inputTokens,
+    llmOutputTokens: settled.answer.usage.outputTokens,
   });
 
   return {
-    answer: result,
+    answer: settled.answer,
+    ...(settled.scenario && { scenario: settled.scenario }),
     refs: refsOf(usable),
     mode: retrieved.mode,
     latencyMs: now() - startedAt,

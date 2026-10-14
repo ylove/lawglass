@@ -102,7 +102,7 @@ test.each([
     (await historyStore.readHistory(dir, result.doc.docId))?.versions.map(
       (item) => item.code,
     ),
-  ).toEqual(['enr', 'eah', 'eas', 'pcs', 'eh', 'rh', 'ih', '']);
+  ).toEqual(['ih', 'rh', 'eh', 'pcs', 'eas', 'eah', 'enr']);
   agent.assertNoPendingInterceptors();
 });
 
@@ -242,7 +242,7 @@ test('latest text selection refreshes a mutable BILLSTATUS record', async () => 
   agent.assertNoPendingInterceptors();
 });
 
-test('a missing format in the latest version never silently selects an older version', async () => {
+test('a newest text entry with a bad link, plus a Public Law entry, never selects an older version', async () => {
   serveStatus(
     BILLSTATUS_XML.replace(
       'https://www.govinfo.gov/content/pkg/BILLS-118hr9001enr/xml/BILLS-118hr9001enr.xml',
@@ -252,7 +252,7 @@ test('a missing format in the latest version never silently selects an older ver
   const error: unknown = await ingest(page, deps).catch(
     (error: unknown) => error,
   );
-  expect(error).toBeInstanceOf(AppError);
+  expect(error).toMatchObject({ code: 'FETCH_FAILED' });
   expect((error as AppError).userMessage).toContain('specific version URL');
   expect(deps.fetcher).toHaveBeenCalledOnce();
 });

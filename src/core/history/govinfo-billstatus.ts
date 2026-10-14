@@ -1,5 +1,6 @@
 import { SaxesParser } from 'saxes';
 import { load } from 'cheerio';
+import { stripInvisible } from './text.js';
 import { AppError, BillHistory, SponsorProfile } from '../model/index.js';
 import {
   govinfoTextUrl,
@@ -75,6 +76,7 @@ const field = (
 
 function plainText(value: string | undefined): string | undefined {
   if (!value) return undefined;
+  value = stripInvisible(value);
   // CDATA can retain an extra HTML-escape layer that ordinary XML text has already decoded.
   if (/^&lt;[a-z][\s\S]*?&gt;/i.test(value)) {
     value = load(value, null, false).root().text();
@@ -150,6 +152,19 @@ function member(
   });
 }
 
+/**
+ * The enacted Public Law is not a bill text version (its package is PLAW-..., not BILLS-...),
+ * and it must not stand in for or hide the latest bill text, so it is left out of versions.
+ */
+function isPublicLaw(element: Element): boolean {
+  return (
+    textField(element, 'type')?.toLowerCase() === 'public law' ||
+    items(child(element, 'formats')).some((format) =>
+      /\/PLAW-[^/]*\/|\/PLAW-[^/]*$/.test(field(format, 'url') ?? ''),
+    )
+  );
+}
+
 function version(
   element: Element,
   plan: GovinfoPlan,
@@ -178,7 +193,8 @@ function version(
       url: govinfoTextUrl(plan, linked.version),
     };
   }
-  // Preserve an unresolvable entry so latest selection cannot silently choose an older text.
+  // Keep an unresolvable bill-text entry (empty code) so latest selection fails loudly
+  // instead of silently choosing an older text.
   return {
     code: '',
     label: textField(element, 'type') ?? 'Version unavailable',
@@ -295,9 +311,11 @@ export function parseGovinfoBillStatus(
   }
   const history = BillHistory.parse({
     officialSummary,
-    versions: items(child(bill, 'textVersions')).map((item) =>
-      version(item, plan),
-    ),
+    // Stored versions are oldest first. BILLSTATUS lists them newest first, so reverse.
+    versions: items(child(bill, 'textVersions'))
+      .filter((item) => !isPublicLaw(item))
+      .map((item) => version(item, plan))
+      .reverse(),
     actions: items(child(bill, 'actions')).flatMap((item) => {
       const actionDate = date(field(item, 'actionDate'));
       const text = textField(item, 'text');

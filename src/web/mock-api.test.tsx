@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'vitest';
+import { AskEvent } from '../core/model/index.js';
 import { createMockApi } from './mock-api.js';
 
 async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
@@ -102,6 +103,26 @@ describe('mock API', () => {
     expect(money).toMatchObject({
       answer: { warnings: ['INVALID_CITATIONS_REMOVED'] },
     });
+  });
+
+  test('who-affected emits a sample scenario after done; other chips and public mode do not', async () => {
+    const m = api();
+    const [sample] = await m.listDocs();
+    const id = sample!.docId;
+    const events = await collect(m.ask(id, { chipId: 'who-affected' }));
+    expect(events.slice(-2).map((e) => e.type)).toEqual(['done', 'scenario']);
+    const done = events.at(-2);
+    const scenario = events.at(-1);
+    expect(done).toMatchObject({ type: 'done' });
+    expect(done?.type === 'done' && done.answer.scenario).toBeUndefined();
+    expect(
+      scenario?.type === 'scenario' && AskEvent.safeParse(scenario).success,
+    ).toBe(true);
+    const penalties = await collect(m.ask(id, { chipId: 'penalties' }));
+    expect(penalties.map((e) => e.type)).not.toContain('scenario');
+    const pub = createMockApi({ delayMs: 0, publicMode: true });
+    const pubEvents = await collect(pub.ask(id, { chipId: 'who-affected' }));
+    expect(pubEvents.map((e) => e.type)).not.toContain('scenario');
   });
 
   test('public mode rejects freeform questions; unknown docs fail; remove works', async () => {

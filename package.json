@@ -33,6 +33,7 @@
     "build": "tsup && vite build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "history:canary": "tsx scripts/history-canary.ts",
     "fixtures:fetch": "tsx scripts/fetch-fixtures.ts",
     "eval:smoke": "tsx scripts/eval-smoke.ts",
     "models:fetch": "tsx scripts/fetch-models.ts",
@@ -43,6 +44,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "0.133.0",
+    "@fontsource/instrument-sans": "5.3.0",
     "@google/genai": "2.29.1",
     "@hono/node-server": "2.1.5",
     "@huggingface/transformers": "4.3.1",

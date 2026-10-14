@@ -98,6 +98,7 @@ export interface IngestResult {
 
 const DEFAULT_MAX_DOCS = 5;
 const MAX_LABEL = 80;
+const HISTORY_PARTIAL = 'Part of the legislative history was unavailable.';
 const HISTORY_UNAVAILABLE =
   'History unavailable: the official history could not be read or saved.';
 
@@ -123,8 +124,14 @@ function attachHistory(
       ...(record ? { sponsorProfiles: record.sponsorProfiles } : {}),
     },
     warnings: [
-      ...doc.warnings.filter((item) => item !== HISTORY_UNAVAILABLE),
-      ...(record ? [] : [HISTORY_UNAVAILABLE]),
+      ...doc.warnings.filter(
+        (item) => item !== HISTORY_UNAVAILABLE && item !== HISTORY_PARTIAL,
+      ),
+      ...(!record
+        ? [HISTORY_UNAVAILABLE]
+        : record.partial
+          ? [HISTORY_PARTIAL]
+          : []),
     ],
   };
 }
