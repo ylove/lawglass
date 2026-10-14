@@ -29,6 +29,7 @@ import type { RegistryEntry } from '../core/registry.js';
 import { buildDocDetail } from './doc-detail.js';
 import { CHIP_LABELS } from './chips.js';
 import { SlidingWindowLimiter } from './rate-limit.js';
+import { registerScenarioRoute } from './scenario-route.js';
 import { createSummaryService } from './summary.js';
 import { staticAssets } from './static.js';
 import { noopTurnstile, type TurnstileVerifier } from './turnstile.js';
@@ -501,6 +502,8 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       (error) => ({ type: 'error', error }),
     );
   });
+
+  registerScenarioRoute(app, runtime, { publicMode, now });
 
   app.all('/api/*', (c) =>
     c.json(
