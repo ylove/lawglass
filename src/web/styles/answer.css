@@ -1,0 +1,23 @@
+.asked {
+  font-weight: 600;
+}
+.cite {
+  min-width: 1.5rem;
+  min-height: 1.5rem;
+  padding: 0 0.35rem;
+  margin: 0 0.1rem;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: var(--accent-ink);
+  background: var(--accent);
+  border: 0;
+  border-radius: 0.75rem;
+  cursor: pointer;
+}
+sup {
+  line-height: 0;
+}
+.sources ol {
+  padding-left: 1.25rem;
+}
