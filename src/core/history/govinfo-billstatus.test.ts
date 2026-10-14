@@ -305,3 +305,29 @@ test('inline XML text retains word order', () => {
     ).history.actions[1]?.text,
   ).toBe('Referred to Example Committee.');
 });
+
+test('the official title is read from titles, preferring the introduced wording and never a short title', () => {
+  expect(parse(BILLSTATUS_XML).officialTitle).toBe(
+    'To create example grants for community gardens, and for other purposes.',
+  );
+  const withTitles = (titles: string) =>
+    BILLSTATUS_XML.replace(
+      /<titles>[\s\S]*?<\/titles>/,
+      `<titles>${titles}</titles>`,
+    );
+  expect(
+    parse(
+      withTitles(
+        `<item><titleType>Official Title as Amended</titleType><title>Later wording.</title></item>
+         <item><titleType>Official Title as Introduced</titleType><title>Introduced wording.</title></item>`,
+      ),
+    ).officialTitle,
+  ).toBe('Introduced wording.');
+  expect(
+    parse(
+      withTitles(
+        `<item><titleType>Short Title(s) as Introduced</titleType><title>Only short.</title></item>`,
+      ),
+    ),
+  ).not.toHaveProperty('officialTitle');
+});

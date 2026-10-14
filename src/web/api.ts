@@ -8,6 +8,7 @@ import {
   DocSummary,
   IngestEvent,
   SectionExcerpt,
+  SummaryResponse,
   type AskRequest,
   type IngestRequest,
 } from '../core/model/index.js';
@@ -24,6 +25,8 @@ export interface ApiClient {
   getDoc(docId: string): Promise<DocDetail>;
   removeDoc(docId: string): Promise<void>;
   getSection(docId: string, sectionId: string): Promise<SectionExcerpt>;
+  /** The summary shown on arrival: cached, still being made (poll again), or off. */
+  getSummary(docId: string): Promise<SummaryResponse>;
   ingest(req: IngestRequest, signal?: AbortSignal): AsyncIterable<IngestEvent>;
   ask(
     docId: string,
@@ -95,6 +98,8 @@ export function createHttpApi(options: HttpApiOptions = {}): ApiClient {
     getConfig: () => request('/api/config', ClientConfig),
     listDocs: () => request('/api/docs', z.array(DocSummary)),
     getDoc: (docId) => request(docPath(docId), DocDetail),
+    getSummary: (docId) =>
+      request(`${docPath(docId)}/summary`, SummaryResponse),
     getSection: (docId, sectionId) =>
       request(
         `${docPath(docId)}/sections/${encodeURIComponent(sectionId)}`,

@@ -184,6 +184,23 @@ describe('HTTP client', () => {
     await expect(failing.removeDoc('a')).rejects.toBeInstanceOf(ApiError);
   });
 
+  test('getSummary reads the summary endpoint and validates the reply', async () => {
+    const urls: string[] = [];
+    const fetchImpl = ((url: string) => {
+      urls.push(url);
+      return Promise.resolve(Response.json({ status: 'pending' }));
+    }) as typeof fetch;
+    expect(await createHttpApi({ fetchImpl }).getSummary('a/b')).toEqual({
+      status: 'pending',
+    });
+    expect(urls[0]).toBe('/api/docs/a%2Fb/summary');
+    await expect(
+      createHttpApi({
+        fetchImpl: () => Promise.resolve(Response.json({ status: 'nope' })),
+      }).getSummary('a'),
+    ).rejects.toBeInstanceOf(ApiError);
+  });
+
   test('getSection encodes the section id', async () => {
     const urls: string[] = [];
     const fetchImpl = ((url: string) => {

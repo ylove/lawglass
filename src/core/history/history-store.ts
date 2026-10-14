@@ -9,6 +9,9 @@ import {
   type ConfigFileSystem,
 } from '../config-files.js';
 
+// File format: the sidecar is a BillHistory plus one extra key, `officialTitle` (federal preview).
+// BillHistory is frozen, so the extra key is read back separately; a contract-change follow-up
+// tracks moving it into the schema. Until then readHistory strips it.
 function historyPath(configDir: string, docId: string): string {
   if (!NormalizedDoc.shape.docId.safeParse(docId).success)
     throw storageError('Invalid document id. Use the full document hash.');
@@ -20,10 +23,28 @@ export async function writeHistory(
   docId: string,
   history: BillHistory,
   fs: ConfigFileSystem = configFileSystem,
+  /** Not part of the frozen BillHistory; kept in the same file so removal deletes both. */
+  officialTitle?: string,
 ): Promise<void> {
   const parsed = BillHistory.safeParse(history);
   if (!parsed.success) throw storageError('The bill history is invalid.');
-  await writePrivateJson(historyPath(configDir, docId), parsed.data, fs);
+  await writePrivateJson(
+    historyPath(configDir, docId),
+    officialTitle ? { ...parsed.data, officialTitle } : parsed.data,
+    fs,
+  );
+}
+
+/** The official title saved beside the history, when the record had one. */
+export async function readOfficialTitle(
+  configDir: string,
+  docId: string,
+  fs: ConfigFileSystem = configFileSystem,
+): Promise<string | undefined> {
+  const value = await readPrivateJson(historyPath(configDir, docId), fs);
+  const title = (value as { officialTitle?: unknown } | undefined)
+    ?.officialTitle;
+  return typeof title === 'string' && title.trim() ? title : undefined;
 }
 
 export async function readHistory(

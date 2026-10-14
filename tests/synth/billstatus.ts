@@ -6,6 +6,10 @@ export const BILLSTATUS_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <billStatus><bill>
   <number>9001</number><originChamber>House</originChamber><originChamberCode>H</originChamberCode>
   <type>HR</type><introducedDate>2023-07-27</introducedDate><congress>118</congress>
+  <titles>
+    <item><titleType>Short Title(s) as Introduced</titleType><title>Example Grants Act</title></item>
+    <item><titleType>Official Title as Introduced</titleType><title>To create example grants for community gardens, and for other purposes.</title></item>
+  </titles>
   <actions>
     <item><actionDate>2024-06-10</actionDate><text>Passed House.</text><type>Floor</type><sourceSystem><code>2</code><name>House floor actions</name></sourceSystem></item>
     <item><actionDate>2024-01-02</actionDate><committees><item><systemCode>hsex00</systemCode><name>Example Committee</name></item></committees><sourceSystem><name>House</name></sourceSystem><text>Referred to the Example Committee.</text><type>IntroReferral</type></item>

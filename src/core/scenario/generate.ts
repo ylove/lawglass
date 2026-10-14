@@ -1,4 +1,9 @@
-import { escapeText, formatExcerpt, mergeContext } from '../answer/prompt.js';
+import {
+  escapeText,
+  formatExcerpt,
+  mergeContext,
+  promptVersion,
+} from '../answer/prompt.js';
 import { jsonSchema, validateObject } from '../llm/shared.js';
 import {
   AppError,
@@ -26,6 +31,12 @@ Every number in a caption must have a figures entry. Bill figures must occur wit
 Describe effects in short, calm sentences, whatever the question's slant. Never judge the bill: no good, bad, fair, unfair, harmful, helpful, great, terrible, relief, burden or giveaway. Give no legal advice.`;
 
 /** Stable across question wording, so a slanted question cannot change the persona. */
+/** Changing the scenario prompt or persona list must not serve scenarios made the old way. */
+export const SCENARIO_PROMPT_VERSION = promptVersion(
+  SCENARIO_SYSTEM_PROMPT,
+  JSON.stringify([...PERSONA_NAMES]),
+);
+
 export function personaName(excerpts: readonly SearchHit[]): string {
   const id = excerpts[0]?.chunk.id ?? '';
   let sum = 0;

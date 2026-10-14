@@ -7,6 +7,7 @@ import {
   type AnswerResult,
   type AskEvent,
   type AskRequest,
+  type BillHistory,
   type ChipId,
   type ClientConfig,
   type DocDetail,
@@ -15,6 +16,8 @@ import {
   type IngestRequest,
   type Scenario,
   type SectionExcerpt,
+  type SponsorProfile,
+  type SummaryResponse,
 } from '../core/model/index.js';
 import { BRAND } from '../core/brand.js';
 import type { ApiClient } from './api.js';
@@ -208,6 +211,105 @@ const SAMPLE_SCENARIO: Scenario = {
   ],
 };
 
+/**
+ * Invented, federal-shaped record: versions oldest first, actions, one adopted amendment. It
+ * exercises every part of `BillHistory` the real adapters fill (spec amendment 10).
+ */
+const SAMPLE_HISTORY: BillHistory = {
+  officialSummary: {
+    text: 'This bill requires water utilities to replace lead service lines within ten years and sets daily fines for missing the deadline. It also requires written notice to affected households.',
+    source: 'Congressional Research Service',
+    url: 'https://www.govinfo.gov/bulkdata/BILLSTATUS/119/hr/BILLSTATUS-119hr214.xml',
+    date: '2026-03-10',
+  },
+  versions: [
+    {
+      code: 'ih',
+      label: 'Introduced in House',
+      date: '2026-02-03',
+      url: 'https://www.govinfo.gov/content/pkg/BILLS-119hr214ih/xml/BILLS-119hr214ih.xml',
+    },
+    {
+      code: 'rh',
+      label: 'Reported in House',
+      date: '2026-03-10',
+      url: 'https://www.govinfo.gov/content/pkg/BILLS-119hr214rh/xml/BILLS-119hr214rh.xml',
+    },
+  ],
+  actions: [
+    {
+      date: '2026-02-03',
+      text: 'Introduced in the House.',
+      chamber: 'House',
+    },
+    {
+      date: '2026-02-03',
+      text: 'Referred to the House Water Committee.',
+      chamber: 'House',
+      committee: 'House Water Committee',
+    },
+    {
+      date: '2026-03-10',
+      text: 'Reported by the House Water Committee.',
+      chamber: 'House',
+      committee: 'House Water Committee',
+    },
+  ],
+  amendments: [
+    {
+      id: '119hamdt1',
+      number: '1',
+      status: 'adopted',
+      sponsor: { name: 'Rep. J. Chen', bioguideId: 'X000002' },
+      committee: 'House Water Committee',
+      purpose: 'To shorten the lead pipe replacement deadline.',
+      date: '2026-03-10',
+    },
+  ],
+  sources: [
+    {
+      host: 'www.govinfo.gov',
+      url: 'https://www.govinfo.gov/bulkdata/BILLSTATUS/119/hr/BILLSTATUS-119hr214.xml',
+      fetchedAt: NOW,
+    },
+  ],
+};
+
+/** One link the official record verifies, one the app only searched for (spec amendment 11). */
+const SAMPLE_SPONSORS: SponsorProfile[] = [
+  {
+    name: 'Rep. A. Rivera',
+    role: 'sponsor',
+    party: 'D',
+    state: 'XX',
+    chamber: 'house',
+    bioguideId: 'X000001',
+    links: [
+      {
+        kind: 'official',
+        url: 'https://rivera.house.gov/',
+        label: 'Official website',
+        verified: true,
+      },
+    ],
+  },
+  {
+    name: 'Rep. J. Chen',
+    role: 'cosponsor',
+    party: 'R',
+    state: 'XX',
+    chamber: 'house',
+    links: [
+      {
+        kind: 'search',
+        url: 'https://ballotpedia.org/wiki/index.php?search=J.%20Chen',
+        label: 'Search Ballotpedia',
+        verified: false,
+      },
+    ],
+  },
+];
+
 const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
   new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -251,6 +353,7 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
   const delay = options.delayMs ?? 350;
   const publicMode = options.publicMode ?? false;
   const docs = new Map<string, DocSummary>([[SAMPLE_ID, SAMPLE_DOC]]);
+  const summariesStarted = new Set<string>();
 
   const config: ClientConfig = {
     productName: BRAND.displayName,
@@ -338,6 +441,7 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
               session: '2025-2026 Regular Session',
               version: 'As Introduced',
               sponsors: ['Rep. A. Rivera', 'Rep. J. Chen'],
+              sponsorProfiles: structuredClone(SAMPLE_SPONSORS),
               source: 'structured',
             }
           : {
@@ -375,8 +479,36 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
               'This file has no printed line numbers, so citations point to a section only.',
             ],
         hasLineNumbers: hasLines(doc),
+        ...(sample ? { history: structuredClone(SAMPLE_HISTORY) } : {}),
+        preview: sample
+          ? {
+              kind: 'purpose',
+              text: 'To require water utilities to replace lead service lines and to set fines for missing the deadline.',
+              sectionId: 'sec-1',
+            }
+          : { kind: 'title', text: doc.title ?? doc.label },
       };
       return detail;
+    },
+
+    // Same contract as GET /api/docs/:id/summary: `pending` on the first look (the server has
+    // started the run), then the cached answer, with its scenario. A public server only ever
+    // serves what was warmed, so there it is the sample's summary or `disabled`.
+    // eslint-disable-next-line @typescript-eslint/require-await
+    async getSummary(docId): Promise<SummaryResponse> {
+      const doc = need(docId);
+      const cached = (): SummaryResponse => ({
+        status: 'cached',
+        answer: {
+          ...buildAnswer(doc, ANSWERS.summary, false),
+          scenario: structuredClone(SAMPLE_SCENARIO),
+        },
+      });
+      if (publicMode)
+        return docId === SAMPLE_ID ? cached() : { status: 'disabled' };
+      if (summariesStarted.has(docId)) return cached();
+      summariesStarted.add(docId);
+      return { status: 'pending' };
     },
 
     // eslint-disable-next-line @typescript-eslint/require-await
