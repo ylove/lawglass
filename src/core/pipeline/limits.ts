@@ -11,7 +11,7 @@
  * `_MAX_CONCURRENT_ASK`, `_MAX_CONCURRENT_CLAUDE_CLI` and `_MAX_CALLS_PER_MINUTE`
  * (not `ConfigSettings`, which is strict).
  */
-import { AppError } from '../model/index.js';
+import { AppError, type LlmProvider } from '../model/index.js';
 import { envVar } from '../brand.js';
 
 export const DEFAULT_MAX_CONCURRENT_INGEST = 2;
@@ -137,22 +137,35 @@ export class Limits {
     return this.pools[kind];
   }
 
+  /** Wait for a concurrency slot (queues). The caller must call the returned release once. */
+  acquire(kind: WorkKind, signal?: AbortSignal): Promise<() => void> {
+    return this.pools[kind].acquire(signal);
+  }
+
   /**
-   * Admit against the per-minute ceiling (fails fast), then wait for a concurrency slot
-   * (queues). The ceiling is checked first so a rejected call never occupies the queue.
+   * Wrap a provider so each model call is charged to the per-minute ceiling when it is made
+   * (summary batches, scenario generation and retries each count; calls that never reach a
+   * model, such as a metadata-only chip, cost nothing). Past the ceiling the call fails fast.
    */
-  async run<T>(
-    kind: WorkKind,
-    task: () => Promise<T>,
-    signal?: AbortSignal,
-  ): Promise<T> {
-    this.ceiling.admit();
-    const release = await this.pools[kind].acquire(signal);
-    try {
-      return await task();
-    } finally {
-      release();
-    }
+  meter(provider: LlmProvider): LlmProvider {
+    return {
+      // Lazy: some runtimes build the provider (and demand its API key) only on first use,
+      // and a chip that makes no model call must not trigger that.
+      get id() {
+        return provider.id;
+      },
+      get model() {
+        return provider.model;
+      },
+      streamText: (req) => {
+        this.ceiling.admit();
+        return provider.streamText(req);
+      },
+      generateObject: async (req) => {
+        this.ceiling.admit();
+        return provider.generateObject(req);
+      },
+    };
   }
 }
 

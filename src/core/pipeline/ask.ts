@@ -243,14 +243,30 @@ export async function ask(
   deps: AskDeps,
   opts: AskOptions = {},
 ): Promise<AskResult> {
-  // Validate before spending a budget slot: a bad question must not use up the ceiling.
+  // Validate before taking a permit: a bad question must not occupy a slot.
   const checked: AskInput =
     'chipId' in input ? input : { question: cleanQuestion(input.question) };
-  return (deps.limits ?? sharedLimits()).run(
-    'ask',
-    () => askWithinLimits(docId, checked, deps, opts),
-    opts.signal,
-  );
+  const limits = deps.limits ?? sharedLimits();
+  const release = await limits.acquire('ask', opts.signal);
+  let result: AskResult;
+  try {
+    // Model calls are charged to the per-minute ceiling by the metered provider.
+    result = await askWithinLimits(
+      docId,
+      checked,
+      { ...deps, provider: limits.meter(deps.provider) },
+      opts,
+    );
+  } catch (error) {
+    release();
+    throw error;
+  }
+  if (!result.scenario) {
+    release();
+    return result;
+  }
+  // A deferred scenario is still model work: keep the permit until it settles (it never rejects).
+  return { ...result, scenario: result.scenario.finally(release) };
 }
 
 async function askWithinLimits(

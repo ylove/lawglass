@@ -26,6 +26,12 @@ import { writeHistory } from '../history/history-store.js';
 import { ingest } from './ingest.js';
 import { Limits } from './limits.js';
 
+async function collect<T>(it: AsyncIterable<T>): Promise<T[]> {
+  const out: T[] = [];
+  for await (const x of it) out.push(x);
+  return out;
+}
+
 let env: PipelineEnv;
 beforeEach(async () => {
   env = await makePipelineEnv();
@@ -814,7 +820,7 @@ describe('budgets and question hygiene (LLM10)', () => {
     ).resolves.toBeDefined();
   });
 
-  test('queues asks beyond the concurrency limit and fails past the per-minute ceiling', async () => {
+  test('queues asks beyond the concurrency limit', async () => {
     const docId = await load(
       'https://example.gov/s9001.xml',
       makeCongressionalBillXml(),
@@ -827,14 +833,10 @@ describe('budgets and question hygiene (LLM10)', () => {
       peak = Math.max(peak, running);
       await new Promise<void>((r) => releases.push(r));
       running -= 1;
-      return {
-        answer: stubAnswer,
-        hits: [],
-        backendUsage: noUsage,
-      };
+      return { answer: stubAnswer, hits: [], backendUsage: noUsage };
     });
     const limits = new Limits(
-      { maxConcurrentIngest: 2, maxConcurrentAsk: 2, maxCallsPerMinute: 4 },
+      { maxConcurrentIngest: 2, maxConcurrentAsk: 2, maxCallsPerMinute: 1 },
       () => 0,
     );
     const deps = askDeps({ chips: runner, limits });
@@ -845,17 +847,135 @@ describe('budgets and question hygiene (LLM10)', () => {
       expect(runner).toHaveBeenCalledTimes(2);
     });
     expect(running).toBe(2); // the other two are queued, not failed
-
-    // A fifth call in the same minute is refused outright with a clear message.
-    await expect(
-      ask(docId, { chipId: 'sponsors' }, deps),
-    ).rejects.toMatchObject({ code: 'RATE_LIMITED' });
-
-    while (runs.length > 0 && (running > 0 || runner.mock.calls.length < 4)) {
+    const state = { done: false };
+    const all = Promise.all(runs).then(() => (state.done = true));
+    while (!state.done) {
       releases.shift()?.();
       await new Promise((r) => setTimeout(r, 0));
     }
-    await Promise.all(runs);
+    await all;
     expect(peak).toBe(2);
+    expect(runner).toHaveBeenCalledTimes(4);
+  });
+
+  test('chips that make no model call cost nothing against the per-minute ceiling', async () => {
+    const docId = await load(
+      'https://example.gov/s9001.xml',
+      makeCongressionalBillXml(),
+    );
+    const limits = new Limits(
+      { maxConcurrentIngest: 2, maxConcurrentAsk: 4, maxCallsPerMinute: 1 },
+      () => 0,
+    );
+    const stream = vi.spyOn(env.provider, 'streamText');
+    for (let i = 0; i < 5; i += 1)
+      await ask(docId, { chipId: 'sponsors' }, askDeps({ limits }));
+    expect(stream).not.toHaveBeenCalled();
+    // The one model call the ceiling allows is still available afterwards.
+    await expect(
+      ask(docId, { question: 'garden grants' }, askDeps({ limits })),
+    ).resolves.toBeDefined();
+  });
+
+  test('charges every provider call, not each ask: a second model call past the ceiling is refused', async () => {
+    const docId = await load(
+      'https://example.gov/s9001.xml',
+      makeCongressionalBillXml(),
+    );
+    const limits = new Limits(
+      { maxConcurrentIngest: 2, maxConcurrentAsk: 4, maxCallsPerMinute: 1 },
+      () => 0,
+    );
+    const stream = vi.spyOn(env.provider, 'streamText');
+    await ask(docId, { question: 'garden grants' }, askDeps({ limits }));
+    expect(stream).toHaveBeenCalledTimes(1);
+    await expect(
+      ask(docId, { question: 'garden grants again' }, askDeps({ limits })),
+    ).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+    expect(stream).toHaveBeenCalledTimes(1); // refused before reaching the model
+  });
+
+  test('a multi-call summary is charged per provider call', async () => {
+    const docId = await load(
+      'https://example.gov/s9001.xml',
+      makeCongressionalBillXml(),
+    );
+    const limits = new Limits(
+      { maxConcurrentIngest: 2, maxConcurrentAsk: 4, maxCallsPerMinute: 2 },
+      () => 0,
+    );
+    // A runner that makes three model calls through the provider it is handed.
+    const runner: ChipRunner = async (_chip, _doc, ctx) => {
+      for (let i = 0; i < 3; i += 1)
+        await collect(
+          ctx.provider.streamText({
+            system: 's',
+            messages: [{ role: 'user', content: 'q' }],
+            maxTokens: 10,
+          }),
+        );
+      return { answer: stubAnswer, hits: [], backendUsage: noUsage };
+    };
+    await expect(
+      ask(docId, { chipId: 'summary' }, askDeps({ chips: runner, limits })),
+    ).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+    // The failed ask released its permit.
+    expect(limits.pool('ask').inFlight).toBe(0);
+  });
+
+  test('a deferred scenario keeps its ask permit until it settles', async () => {
+    const docId = await load(BILL_URL, makeCongressionalBillXml());
+    const limits = new Limits(
+      { maxConcurrentIngest: 2, maxConcurrentAsk: 1, maxCallsPerMinute: 100 },
+      () => 0,
+    );
+    const deps = scenarioDeps({ limits });
+    let open: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const real = deps.provider.generateObject.bind(deps.provider);
+    deps.provider.behavior = async (req) => {
+      await gate;
+      deps.provider.behavior = undefined;
+      return (await real(req)) as never;
+    };
+    const first = await ask(
+      docId,
+      { question: 'How will garden grants affect me?' },
+      deps,
+      { deferScenario: true },
+    );
+    expect(first.scenario).toBeInstanceOf(Promise);
+    // The answer is back but the scenario is still running: the permit is still held.
+    expect(limits.pool('ask').inFlight).toBe(1);
+    let secondStarted = false;
+    const second = ask(docId, { question: 'garden grants' }, deps).then(() => {
+      secondStarted = true;
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(secondStarted).toBe(false);
+    expect(limits.pool('ask').queued).toBe(1);
+    open();
+    await first.scenario;
+    await second;
+    expect(limits.pool('ask').inFlight).toBe(0);
+  });
+
+  test('a failed ask releases its permit', async () => {
+    const docId = await load(
+      'https://example.gov/s9001.xml',
+      makeCongressionalBillXml(),
+    );
+    const limits = new Limits(
+      { maxConcurrentIngest: 2, maxConcurrentAsk: 1, maxCallsPerMinute: 100 },
+      () => 0,
+    );
+    const boom: ChipRunner = () =>
+      Promise.reject(new AppError('PROVIDER_ERROR'));
+    await expect(
+      ask(docId, { chipId: 'summary' }, askDeps({ chips: boom, limits })),
+    ).rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
+    expect(limits.pool('ask').inFlight).toBe(0);
   });
 });

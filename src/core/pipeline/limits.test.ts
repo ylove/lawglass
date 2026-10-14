@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { envVar } from '../brand.js';
-import { AppError } from '../model/index.js';
+import { ScriptedProvider } from '../../../tests/contracts/scripted-provider.js';
+import {
+  AppError,
+  type ObjectRequest,
+  type TextRequest,
+} from '../model/index.js';
+import { z } from 'zod';
 import {
   Limits,
   RateCeiling,
@@ -11,6 +17,24 @@ import {
   resetSharedLimits,
   sharedLimits,
 } from './limits.js';
+
+const textReq: TextRequest = {
+  system: 's',
+  messages: [{ role: 'user', content: 'q' }],
+  maxTokens: 10,
+};
+const objReq: ObjectRequest<{ a: number }> = {
+  system: 's',
+  prompt: 'p',
+  schema: z.object({ a: z.number() }),
+  schemaName: 'o',
+  maxTokens: 10,
+};
+async function collect<T>(it: AsyncIterable<T>): Promise<T[]> {
+  const out: T[] = [];
+  for await (const x of it) out.push(x);
+  return out;
+}
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
 
@@ -154,6 +178,21 @@ describe('RateCeiling', () => {
   });
 });
 
+/** Occupies a pool slot for the duration of `task`, as `ask` and `ingest` do. */
+async function run<T>(
+  limits: Limits,
+  kind: 'ask' | 'ingest',
+  task: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  const release = await limits.acquire(kind, signal);
+  try {
+    return await task();
+  } finally {
+    release();
+  }
+}
+
 describe('Limits', () => {
   const config = {
     maxConcurrentIngest: 2,
@@ -164,7 +203,7 @@ describe('Limits', () => {
   it('caps ingest at 2 and queues the rest instead of failing', async () => {
     const limits = new Limits(config);
     const g = gate();
-    const runs = Array.from({ length: 5 }, () => limits.run('ingest', g.task));
+    const runs = Array.from({ length: 5 }, () => run(limits, 'ingest', g.task));
     await tick();
     expect(g.state.running).toBe(2);
     while (g.state.running > 0 || limits.pool('ingest').queued > 0) {
@@ -180,8 +219,8 @@ describe('Limits', () => {
     const ask = gate();
     const ingest = gate();
     const runs = [
-      ...Array.from({ length: 6 }, () => limits.run('ask', ask.task)),
-      ...Array.from({ length: 3 }, () => limits.run('ingest', ingest.task)),
+      ...Array.from({ length: 6 }, () => run(limits, 'ask', ask.task)),
+      ...Array.from({ length: 3 }, () => run(limits, 'ingest', ingest.task)),
     ];
     await tick();
     expect(ask.state.running).toBe(4);
@@ -198,29 +237,61 @@ describe('Limits', () => {
   it('releases the slot when the task throws', async () => {
     const limits = new Limits({ ...config, maxConcurrentAsk: 1 });
     await expect(
-      limits.run('ask', () => Promise.reject(new Error('boom'))),
+      run(limits, 'ask', () => Promise.reject(new Error('boom'))),
     ).rejects.toThrow('boom');
-    await expect(limits.run('ask', () => Promise.resolve(7))).resolves.toBe(7);
+    await expect(run(limits, 'ask', () => Promise.resolve(7))).resolves.toBe(7);
   });
 
-  it('fails past the per-minute ceiling without running the task or queueing', async () => {
-    const limits = new Limits({ ...config, maxCallsPerMinute: 2 }, () => 0);
-    await limits.run('ask', () => Promise.resolve());
-    await limits.run('ingest', () => Promise.resolve()); // ceiling is shared across kinds
-    const task = vi.fn(() => Promise.resolve());
-    await expect(limits.run('ask', task)).rejects.toMatchObject({
+  it('charges the ceiling per model call, across both call styles, and fails fast past it', async () => {
+    const limits = new Limits({ ...config, maxCallsPerMinute: 3 }, () => 0);
+    const base = new ScriptedProvider({ objects: { o: { a: 1 } } });
+    const metered = limits.meter(base);
+    expect(metered.id).toBe(base.id);
+    expect(metered.model).toBe(base.model);
+    await collect(metered.streamText(textReq));
+    await metered.generateObject(objReq);
+    await collect(metered.streamText(textReq));
+    expect(base.calls).toHaveLength(3);
+    expect(() => metered.streamText(textReq)).toThrow(
+      expect.objectContaining({ code: 'RATE_LIMITED' }),
+    );
+    await expect(metered.generateObject(objReq)).rejects.toMatchObject({
       code: 'RATE_LIMITED',
     });
-    expect(task).not.toHaveBeenCalled();
-    expect(limits.pool('ask').queued).toBe(0);
+    expect(base.calls).toHaveLength(3); // refused calls never reach the model
+  });
+
+  it('does not read the wrapped provider until a call is made (lazy providers need no key yet)', () => {
+    const limits = new Limits(config, () => 0);
+    const lazy = {
+      get id(): never {
+        throw new AppError('MISSING_KEY');
+      },
+      get model(): never {
+        throw new AppError('MISSING_KEY');
+      },
+      streamText: () => {
+        throw new AppError('MISSING_KEY');
+      },
+      generateObject: () => Promise.reject(new AppError('MISSING_KEY')),
+    };
+    expect(() => limits.meter(lazy)).not.toThrow();
+  });
+
+  it('charges nothing when no model call is made', () => {
+    const limits = new Limits({ ...config, maxCallsPerMinute: 1 }, () => 0);
+    const metered = limits.meter(new ScriptedProvider());
+    for (let i = 0; i < 50; i += 1) limits.meter(new ScriptedProvider());
+    expect(metered).toBeDefined(); // wrapping alone is free; only calls count
+    expect(() => metered.streamText(textReq)).not.toThrow();
   });
 
   it('lets a queued call be abandoned by its signal', async () => {
     const limits = new Limits({ ...config, maxConcurrentAsk: 1 });
     const g = gate();
-    const first = limits.run('ask', g.task);
+    const first = run(limits, 'ask', g.task);
     const ctl = new AbortController();
-    const second = limits.run('ask', () => Promise.resolve(), ctl.signal);
+    const second = run(limits, 'ask', () => Promise.resolve(), ctl.signal);
     ctl.abort(new Error('cancelled'));
     await expect(second).rejects.toThrow('cancelled');
     g.finishOne();
