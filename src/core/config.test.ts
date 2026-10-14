@@ -681,15 +681,21 @@ describe('Pinecone settings', () => {
       region: 'us-east-1',
       indexPrefix: BRAND.indexPrefix,
       rerankModel: DEFAULT_RERANK_MODELS.pinecone,
+      upsertRetryBudgetMs: 600_000,
+      queryRetryBudgetMs: 60_000,
+      upsertBatchDelayMs: 0,
     });
     expect(
       pineconeConfig(
-        { denseModel: 'override' },
+        { denseModel: 'override', upsertRetryBudgetMs: 10_000 },
         {
           [envVar('DENSE_MODEL')]: 'env-dense',
           [envVar('SPARSE_MODEL')]: 'env-sparse',
           [envVar('RERANK_MODEL')]: 'env-rerank',
           [envVar('PINECONE_REGION')]: 'eu-west-1',
+          [envVar('PINECONE_UPSERT_RETRY_BUDGET_MS')]: '5000',
+          [envVar('PINECONE_QUERY_RETRY_BUDGET_MS')]: '2000',
+          [envVar('PINECONE_UPSERT_BATCH_DELAY_MS')]: '50',
         },
       ),
     ).toMatchObject({
@@ -697,16 +703,30 @@ describe('Pinecone settings', () => {
       sparseModel: 'env-sparse',
       rerankModel: 'env-rerank',
       region: 'eu-west-1',
+      upsertRetryBudgetMs: 10_000,
+      queryRetryBudgetMs: 2_000,
+      upsertBatchDelayMs: 50,
     });
   });
   it.each([
     { indexPrefix: 'BAD-' },
     { indexPrefix: 'x'.repeat(45) + '-' },
     { timeoutMs: 0 },
+    { upsertRetryBudgetMs: 0 },
+    { queryRetryBudgetMs: -1 },
+    { upsertBatchDelayMs: -1 },
   ])('rejects invalid settings without echoing values: %j', (settings) => {
     expect(() => pineconeConfig(settings, {})).toThrow(
       'Invalid Pinecone configuration.',
     );
+  });
+  it('rejects invalid pacing environment settings without echoing values', () => {
+    expect(() =>
+      pineconeConfig(
+        {},
+        { [envVar('PINECONE_UPSERT_BATCH_DELAY_MS')]: 'secret-key' },
+      ),
+    ).toThrow('Invalid Pinecone configuration.');
   });
 });
 
