@@ -336,6 +336,58 @@ describe('chunkDocument', () => {
     ]);
   });
 
+  it('labels each breadcrumb level by its id prefix (NDAA-style nesting)', () => {
+    const chunks = chunkDocument(
+      document([
+        section('division-A', '', {
+          num: 'A',
+          heading: 'DEPARTMENT OF DEFENSE AUTHORIZATIONS',
+          children: [
+            section('title-I', '', {
+              num: 'I',
+              heading: 'PROCUREMENT',
+              level: 2,
+              children: [
+                section('subtitle-D', '', {
+                  num: 'D',
+                  heading: 'Air Force Programs',
+                  level: 3,
+                  children: [
+                    section('sec-142', 'Report text.', {
+                      num: '142',
+                      heading: 'Annual report',
+                      level: 4,
+                      children: [
+                        section('sec-142/b', 'Sub text.', {
+                          num: '(b)',
+                          level: 5,
+                        }),
+                      ],
+                    }),
+                  ],
+                }),
+              ],
+            }),
+          ],
+        }),
+        section('chapter-5', 'C.', { num: '5' }),
+        section('part-2', 'P.', { num: '2' }),
+        section('article-3', 'A.', { num: '3' }),
+        section('title-i', 'T.', { num: 'Title I' }),
+      ]),
+    );
+    const crumbs = chunks.map((chunk) => chunk.breadcrumb);
+    expect(crumbs).toContain(
+      'Division A DEPARTMENT OF DEFENSE AUTHORIZATIONS > Title I PROCUREMENT > Subtitle D Air Force Programs > Sec. 142 Annual report',
+    );
+    expect(crumbs).toContain(
+      'Division A DEPARTMENT OF DEFENSE AUTHORIZATIONS > Title I PROCUREMENT > Subtitle D Air Force Programs > Sec. 142 Annual report > (b)',
+    );
+    expect(crumbs).toEqual(
+      expect.arrayContaining(['Chapter 5', 'Part 2', 'Article 3', 'Title I']),
+    );
+  });
+
   it('returns no chunks for empty/whitespace-only documents or spans', () => {
     expect(chunkDocument(document([]))).toEqual([]);
     expect(
