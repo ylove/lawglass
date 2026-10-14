@@ -1,11 +1,19 @@
 import { createHash } from 'node:crypto';
-import { degrees, PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import {
+  degrees,
+  PDFDocument,
+  PDFString,
+  rgb,
+  StandardFonts,
+  type PDFPage,
+} from 'pdf-lib';
 import { describe, expect, it } from 'vitest';
 import {
   makeAmendingBillPdf,
   makeAmendmentGeometryPdf,
   makeFederalStylePdf,
   makeScannedPdf,
+  SCAN_PIXEL,
 } from '../../../tests/synth/index.js';
 import { chunkDocument } from '../chunk/index.js';
 import {
@@ -21,7 +29,7 @@ import {
 } from '../model/index.js';
 import { parsePdf } from './index.js';
 import type { StyledLine } from './pdf-lines.js';
-import { toSourceLines } from './pdf.js';
+import { toSourceLines, withoutCanvasNotices } from './pdf.js';
 
 const options = {
   sourceUrl: 'https://example.gov/bill.pdf',
@@ -29,6 +37,15 @@ const options = {
 };
 
 const normalize = (text: string): string => text.replace(/\s+/g, ' ').trim();
+
+/** Body text long enough that its page is clearly not a scan. */
+const BODY = 'Section 1. The board shall adopt rules for the program by June.';
+
+/** Paint a page-sized image, as a scanner would. */
+async function scanned(pdf: PDFDocument, page: PDFPage): Promise<void> {
+  const image = await pdf.embedPng(SCAN_PIXEL);
+  page.drawImage(image, { x: 0, y: 0, width: 612, height: 792 });
+}
 const byStatus = (spans: readonly Span[], status: SpanStatus): string[] =>
   spans
     .filter((span) => span.status === status)
@@ -152,11 +169,14 @@ describe('parsePdf on every amendment-geometry case', async () => {
   const onLine = (page: number, line: number) =>
     spans.filter((span) => span.page === page && span.line === line);
 
-  it('builds the expected tree with no warnings', () => {
+  it('builds the expected tree, flagging only the heavy decorative bar', () => {
     expect([...walkSections(doc.sections)].map((s) => s.id)).toEqual([
       ...[...walkSections(groundTruth.sections)].map((s) => s.id.toLowerCase()),
     ]);
-    expect(doc.warnings).toEqual([]);
+    // The 3pt bar through line 1 is a negative control: unmarked, but worth a look.
+    expect(doc.warnings).toEqual([
+      'Page 1, line 1: a rule through or under the text is too heavy to be a strikethrough or underline (perhaps a bar or highlight), so that text is treated as unchanged; check it.',
+    ]);
     expect(doc.pageCount).toBe(2);
   });
 
@@ -305,23 +325,52 @@ describe('parsePdf on other layouts', () => {
     expect(error.userMessage).toBe(ERROR_CODES.SCANNED_PDF);
   });
 
-  it('treats a page with only a stray page number as textless', async () => {
+  it('treats page images with only a stray stamp of text as scanned', async () => {
     const pdf = await PDFDocument.create();
     const font = await pdf.embedFont(StandardFonts.TimesRoman);
-    pdf.addPage().drawText('1', { x: 300, y: 30, size: 10, font });
+    for (const number of ['1', '2']) {
+      const page = pdf.addPage();
+      await scanned(pdf, page);
+      page.drawText(number, { x: 300, y: 30, size: 10, font });
+    }
     const error = await rejection(parsePdf(await pdf.save(), options));
     expect(error.code).toBe('SCANNED_PDF');
+  });
+
+  it('reads a short text-only PDF rather than calling it scanned (review finding 4)', async () => {
+    const pdf = await PDFDocument.create();
+    const font = await pdf.embedFont(StandardFonts.TimesRoman);
+    pdf.addPage().drawText('Section 1.', { x: 72, y: 700, size: 11, font });
+    const doc = await parsePdf(await pdf.save(), options);
+    expect(doc.sections.map((section) => section.id)).toEqual(['sec-1']);
+    expect(doc.warnings.join('\n')).not.toMatch(/text layer/);
+  });
+
+  it('does not call a short cover page scanned', async () => {
+    const pdf = await PDFDocument.create();
+    const font = await pdf.embedFont(StandardFonts.TimesRoman);
+    pdf.addPage().drawText('HB 5', { x: 250, y: 600, size: 30, font });
+    pdf.addPage().drawText(BODY, { x: 72, y: 700, size: 11, font });
+    const doc = await parsePdf(await pdf.save(), options);
+    expect(doc.warnings.join('\n')).not.toMatch(/text layer/);
+  });
+
+  it('reports a PDF with no text and no images as unreadable, not scanned', async () => {
+    const pdf = await PDFDocument.create();
+    pdf.addPage().drawRectangle({ x: 72, y: 600, width: 300, height: 8 });
+    const error = await rejection(parsePdf(await pdf.save(), options));
+    expect(error).toMatchObject({
+      code: 'PARSE_FAILED',
+      message: 'The PDF contains no text.',
+    });
   });
 
   it('keeps the text pages of a partly scanned PDF and warns about the rest', async () => {
     const pdf = await PDFDocument.create();
     const font = await pdf.embedFont(StandardFonts.TimesRoman);
-    pdf.addPage().drawText('Section 1. A typed page of the bill.', {
-      x: 72,
-      y: 700,
-      size: 11,
-      font,
-    });
+    pdf.addPage().drawText(BODY, { x: 72, y: 700, size: 11, font });
+    await scanned(pdf, pdf.addPage());
+    // A blank page is neither text nor a scan, so it gets no warning.
     pdf.addPage().drawRectangle({
       x: 72,
       y: 600,
@@ -330,11 +379,11 @@ describe('parsePdf on other layouts', () => {
       color: rgb(0.2, 0.2, 0.2),
     });
     const doc = await parsePdf(await pdf.save(), options);
-    expect(doc.pageCount).toBe(2);
+    expect(doc.pageCount).toBe(3);
     expect(doc.sections.map((section) => section.id)).toEqual(['sec-1']);
-    expect(doc.warnings).toContain(
+    expect(doc.warnings.filter((w) => w.includes('text layer'))).toEqual([
       'Page 2 has no text layer (it may be a scanned image), so its content is missing.',
-    );
+    ]);
   });
 
   it('skips rotated text such as a margin stamp, with a warning', async () => {
@@ -363,6 +412,237 @@ describe('parsePdf on other layouts', () => {
     expect(doc.warnings).toContain(
       'Page 1: rotated text (such as a stamp) was skipped.',
     );
+  });
+});
+
+describe('review findings, end to end', () => {
+  const statusesOf = async (bytes: Uint8Array) => {
+    const doc = await parsePdf(bytes, options);
+    return {
+      doc,
+      runs: allSpans(doc.sections).map((span) => [
+        span.status,
+        normalize(span.text),
+      ]),
+    };
+  };
+
+  /** One Courier line (0.6em per character), plus whatever `draw` adds. */
+  async function courierLine(
+    text: string,
+    size: number,
+    draw: (page: PDFPage, charWidth: number, pdf: PDFDocument) => void,
+  ): Promise<Uint8Array> {
+    const pdf = await PDFDocument.create();
+    const font = await pdf.embedFont(StandardFonts.Courier);
+    const page = pdf.addPage([612, 792]);
+    page.drawText(text, { x: 72, y: 600, size, font });
+    draw(page, 0.6 * size, pdf);
+    return pdf.save();
+  }
+
+  it('reads a 3pt strike through 48pt text as struck (finding 1)', async () => {
+    const bytes = await courierLine('Sec. 1. Big word.', 48, (page, w) => {
+      page.drawLine({
+        start: { x: 72 + 12 * w, y: 600 + 0.3 * 48 },
+        end: { x: 72 + 16 * w, y: 600 + 0.3 * 48 },
+        thickness: 3,
+      });
+    });
+    const { runs, doc } = await statusesOf(bytes);
+    expect(runs).toContainEqual(['deleted', 'word']);
+    expect(doc.warnings.join('\n')).not.toMatch(/too heavy/);
+  });
+
+  it('reads a filled and stroked 1.6pt bar through 12pt text as struck (finding 1)', async () => {
+    const bytes = await courierLine(
+      'Sec. 1. The quick brown fox.',
+      12,
+      (page, w) => {
+        page.drawRectangle({
+          x: 72 + 18 * w,
+          y: 600 + 0.3 * 12 - 0.3,
+          width: 5 * w,
+          height: 0.6,
+          color: rgb(0, 0, 0),
+          borderColor: rgb(0, 0, 0),
+          borderWidth: 1,
+        });
+      },
+    );
+    expect((await statusesOf(bytes)).runs).toContainEqual(['deleted', 'brown']);
+  });
+
+  it('warns instead of silently dropping a strike too heavy to trust (finding 1)', async () => {
+    const bytes = await courierLine(
+      'Sec. 1. The quick brown fox.',
+      10,
+      (page, w) => {
+        page.drawLine({
+          start: { x: 72 + 18 * w, y: 603 },
+          end: { x: 72 + 23 * w, y: 603 },
+          thickness: 3,
+        });
+      },
+    );
+    const { runs, doc } = await statusesOf(bytes);
+    expect(runs.every(([status]) => status === 'unchanged')).toBe(true);
+    expect(doc.warnings.join('\n')).toMatch(/too heavy to be a strikethrough/);
+  });
+
+  it('ignores a white cover-up rectangle (finding 2)', async () => {
+    const bytes = await courierLine(
+      'Sec. 1. The quick brown fox.',
+      12,
+      (page, w) => {
+        page.drawRectangle({
+          x: 72 + 18 * w,
+          y: 603.3,
+          width: 5 * w,
+          height: 0.6,
+          color: rgb(1, 1, 1),
+        });
+      },
+    );
+    const { runs, doc } = await statusesOf(bytes);
+    expect(runs.every(([status]) => status === 'unchanged')).toBe(true);
+    expect(doc.warnings.join('\n')).not.toMatch(/rule/);
+  });
+
+  it('does not mark a whole line under a hairline grid rule, and says why (finding 2)', async () => {
+    const text = 'Sec. 1. The quick brown fox.';
+    const bytes = await courierLine(text, 12, (page, w) => {
+      page.drawLine({
+        start: { x: 72, y: 603.6 },
+        end: { x: 72 + text.length * w, y: 603.6 },
+        thickness: 0.1,
+      });
+    });
+    const { runs, doc } = await statusesOf(bytes);
+    expect(runs.every(([status]) => status === 'unchanged')).toBe(true);
+    expect(doc.warnings.join('\n')).toMatch(/hairline rule crosses the text/);
+  });
+
+  it('does not read a hyperlink underline as an insertion, but keeps a strike in a link (finding 3)', async () => {
+    const bytes = await courierLine(
+      'Sec. 1. See the board site now.',
+      12,
+      (page, w, pdf) => {
+        const link = (from: number, to: number) => {
+          page.node.addAnnot(
+            pdf.context.register(
+              pdf.context.obj({
+                Type: 'Annot',
+                Subtype: 'Link',
+                Rect: [72 + from * w, 598, 72 + to * w, 610],
+                Border: [0, 0, 0],
+                A: { S: 'URI', URI: PDFString.of('https://example.gov') },
+              }),
+            ),
+          );
+        };
+        link(16, 26);
+        page.drawLine({
+          start: { x: 72 + 16 * w, y: 598.5 },
+          end: { x: 72 + 26 * w, y: 598.5 },
+          thickness: 0.5,
+          color: rgb(0, 0, 1),
+        });
+        link(4, 7);
+        page.drawLine({
+          start: { x: 72 + 4 * w, y: 603.1 },
+          end: { x: 72 + 7 * w, y: 603.1 },
+          thickness: 0.6,
+        });
+      },
+    );
+    const { runs } = await statusesOf(bytes);
+    expect(runs.filter(([status]) => status === 'inserted')).toEqual([]);
+    expect(runs).toContainEqual(['deleted', '1.']);
+  });
+
+  it('reads fake-bold overprinted text once (finding 6)', async () => {
+    const pdf = await PDFDocument.create();
+    const font = await pdf.embedFont(StandardFonts.TimesRoman);
+    const page = pdf.addPage();
+    for (const dx of [0, 0.3])
+      page.drawText(BODY, { x: 72 + dx, y: 700, size: 11, font });
+    const doc = await parsePdf(await pdf.save(), options);
+    expect(
+      allSpans(doc.sections)
+        .map((span) => span.text)
+        .join(''),
+    ).toBe(BODY);
+  });
+
+  it('warns that a two-column page is read straight across (finding 5)', async () => {
+    const pdf = await PDFDocument.create();
+    const font = await pdf.embedFont(StandardFonts.TimesRoman);
+    const page = pdf.addPage();
+    [0, 1, 2, 3].forEach((row) => {
+      page.drawText('Section 1. The quick brown fox', {
+        x: 72,
+        y: 700 - row * 14,
+        size: 11,
+        font,
+      });
+      page.drawText('Section 2. Another brown thing', {
+        x: 330,
+        y: 700 - row * 14,
+        size: 11,
+        font,
+      });
+    });
+    const doc = await parsePdf(await pdf.save(), options);
+    expect(doc.warnings).toContain(
+      'Page 1 looks like it has two columns (or a table); its lines are read straight across, so text there may be out of order.',
+    );
+  });
+
+  it('gives a fully rotated page only the rotated-text warning (finding 4)', async () => {
+    const pdf = await PDFDocument.create();
+    const font = await pdf.embedFont(StandardFonts.TimesRoman);
+    pdf
+      .addPage()
+      .drawText(BODY, { x: 300, y: 100, size: 11, font, rotate: degrees(90) });
+    pdf.addPage().drawText(BODY, { x: 72, y: 700, size: 11, font });
+    const doc = await parsePdf(await pdf.save(), options);
+    expect(doc.warnings).toContain(
+      'Page 1: rotated text (such as a stamp) was skipped.',
+    );
+    expect(doc.warnings.join('\n')).not.toMatch(/text layer/);
+  });
+});
+
+describe('withoutCanvasNotices', () => {
+  it('drops only PDF.js canvas notices while loading, and restores console.warn', async () => {
+    const seen: unknown[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => {
+      seen.push(args[0]);
+    };
+    try {
+      const result = await withoutCanvasNotices(() => {
+        console.warn('Warning: Cannot load "@napi-rs/canvas" package: "Error"');
+        console.warn(
+          'Warning: Cannot polyfill `DOMMatrix`, rendering may be broken.',
+        );
+        console.warn(
+          'Warning: Cannot polyfill `Path2D`, rendering may be broken.',
+        );
+        console.warn('Warning: something else');
+        console.warn(42);
+        return Promise.resolve('loaded');
+      });
+      expect(result).toBe('loaded');
+      await expect(
+        withoutCanvasNotices(() => Promise.reject(new Error('boom'))),
+      ).rejects.toThrow('boom');
+      console.warn('after');
+    } finally {
+      console.warn = original;
+    }
+    expect(seen).toEqual(['Warning: something else', 42, 'after']);
   });
 });
 

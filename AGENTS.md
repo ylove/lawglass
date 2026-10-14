@@ -21,7 +21,7 @@ A localhost-first legislation RAG tool: an `npx` CLI plus a local web UI. You gi
 4. **No network in unit tests.** Both projects guard fetch; Node tests also guard `node:http`/`node:https` `request`/`get` and `node:net` `connect`/`createConnection`. Loopback connections are allowed. Builtin patches use `syncBuiltinESMExports()` to cover ESM named imports as well as default imports. Inject fetchers, resolvers and SDK clients so tests can fake them.
 5. **Never log API keys** or include them in errors. Keys only go to their own provider.
 6. **Tests come with the code.** Every module ships with vitest tests next to it (`*.test.ts`). Security-critical modules (`core/fetch`, citation validation) need ≥90% line coverage.
-7. **TypeScript strict, ESM, Node ≥ 22.** Prefer small pure functions and explicit types at module boundaries. Validate external data with zod. No `any` without a comment explaining why.
+7. **TypeScript strict, ESM, Node ≥ 22.13.** Prefer small pure functions and explicit types at module boundaries. Validate external data with zod. No `any` without a comment explaining why.
 8. **Keep it readable.** This repo is also a portfolio piece. Name things clearly, comment the _why_ and not the _what_, and keep retrieval and chip strategies explicit rather than clever.
 9. **Dependencies.** Check the current version with `npm view <pkg> version` before adding a dependency, and prefer well-maintained packages. Don't add a dependency for something that takes a few lines.
 

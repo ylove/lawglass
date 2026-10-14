@@ -238,12 +238,15 @@ describe('other PDF reader round-trips', () => {
     });
   });
 
-  it('finds shapes but zero text items in the scanned sample', async () => {
+  it('finds a page image and shapes but zero text items in the scanned sample', async () => {
     const { bytes, groundTruth } = await makeScannedPdf();
     await withPdf(bytes, async (doc) => {
       expect(doc.numPages).toBe(1);
       expect((await (await doc.getPage(1)).getTextContent()).items).toEqual([]);
       const operators = await (await doc.getPage(1)).getOperatorList();
+      expect(
+        operators.fnArray.filter((fn) => fn === OPS.paintImageXObject),
+      ).toHaveLength(1);
       expect(
         operators.fnArray.filter((fn) => fn === OPS.constructPath),
       ).toHaveLength(12);

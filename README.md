@@ -17,7 +17,7 @@ Not legal advice. Answers are generated only from the text of the document.
 
 ## Development
 
-Use an up-to-date Node.js 22 release (or Node.js 24); `.nvmrc` selects 22.
+Use Node.js 22.13 or newer (or Node.js 24); `.nvmrc` selects the latest 22.
 The scaffold was installed with npm 11.12.1. The lockfile pins dependencies.
 TypeScript 6.0.3 stays within typescript-eslint's supported range; tsdown is
 still below 1.0, so Node builds use tsup. An esbuild override pins the patched

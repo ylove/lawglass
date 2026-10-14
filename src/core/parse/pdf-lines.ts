@@ -7,6 +7,7 @@ import type { SpanStatus } from '../model/index.js';
 import {
   markLine,
   type GlyphWidths,
+  type MarkIssue,
   type MarkSegment,
   type PdfTextItem,
 } from './pdf-geometry.js';
@@ -56,6 +57,16 @@ export const LAYOUT = {
   furnitureTolerance: 2,
   /** ...on at least this share of pages (and at least two pages). */
   furnitureRepeat: 0.5,
+  /** The same string within this many points of itself is overprinted (fake bold). */
+  overprintTolerance: 1,
+  /** A gap wider than this many ems between items on a line may be a column gutter... */
+  gutterEm: 4,
+  /** ...when gaps at the same x (within this many points) recur on enough lines. */
+  gutterTolerance: 12,
+  minGutterLines: 3,
+  gutterShare: 0.25,
+  /** In a document without line numbers, body lines start at x positions this common. */
+  bodyStartShare: 0.1,
 } as const;
 
 const LINE_NUMBER = /^\d{1,6}$/;
@@ -323,20 +334,98 @@ function where(page: number, lines: readonly (number | undefined)[]): string {
   return `Page ${String(page)}, ${label} ${numbered.join(', ')}`;
 }
 
+/** What each mark issue means for the reader, appended after "Page N, lines …: ". */
+const ISSUE_WARNINGS: Record<MarkIssue, string> = {
+  ambiguous:
+    'a rule crosses the text but is neither a clear strikethrough nor a clear underline, so that text is treated as unchanged.',
+  conflict:
+    'some text is both struck through and underlined; it is treated as deleted.',
+  'too-thick':
+    'a rule through or under the text is too heavy to be a strikethrough or underline (perhaps a bar or highlight), so that text is treated as unchanged; check it.',
+  hairline:
+    'a hairline rule crosses the text; it is too thin to tell from a table grid line, so that text is treated as unchanged; check it.',
+  'whole-line':
+    'one rule marks the whole line outside the body text; it may be a table or border rule rather than an amendment, so check it.',
+};
+
 /**
- * Lay out every page: detect line numbers (per page, falling back to the band most pages share),
- * group lines, drop running furniture, mark amendments and join text. Pages are processed in
- * order and lines top to bottom, which is reading order for single-column legislation.
+ * Remove overprinted duplicates: generators fake bold by drawing the same string twice a
+ * fraction of a point apart, which would otherwise read "SectionSection".
+ */
+export function withoutOverprint(items: readonly PdfTextItem[]): PdfTextItem[] {
+  const seen = new Map<string, PdfTextItem[]>();
+  return items.filter((item) => {
+    const same = seen.get(item.text) ?? [];
+    if (
+      same.some(
+        (other) =>
+          Math.abs(other.x - item.x) <= LAYOUT.overprintTolerance &&
+          Math.abs(other.y - item.y) <= LAYOUT.overprintTolerance,
+      )
+    )
+      return false;
+    seen.set(item.text, [...same, item]);
+    return true;
+  });
+}
+
+/**
+ * Whether a page looks like two columns (or a table): several lines share a wide gap at the
+ * same x. Lines are read straight across, so such a page's text may be out of order.
+ */
+export function hasColumnGutter(lines: readonly PdfTextItem[][]): boolean {
+  const gutters: number[] = [];
+  for (const items of lines) {
+    items.slice(1).forEach((item, index) => {
+      const previous = items[index];
+      if (!previous) return;
+      const end = previous.x + previous.width;
+      const em = Math.min(previous.fontSize, item.fontSize);
+      if (item.x - end > LAYOUT.gutterEm * em) gutters.push((end + item.x) / 2);
+    });
+  }
+  const needed = Math.max(
+    LAYOUT.minGutterLines,
+    LAYOUT.gutterShare * lines.length,
+  );
+  return gutters.some(
+    (x) =>
+      gutters.filter((other) => Math.abs(other - x) <= LAYOUT.gutterTolerance)
+        .length >= needed,
+  );
+}
+
+/** Rounded x positions that at least `share` of the lines start at (within 2pt). */
+function commonStarts(lines: readonly TextLine[], share: number): number[] {
+  const counts = new Map<number, number>();
+  for (const line of lines) {
+    const x = Math.round(line.items[0]?.x ?? 0);
+    counts.set(x, (counts.get(x) ?? 0) + 1);
+  }
+  const near = (x: number): number =>
+    [...counts]
+      .filter(([other]) => Math.abs(other - x) <= LAYOUT.bandTolerance)
+      .reduce((total, [, count]) => total + count, 0);
+  return [...counts.keys()].filter((x) => near(x) >= share * lines.length);
+}
+
+/**
+ * Lay out every page: drop overprinted duplicates, detect line numbers (per page, falling back
+ * to the band most pages share), group lines, drop running furniture, mark amendments and
+ * join text. Pages are processed in order and lines top to bottom, which is reading order for
+ * single-column legislation; a page that looks like two columns gets a warning.
  */
 export function layoutPages(pages: readonly PageContent[]): PageLayoutResult {
   const warnings: string[] = [];
-  const pageBands = pages.map((page) => detectBand(page.items));
+  const pageItems = pages.map((page) => withoutOverprint(page.items));
+  const pageBands = pageItems.map((items) => detectBand(items));
   const fallback = documentBand(pageBands);
   const laidOut = pages.map((page, index) => {
+    const items = pageItems[index] ?? [];
     const band = pageBands[index] ?? fallback;
-    const numbers = band ? bandMembers(page.items, band) : [];
+    const numbers = band ? bandMembers(items, band) : [];
     const lines: TextLine[] = groupLines(
-      page.items.filter((item) => !numbers.includes(item)),
+      items.filter((item) => !numbers.includes(item)),
     ).map((items) => {
       const y = items[0]?.y ?? 0;
       const em = Math.max(...items.map((item) => item.fontSize));
@@ -363,16 +452,34 @@ export function layoutPages(pages: readonly PageContent[]): PageLayoutResult {
       warnings.push(
         `Line numbers were not found on page ${String(page.page)}; citations there use the page only.`,
       );
+    if (hasColumnGutter(lines.map((line) => line.items)))
+      warnings.push(
+        `Page ${String(page.page)} looks like it has two columns (or a table); its lines are read straight across, so text there may be out of order.`,
+      );
   }
+
+  // Body text is numbered when the document has line numbers; otherwise it starts at the
+  // document's common indents. A rule under a whole line elsewhere may be a table rule.
+  const starts = commonStarts(
+    laidOut.flatMap(({ lines }) => lines),
+    LAYOUT.bodyStartShare,
+  );
+  const inBody = (line: TextLine): boolean =>
+    fallback
+      ? line.number !== undefined
+      : starts.some(
+          (x) => Math.abs((line.items[0]?.x ?? 0) - x) <= LAYOUT.bandTolerance,
+        );
 
   const lines: StyledLine[] = [];
   for (const { page, lines: pageLines } of laidOut) {
-    const ambiguous: (number | undefined)[] = [];
-    const conflicts: (number | undefined)[] = [];
+    const flagged = new Map<MarkIssue, (number | undefined)[]>();
     for (const line of pageLines) {
       const marks = markLine(line.items, page.segments, page.widths);
-      if (marks.ambiguous) ambiguous.push(line.number);
-      if (marks.conflict) conflicts.push(line.number);
+      for (const issue of marks.issues) {
+        if (issue === 'whole-line' && inBody(line)) continue;
+        flagged.set(issue, [...(flagged.get(issue) ?? []), line.number]);
+      }
       const joined = joinLine(line.items, marks.statuses);
       if (!joined.text) continue;
       lines.push({
@@ -382,14 +489,8 @@ export function layoutPages(pages: readonly PageContent[]): PageLayoutResult {
         ...joined,
       });
     }
-    if (ambiguous.length > 0)
-      warnings.push(
-        `${where(page.page, ambiguous)}: a rule crosses the text but is neither a clear strikethrough nor a clear underline, so that text is treated as unchanged.`,
-      );
-    if (conflicts.length > 0)
-      warnings.push(
-        `${where(page.page, conflicts)}: some text is both struck through and underlined; it is treated as deleted.`,
-      );
+    for (const [issue, labels] of flagged)
+      warnings.push(`${where(page.page, labels)}: ${ISSUE_WARNINGS[issue]}`);
   }
   return { lines, warnings };
 }

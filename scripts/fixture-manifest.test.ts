@@ -11,13 +11,14 @@ const manifest = readManifest();
 const fixture = manifest.fixtures[0];
 if (!fixture) throw new Error('The manifest needs at least one fixture');
 
-test('the committed manifest contains five validated public sources', () => {
-  expect(manifest.fixtures).toHaveLength(5);
+test('the committed manifest contains six validated public sources', () => {
+  expect(manifest.fixtures).toHaveLength(6);
   expect(manifest.fixtures.map(({ name }) => name)).toEqual([
     'us-s202-119-is',
     'us-s202-119-is-html',
     'oh-sb113-136-in',
     'oh-sb203-133-in',
+    'oh-hb62-135-in',
     'us-hr5009-118-enr',
   ]);
   expect(

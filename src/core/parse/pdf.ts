@@ -4,22 +4,15 @@
  * sections over the whole document (sections.ts). Design: docs/decisions/0006.
  */
 import { createHash } from 'node:crypto';
-import { createRequire } from 'node:module';
-import { dirname, join, sep } from 'node:path';
-import {
-  AnnotationMode,
-  getDocument,
-  PDFWorker,
-  PasswordException,
-  VerbosityLevel,
-  type PDFPageProxy,
-} from 'pdfjs-dist/legacy/build/pdf.mjs';
+import type { PDFPageProxy } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { z } from 'zod';
 import { AppError, EMPTY_METADATA, NormalizedDoc } from '../model/index.js';
 import {
   collectGlyphWidths,
   extractMarkSegments,
+  withoutLinkUnderlines,
   type PdfTextItem,
+  type Rect,
 } from './pdf-geometry.js';
 import { layoutPages, type PageContent, type StyledLine } from './pdf-lines.js';
 import {
@@ -37,15 +30,54 @@ export interface PdfParseOptions extends SectionDetectionOptions {
 
 const context = z.object({ sourceUrl: z.url(), fetchedAt: z.iso.datetime() });
 
-/** A page with fewer visible characters than this has no usable text layer. */
-const MIN_PAGE_CHARACTERS = 10;
+/**
+ * A document is scanned when it paints images and no page has more than a stray stamp of text
+ * (a page number, "HB 5"): fewer than this many visible characters on every page.
+ */
+const SCANNED_MAX_PAGE_CHARACTERS = 50;
 
-// PDF.js reads its standard-font metrics from disk in Node; the path must end with a separator.
-const STANDARD_FONTS =
-  join(
-    dirname(createRequire(import.meta.url).resolve('pdfjs-dist/package.json')),
-    'standard_fonts',
-  ) + sep;
+type PdfJs = typeof import('pdfjs-dist/legacy/build/pdf.mjs');
+
+// PDF.js warns with these when it loads without its optional @napi-rs/canvas dependency. That package
+// only serves rendering, which this parser never does, and the published CLI bundles PDF.js
+// without it (docs/decisions/0006), so the notices would only alarm users.
+const CANVAS_NOTICE =
+  /^Warning: Cannot (?:load "@napi-rs\/canvas"|polyfill `(?:DOMMatrix|Path2D)`)/;
+
+/** Run `load` with PDF.js's canvas notices filtered out of console.warn, then restore it. */
+export async function withoutCanvasNotices<T>(
+  load: () => Promise<T>,
+): Promise<T> {
+  const warn = console.warn;
+  console.warn = (...args: unknown[]) => {
+    if (typeof args[0] === 'string' && CANVAS_NOTICE.test(args[0])) return;
+    warn(...args);
+  };
+  try {
+    return await load();
+  } finally {
+    console.warn = warn;
+  }
+}
+
+let pdfjs: Promise<PdfJs> | undefined;
+
+/**
+ * Load PDF.js on first use: it is large, and the CLI should start fast when no PDF is parsed.
+ * Its worker runs on this thread from the imported module rather than a file path, so the
+ * same code works from node_modules and from the bundled CLI.
+ */
+function loadPdfJs(): Promise<PdfJs> {
+  pdfjs ??= withoutCanvasNotices(async () => {
+    const [api, worker] = await Promise.all([
+      import('pdfjs-dist/legacy/build/pdf.mjs'),
+      import('pdfjs-dist/legacy/build/pdf.worker.mjs'),
+    ]);
+    (globalThis as { pdfjsWorker?: unknown }).pdfjsWorker = worker;
+    return api;
+  });
+  return pdfjs;
+}
 
 // PDF.js types text-item transforms as any[]; validate them at this boundary.
 const textItem = z.object({
@@ -61,8 +93,16 @@ const textItem = z.object({
     z.number(),
   ]),
 });
+const linkAnnotation = z.object({
+  subtype: z.literal('Link'),
+  rect: z.tuple([z.number(), z.number(), z.number(), z.number()]),
+});
 
 interface ExtractedPage extends PageContent {
+  /** Visible characters in the text layer, including rotated text. */
+  characters: number;
+  /** Image paints: a page that only paints images is likely a scan. */
+  images: number;
   /** Rotated or vertical text was skipped. */
   skippedRotated: boolean;
 }
@@ -70,15 +110,18 @@ interface ExtractedPage extends PageContent {
 async function extractPage(
   page: PDFPageProxy,
   pageNumber: number,
+  { OPS, AnnotationMode }: PdfJs,
 ): Promise<ExtractedPage> {
   const content = await page.getTextContent();
   const items: PdfTextItem[] = [];
+  let characters = 0;
   let skippedRotated = false;
   for (const raw of content.items) {
     const parsed = textItem.safeParse(raw);
     // Marked-content entries have no text; whitespace-only items (PDF.js emits them for gaps,
     // including one beside every printed line number) carry nothing a gap cannot.
     if (!parsed.success || !/\S/.test(parsed.data.str)) continue;
+    characters += parsed.data.str.replace(/\s/g, '').length;
     const [a, b, c, d, x, y] = parsed.data.transform;
     // Amendment geometry assumes horizontal text; margin stamps and watermarks are not body text.
     if (Math.abs(b) > 1e-3 * Math.abs(a) || Math.abs(c) > 1e-3 * Math.abs(d)) {
@@ -94,31 +137,63 @@ async function extractPage(
       fontName: parsed.data.fontName,
     });
   }
-  // Annotations are reader markup (a reviewer's strikeout), never the bill's own amendments.
+  // Annotations are reader markup (a reviewer's strikeout), never the bill's own amendments;
+  // only link areas are read, to tell a hyperlink's underline from an insertion.
   const operators = await page.getOperatorList({
     annotationMode: AnnotationMode.DISABLE,
   });
+  const links: Rect[] = (await page.getAnnotations()).flatMap((annotation) => {
+    const link = linkAnnotation.safeParse(annotation);
+    if (!link.success) return [];
+    const [x0, y0, x1, y1] = link.data.rect;
+    return [
+      {
+        x0: Math.min(x0, x1),
+        y0: Math.min(y0, y1),
+        x1: Math.max(x0, x1),
+        y1: Math.max(y0, y1),
+      },
+    ];
+  });
+  const imageOps = new Set<number>([
+    OPS.paintImageXObject,
+    OPS.paintInlineImageXObject,
+    OPS.paintInlineImageXObjectGroup,
+    OPS.paintImageXObjectRepeat,
+    OPS.paintImageMaskXObject,
+    OPS.paintImageMaskXObjectGroup,
+    OPS.paintImageMaskXObjectRepeat,
+  ]);
   const [x0 = 0, y0 = 0, x1 = 0, y1 = 0] = page.view;
   return {
     page: pageNumber,
     view: [x0, y0, x1, y1],
     items,
-    segments: extractMarkSegments(operators.fnArray, operators.argsArray),
-    widths: collectGlyphWidths(operators.fnArray, operators.argsArray),
+    segments: withoutLinkUnderlines(
+      extractMarkSegments(operators.fnArray, operators.argsArray, OPS),
+      links,
+    ),
+    widths: collectGlyphWidths(operators.fnArray, operators.argsArray, OPS),
+    characters,
+    images: operators.fnArray.filter((fn) => imageOps.has(fn)).length,
     skippedRotated,
   };
 }
 
 async function extractPages(bytes: Uint8Array): Promise<ExtractedPage[]> {
+  const api = await loadPdfJs();
   // A worker per call keeps parses independent; in Node it runs on this thread.
-  const worker = new PDFWorker();
-  const task = getDocument({
+  const worker = new api.PDFWorker();
+  const task = api.getDocument({
     // PDF.js may detach the buffer it is given, and rejects Node Buffers; a plain copy avoids
     // both (Buffer#slice would share the caller's memory).
     data: new Uint8Array(bytes),
     worker,
-    standardFontDataUrl: STANDARD_FONTS,
-    verbosity: VerbosityLevel.ERRORS,
+    // Standard-font metrics are built into PDF.js; the font files only matter for rendering,
+    // and extraction is identical without them across every fixture. `useSystemFonts` stops
+    // PDF.js fetching them (and warning that no font path was given).
+    useSystemFonts: true,
+    verbosity: api.VerbosityLevel.ERRORS,
   });
   try {
     let document;
@@ -127,7 +202,7 @@ async function extractPages(bytes: Uint8Array): Promise<ExtractedPage[]> {
     } catch (cause) {
       throw new AppError(
         'PARSE_FAILED',
-        cause instanceof PasswordException
+        cause instanceof api.PasswordException
           ? 'The PDF is password-protected.'
           : 'The PDF could not be opened.',
         { cause },
@@ -136,7 +211,7 @@ async function extractPages(bytes: Uint8Array): Promise<ExtractedPage[]> {
     const pages: ExtractedPage[] = [];
     for (let number = 1; number <= document.numPages; number++) {
       const page = await document.getPage(number);
-      pages.push(await extractPage(page, number));
+      pages.push(await extractPage(page, number, api));
       // Keep only the extracted geometry; long bills run to thousands of pages.
       page.cleanup();
     }
@@ -147,16 +222,11 @@ async function extractPages(bytes: Uint8Array): Promise<ExtractedPage[]> {
   }
 }
 
-const visibleCharacters = (page: PageContent): number =>
-  page.items.reduce(
-    (total, item) => total + item.text.replace(/\s/g, '').length,
-    0,
-  );
-
 /**
  * Parse a PDF with a text layer. Struck text becomes `deleted` spans and underlined text
  * `inserted` spans; printed line numbers become span and section coordinates. Metadata is
- * left empty for the enrichment step. Throws `SCANNED_PDF` when no page has a text layer.
+ * left empty for the enrichment step. Throws `SCANNED_PDF` when the document is images with
+ * at most a stray stamp of text, and `PARSE_FAILED` when it has no text and no images.
  */
 export async function parsePdf(
   bytes: Uint8Array,
@@ -171,16 +241,23 @@ export async function parsePdf(
   // Hash the original bytes, before PDF.js sees (and may detach) a copy.
   const docId = createHash('sha256').update(bytes).digest('hex');
   const pages = await extractPages(bytes);
-  const textless = pages.filter(
-    (page) => visibleCharacters(page) < MIN_PAGE_CHARACTERS,
-  );
-  if (textless.length === pages.length) {
-    throw new AppError('SCANNED_PDF', 'No page of the PDF has a text layer.');
+  const images = pages.some((page) => page.images > 0);
+  if (
+    images &&
+    pages.every((page) => page.characters < SCANNED_MAX_PAGE_CHARACTERS)
+  ) {
+    throw new AppError('SCANNED_PDF', 'The PDF is images with no text layer.');
   }
-  const warnings = textless.map(
-    ({ page }) =>
-      `Page ${String(page)} has no text layer (it may be a scanned image), so its content is missing.`,
-  );
+  if (pages.every((page) => page.characters === 0)) {
+    throw new AppError('PARSE_FAILED', 'The PDF contains no text.');
+  }
+  // A page with any text is not a scan, however short ("HB 5" on a cover page).
+  const warnings = pages
+    .filter((page) => page.characters === 0 && page.images > 0)
+    .map(
+      ({ page }) =>
+        `Page ${String(page)} has no text layer (it may be a scanned image), so its content is missing.`,
+    );
   for (const { page, skippedRotated } of pages) {
     if (skippedRotated)
       warnings.push(

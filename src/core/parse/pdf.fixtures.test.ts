@@ -2,10 +2,11 @@
  * Local-only checks against real Ohio bills (fixtures/downloads, never committed; they skip
  * when absent: `npm run fixtures:fetch`). Every expected string was read off the rendered page.
  *
- * Neither bill strikes any text: both only add language. They still test the hard parts on
+ * SB 113 and SB 203 strike no text: both only add language. They still test the hard parts on
  * real geometry: underlines 1.4pt and 2.7pt below the baseline, line numbers in the right
  * margin that continue across pages, two-line running headers, and decorative bars on page
- * 1 that must not read as strikethrough.
+ * 1 that must not read as strikethrough. HB 62 strikes and inserts, so it tests the spec's
+ * core promise on real output: struck text never reaches a heading, breadcrumb or embedding.
  */
 import { readFileSync } from 'node:fs';
 import { beforeAll, expect, it } from 'vitest';
@@ -20,6 +21,7 @@ import {
   type Section,
   type Span,
 } from '../model/index.js';
+import { chunkDocument } from '../chunk/index.js';
 import { parsePdf } from './index.js';
 
 const normalize = (text: string): string => text.replace(/\s+/g, ' ').trim();
@@ -192,5 +194,105 @@ describeWithFixture('oh-sb203-133-in', () => {
       ['inserted', 'or 2923.27'],
       ['unchanged', ' of the Revised\n'],
     ]);
+  });
+});
+
+describeWithFixture('oh-hb62-135-in', () => {
+  const doc = load('oh-hb62-135-in');
+  /** Status runs on one printed line, whitespace normalized and blank runs dropped. */
+  const line = (page: number, number: number) =>
+    spans(doc())
+      .filter((span) => span.page === page && span.line === number)
+      .map((span) => [span.status, normalize(span.text)])
+      .filter(([, text]) => text);
+
+  it('parses the bill: 26 struck and 28 underlined runs, no warnings', () => {
+    expect(doc().pageCount).toBe(5);
+    expect(doc().warnings).toEqual([]);
+    expect(doc().sections.map((s) => s.id)).toEqual([
+      'preamble',
+      'sec-1',
+      'sec-2307.601',
+      'sec-2901.05',
+      'sec-2901.09',
+      'sec-2',
+    ]);
+    const all = spans(doc());
+    expect(all.filter((span) => span.status === 'deleted')).toHaveLength(26);
+    expect(all.filter((span) => span.status === 'inserted')).toHaveLength(28);
+  });
+
+  it('p. 1, lines 7-8: "has" and "meaning" struck for "and "vehicle" have" and "meanings"', () => {
+    expect(line(1, 7)).toEqual([
+      ['unchanged', '(1) "Residence"'],
+      ['deleted', 'has'],
+      ['inserted', 'and "vehicle" have'],
+      ['unchanged', 'the same'],
+      ['deleted', 'meaning'],
+    ]);
+    expect(line(1, 8)[0]).toEqual(['inserted', 'meanings']);
+    // The division's heading is the amended text, without the struck "has".
+    expect(section(doc(), 'sec-2307.601/a/1').heading).toBe(
+      '"Residence" and "vehicle" have the same',
+    );
+  });
+
+  it('p. 2, lines 20-21: "lawfully", "a right" and "be" struck; "retreat before using force" inserted', () => {
+    const line20 = line(2, 20);
+    expect(line20).toContainEqual(['deleted', 'lawfully']);
+    expect(line20).toContainEqual(['deleted', 'a right']);
+    const line21 = line(2, 21);
+    const be = line21.findIndex(
+      ([status, text]) => status === 'deleted' && text === 'be',
+    );
+    expect(be).toBeGreaterThan(-1);
+    expect(line21[be + 1]?.[0]).toBe('inserted');
+    expect(line21[be + 1]?.[1]).toMatch(/^retreat before using force/);
+  });
+
+  it('p. 2, lines 23-27: the whole struck division (C) is deleted and opens no section', () => {
+    const struck = [23, 24, 25, 26, 27].flatMap((number) => line(2, number));
+    expect(struck.every(([status]) => status === 'deleted')).toBe(true);
+    const text = struck.map(([, t]) => t).join(' ');
+    expect(text).toMatch(
+      /^\(C\) A trier of fact shall not consider the possibility of retreat/,
+    );
+    expect(text).toMatch(
+      /necessary to prevent injury, loss, or risk to life or safety\.$/,
+    );
+    const ids = [...walkSections(doc().sections)].map((s) => s.id);
+    expect(ids).not.toContain('sec-2307.601/c');
+    expect(ids).not.toContain('sec-2901.09/c');
+  });
+
+  it('never lets struck text reach a non-deleted chunk heading, breadcrumb or embedding', () => {
+    const kept = spans(doc())
+      .filter((span) => span.status !== 'deleted')
+      .map((span) => normalize(span.text))
+      .join(' ');
+    // Struck words that also appear as kept text ("lawfully") cannot be told apart.
+    const distinctive = [
+      ...new Set(
+        spans(doc())
+          .filter((span) => span.status === 'deleted')
+          .map((span) => normalize(span.text)),
+      ),
+    ].filter((text) => text.length > 3 && !kept.includes(text));
+    expect(distinctive).toEqual(
+      expect.arrayContaining([
+        '(C) A trier of fact shall not consider the possibility of',
+        'place in which',
+      ]),
+    );
+    const chunks = chunkDocument(doc());
+    expect(chunks.some((chunk) => chunk.amendmentStatus === 'deleted')).toBe(
+      true,
+    );
+    for (const chunk of chunks.filter((c) => c.amendmentStatus !== 'deleted')) {
+      const exposed = [chunk.heading ?? '', chunk.breadcrumb, chunk.embedText]
+        .map(normalize)
+        .join(' | ');
+      for (const text of distinctive) expect(exposed).not.toContain(text);
+    }
   });
 });

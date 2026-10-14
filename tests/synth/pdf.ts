@@ -381,10 +381,23 @@ export async function makeAmendingBillPdf(
   return { bytes: await doc.save({ useObjectStreams: false }), groundTruth };
 }
 
+/** A 1x1 grey PNG: stands in for a scanned page image. */
+export const SCAN_PIXEL = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC',
+  'base64',
+);
+
 export async function makeScannedPdf(): Promise<SyntheticSample> {
   const doc = await newDocument();
   const page = doc.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight]);
-  // Draw raster-like bands only: no fonts, text operators, or hidden searchable text.
+  // A scan is an image of the page; draw one across the page, as a scanner would.
+  page.drawImage(await doc.embedPng(SCAN_PIXEL), {
+    x: 0,
+    y: 0,
+    width: LAYOUT.pageWidth,
+    height: LAYOUT.pageHeight,
+  });
+  // Raster-like bands on top: no fonts, text operators, or hidden searchable text.
   for (let line = 0; line < 12; line++) {
     page.drawRectangle({
       x: 72,

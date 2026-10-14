@@ -46,6 +46,17 @@
       "notes": "Ohio 133rd General Assembly SB 203, As Introduced. Line-numbered PDF amending the Revised Code."
     },
     {
+      "name": "oh-hb62-135-in",
+      "description": "Ohio HB 62, as introduced in the 135th General Assembly.",
+      "format": "pdf",
+      "url": "https://search-prod.lis.state.oh.us/api/v2/general_assembly_135/legislation/hb62/00_IN/pdf/",
+      "sha256": "6090074c52bf63c9f5053838d5a50022f62ce29b64535b40c8a84bcad0bb1e73",
+      "bytes": 69254,
+      "retrievedAt": "2026-10-13",
+      "jurisdiction": "Ohio",
+      "notes": "Amends RC 2307.601, 2901.05, 2901.09; contains strikethrough AND underline"
+    },
+    {
       "name": "us-hr5009-118-enr",
       "description": "National Defense Authorization Act for FY2025, enrolled House bill (large XML).",
       "format": "xml",

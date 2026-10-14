@@ -5,7 +5,7 @@ legislation files live in the gitignored `fixtures/downloads/`; never commit the
 or their `.mismatch` copies. CI uses generated samples from `tests/synth/` and
 does not download these files.
 
-Fetch all five public documents with Node ≥22:
+Fetch all six public documents with Node ≥22.13:
 
 ```sh
 npm ci

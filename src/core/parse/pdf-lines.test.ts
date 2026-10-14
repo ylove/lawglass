@@ -4,8 +4,10 @@ import type { MarkSegment, PdfTextItem } from './pdf-geometry.js';
 import {
   detectBand,
   groupLines,
+  hasColumnGutter,
   joinLine,
   layoutPages,
+  withoutOverprint,
   type PageContent,
 } from './pdf-lines.js';
 
@@ -348,5 +350,123 @@ describe('layoutPages', () => {
     expect(layoutPages([content]).warnings[0]).toMatch(
       /^Page 1, lines 1, 2, 3:/,
     );
+  });
+});
+
+describe('withoutOverprint (review finding 6)', () => {
+  it('drops the same string redrawn within a point (fake bold), keeping real repeats', () => {
+    const items = [
+      item('Section', 72, 700),
+      item('Section', 72.3, 700.2),
+      item('1.', 120, 700),
+      item('Section', 72, 600),
+      item('Section', 74, 700),
+    ];
+    expect(withoutOverprint(items)).toEqual([
+      items[0],
+      items[2],
+      items[3],
+      items[4],
+    ]);
+  });
+
+  it('reads overprinted text once in the laid-out line', () => {
+    const bold = page(1, [
+      item('Section 1. The quick fox.', 72, 700),
+      item('Section 1. The quick fox.', 72.3, 700),
+    ]);
+    expect(layoutPages([bold]).lines.map(({ text }) => text)).toEqual([
+      'Section 1. The quick fox.',
+    ]);
+  });
+});
+
+describe('hasColumnGutter (review finding 5)', () => {
+  const twoColumns = [0, 1, 2, 3].map((index) => [
+    item('left column text', 72, 700 - index * 14),
+    item('right column text', 330, 700 - index * 14),
+  ]);
+
+  it('sees a gap shared by several lines at the same x', () => {
+    expect(hasColumnGutter(twoColumns)).toBe(true);
+  });
+
+  it('ignores one wide gap (a title line) and ordinary word spacing', () => {
+    expect(
+      hasColumnGutter([
+        [item('Regular Session', 99, 645), item('S. B. No. 113', 424, 645)],
+        ...[1, 2, 3, 4].map((index) => [
+          item('the board', 75, 600 - index * 18),
+          item('shall adopt', 141, 600 - index * 18),
+        ]),
+      ]),
+    ).toBe(false);
+  });
+
+  it('warns about a two-column page in the layout', () => {
+    const result = layoutPages([page(1, twoColumns.flat())]);
+    expect(result.warnings).toContain(
+      'Page 1 looks like it has two columns (or a table); its lines are read straight across, so text there may be out of order.',
+    );
+  });
+});
+
+describe('heavy, hairline and whole-line rules in the layout', () => {
+  it('names lines with rules too heavy or too thin to be marks', () => {
+    const content = numberedPage(1, ['brown fox', 'lazy dog', 'plain']);
+    content.segments = [
+      { x0: 75, x1: 129, y: 653, thickness: 3 },
+      { x0: 75, x1: 123, y: 635, thickness: 0.1 },
+    ];
+    const result = layoutPages([content]);
+    expect(result.lines.flatMap((line) => line.statuses)).not.toContain(
+      'deleted',
+    );
+    expect(result.warnings).toEqual([
+      'Page 1, line 1: a rule through or under the text is too heavy to be a strikethrough or underline (perhaps a bar or highlight), so that text is treated as unchanged; check it.',
+      'Page 1, line 2: a hairline rule crosses the text; it is too thin to tell from a table grid line, so that text is treated as unchanged; check it.',
+    ]);
+  });
+
+  it('does not question a whole underlined line in numbered body text (an Ohio new section)', () => {
+    const content = numberedPage(1, [
+      'new law text',
+      'more new text',
+      'and more',
+    ]);
+    content.segments = [650, 632, 614].map((y) => ({
+      x0: 75,
+      x1: 160,
+      y: y - 1.4,
+      thickness: 0.7,
+    }));
+    const result = layoutPages([content]);
+    expect(result.lines[0]?.statuses).not.toContain('unchanged');
+    expect(result.warnings).toEqual([]);
+  });
+
+  it('questions a whole-line rule on an unnumbered line of a numbered document', () => {
+    const content = numberedPage(1, ['body', 'body', 'body']);
+    content.items.push(item('Fee table', 300, 500));
+    content.segments = [{ x0: 300, x1: 354, y: 497, thickness: 0.5 }];
+    expect(layoutPages([content]).warnings).toEqual([
+      'Page 1: one rule marks the whole line outside the body text; it may be a table or border rule rather than an amendment, so check it.',
+    ]);
+  });
+
+  it('judges the body by common indents when a document has no line numbers', () => {
+    const body = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((index) =>
+      item('Body text line', 72, 700 - index * 14),
+    );
+    const cell = item('Cell', 400, 500);
+    const content = page(1, [...body, cell]);
+    content.segments = [
+      { x0: 72, x1: 156, y: 698.6, thickness: 0.6 },
+      { x0: 400, x1: 424, y: 498.6, thickness: 0.6 },
+    ];
+    expect(layoutPages([content]).warnings).toEqual([
+      'Line numbers were not found in this PDF; citations use page numbers only.',
+      'Page 1: one rule marks the whole line outside the body text; it may be a table or border rule rather than an amendment, so check it.',
+    ]);
   });
 });

@@ -7,6 +7,8 @@ import {
   GEOMETRY,
   glyphExtents,
   markLine,
+  maxMarkThickness,
+  withoutLinkUnderlines,
   type GlyphWidths,
   type MarkSegment,
   type PdfTextItem,
@@ -28,7 +30,7 @@ const path = (paint: number, data: number[]): [number, unknown] => [
   [paint, [new Float32Array(data)], null],
 ];
 const segments = (...entries: [number, unknown][]): MarkSegment[] =>
-  extractMarkSegments(...ops(...entries));
+  extractMarkSegments(...ops(...entries), OPS);
 
 const item = (overrides: Partial<PdfTextItem> = {}): PdfTextItem => ({
   text: 'resident',
@@ -156,11 +158,6 @@ describe('extractMarkSegments', () => {
       OPS.stroke,
       [M, 0, 0, L, 100, 0, L, 100, 12, L, 0, 12, Z],
     ],
-    [
-      'a filled bar thicker than a typographic rule',
-      OPS.fill,
-      [M, 0, 0, L, 100, 0, L, 100, 2.5, L, 0, 2.5, Z],
-    ],
     ['a vertical rule', OPS.stroke, [M, 0, 0, L, 0, 100]],
     ['a diagonal line', OPS.stroke, [M, 0, 0, L, 100, 30]],
     ['a curve', OPS.stroke, [M, 0, 0, C, 10, 1, 20, 1, 30, 0]],
@@ -173,24 +170,34 @@ describe('extractMarkSegments', () => {
     expect(segments(path(paint, data))).toEqual([]);
   });
 
-  it('ignores a stroke whose line width makes it thicker than a typographic rule', () => {
+  it('keeps heavy rules and filled bars for judging against the text size', () => {
     expect(
       segments(
-        [OPS.setLineWidth, [2.5]],
+        [OPS.setLineWidth, [3]],
         path(OPS.stroke, [M, 0, 0, L, 100, 0]),
-      ),
-    ).toEqual([]);
+        path(OPS.fill, [M, 0, 10, L, 100, 10, L, 100, 22, L, 0, 22, Z]),
+      ).map((segment) => segment.thickness),
+    ).toEqual([3, 12]);
   });
 
   it('counts the stroke of a filled and stroked bar toward its thickness', () => {
-    const bar = [M, 0, 0, L, 50, 0, L, 50, 1, L, 0, 1, Z];
-    expect(
-      segments([OPS.setLineWidth, [0.2]], path(OPS.fillStroke, bar)),
-    ).toEqual([
-      { x0: 0, x1: 50, y: 0.5, thickness: expect.closeTo(1.2, 5) as number },
-    ]);
+    const bar = [M, 0, 0, L, 50, 0, L, 50, 0.6, L, 0, 0.6, Z];
     expect(
       segments([OPS.setLineWidth, [1]], path(OPS.fillStroke, bar)),
+    ).toEqual([
+      {
+        x0: 0,
+        x1: 50,
+        y: expect.closeTo(0.3, 5) as number,
+        thickness: expect.closeTo(1.6, 5) as number,
+      },
+    ]);
+  });
+
+  it('treats an outline whose fill is invisible as an outline', () => {
+    const box = [M, 0, 0, L, 100, 0, L, 100, 12, L, 0, 12, Z];
+    expect(
+      segments([OPS.setFillRGBColor, ['#ffffff']], path(OPS.fillStroke, box)),
     ).toEqual([]);
   });
 
@@ -253,6 +260,7 @@ describe('collectGlyphWidths', () => {
         [OPS.setFont, [7]],
         [OPS.showText, [['bad']]],
       ),
+      OPS,
     );
     expect(widths.get('f1')).toEqual(
       new Map([
@@ -342,8 +350,7 @@ describe('markLine', () => {
         ['deleted', 'deleted', 'deleted'],
         ['inserted', 'inserted', 'inserted'],
       ],
-      ambiguous: false,
-      conflict: false,
+      issues: new Set(),
     });
   });
 
@@ -377,10 +384,8 @@ describe('markLine', () => {
       [strike(0, 20), under(0, 20)],
       noWidths,
     );
-    expect(marks).toMatchObject({
-      statuses: [['deleted', 'deleted']],
-      conflict: true,
-    });
+    expect(marks.statuses).toEqual([['deleted', 'deleted']]);
+    expect(marks.issues).toEqual(new Set(['conflict', 'whole-line']));
   });
 
   it('leaves text unchanged under a rule between the bands, and flags it', () => {
@@ -391,8 +396,7 @@ describe('markLine', () => {
     );
     expect(marks).toEqual({
       statuses: [['unchanged', 'unchanged']],
-      ambiguous: true,
-      conflict: false,
+      issues: new Set(['ambiguous']),
     });
   });
 
@@ -402,8 +406,8 @@ describe('markLine', () => {
         [item({ text: 'a b', x: 0, width: 30 })],
         [strike(11, 19, 500.9)],
         noWidths,
-      ).ambiguous,
-    ).toBe(false);
+      ).issues.size,
+    ).toBe(0);
   });
 
   it('ignores a rule that overhangs the line text like a table rule', () => {
@@ -424,8 +428,209 @@ describe('markLine', () => {
     ).toEqual([['unchanged', 'unchanged', 'unchanged', 'unchanged']]);
     expect(markLine([], [strike(0, 10)], noWidths)).toEqual({
       statuses: [],
-      ambiguous: false,
-      conflict: false,
+      issues: new Set(),
     });
+  });
+});
+
+describe('visible paint (review finding 2)', () => {
+  const rule = path(OPS.stroke, [M, 0, 10, L, 50, 10]);
+  const bar = path(OPS.fill, [M, 0, 0, L, 50, 0, L, 50, 0.6, L, 0, 0.6, Z]);
+
+  it.each([
+    ['a white cover-up rectangle', [[OPS.setFillRGBColor, ['#ffffff']], bar]],
+    [
+      'a near-white (5% grey) rule',
+      [[OPS.setStrokeRGBColor, ['#f2f2f2']], rule],
+    ],
+    ['a fully transparent fill', [[OPS.setGState, [[['ca', 0]]]], bar]],
+    ['a fully transparent stroke', [[OPS.setGState, [[['CA', 0]]]], rule]],
+    ['black at 5% opacity', [[OPS.setGState, [[['CA', 0.05]]]], rule]],
+  ] as [string, [number, unknown][]][])('ignores %s', (_, entries) => {
+    expect(segments(...entries)).toEqual([]);
+  });
+
+  it.each([
+    ['blue', [[OPS.setStrokeRGBColor, ['#0000ff']], rule]],
+    [
+      'yellow (dark in one channel)',
+      [[OPS.setStrokeRGBColor, ['#ffff00']], rule],
+    ],
+    [
+      'CMYK black at half opacity',
+      [
+        [OPS.setGState, [[['CA', 0.5]]]],
+        [OPS.setStrokeRGBColor, ['#2c2e35']],
+        rule,
+      ],
+    ],
+    [
+      'a pattern fill',
+      [
+        [OPS.setFillRGBColor, ['#ffffff']],
+        [OPS.setFillColorN, ['TilingPattern']],
+        bar,
+      ],
+    ],
+    [
+      'a pattern stroke',
+      [
+        [OPS.setStrokeRGBColor, ['#ffffff']],
+        [OPS.setStrokeColorN, ['TilingPattern']],
+        rule,
+      ],
+    ],
+  ] as [string, [number, unknown][]][])('keeps %s', (_, entries) => {
+    expect(segments(...entries)).toHaveLength(1);
+  });
+
+  it('restores paint with the graphics state and reads line width from a graphics state', () => {
+    expect(
+      segments(
+        [OPS.save, null],
+        [OPS.setStrokeRGBColor, ['#ffffff']],
+        [OPS.restore, null],
+        [
+          OPS.setGState,
+          [
+            [
+              ['LW', 0.4],
+              ['BM', 'Normal'],
+              ['CA', 'bad'],
+            ],
+          ],
+        ],
+        rule,
+      ),
+    ).toEqual([
+      { x0: 0, x1: 50, y: 10, thickness: expect.closeTo(0.4, 5) as number },
+    ]);
+  });
+
+  it('skips malformed colour and graphics-state arguments', () => {
+    expect(
+      segments(
+        [OPS.setStrokeRGBColor, ['white']],
+        [OPS.setGState, ['bad']],
+        rule,
+      ),
+    ).toHaveLength(1);
+  });
+});
+
+describe('withoutLinkUnderlines (review finding 3)', () => {
+  const link = { x0: 100, y0: 497, x1: 140, y1: 508 };
+  const at = (y: number, x0 = 100, x1 = 140): MarkSegment => ({
+    x0,
+    x1,
+    y,
+    thickness: 0.5,
+  });
+
+  it('drops an underline along the bottom of a hyperlink, and keeps a strike through it', () => {
+    expect(
+      withoutLinkUnderlines(
+        [at(498.5), at(502.6), at(498.5, 200, 240)],
+        [link],
+      ),
+    ).toEqual([at(502.6), at(498.5, 200, 240)]);
+  });
+
+  it('keeps a rule that only grazes the link area', () => {
+    expect(withoutLinkUnderlines([at(498.5, 130, 200)], [link])).toHaveLength(
+      1,
+    );
+    expect(withoutLinkUnderlines([at(490)], [link])).toHaveLength(1);
+  });
+});
+
+describe('thickness relative to the text (review finding 1)', () => {
+  const big = item({ text: 'word', x: 0, width: 115.2, y: 700, fontSize: 48 });
+  const rule = (thickness: number, y = 714.4): MarkSegment => ({
+    x0: 0,
+    x1: 115.2,
+    y,
+    thickness,
+  });
+
+  it('caps a mark at max(1.5pt, 0.15em)', () => {
+    expect(maxMarkThickness(10)).toBe(1.5);
+    expect(maxMarkThickness(12)).toBeCloseTo(1.8);
+    expect(maxMarkThickness(48)).toBeCloseTo(7.2);
+  });
+
+  it('reads a 3pt strike through 48pt text as a strikethrough', () => {
+    expect(markLine([big], [rule(3)], noWidths).statuses[0]).toEqual(
+      Array.from('word', () => 'deleted'),
+    );
+  });
+
+  it('reads a filled and stroked 1.6pt bar through 12pt text as a strikethrough', () => {
+    const text = item({ text: 'brown', x: 0, width: 36, y: 700, fontSize: 12 });
+    expect(
+      markLine([text], [{ x0: 0, x1: 36, y: 703.6, thickness: 1.6 }], noWidths)
+        .statuses[0],
+    ).toEqual(Array.from('brown', () => 'deleted'));
+  });
+
+  it('flags an in-band rule too heavy to be a mark, and leaves the text unchanged', () => {
+    const text = item({ text: 'brown', x: 0, width: 50, y: 700, fontSize: 10 });
+    const heavy = { x0: 0, x1: 50, y: 703, thickness: 3 };
+    expect(markLine([text], [heavy], noWidths)).toEqual({
+      statuses: [Array.from('brown', () => 'unchanged')],
+      issues: new Set(['too-thick']),
+    });
+  });
+
+  it('ignores a highlight or box thicker than half an em, silently', () => {
+    expect(markLine([big], [rule(30, 712)], noWidths)).toEqual({
+      statuses: [Array.from('word', () => 'unchanged')],
+      issues: new Set(),
+    });
+  });
+
+  it('flags an in-band hairline instead of marking the line', () => {
+    const line = item({
+      text: 'Section 1. The quick',
+      x: 72,
+      width: 144,
+      y: 700,
+      fontSize: 12,
+    });
+    expect(
+      markLine(
+        [line],
+        [{ x0: 72, x1: 216, y: 703.6, thickness: 0.1 }],
+        noWidths,
+      ),
+    ).toEqual({
+      statuses: [Array.from('Section 1. The quick', () => 'unchanged')],
+      issues: new Set(['hairline']),
+    });
+  });
+});
+
+describe('whole-line rules (review finding 3)', () => {
+  const words = [
+    item({ text: 'Fee', x: 100, width: 18 }),
+    item({ text: 'table', x: 124, width: 30 }),
+  ];
+  const rule = (x0: number, x1: number): MarkSegment => ({
+    x0,
+    x1,
+    y: 497.5,
+    thickness: 0.5,
+  });
+
+  it('notes when one rule marks every glyph on the line', () => {
+    expect(markLine(words, [rule(100, 154)], noWidths).issues).toEqual(
+      new Set(['whole-line']),
+    );
+  });
+
+  it('does not note rules that each mark only part of the line', () => {
+    expect(
+      markLine(words, [rule(100, 118), rule(124, 154)], noWidths).issues,
+    ).toEqual(new Set());
   });
 });

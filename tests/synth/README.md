@@ -12,7 +12,7 @@ body text), header/footer text, layout coordinates, expected top-level section
 numbers, and amendment decoration geometry. Coordinates are PDF points with the
 origin at the bottom left. `makeAmendingBillPdf({ pageCount: 3 })` adds a third
 page; the default is two. Both drawn lines and filled rectangles mark insertions
-and deletions. `makeScannedPdf()` has drawn shapes and zero text-layer items.
+and deletions. `makeScannedPdf()` has a page image, drawn shapes and zero text-layer items.
 
 `makeAmendmentGeometryPdf()` holds one line per amendment-geometry case, on two
 pages whose line numbers restart: strikes and underlines as lines and thin
