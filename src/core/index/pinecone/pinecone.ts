@@ -261,7 +261,7 @@ async function boundedAttempt<T>(
  * PINECONE_DEBUG prints bodies, so the adapter switches both off wherever it uses the SDK
  * rather than trusting each entry point to do it.
  */
-function disableSdkDiagnostics(): void {
+export function disableSdkDiagnostics(): void {
   delete process.env.PINECONE_DEBUG_CURL;
   delete process.env.PINECONE_DEBUG;
 }

@@ -140,4 +140,38 @@ posix('config directory vetting (G18)', () => {
     await ensurePrivateSubdirectory(models);
     expect(await mode(models)).toBe(0o700);
   });
+
+  it('does not chmod through a symlink, and warns when the target is loose', async () => {
+    const target = join(root, 'target');
+    await mkdir(target);
+    await chmod(target, 0o755);
+    const link = join(root, 'cfg-models');
+    await symlink(target, link);
+    const warn = vi.fn();
+    await ensurePrivateSubdirectory(link, configFileSystem, warn);
+    expect(await mode(target)).toBe(0o755);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/symbolic link/));
+    // A private target needs no warning.
+    await chmod(target, 0o700);
+    warn.mockClear();
+    await ensurePrivateSubdirectory(link, configFileSystem, warn);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('treats a failed chmod as a warning, not a crash', async () => {
+    const models = join(root, 'cfg2', 'models');
+    await mkdir(models, { recursive: true });
+    await chmod(models, 0o755);
+    const warn = vi.fn();
+    const fs = {
+      ...configFileSystem,
+      chmod: vi
+        .fn()
+        .mockRejectedValue(Object.assign(new Error('x'), { code: 'EPERM' })),
+    };
+    await expect(
+      ensurePrivateSubdirectory(models, fs, warn),
+    ).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/0700/));
+  });
 });

@@ -32,6 +32,15 @@ test('removes bidi controls and zero-width characters that disguise text', () =>
     '\u2068',
     '\u2069',
     '\ufeff',
+    '\u00ad',
+    '\u180e',
+    '\u2061',
+    '\u2062',
+    '\u2063',
+    '\u2064',
+    '\u{e0000}',
+    '\u{e0041}',
+    '\u{e007f}',
   ];
   for (const char of hidden) expect(safeText(`a${char}b`)).toBe('ab');
   expect(safeText('pay\u202egpj.exe')).toBe('paygpj.exe');

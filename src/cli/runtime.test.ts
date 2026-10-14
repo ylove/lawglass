@@ -276,7 +276,7 @@ test.each([
   expectNoKeyInLogs();
 });
 
-test('the real SDK factory disables curl logging, preserves redacted debug and uses its resolved key', () => {
+test('the real SDK factory clears both debug variables and uses its resolved key', () => {
   vi.stubEnv('PINECONE_DEBUG', '1');
   vi.stubEnv('PINECONE_DEBUG_CURL', '1');
   vi.stubEnv('PINECONE_API_KEY', 'synthetic-unresolved-key');
@@ -286,10 +286,40 @@ test('the real SDK factory disables curl logging, preserves redacted debug and u
     apiKey: key,
     maxRetries: 0,
   });
-  expect(process.env.PINECONE_DEBUG).toBe('1');
+  expect(process.env.PINECONE_DEBUG).toBeUndefined();
   expect(process.env.PINECONE_DEBUG_CURL).toBeUndefined();
   expectNoKeyInLogs();
 });
+
+test.each(['PINECONE_DEBUG', 'PINECONE_DEBUG_CURL'])(
+  'production path: %s=1 with a 401 that echoes the key logs nothing',
+  async (variable) => {
+    vi.stubEnv(variable, '1');
+    let requests = 0;
+    const transport: typeof fetch = () => {
+      requests++;
+      return Promise.resolve(
+        new Response(JSON.stringify({ error: { message: `bad key ${key}` } }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        }),
+      );
+    };
+    const runtime = await createRuntimeFrom({
+      ...sources(pineconeEnv),
+      createPineconeClient: (apiKey) => createPineconeClient(apiKey, transport),
+    })({ needsLlm: true });
+    const error: unknown = await runtime.backend
+      .ensureReady()
+      .catch((e: unknown) => e);
+    expect(requests, 'the real SDK sent the request').toBeGreaterThan(0);
+    expect(error).toMatchObject({ code: 'MISSING_KEY' });
+    const logged = JSON.stringify(logCalls);
+    expect(logged).not.toContain(key);
+    expect(logged).not.toContain('<<< Body');
+    expect(logged).not.toContain('>>> ');
+  },
+);
 
 test.each(['remove', 'server delete'])(
   'ingest, ask, serve, list and %s use Pinecone across fresh runtimes',

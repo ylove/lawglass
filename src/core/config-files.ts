@@ -63,13 +63,34 @@ async function ensurePrivateDirectory(
   );
 }
 
-/** Create a private (0700) subdirectory of the config directory, such as the model cache. */
+/**
+ * Create a private (0700) subdirectory of the config directory, such as the model cache.
+ * A symlink is never chmod'd (that would change a directory that is not ours); a loose
+ * target is reported instead. A failed chmod is a warning, not a reason to stop.
+ */
 export async function ensurePrivateSubdirectory(
   directory: string,
   fs: ConfigFileSystem = configFileSystem,
+  warn: (message: string) => void = (message) => {
+    console.warn(`Configuration warning: ${message}`);
+  },
 ): Promise<void> {
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-  if (process.platform !== 'win32') await fs.chmod(directory, 0o700);
+  if (process.platform === 'win32') return;
+  try {
+    const link = (await fs.lstat(directory)).isSymbolicLink();
+    const { mode } = await fs.stat(directory);
+    if (link) {
+      if ((mode & GROUP_OR_WORLD_ACCESS) !== 0)
+        warn(
+          'The model cache directory is a symbolic link to a directory that other users can access. Set its mode to 0700.',
+        );
+      return;
+    }
+    if ((mode & GROUP_OR_WORLD_ACCESS) !== 0) await fs.chmod(directory, 0o700);
+  } catch {
+    warn('The model cache directory could not be restricted to 0700.');
+  }
 }
 
 const IGNORABLE_SYNC_ERRORS = new Set([
