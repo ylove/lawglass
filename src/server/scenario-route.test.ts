@@ -16,7 +16,8 @@ import { IngestEvent, ScenarioResponse } from '../core/model/index.js';
 import { NONE_RETRY_MS } from '../core/scenario/scenario-cache.js';
 import { PERSONA_NAMES } from '../core/scenario/validate.js';
 import { readSseEvents } from '../web/sse.js';
-import { createApp, type AppOptions } from './app.js';
+import type { AppOptions } from './app.js';
+import { createSessionTestApp as createApp } from '../../tests/support/session-app.js';
 
 const URL_A = 'https://example.gov/gardens.txt';
 let env: PipelineEnv;
