@@ -452,15 +452,28 @@ describe('positions, quotes, caps', () => {
     ).toEqual(['sec-1', 'sec-1/a']);
   });
 
-  it('dedupes by section, kind and actor', () => {
+  it('folds the same decision found twice', () => {
     const result = extractDelegations([
       sec(
         's',
-        'The Secretary shall adopt rules. The Secretary shall issue regulations.',
+        'The Secretary shall adopt rules. The Secretary shall adopt rules.',
       ),
     ]);
     expect(result.decidedLater).toHaveLength(1);
     expect(result.truncated.decidedLater).toBe(0);
+  });
+
+  it('keeps distinct decisions by the same actor, each with its own deadline', () => {
+    const result = extractDelegations([
+      sec(
+        's',
+        'Within 30 days, the Secretary shall prescribe safety regulations. Within 90 days, the Secretary shall prescribe licensing regulations.',
+      ),
+    ]);
+    expect(result.decidedLater.map((i) => i.deadline)).toEqual([
+      'Within 30 days',
+      'Within 90 days',
+    ]);
   });
 
   it('caps each group and counts the rest', () => {
@@ -607,6 +620,122 @@ describe('charter-style dependencies', () => {
     ['no subject', 'Whether it applies determines the outcome.'],
   ])('excludes "determines" with %s', (_n, text) => {
     expect(decided(text)).toEqual([]);
+  });
+});
+
+describe('review fixes', () => {
+  it.each([
+    ['appropriation', 'The program is not subject to appropriations.'],
+    [
+      'outside body',
+      'The program need not be approved by the Department of Labor.',
+    ],
+    ['approval', 'The plan is not subject to the approval of the Governor.'],
+    ['voters', 'The plan is not subject to the approval of the voters.'],
+    ['contingency', 'This section does not take effect if Congress objects.'],
+  ])('ignores a negated dependency: %s', (_n, text) => {
+    const result = extractDelegations([sec('s', text)]);
+    expect(result.dependsOn).toEqual([]);
+    expect(result.decidedLater).toEqual([]);
+  });
+
+  it('still finds the un-negated forms', () => {
+    expect(depends('The program is subject to appropriations.')).toHaveLength(
+      1,
+    );
+    expect(
+      decided('The plan is subject to the approval of the Governor.'),
+    ).toHaveLength(1);
+  });
+
+  it("finds an official's active approval and discretionary designation", () => {
+    expect(decided('The Director may approve applications.')[0]).toMatchObject({
+      kind: 'approval',
+      actor: 'The Director',
+    });
+    expect(decided('The Board shall approve the plan.')[0]).toMatchObject({
+      kind: 'approval',
+    });
+    expect(
+      decided('The Secretary may designate a lead agency.')[0],
+    ).toMatchObject({
+      kind: 'designation',
+      actor: 'The Secretary',
+    });
+  });
+
+  it.each([
+    ['applicant approves', 'An applicant may approve the terms.'],
+    ['person designates', 'A person may designate a beneficiary.'],
+    ['negated', 'The Director may not approve applications.'],
+  ])('excludes public or negated approve/designate: %s', (_n, text) => {
+    expect(decided(text)).toEqual([]);
+  });
+
+  it('turns "subject to the approval of the voters" into a voter-approval dependency', () => {
+    const result = extractDelegations([
+      sec(
+        's',
+        'The charter amendment is subject to the approval of the voters.',
+      ),
+    ]);
+    expect(result.decidedLater).toEqual([]);
+    expect(result.dependsOn.map((i) => i.kind)).toEqual(['voter_approval']);
+  });
+
+  it('finds a citation by its normalized form when a section words it differently', () => {
+    const refs: ExternalRef[] = [
+      {
+        text: 'division (A) of section 5747.01 of the Revised Code',
+        citation: 'R.C. 5747.01',
+        kind: 'state_code',
+        sectionIds: ['a', 'b'],
+      },
+    ];
+    const result = extractDelegations(
+      [
+        sec('a', 'See division (A) of section 5747.01 of the Revised Code.'),
+        sec('b', 'Tax follows section 5747.01 of the Revised Code.'),
+      ],
+      refs,
+    );
+    expect(result.dependsOn.map((i) => [i.sectionId, i.what])).toEqual([
+      ['a', 'division (A) of section 5747.01 of the Revised Code'],
+      ['b', 'section 5747.01 of the Revised Code'],
+    ]);
+  });
+
+  describe('adversarial input stays fast', () => {
+    const bound = 2000;
+    const timed = (text: string): number => {
+      const start = performance.now();
+      extractDelegations([sec('s', text)]);
+      return performance.now() - start;
+    };
+
+    it.each([
+      [
+        'repeated clause words',
+        'that '.repeat(128000) + 'the Secretary shall prescribe regulations.',
+      ],
+      [
+        'many matches in one sentence',
+        'the Secretary shall designate '.repeat(8000),
+      ],
+      ['many determinations', 'if the clerk determines '.repeat(8000)],
+      [
+        'long punctuation runs',
+        'The Secretary may waive' + ',.;'.repeat(100000) + 'x',
+      ],
+      ['blank-line runs', ('\n' + ' '.repeat(20)).repeat(20000) + 'x'],
+      [
+        'unclosed parentheses',
+        '('.repeat(100000) + 'the Secretary shall adopt rules',
+      ],
+      ['phrases without stops', 'pursuant to the '.repeat(20000)],
+    ])('%s', (_n, text) => {
+      expect(timed(text)).toBeLessThan(bound);
+    });
   });
 });
 

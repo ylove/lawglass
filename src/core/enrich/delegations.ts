@@ -4,6 +4,7 @@ import {
   type Section,
 } from '../model/index.js';
 import { segmentDefinitions } from './definitions.js';
+import { findExternalMatches } from './refs.js';
 
 /**
  * "Who decides later" and "what it depends on": the places a bill hands a decision to someone
@@ -70,7 +71,7 @@ interface Span {
 // A sentence or clause ends at . ! ? ; before a new capital, digit, quote or "(", at a blank
 // line, or before a newline that starts a "(a)"-style label.
 const SPLIT =
-  /(?<=[.!?;])["”’)]*\s+(?=[("“A-Z0-9])|\n\s*\n|\n(?=\s*\([A-Za-z0-9]{1,6}\)\s)/g;
+  /(?<=[.!?;])["”’)]*\s+(?=[("“A-Z0-9])|\n[^\S\n]*\n|\n(?=[^\S\n]*\([A-Za-z0-9]{1,6}\)\s)/g;
 // A period after these is an abbreviation, not the end of a sentence.
 const ABBREVIATION =
   /\b(?:U\.S|U\.S\.C|Stat|Pub|L|Sec|Secs|No|Nos|Inc|Corp|Dept|St|Mr|Ms|Dr|cf|e\.g|i\.e)\.$/;
@@ -100,7 +101,7 @@ const PHRASE_STOP = new Set(
   ).split(' '),
 );
 const MAX_PHRASE_WORDS = 8;
-const WORD = /^\s+([A-Za-z0-9][\w'’-]*(?:\.\w+)*)/;
+const WORD = /\s+([A-Za-z0-9][\w'’-]*(?:\.\w+)*)/y;
 
 /**
  * The noun phrase starting at `from` ("the Secretary of Health and Human Services"). "and"/"or"
@@ -111,7 +112,9 @@ function phraseAfter(text: string, from: number): string | undefined {
   const words: string[] = [];
   let pos = from;
   for (;;) {
-    const m = WORD.exec(text.slice(pos));
+    // Sticky match at `pos`: slicing the rest of the text per word would be quadratic.
+    WORD.lastIndex = pos;
+    const m = WORD.exec(text);
     if (!m) break;
     const word = m[1] ?? '';
     const lower = word.toLowerCase();
@@ -136,10 +139,15 @@ function phraseAfter(text: string, from: number): string | undefined {
 const MODIFIER_START =
   /^(?:in|after|with|and|or|by|not|no|within|upon|on|if|unless|subject|pursuant|consistent|acting|as|to|for|before|from|under|which|who|including|except|notwithstanding|during|at|through|jointly|of)\b/i;
 const CLAUSE_BREAK =
-  /\b(?:that|if|when|whenever|unless|provided|because|while|where|so)\s+(?=[^]*$)/gi;
+  /\b(?:that|if|when|whenever|unless|provided|because|while|where|so)\s+/gi;
 
 /** The subject of the verb that follows `prefix`: "the Secretary", "the board of elections". */
-function actorBefore(prefix: string): string | undefined {
+// A subject is a few words, so only the text just before the verb matters. Bounding it keeps
+// the cost per match constant however long the sentence is.
+const ACTOR_WINDOW = 300;
+
+function actorBefore(fullPrefix: string): string | undefined {
+  const prefix = fullPrefix.slice(-ACTOR_WINDOW);
   let rest = prefix.replace(/\([^()]*\)/g, ' ');
   // "(a) Rulemaking.—The Secretary" / "Sec. 4. The director": keep the last sentence part.
   rest = rest.split(/[—–:;]|(?<![A-Z])\.\s/).at(-1) ?? '';
@@ -204,7 +212,8 @@ function clean(text: string): string {
 }
 
 function shorten(text: string, max: number): string {
-  const t = clean(text).replace(/[.;,]+$/, '');
+  // Bounded first: the trailing-punctuation regex is quadratic on a long run of commas.
+  const t = clean(text.slice(0, max * 4)).replace(/[.;,]+$/, '');
   return t.length <= max ? t : `${t.slice(0, max - 1).trimEnd()}…`;
 }
 
@@ -216,13 +225,29 @@ function fromVerb(sentence: string, from: number): string {
 /** The words before a trailing phrase: what the approval or determination applies to. */
 function beforeMatch(sentence: string, at: number): string {
   const head = sentence
-    .slice(0, at)
+    .slice(Math.max(0, at - WHAT_MAX * 3), at)
     .replace(/^[\s,;—–:-]+|[\s,]+$/g, '')
     .replace(/^\([A-Za-z0-9]{1,6}\)\s*/, '');
   return shorten(
     head.length > WHAT_MAX ? head.slice(-WHAT_MAX) : head,
     WHAT_MAX,
   );
+}
+
+// "is not subject to", "need not be approved by", "without being subject to".
+const NEGATION =
+  /\b(?:not|never|neither|nor|without)\s+(?:(?:be|been|being|to|so|also|otherwise|necessarily)\s+){0,3}$/i;
+
+function isNegated(sentence: string, at: number): boolean {
+  return NEGATION.test(sentence.slice(Math.max(0, at - 40), at));
+}
+
+/** "<official> may <verb> ...": the verb is read from the match, the actor must be an official. */
+function officialPower(m: RegExpExecArray, s: string): Hit | undefined {
+  const actor = subjectOf(s, m.index);
+  if (!actor || !OFFICIAL.test(actor) || PRIVATE_PARTY.test(actor))
+    return undefined;
+  return { actor, what: fromVerb(s, m.index), at: m.index };
 }
 
 function subjectOf(sentence: string, verbAt: number): string | undefined {
@@ -261,7 +286,7 @@ const RULES: Rule[] = [
     group: 'decidedLater',
     kind: 'rulemaking',
     pattern: new RegExp(
-      String.raw`\bshall\s+(?:promptly\s+|expeditiously\s+|jointly\s+)?(?:prescribe|promulgate|issue|adopt)\s+(?:(?:${MODIFIERS})\s+){0,3}(?:regulations?|rules?)\b`,
+      String.raw`\bshall\s+(?:promptly\s+|expeditiously\s+|jointly\s+)?(?:prescribe|promulgate|issue|adopt)\s+(?:(?:${MODIFIERS})\s+){0,3}(?:[A-Za-z-]+\s+)?(?:regulations?|rules?)\b`,
       'gi',
     ),
     hit: (m, s) => ({
@@ -293,6 +318,20 @@ const RULES: Rule[] = [
       if (actor !== undefined && PRIVATE_PARTY.test(actor)) return undefined;
       return { actor, what: fromVerb(s, m.index), at: m.index };
     },
+  },
+  {
+    group: 'decidedLater',
+    kind: 'designation',
+    // "The Secretary may designate a lead agency": discretion, unlike a private party's "may".
+    pattern: /\bmay\s+designate\b/gi,
+    hit: officialPower,
+  },
+  {
+    group: 'decidedLater',
+    kind: 'approval',
+    // "The Director may approve applications" / "The Board shall approve the plan".
+    pattern: /\b(?:may|shall)\s+(?:approve|disapprove)\b/gi,
+    hit: officialPower,
   },
   {
     group: 'decidedLater',
@@ -375,7 +414,7 @@ const RULES: Rule[] = [
     group: 'dependsOn',
     kind: 'voter_approval',
     pattern:
-      /\b(?:approved\s+by|submitted\s+to)\s+(?:a\s+(?:majority\s+of\s+the\s+)?(?:vote\s+of\s+)?)?(?:the\s+)?(?:majority\s+of\s+(?:the\s+)?)?(?:qualified\s+|registered\s+)?(?:electors|voters)\b|\bmajority\s+of\s+(?:the\s+)?(?:qualified\s+|registered\s+)?(?:electors|voters)\s+voting\b/gi,
+      /\bsubject\s+to\s+(?:the\s+)?(?:(?:prior|written|final|express)\s+)*approval\s+(?:of|by)\s+(?:a\s+majority\s+of\s+)?(?:the\s+)?(?:qualified\s+|registered\s+)?(?:electors|voters|electorate)\b|\b(?:approved\s+by|submitted\s+to)\s+(?:a\s+(?:majority\s+of\s+the\s+)?(?:vote\s+of\s+)?)?(?:the\s+)?(?:majority\s+of\s+(?:the\s+)?)?(?:qualified\s+|registered\s+)?(?:electors|voters)\b|\bmajority\s+of\s+(?:the\s+)?(?:qualified\s+|registered\s+)?(?:electors|voters)\s+voting\b/gi,
     hit: (m, s) => ({
       what: shorten(s.slice(m.index), WHAT_MAX),
       at: m.index,
@@ -440,7 +479,7 @@ const RULES: Rule[] = [
     // "after the city clerk determines the sufficiency of the petition".
     pattern: /\bdetermines(?=\s)/gi,
     hit(m, s) {
-      const before = s.slice(0, m.index);
+      const before = s.slice(Math.max(0, m.index - 150), m.index);
       // "as the Secretary determines appropriate" is the rule above.
       if (/\bas\s+(?:\S+\s+){0,6}$/i.test(before)) return undefined;
       const subject = before.replace(
@@ -551,8 +590,10 @@ function positionAt(
 
 /** At most QUOTE_MAX characters of the sentence, centred on the match when it is long. */
 function quoteOf(sentence: string, at: number): string {
-  const flat = clean(sentence);
-  if (flat.length <= QUOTE_MAX) return flat;
+  if (sentence.length <= QUOTE_MAX * 2) {
+    const flat = clean(sentence);
+    if (flat.length <= QUOTE_MAX) return flat;
+  }
   const start = Math.max(0, Math.min(at - 60, sentence.length - QUOTE_MAX));
   const window = clean(sentence.slice(start, start + QUOTE_MAX));
   const body =
@@ -572,12 +613,19 @@ const DEPENDS_ORDER: Record<string, number> = {
   law: 4,
 };
 
+const norm = (text: string): string => text.toLowerCase().replace(/\s+/g, ' ');
+
+/**
+ * Two items are the same when one rule or two overlapping rules found the same thing twice.
+ * A decision is identified by its actor, content and deadline: the same official prescribing
+ * safety rules and licensing rules is two decisions. A dependency is identified by what it
+ * depends on (the body or the law), however it was worded.
+ */
 function dedupeKey(item: DelegationItem): string {
-  return [
-    item.sectionId,
-    item.kind,
-    (item.actor ?? item.what).toLowerCase().replace(/\s+/g, ' '),
-  ].join('\u0000');
+  const parts = [item.sectionId, item.kind, norm(item.actor ?? item.what)];
+  if (groupOf(item.kind) === 'decidedLater')
+    parts.push(norm(item.what), norm(item.deadline ?? ''));
+  return parts.join('\u0000');
 }
 
 function capGroup(items: DelegationItem[]): {
@@ -621,27 +669,40 @@ export function extractDelegations(
     const { text } = located;
     if (!text.trim()) continue;
     const definitions = segmentDefinitions(text);
-    const inDefinition = (offset: number): boolean =>
-      definitions.some((d) => offset >= d.start && offset < d.end);
+    // Sentences arrive in order and definitions never overlap, so one forward pass is enough.
+    let nextDefinition = 0;
+    const inDefinition = (offset: number): boolean => {
+      while ((definitions[nextDefinition]?.end ?? Infinity) <= offset)
+        nextDefinition++;
+      const d = definitions[nextDefinition];
+      return d !== undefined && offset >= d.start;
+    };
 
     for (const span of sentenceSpans(text)) {
       // A definition ("'Director' means the person who shall designate ...") describes a term.
       if (inDefinition(span.start)) continue;
       const sentence = text.slice(span.start, span.end);
       const sentenceItems: DelegationItem[] = [];
+      let deadline: string | undefined;
+      let deadlineRead = false;
       for (const rule of RULES) {
         for (const m of sentence.matchAll(rule.pattern)) {
           const hit = rule.hit(m, sentence);
           if (!hit?.what) continue;
           const at = hit.at ?? m.index;
-          const deadline =
-            rule.group === 'decidedLater' ? deadlineIn(sentence) : undefined;
+          // A negated match ("not subject to appropriations") says the opposite.
+          if (isNegated(sentence, m.index)) continue;
+          if (rule.group === 'decidedLater' && !deadlineRead) {
+            deadline = deadlineIn(sentence);
+            deadlineRead = true;
+          }
           sentenceItems.push({
             sectionId: section.id,
             ...positionAt(section, located, span.start + at),
             ...(hit.actor !== undefined && { actor: hit.actor }),
             what: hit.what,
-            ...(deadline !== undefined && { deadline }),
+            ...(rule.group === 'decidedLater' &&
+              deadline !== undefined && { deadline }),
             kind: rule.kind,
             quote: quoteOf(sentence, at),
           });
@@ -655,12 +716,18 @@ export function extractDelegations(
       }
     }
 
-    for (const ref of refsBySection.get(section.id) ?? []) {
-      const at = text.indexOf(ref.text);
+    const sectionRefs = refsBySection.get(section.id) ?? [];
+    // Refs are merged across sections by citation and keep the first section's wording, so a
+    // later section may word the same citation differently. Find each ref by citation in
+    // this section's own current text, and by its wording only as a fallback.
+    const matches = sectionRefs.length > 0 ? findExternalMatches(text) : [];
+    const spans = sectionRefs.length > 0 ? sentenceSpans(text) : [];
+    for (const ref of sectionRefs) {
+      const wanted = normCitation(ref.citation);
+      const match = matches.find((m) => normCitation(m.citation) === wanted);
+      const at = match?.start ?? text.indexOf(ref.text);
       if (at === -1) continue; // only cited in struck text
-      const sentenceSpan = sentenceSpans(text).find(
-        (s) => at >= s.start && at < s.end,
-      ) ?? {
+      const sentenceSpan = spans.find((s) => at >= s.start && at < s.end) ?? {
         start: 0,
         end: text.length,
       };
@@ -668,7 +735,7 @@ export function extractDelegations(
         sectionId: section.id,
         ...positionAt(section, located, at),
         actor: ref.citation,
-        what: ref.text,
+        what: match?.text ?? ref.text,
         kind: 'law',
         quote: quoteOf(
           text.slice(sentenceSpan.start, sentenceSpan.end),
@@ -696,6 +763,9 @@ export function extractDelegations(
     },
   };
 }
+
+const normCitation = (citation: string): string =>
+  citation.toLowerCase().replace(/\s+/g, ' ').trim();
 
 function groupOf(kind: DelegationKind): Rule['group'] {
   if (kind === 'effective_date') return 'takesEffect';
