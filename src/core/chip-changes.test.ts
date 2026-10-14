@@ -379,3 +379,63 @@ describe('pickFairly', () => {
     expect(pickFairly([], 10)).toEqual({ picked: [], hidden: 0 });
   });
 });
+
+describe('what-changes on a scan with unreliable marks', () => {
+  const scanned = (marks: 'read' | 'uncertain' | 'not-read') => ({
+    pages: [
+      { page: 1, marks: 'read' as const },
+      { page: 2, marks },
+    ],
+  });
+  const runWith = (
+    sections: Section[],
+    marks: 'read' | 'uncertain' | 'not-read',
+    provider: ScriptedProvider,
+  ) =>
+    runChip(
+      getChip('what-changes'),
+      DOC,
+      {
+        ...makeDeps(sections, provider),
+        doc: {
+          metadata: EMPTY_METADATA,
+          sections,
+          scan: scanned(marks),
+        },
+      },
+      {},
+    );
+
+  it.each(['uncertain', 'not-read'] as const)(
+    'with no detected changes and marks %s, says it may be incomplete and never calls it "no changes"',
+    async (marks) => {
+      const provider = new ScriptedProvider({ reply: 'No changes.' });
+      const r = await runWith(
+        [section('sec-1', [same('Plain.')])],
+        marks,
+        provider,
+      );
+      expect(r.answer.text).toMatch(/may be incomplete/);
+      expect(r.answer.text).not.toMatch(/no changes/i);
+      expect(r.answer.declined).toBe(false);
+      expect(provider.calls).toHaveLength(0);
+    },
+  );
+
+  it('appends the caveat to a real answer when some changes were found', async () => {
+    const provider = new ScriptedProvider({
+      reply: 'It changes [S:sec-2307.601/b].',
+    });
+    const r = await runWith([retreat], 'uncertain', provider);
+    expect(r.answer.text).toContain('It changes');
+    expect(r.answer.text).toMatch(/may be incomplete/);
+  });
+
+  it('adds nothing when every page was read', async () => {
+    const provider = new ScriptedProvider({
+      reply: 'It changes [S:sec-2307.601/b].',
+    });
+    const r = await runWith([retreat], 'read', provider);
+    expect(r.answer.text).not.toMatch(/incomplete/);
+  });
+});

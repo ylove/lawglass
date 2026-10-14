@@ -20,6 +20,7 @@
  * round-robin across top-level sections so amendments to existing law are not crowded out.
  */
 import { answer } from './answer/index.js';
+import { fleschKincaidGrade } from './answer/readability.js';
 import { breadcrumb } from './chunk/index.js';
 import {
   appendNote,
@@ -35,6 +36,7 @@ import {
   ZERO_USAGE,
   type ChipDefinition,
   type SearchHit,
+  type ScanStatus,
   type Section,
   type Span,
 } from './model/index.js';
@@ -259,6 +261,14 @@ export function pickFairly(
   };
 }
 
+/** True when some page's strike/underline marks were not read reliably. */
+export function scanMarksUnreliable(scan: ScanStatus | undefined): boolean {
+  return (scan?.pages ?? []).some((p) => p.marks !== 'read');
+}
+
+const SCAN_CAVEAT =
+  'Note: this document is a scan, and the strikethrough and underline marks on some pages were not read reliably, so this list of changes may be incomplete. Check the original pages.';
+
 export async function runChangesChip(
   chip: ChipDefinition,
   docId: string,
@@ -274,6 +284,29 @@ export async function runChangesChip(
     hidden > 0
       ? `${String(hidden)} more changed ${hidden === 1 ? 'section is' : 'sections are'} not covered here.`
       : '';
+
+  // Unread marks look exactly like "nothing changed". Never let a doubtful scan say so: with
+  // nothing to show, answer with the caveat alone; otherwise append it to what was found.
+  const doubtful = scanMarksUnreliable(deps.doc.scan);
+  if (doubtful && picked.length === 0) {
+    options.onToken?.(SCAN_CAVEAT);
+    return {
+      answer: {
+        text: SCAN_CAVEAT,
+        citations: [],
+        invalidCitations: [],
+        warnings: [],
+        declined: false,
+        readingGrade: fleschKincaidGrade(SCAN_CAVEAT),
+        provider: deps.provider.id,
+        model: deps.provider.model,
+        usage: { inputTokens: 0, outputTokens: 0 },
+      },
+      hits: [],
+      backendUsage: ZERO_USAGE,
+      mode: 'none',
+    };
+  }
 
   const result = await answer({
     provider: deps.provider,
@@ -292,7 +325,7 @@ export async function runChangesChip(
           withoutSyntheticChunks(c, docId),
         ),
       },
-      more,
+      doubtful ? `${more} ${SCAN_CAVEAT}`.trim() : more,
       options.onToken,
     ),
     // The excerpts are built for the prompt and have no stored chunk behind them.
