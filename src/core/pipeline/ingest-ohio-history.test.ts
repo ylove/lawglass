@@ -126,43 +126,76 @@ test('explicit LIS version wins over newer listed versions', async () => {
   ).toBe('06_EN');
   agent.assertNoPendingInterceptors();
 });
-test.each(ENDPOINTS)(
-  'any %j download failure preserves explicit text ingest with history unavailable',
+test.each(['', ...ENDPOINTS.slice(1)])(
+  'a %j download failure: only the bill endpoint is required',
   async (failure) => {
-    servePages({ failure });
+    servePages({ failure: failure as (typeof ENDPOINTS)[number] });
     serveText('00_IN');
     const result = await ingest(`${textOrigin}${textPath('00_IN')}`, deps);
-    expect(result.normalized.warnings.join(' ')).toContain(
-      'History unavailable',
-    );
-    expect(result.normalized.metadata.sponsorProfiles).toBeUndefined();
-    expect(await readHistory(dir, result.doc.docId)).toBeUndefined();
+    const warnings = result.normalized.warnings.join(' ');
     expect(await deps.backend.hasDocument(result.doc.docId)).toBe(true);
+    if (failure === '') {
+      expect(warnings).toContain('History unavailable');
+      expect(result.normalized.metadata.sponsorProfiles).toBeUndefined();
+      expect(await readHistory(dir, result.doc.docId)).toBeUndefined();
+    } else {
+      expect(warnings).toContain(
+        'Part of the legislative history was unavailable',
+      );
+      expect(warnings).not.toContain('History unavailable');
+      expect((await readHistory(dir, result.doc.docId))?.versions).toHaveLength(
+        7,
+      );
+      expect(result.normalized.metadata.sponsorProfiles).toHaveLength(4);
+    }
     agent.assertNoPendingInterceptors();
   },
 );
-test.each(ENDPOINTS)(
-  'any %j parse failure also discards the complete history attachment',
+test.each(ENDPOINTS.slice(1))(
+  'a malformed %j response also only makes the history partial',
   async (failure) => {
     servePages({ failure, parseFailure: true });
     serveText('00_IN');
     const result = await ingest(`${textOrigin}${textPath('00_IN')}`, deps);
     expect(result.normalized.warnings.join(' ')).toContain(
-      'History unavailable',
+      'Part of the legislative history was unavailable',
     );
-    expect(await readHistory(dir, result.doc.docId)).toBeUndefined();
     agent.assertNoPendingInterceptors();
   },
 );
-test('versionless landing fails clearly when history is unavailable', async () => {
+test('a malformed bill response discards the history attachment', async () => {
+  servePages({ failure: '', parseFailure: true });
+  serveText('00_IN');
+  const result = await ingest(`${textOrigin}${textPath('00_IN')}`, deps);
+  expect(result.normalized.warnings.join(' ')).toContain('History unavailable');
+  expect(await readHistory(dir, result.doc.docId)).toBeUndefined();
+  agent.assertNoPendingInterceptors();
+});
+test('versionless landing ingests the latest version when only optional parts fail', async () => {
   servePages({ failure: 'actions/' });
+  serveText('06_EN');
+  const result = await ingest(landing, deps);
+  expect(result.normalized.metadata.version).toBe('As Enrolled (06_EN)');
+  expect(result.normalized.warnings.join(' ')).toContain(
+    'Part of the legislative history was unavailable',
+  );
+  agent.assertNoPendingInterceptors();
+});
+test('versionless landing fails clearly when the bill endpoint is unavailable', async () => {
+  servePages({ failure: '' });
   await expect(ingest(landing, deps)).rejects.toMatchObject({
     code: 'FETCH_FAILED',
     userMessage: expect.stringContaining('specific version URL') as unknown,
   });
   expect(await deps.registry.list()).toEqual([]);
-  expect(deps.fetcher).toHaveBeenCalledTimes(2);
+  expect(deps.fetcher).toHaveBeenCalledTimes(1);
   agent.assertNoPendingInterceptors();
+});
+test('an unmapped legislature URL is rejected before any fetch', async () => {
+  await expect(
+    ingest('https://www.legislature.ohio.gov./legislation/135/hb9001', deps),
+  ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  expect(deps.fetcher).not.toHaveBeenCalled();
 });
 test.each([
   'https://ohiohouse.gov/members/alex-example',

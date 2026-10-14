@@ -1,5 +1,6 @@
 import { SaxesParser } from 'saxes';
 import { load } from 'cheerio';
+import { stripInvisible } from './text.js';
 import { AppError, BillHistory, SponsorProfile } from '../model/index.js';
 import {
   govinfoTextUrl,
@@ -75,6 +76,7 @@ const field = (
 
 function plainText(value: string | undefined): string | undefined {
   if (!value) return undefined;
+  value = stripInvisible(value);
   // CDATA can retain an extra HTML-escape layer that ordinary XML text has already decoded.
   if (/^&lt;[a-z][\s\S]*?&gt;/i.test(value)) {
     value = load(value, null, false).root().text();
@@ -186,6 +188,21 @@ function version(
   };
 }
 
+/**
+ * Stored versions are oldest first. BILLSTATUS lists them newest first, so reverse.
+ * Unresolvable entries (code '') keep their relative order but go last, so they never
+ * look like an older text.
+ */
+function storedVersions(
+  listed: BillHistory['versions'],
+): BillHistory['versions'] {
+  const oldestFirst = [...listed].reverse();
+  return [
+    ...oldestFirst.filter((item) => item.code),
+    ...oldestFirst.filter((item) => !item.code),
+  ];
+}
+
 function amendmentStatus(
   element: Element,
 ): BillHistory['amendments'][number]['status'] {
@@ -295,10 +312,9 @@ export function parseGovinfoBillStatus(
   }
   const history = BillHistory.parse({
     officialSummary,
-    // Stored versions are oldest first. BILLSTATUS lists them newest first, so reverse.
-    versions: items(child(bill, 'textVersions'))
-      .map((item) => version(item, plan))
-      .reverse(),
+    versions: storedVersions(
+      items(child(bill, 'textVersions')).map((item) => version(item, plan)),
+    ),
     actions: items(child(bill, 'actions')).flatMap((item) => {
       const actionDate = date(field(item, 'actionDate'));
       const text = textField(item, 'text');

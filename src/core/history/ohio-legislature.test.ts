@@ -67,6 +67,8 @@ test('the LIS URL version wins and the registry constructs text URLs', () => {
   expect(() => ohioTextUrl(plan, '../00_IN')).toThrow(AppError);
 });
 test.each([
+  // Not on the landing host:
+
   landing.replace('https:', 'http:'),
   landing.replace('www.', 'user@www.'),
   landing.replace('.gov/', '.gov:444/'),
@@ -81,17 +83,22 @@ test.each([
   ohioTextUrl(plan, '00_IN').replace('pdf/', 'xml/'),
   ohioTextUrl(plan, '00_IN').replace('search-prod.', 'evil.search-prod.'),
 ])('does not map malformed or unmatched Ohio URL %s', (url) => {
-  expect(resolveHistory(url)).toBeUndefined();
+  // Unmapped URLs on the landing host are rejected with guidance, never fetched.
+  if (
+    new URL(url).hostname.replace(/\.+$/, '').endsWith('legislature.ohio.gov')
+  )
+    expect(() => resolveHistory(url)).toThrow(AppError);
+  else expect(resolveHistory(url)).toBeUndefined();
 });
 test('raw dot segments and backslashes do not normalize into a supported Ohio URL', () => {
-  expect(
+  expect(() =>
     resolveHistory(
       'https://www.legislature.ohio.gov/legislation/135/hb9001/../hb9002',
     ),
-  ).toBeUndefined();
-  expect(
+  ).toThrow(AppError);
+  expect(() =>
     resolveHistory('https://www.legislature.ohio.gov/legislation/135\\hb9001'),
-  ).toBeUndefined();
+  ).toThrow(AppError);
 });
 
 test('orders the seven versions by stage, with labels, and builds text URLs from identity', () => {
@@ -216,9 +223,9 @@ test('hostile text is stripped to plain text and never becomes a URL', () => {
     versions: JSON.stringify(versions),
     actions: JSON.stringify(actions),
   });
-  expect(history.versions[0]!.label).toBe('As Introduced');
+  expect(history.versions[0]!.label).toBe('As Introduced alert(1)');
   expect(history.actions.at(-3)!.text).toBe('Passed click');
-  expect(sponsorProfiles[0]!.name).toBe('Alex');
+  expect(sponsorProfiles[0]!.name).toBe('Alex Evil');
   expect(JSON.stringify([history, sponsorProfiles])).not.toMatch(
     /[<>]|evil\.test/,
   );
@@ -235,7 +242,8 @@ test.each([
     '&bogus; &#0; &#9999999;',
     '&bogus; &#9999999;',
   ],
-  ['style blocks', 'k<style>p{}</style>l', 'k l'],
+  ['style blocks (content is plain text)', 'k<style>p{}</style>l', 'k p{} l'],
+  ['bare angle brackets', '1 < 2 > 0', '1 0'],
 ])('plainText handles %s', (_name, input, expected) => {
   expect(plainText(input)).toBe(expected);
 });
@@ -253,13 +261,6 @@ test.each([
   expect(() => parse({ versions })).toThrow(
     expect.objectContaining({ code: 'PARSE_FAILED' }) as unknown,
   );
-});
-test.each([
-  ['actions', { actions: '[{"occurred":"soon","action":"x"}]' }],
-  ['meetings', { meetings: '[{"committee":"x"}]' }],
-  ['amendments', { amendments: '[{"amendment_number":"../x"}]' }],
-])('fails closed on malformed %s', (_name, overrides) => {
-  expect(() => parse(overrides)).toThrow(AppError);
 });
 test('latest version fails clearly when none is known', () => {
   expect(() => chooseOhioVersion()).toThrow(
@@ -339,4 +340,72 @@ test('several amendment sponsors: the first is the sponsor, the rest go in the d
     amendments: amendment([{ full_name: 'No Id' }]),
   }).history.amendments[0]!;
   expect(noId.sponsor).toEqual({ name: 'No Id' });
+});
+
+test('a 1 MB hostile string is sanitized in linear time and capped', () => {
+  for (const hostile of [
+    '<script '.repeat(130_000),
+    '<script>'.repeat(130_000),
+  ]) {
+    const started = performance.now();
+    const out = plainText(hostile);
+    expect(performance.now() - started).toBeLessThan(100);
+    expect(out.length).toBeLessThanOrEqual(2_001);
+    expect(out).not.toMatch(/[<>]/);
+  }
+  const long = plainText('word '.repeat(10_000));
+  expect(long.length).toBeLessThanOrEqual(2_001);
+  expect(long.endsWith('…')).toBe(true);
+});
+test('zero-width and bidi characters are stripped from text fields', () => {
+  expect(plainText('a​b‎c‮d⁦e⁩f﻿g')).toBe('abcdefg');
+  const names = parse({
+    versions: JSON.stringify(
+      makeOhioVersionsJson({
+        sponsors: [{ full_name: 'Alex‮ Example'.padEnd(500, 'x') }],
+        cosponsors: [],
+      }),
+    ),
+  }).sponsorProfiles;
+  expect(names[0]!.name).not.toContain('‮');
+  expect(names[0]!.name.length).toBeLessThanOrEqual(201);
+});
+test('missing or malformed optional parts keep the history and mark it partial', () => {
+  const json = makeOhioHistoryJson();
+  const bytes = (v: string) => new TextEncoder().encode(v);
+  const record = parseOhioHistory(
+    {
+      versions: bytes(json.versions),
+      actions: undefined,
+      meetings: bytes('[{"committee":"x"}]'),
+      amendments: bytes(json.amendments),
+    },
+    plan,
+    fetchedAt,
+  );
+  expect(record.partial).toBe(true);
+  expect(record.history.versions).toHaveLength(7);
+  expect(record.history.actions.map((a) => a.text)).toEqual([
+    'Signed by the Governor',
+    'Effective date',
+  ]);
+  expect(record.history.sources.map((s) => s.url.split('/').at(-2))).toEqual([
+    'hb9001',
+    'amendments',
+  ]);
+  expect(parse().partial).toBeUndefined();
+});
+test.each([
+  'https://www.legislature.ohio.gov./legislation/135/hb9001',
+  `${landing}/text`,
+  'http://www.legislature.ohio.gov/legislation/135/hb9001',
+  'https://www.legislature.ohio.gov/',
+  'https://legislature.ohio.gov/legislation/135/hb9001',
+])('rejects the unmapped legislature URL %s before any fetch', (url) => {
+  expect(() => resolveHistory(url)).toThrow(
+    expect.objectContaining({
+      code: 'INVALID_INPUT',
+      userMessage: expect.stringContaining('legislation/135/hb9001') as unknown,
+    }) as unknown,
+  );
 });

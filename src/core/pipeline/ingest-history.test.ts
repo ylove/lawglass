@@ -102,7 +102,7 @@ test.each([
     (await historyStore.readHistory(dir, result.doc.docId))?.versions.map(
       (item) => item.code,
     ),
-  ).toEqual(['', 'ih', 'rh', 'eh', 'pcs', 'eas', 'eah', 'enr']);
+  ).toEqual(['ih', 'rh', 'eh', 'pcs', 'eas', 'eah', 'enr', '']);
   agent.assertNoPendingInterceptors();
 });
 
@@ -242,19 +242,17 @@ test('latest text selection refreshes a mutable BILLSTATUS record', async () => 
   agent.assertNoPendingInterceptors();
 });
 
-test('a missing format in the latest version never silently selects an older version', async () => {
+test('an unresolvable latest entry is skipped for the last resolvable version', async () => {
   serveStatus(
     BILLSTATUS_XML.replace(
       'https://www.govinfo.gov/content/pkg/BILLS-118hr9001enr/xml/BILLS-118hr9001enr.xml',
       'https://evil.test/bill',
     ),
   );
-  const error: unknown = await ingest(page, deps).catch(
-    (error: unknown) => error,
-  );
-  expect(error).toBeInstanceOf(AppError);
-  expect((error as AppError).userMessage).toContain('specific version URL');
-  expect(deps.fetcher).toHaveBeenCalledOnce();
+  serveText('eah');
+  const result = await ingest(page, deps);
+  expect(result.normalized.sourceUrl).toBe(`${origin}${textPath('eah')}`);
+  agent.assertNoPendingInterceptors();
 });
 
 test('failed registration cleans up its sidecar and half-indexed namespace', async () => {

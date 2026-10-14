@@ -1,15 +1,32 @@
 import { z } from 'zod';
 import { AppError, BillHistory, SponsorProfile } from '../model/index.js';
+import { MAX_NAME, MAX_TEXT, sanitizeText } from './text.js';
 import type { HistoryPlan, HistoryRecord, HistorySource } from './resolve.js';
 
 /**
- * Ohio history comes from the legislature's own LIS JSON API. We never fetch
- * www.legislature.ohio.gov: it serves the wrong intermediate certificate, so Node
- * cannot verify it, and we will not weaken TLS. Its bill URLs are only recognised
+ * Ohio history comes from the legislature's own LIS JSON API on search-prod.lis.state.oh.us
+ * (the same host the bill text comes from), under
+ * `/api/v2/general_assembly_<ga>/legislation/<bill>/`:
+ *
+ * - `` (the bill): one object per version, with `version`, `version_id`,
+ *   `formatted_version`, `long_title`, signing/effective dates and `sponsors[]`/`cosponsors[]`.
+ *   Required: versions come only from here.
+ * - `actions/`: dated journal actions (introduced, passed, reported, conference...).
+ * - `meetings/`: committee meeting notices (date, committee, chamber, `canceled`).
+ * - `amendments/`: amendment numbers, the version amended and their sponsors. Often empty.
+ *
+ * There is no members endpoint with member-page URLs, so sponsors keep only `memberId`.
+ * The last three are optional: if one fails the history is kept and marked partial.
+ *
+ * We never fetch www.legislature.ohio.gov. It serves the wrong intermediate certificate,
+ * so Node cannot verify it, and we will not weaken TLS. Its bill URLs are only recognised
  * and mapped to the API.
  *
- * Every string returned here comes from a remote record. Consumers must render it
- * as text, never as HTML. Tags are stripped on the way in as a second line of defence.
+ * Every string returned here comes from a remote record. Consumers must render it as
+ * text, never as HTML. Tags, invisible characters and over-long values are removed on the
+ * way in as a second line of defence (see ./text.ts).
+ *
+ * Stored versions are oldest first.
  */
 const LANDING_HOST = 'www.legislature.ohio.gov';
 const API_HOST = 'search-prod.lis.state.oh.us';
@@ -38,6 +55,18 @@ export function ohioTextUrl(plan: OhioPlan, version: string): string {
   return `${apiBase(plan)}${version}/pdf/`;
 }
 
+/** The landing host, with or without `www` or a trailing dot. Never fetched. */
+export function isOhioLandingHost(url: URL): boolean {
+  const host = url.hostname.replace(/\.+$/, '');
+  return host === LANDING_HOST || host === 'legislature.ohio.gov';
+}
+export function ohioPageError(): AppError {
+  return new AppError('INVALID_INPUT', undefined, {
+    userMessage:
+      'Paste an Ohio bill URL such as https://www.legislature.ohio.gov/legislation/135/hb9001, or a search-prod.lis.state.oh.us bill text URL.',
+  });
+}
+
 export function resolveOhio(url: URL): OhioPlan | undefined {
   if (
     url.protocol !== 'https:' ||
@@ -62,51 +91,18 @@ export function resolveOhio(url: URL): OhioPlan | undefined {
   return plan;
 }
 
-/** Drop markup and control characters. Entities are decoded first so none can hide a tag. */
-export function plainText(value: string): string {
-  const entities: Readonly<Record<string, string>> = {
-    amp: '&',
-    lt: '<',
-    gt: '>',
-    quot: '"',
-    apos: "'",
-    nbsp: ' ',
-  };
-  const decoded = value.replace(
-    /&(#\d{1,6}|#x[0-9a-f]{1,5}|[a-z]+);/gi,
-    (m, e) => {
-      const name = String(e);
-      if (name.startsWith('#')) {
-        const code =
-          name[1]?.toLowerCase() === 'x'
-            ? parseInt(name.slice(2), 16)
-            : parseInt(name.slice(1), 10);
-        return code > 0 && code < 0x110000 ? String.fromCodePoint(code) : ' ';
-      }
-      return entities[name.toLowerCase()] ?? m;
-    },
-  );
-  return decoded
-    .replace(
-      /<script\b[\s\S]*?<\/script\s*>|<style\b[\s\S]*?<\/style\s*>/gi,
-      ' ',
-    )
-    .replace(/<[^>]*>?/g, ' ')
-    .replace(/[<>]/g, ' ')
+/** Kept as a named export for the adapter's tests; the work is in the shared helper. */
+export const plainText = sanitizeText;
 
-    .replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-const Text = z.string().transform(plainText);
+const Text = z.string().transform((v) => sanitizeText(v, MAX_TEXT));
+const Name = z.string().transform((v) => sanitizeText(v, MAX_NAME));
 const OptionalText = Text.nullish().transform((v) =>
   v?.length ? v : undefined,
 );
 const IsoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}/);
 
 const Member = z.object({
-  full_name: Text.pipe(z.string().min(1)),
+  full_name: Name.pipe(z.string().min(1)),
   member_id: z.union([z.number(), z.string()]).nullish(),
   party: OptionalText,
   district: z.union([z.number(), z.string()]).nullish(),
@@ -145,6 +141,19 @@ const VersionList = z.array(VersionRecord).min(1);
 const ActionList = z.array(ActionRecord);
 const MeetingList = z.array(MeetingRecord);
 const AmendmentList = z.array(AmendmentRecord);
+
+/** An optional part that is missing or malformed becomes `undefined`, and the caller marks the history partial. */
+function optionalJson<T>(
+  schema: z.ZodType<T>,
+  bytes: Uint8Array | undefined,
+): T | undefined {
+  if (!bytes) return undefined;
+  try {
+    return json(schema, bytes);
+  } catch {
+    return undefined;
+  }
+}
 
 function json<T>(schema: z.ZodType<T>, bytes: Uint8Array): T {
   let value: unknown;
@@ -197,9 +206,9 @@ function sponsorProfiles(
 export function parseOhioHistory(
   responses: {
     versions: Uint8Array;
-    actions: Uint8Array;
-    meetings: Uint8Array;
-    amendments: Uint8Array;
+    actions: Uint8Array | undefined;
+    meetings: Uint8Array | undefined;
+    amendments: Uint8Array | undefined;
   },
   plan: OhioPlan,
   fetchedAt: string,
@@ -219,15 +228,18 @@ export function parseOhioHistory(
     return { code, label: r.version, url: ohioTextUrl(plan, code) };
   });
 
+  const actionList = optionalJson(ActionList, responses.actions);
+  const meetingList = optionalJson(MeetingList, responses.meetings);
+  const amendmentList = optionalJson(AmendmentList, responses.amendments);
   const actions: BillHistory['actions'] = [
-    ...json(ActionList, responses.actions).map((a) => ({
+    ...(actionList ?? []).map((a) => ({
       date: day(a.occurred),
       text: a.action,
       chamber: a.chamber,
       committee: a.cmte_name ?? a.committee,
       url: `${base}actions/`,
     })),
-    ...json(MeetingList, responses.meetings)
+    ...(meetingList ?? [])
       .filter((m) => !m.canceled)
       .map((m) => ({
         date: day(m.meeting_date),
@@ -255,36 +267,36 @@ export function parseOhioHistory(
   // Oldest first; the sort is stable so same-day entries keep the record's order.
   actions.sort((a, b) => a.date.localeCompare(b.date));
 
-  // The record states no amendment date or committee, so none is claimed. The record's own sponsor list is the official attribution. The first becomes the
-  // sponsor; any others are named in the description.
-  const amendments: BillHistory['amendments'] = json(
-    AmendmentList,
-    responses.amendments,
-  ).map((a) => {
-    const [first, ...others] = a.sponsors;
-    const label = a.version
-      ? `Amendment ${a.amendment_number} (${a.version})`
-      : `Amendment ${a.amendment_number}`;
-    return {
-      id: a.amendment_number,
-      number: a.amendment_number,
-      status: 'unknown' as const,
-      ...(first
-        ? {
-            sponsor: {
-              name: first.full_name,
-              ...(first.member_id == null
-                ? {}
-                : { memberId: String(first.member_id) }),
-            },
-          }
-        : {}),
-      description: others.length
-        ? `${label}. Also sponsored by ${others.map((o) => o.full_name).join(', ')}`
-        : label,
-      url: `${base}amendments/${a.amendment_number}/pdf/`,
-    };
-  });
+  // The record states no amendment date or committee, so none is claimed. Its own sponsor
+  // list is the official attribution: the first becomes the sponsor, any others are
+  // named in the description.
+  const amendments: BillHistory['amendments'] = (amendmentList ?? []).map(
+    (a) => {
+      const [first, ...others] = a.sponsors;
+      const label = a.version
+        ? `Amendment ${a.amendment_number} (${a.version})`
+        : `Amendment ${a.amendment_number}`;
+      return {
+        id: a.amendment_number,
+        number: a.amendment_number,
+        status: 'unknown' as const,
+        ...(first
+          ? {
+              sponsor: {
+                name: first.full_name,
+                ...(first.member_id == null
+                  ? {}
+                  : { memberId: String(first.member_id) }),
+              },
+            }
+          : {}),
+        description: others.length
+          ? `${label}. Also sponsored by ${others.map((o) => o.full_name).join(', ')}`
+          : label,
+        url: `${base}amendments/${a.amendment_number}/pdf/`,
+      };
+    },
+  );
 
   const sponsored = new Map(
     ordered.map((r) => [`${r.formatted_version}_${r.version_id}`, r]),
@@ -296,16 +308,22 @@ export function parseOhioHistory(
       versions,
       actions,
       amendments,
-      sources: ['', 'actions/', 'meetings/', 'amendments/'].map((path) => ({
-        host: API_HOST,
-        url: `${base}${path}`,
-        fetchedAt,
-      })),
+      sources: (
+        [
+          ['', true],
+          ['actions/', actionList],
+          ['meetings/', meetingList],
+          ['amendments/', amendmentList],
+        ] as const
+      ).flatMap(([path, part]) =>
+        part ? [{ host: API_HOST, url: `${base}${path}`, fetchedAt }] : [],
+      ),
     }),
     sponsorProfiles: [
       ...sponsorProfiles(latest?.sponsors ?? [], 'sponsor'),
       ...sponsorProfiles(latest?.cosponsors ?? [], 'cosponsor'),
     ],
+    ...(actionList && meetingList && amendmentList ? {} : { partial: true }),
   };
 }
 
@@ -328,16 +346,21 @@ export const ohioHistorySource: HistorySource = {
   resolve: resolveOhio,
   read: async (plan, fetcher, now) => {
     const base = apiBase(plan as OhioPlan);
+    // Only the bill endpoint is required. A failed optional part leaves that part out.
     const versions = await fetcher(base);
-    const actions = await fetcher(`${base}actions/`);
-    const meetings = await fetcher(`${base}meetings/`);
-    const amendments = await fetcher(`${base}amendments/`);
+    const optional = async (path: string): Promise<Uint8Array | undefined> => {
+      try {
+        return (await fetcher(`${base}${path}`)).bytes;
+      } catch {
+        return undefined;
+      }
+    };
     return parseOhioHistory(
       {
         versions: versions.bytes,
-        actions: actions.bytes,
-        meetings: meetings.bytes,
-        amendments: amendments.bytes,
+        actions: await optional('actions/'),
+        meetings: await optional('meetings/'),
+        amendments: await optional('amendments/'),
       },
       plan as OhioPlan,
       now().toISOString(),

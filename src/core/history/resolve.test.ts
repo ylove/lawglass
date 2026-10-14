@@ -151,10 +151,7 @@ test('explicit version wins; latest follows official list order even with missin
   ).toBe('ih');
   for (const versions of [
     [],
-    [
-      { code: '', label: 'Unavailable latest' },
-      { code: 'eh', label: 'Engrossed', date: '2024-06-01' },
-    ],
+    [{ code: '', label: 'Unavailable' }],
     [{ code: '../ih', label: 'Bad', date: '2024-01-01' }],
   ]) {
     expect(() =>
@@ -169,6 +166,21 @@ test('explicit version wins; latest follows official list order even with missin
   }
 });
 
+test('an unresolvable entry never hides the last resolvable version', () => {
+  const plan = resolveHistory(page)!;
+  const history: BillHistory = {
+    versions: [
+      { code: 'eh', label: 'Engrossed' },
+      { code: 'enr', label: 'Enrolled' },
+      { code: '', label: 'Public Law' },
+    ],
+    actions: [],
+    amendments: [],
+    sources: [],
+  };
+  expect(chooseVersion(plan, history)).toBe('enr');
+});
+
 test('hr5009 version-list shape chooses dateless Enrolled first, ahead of the later-dated Public Law', () => {
   const plan = resolveGovinfo(new URL(page))!;
   const { history } = parseGovinfoBillStatus(
@@ -177,7 +189,6 @@ test('hr5009 version-list shape chooses dateless Enrolled first, ahead of the la
     '2026-10-14T00:00:00.000Z',
   );
   expect(history.versions.map((item) => item.code)).toEqual([
-    '',
     'ih',
     'rh',
     'eh',
@@ -185,9 +196,10 @@ test('hr5009 version-list shape chooses dateless Enrolled first, ahead of the la
     'eas',
     'eah',
     'enr',
+    '',
   ]);
-  expect(history.versions.at(-1)?.date).toBeUndefined();
-  expect(history.versions[0]?.date).toBe('2024-12-24T04:59:59Z');
+  expect(history.versions.at(-1)?.date).toBe('2024-12-24T04:59:59Z');
+  expect(history.versions.at(-2)?.date).toBeUndefined();
   expect(chooseVersion(plan, history)).toBe('enr');
 });
 

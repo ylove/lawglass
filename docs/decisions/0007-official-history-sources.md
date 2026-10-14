@@ -25,6 +25,7 @@ rc.2 adds a bill's legislative history and lets people paste the page they actua
 
 ## Consequences
 
+- **Ohio history is read from the official LIS JSON API** (`search-prod.lis.state.oh.us/api/v2/...`: the bill, `actions/`, `meetings/`, `amendments/`). Only the bill endpoint is required; a failed optional part gives a partial-history warning. `www.legislature.ohio.gov` serves the wrong TLS intermediate (Node cannot verify it, and we will not weaken TLS), so it is never fetched: its URLs are only mapped, and unmapped ones are rejected with guidance. The endpoint details live in the adapter's header comment.
 - Pasting a congress.gov or legislature.ohio.gov bill URL works without us touching congress.gov.
 - Adding a jurisdiction means adding a mapping and one allowlisted host, each with tests. That is deliberate friction.
 - The mappings are string patterns, so a site redesign breaks them. They fail closed: no match means the old behavior, and a fetch failure means "history unavailable".

@@ -3,7 +3,12 @@ import {
   type BillHistory,
   type SponsorProfile,
 } from '../model/index.js';
-import { chooseOhioVersion, ohioHistorySource } from './ohio-legislature.js';
+import {
+  chooseOhioVersion,
+  isOhioLandingHost,
+  ohioHistorySource,
+  ohioPageError,
+} from './ohio-legislature.js';
 import { parseGovinfoBillStatus } from './govinfo-billstatus.js';
 import type { SafeFetchResult } from '../fetch/index.js';
 
@@ -16,6 +21,8 @@ export interface HistoryPlan {
 export interface HistoryRecord {
   history: BillHistory;
   sponsorProfiles: SponsorProfile[];
+  /** Part of the record could not be read; the rest is kept and the user is warned. */
+  partial?: boolean;
 }
 export interface HistorySource {
   source: string;
@@ -71,6 +78,7 @@ function isCongressHost(url: URL): boolean {
 /** Also covers a redirect to Congress.gov from an otherwise ordinary document URL. */
 export function assertNoCongressFetch(url: URL): void {
   if (isCongressHost(url)) throw billPageError();
+  if (isOhioLandingHost(url)) throw ohioPageError();
 }
 
 export function govinfoTextUrl(plan: GovinfoPlan, version: string): string {
@@ -201,6 +209,8 @@ export function resolveHistory(input: string): HistoryPlan | undefined {
     const plan = source.resolve(url);
     if (plan) return plan;
   }
+  // The landing host fails TLS from Node and is never fetched; say what to paste instead.
+  if (isOhioLandingHost(url)) throw ohioPageError();
   return undefined;
 }
 
@@ -215,8 +225,12 @@ export function chooseVersion(
   // equal/inconsistent dates: Enrolled often has <date/>, and a later-dated Public
   // Law can be appended last. Dates must never override the first listed entry.
   // Stored versions are oldest first, so the first one BILLSTATUS listed is now the last.
-  const latest = versions.at(-1);
-  if (!latest || !historySource(plan.source).isVersion(latest.code)) {
+  // An unresolvable entry (e.g. a Public Law with no text package) is stored last and
+  // must not hide the latest text we can actually read.
+  const latest = versions.findLast((item) =>
+    historySource(plan.source).isVersion(item.code),
+  );
+  if (!latest) {
     throw new AppError('FETCH_FAILED', undefined, {
       userMessage:
         'The official record could not identify the latest text version. Paste a specific version URL, such as a congress.gov bill URL ending in /text/ih or a GovInfo BILLS version URL.',
