@@ -127,6 +127,12 @@ const FetchResponse = z.object({
     z.object({ id: z.string(), metadata: z.unknown() }),
   ),
 });
+const COMPLETION_ID = 'complete';
+const Completion = z.object({ doc_id: z.string(), version: z.literal(1) });
+// Keep control records out of chunk searches, fetches and record counts.
+function completionNamespace(docId: string): string {
+  return `ingest-complete:${docId}`;
+}
 const RerankResponse = z.object({
   data: z.array(
     z.object({ index: z.number().int().nonnegative(), score: z.number() }),
@@ -269,20 +275,40 @@ export class PineconeBackend implements RetrievalBackend {
   }
 
   hasDocument(docId: string): Promise<boolean> {
-    return this.serial(async () => {
-      const stats = Stats.parse(
-        await this.readyIndexes().dense.describeIndexStats(),
-      );
-      return (stats.namespaces?.[docId]?.recordCount ?? 0) > 0;
-    });
+    return this.serial(() => this.isComplete(docId));
   }
-  private async namespaceExists(docId: string): Promise<boolean> {
-    const stats = Stats.parse(
-      await this.readyIndexes().dense.describeIndexStats(),
-    );
-    return (stats.namespaces?.[docId]?.recordCount ?? 0) > 0;
+  private async isComplete(docId: string): Promise<boolean> {
+    let response: unknown;
+    try {
+      response = await this.readyIndexes()
+        .dense.namespace(completionNamespace(docId))
+        .fetch({ ids: [COMPLETION_ID] });
+    } catch (error) {
+      if (hasStatus(error, 404, 'PineconeNotFoundError')) return false;
+      throw error;
+    }
+    const record = FetchResponse.parse(response).records[COMPLETION_ID];
+    this.report('fetch:completion', response);
+    if (!record) return false;
+    if (
+      record.id !== COMPLETION_ID ||
+      Completion.parse(record.metadata).doc_id !== docId
+    )
+      throw new AppError('BACKEND_UNAVAILABLE');
+    return true;
+  }
+  private async removeCompletion(docId: string): Promise<void> {
+    try {
+      await this.readyIndexes().dense.deleteNamespace(
+        completionNamespace(docId),
+      );
+    } catch (error) {
+      if (!hasStatus(error, 404, 'PineconeNotFoundError')) throw error;
+    }
   }
   private async remove(docId: string): Promise<void> {
+    // Invalidate completion before deleting chunks, even if chunk cleanup fails.
+    await this.removeCompletion(docId);
     for (const index of Object.values(this.readyIndexes())) {
       try {
         await index.deleteNamespace(docId);
@@ -307,7 +333,9 @@ export class PineconeBackend implements RetrievalBackend {
         return toRecord(parsed.data);
       });
       if (!records.length) return { usage: { ...ZERO_USAGE } };
-      const existed = await this.namespaceExists(docId);
+      const wasComplete = await this.isComplete(docId);
+      // A failed update can leave the indexes inconsistent, including across restarts.
+      if (wasComplete) await this.removeCompletion(docId);
       let usage = { ...ZERO_USAGE };
       try {
         // 96 text records; NDJSON must also stay below 2 MB, including UTF-8 and separators.
@@ -333,12 +361,26 @@ export class PineconeBackend implements RetrievalBackend {
           offset += batch.length;
           onProgress?.({ done: offset, total: chunks.length });
         }
+        // Publish durable completion only after every batch succeeds in both indexes.
+        const response = await indexes.dense
+          .namespace(completionNamespace(docId))
+          .upsertRecords({
+            records: [
+              {
+                _id: COMPLETION_ID,
+                embed_text: 'Document ingest complete.',
+                doc_id: docId,
+                version: 1,
+              },
+            ],
+          });
+        usage = addUsage(usage, this.report('upsert:completion', response));
         const ids = this.expectedIds.get(docId) ?? new Set<string>();
         for (const record of records) ids.add(String(record._id));
         this.expectedIds.set(docId, ids);
       } catch (error) {
         // Don't let a failed ingest appear complete just because dense writes succeeded.
-        if (!existed) await this.remove(docId).catch(() => undefined);
+        if (!wasComplete) await this.remove(docId).catch(() => undefined);
         throw error;
       }
       return { usage };
@@ -474,7 +516,7 @@ export class PineconeBackend implements RetrievalBackend {
   }
 }
 
-/** Poll both indexes after test writes/deletes; a timeout is a failure, never a fixed sleep. */
+/** Poll both indexes and completion after test writes/deletes; a timeout is a failure. */
 export async function settle(
   backend: PineconeBackend,
   docId: string,
@@ -482,12 +524,14 @@ export async function settle(
   signal?: AbortSignal,
 ): Promise<void> {
   const deadline = Date.now() + backend.config.timeoutMs;
+  const expectedComplete = expectedCount > 0;
   for (;;) {
     abortIfNeeded(signal);
     if (
       (await backend.recordCounts(docId)).every(
         (count) => count === expectedCount,
-      )
+      ) &&
+      (await backend.hasDocument(docId)) === expectedComplete
     )
       return;
     if (Date.now() >= deadline)

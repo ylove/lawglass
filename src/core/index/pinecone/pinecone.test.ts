@@ -4,6 +4,7 @@ import type {
   UpsertRecordsOptions,
   CreateIndexForModelOptions,
   RerankOptions,
+  IntegratedRecord,
 } from '@pinecone-database/pinecone';
 import { Errors } from '@pinecone-database/pinecone';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -31,19 +32,29 @@ function fakeSdk() {
   function fakeIndex(kind: 'dense' | 'sparse') {
     const memory = new MemoryBackend();
     const records = new Map<string, Set<string>>();
+    const storedRecords = new Map<string, Map<string, IntegratedRecord>>();
     const upsert = vi.fn(
       async (
         docId: string,
         options: UpsertRecordsOptions,
       ): Promise<unknown> => {
-        const chunks = options.records.map((record) => ({
-          ...fromRecord(String(record._id), record, docId),
-          embedText: String(record.embed_text),
-        }));
+        const chunks = options.records
+          .filter((record) => record.section_id !== undefined)
+          .map((record) => ({
+            ...fromRecord(String(record._id), record, docId),
+            embedText: String(record.embed_text),
+          }));
         await memory.upsertChunks(docId, chunks);
         const ids = records.get(docId) ?? new Set<string>();
-        chunks.forEach((chunk) => ids.add(chunk.id));
+        const stored =
+          storedRecords.get(docId) ?? new Map<string, IntegratedRecord>();
+        for (const record of options.records) {
+          const id = String(record._id);
+          ids.add(id);
+          stored.set(id, record);
+        }
         records.set(docId, ids);
+        storedRecords.set(docId, stored);
         return undefined; // The pinned SDK returns void, not a usage object.
       },
     );
@@ -88,18 +99,16 @@ function fakeSdk() {
       },
     );
     const fetch = vi.fn(
-      async (docId: string, options: FetchOptions): Promise<unknown> => ({
-        records: Object.fromEntries(
-          (await memory.getChunks(docId, options.ids)).map((chunk) => [
-            chunk.id,
-            {
-              id: chunk.id,
-              metadata: toRecord({ ...chunk, embedText: chunk.text }),
-            },
-          ]),
-        ),
-        usage: { readUnits: 1 },
-      }),
+      (docId: string, options: FetchOptions): Promise<unknown> =>
+        Promise.resolve({
+          records: Object.fromEntries(
+            options.ids.flatMap((id) => {
+              const record = storedRecords.get(docId)?.get(id);
+              return record ? [[id, { id, metadata: record }]] : [];
+            }),
+          ),
+          usage: { readUnits: 1 },
+        }),
     );
     const stats = vi.fn((): Promise<unknown> =>
       Promise.resolve({
@@ -111,6 +120,7 @@ function fakeSdk() {
     const deleteNamespace = vi.fn(async (docId: string): Promise<unknown> => {
       await memory.deleteDocument(docId);
       records.delete(docId);
+      storedRecords.delete(docId);
       return undefined;
     });
     return {
@@ -286,21 +296,19 @@ describe('PineconeBackend', () => {
     const progress = vi.fn<(p: UpsertProgress) => void>();
     const response = await backend.upsertChunks(DOC_A, chunks, progress);
     for (const index of [sdk.dense, sdk.sparse]) {
-      expect(
-        index.upsert.mock.calls.map((call) => call[1].records.length),
-      ).toEqual([96, 96, 1]);
-      expect(index.upsert.mock.calls.every((call) => call[0] === DOC_A)).toBe(
-        true,
-      );
+      const calls = index.upsert.mock.calls.filter((call) => call[0] === DOC_A);
+      expect(calls.map((call) => call[1].records.length)).toEqual([96, 96, 1]);
     }
-    expect(sdk.dense.upsert.mock.calls).toEqual(sdk.sparse.upsert.mock.calls);
+    expect(
+      sdk.dense.upsert.mock.calls.filter((call) => call[0] === DOC_A),
+    ).toEqual(sdk.sparse.upsert.mock.calls);
     expect(progress.mock.calls.map((call) => call[0])).toEqual([
       { done: 96, total: 193 },
       { done: 192, total: 193 },
       { done: 193, total: 193 },
     ]);
     expect(response.usage).toEqual(ZERO_USAGE);
-    expect(logUsage).toHaveBeenCalledTimes(6);
+    expect(logUsage).toHaveBeenCalledTimes(8);
     await backend.settle();
   });
   it('also batches by NDJSON byte size, including multibyte text', async () => {
@@ -336,7 +344,9 @@ describe('PineconeBackend', () => {
       (await backend.getChunks(DOC_A, ids)).map((chunk) => chunk.id),
     ).toEqual([CHUNKS_A[2]!.id, CHUNKS_A[0]!.id]);
     expect(
-      sdk.dense.fetch.mock.calls.map((call) => call[1].ids.length),
+      sdk.dense.fetch.mock.calls
+        .filter((call) => call[0] === DOC_A)
+        .map((call) => call[1].ids.length),
     ).toEqual([1_000, 2]);
     expect(logUsage).toHaveBeenCalledWith({
       backend: 'pinecone',
@@ -438,6 +448,109 @@ describe('PineconeBackend', () => {
     await backend.upsertChunks(DOC_A, CHUNKS_A);
     expect(await backend.hasDocument(DOC_A)).toBe(true);
   });
+  it.each([7, 97])(
+    'recovers %i chunks after sparse failure and failed cleanup, including a backend restart',
+    async (count) => {
+      const { backend, sdk } = setup();
+      await backend.ensureReady();
+      const chunks =
+        count === 7
+          ? CHUNKS_A
+          : Array.from({ length: count }, (_, n) => ({
+              ...CHUNKS_A[0]!,
+              id: `${DOC_A}:sec-1:${String(n)}`,
+            }));
+      // For multiple batches, leave records in both indexes before the final sparse write fails.
+      if (count > 96)
+        sdk.sparse.upsert.mockImplementationOnce(
+          sdk.sparse.upsert.getMockImplementation()!,
+        );
+      sdk.sparse.upsert.mockRejectedValueOnce({ status: 429 });
+      sdk.dense.deleteNamespace
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('cleanup secret'));
+      const progress = vi.fn<(p: UpsertProgress) => void>();
+      await expect(
+        backend.upsertChunks(DOC_A, chunks, progress),
+      ).rejects.toMatchObject({
+        code: 'RATE_LIMITED',
+      });
+      expect(progress.mock.calls.map(([p]) => p.done)).toEqual(
+        count > 96 ? [96] : [],
+      );
+      expect(await backend.recordCounts(DOC_A)).toEqual([
+        count,
+        count > 96 ? 96 : 0,
+      ]);
+      expect(await backend.hasDocument(DOC_A)).toBe(false);
+
+      const restarted = new PineconeBackend({
+        client: sdk.client,
+        config: defaults,
+        logUsage: () => undefined,
+      });
+      await restarted.ensureReady();
+      expect(await restarted.hasDocument(DOC_A)).toBe(false);
+      await restarted.upsertChunks(DOC_A, chunks);
+      expect(await restarted.recordCounts(DOC_A)).toEqual([count, count]);
+      expect(await restarted.hasDocument(DOC_A)).toBe(true);
+
+      const completedRestart = new PineconeBackend({
+        client: sdk.client,
+        config: defaults,
+        logUsage: () => undefined,
+      });
+      await completedRestart.ensureReady();
+      expect(await completedRestart.hasDocument(DOC_A)).toBe(true);
+      await completedRestart.deleteDocument(DOC_A);
+      expect(await restarted.hasDocument(DOC_A)).toBe(false);
+    },
+  );
+  it('does not report completion when publishing the marker and cleaning up both fail', async () => {
+    const { backend, sdk } = setup();
+    await backend.ensureReady();
+    sdk.dense.upsert
+      .mockImplementationOnce(sdk.dense.upsert.getMockImplementation()!)
+      .mockRejectedValueOnce({ status: 429 });
+    sdk.dense.deleteNamespace
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error('cleanup secret'));
+    await expect(backend.upsertChunks(DOC_A, CHUNKS_A)).rejects.toMatchObject({
+      code: 'RATE_LIMITED',
+    });
+    expect(await backend.recordCounts(DOC_A)).toEqual([
+      CHUNKS_A.length,
+      CHUNKS_A.length,
+    ]);
+    expect(await backend.hasDocument(DOC_A)).toBe(false);
+    const restarted = new PineconeBackend({
+      client: sdk.client,
+      config: defaults,
+      logUsage: () => undefined,
+    });
+    await restarted.ensureReady();
+    expect(await restarted.hasDocument(DOC_A)).toBe(false);
+    await restarted.upsertChunks(DOC_A, CHUNKS_A);
+    expect(await restarted.hasDocument(DOC_A)).toBe(true);
+  });
+  it('invalidates completion before a deletion whose chunk cleanup fails', async () => {
+    const { backend, sdk } = setup();
+    await backend.ensureReady();
+    await backend.upsertChunks(DOC_A, CHUNKS_A);
+    sdk.dense.deleteNamespace
+      .mockImplementationOnce(
+        sdk.dense.deleteNamespace.getMockImplementation()!,
+      )
+      .mockRejectedValueOnce(new Error('cleanup secret'));
+    await expect(backend.deleteDocument(DOC_A)).rejects.toMatchObject({
+      code: 'BACKEND_UNAVAILABLE',
+    });
+    expect(await backend.recordCounts(DOC_A)).toEqual([
+      CHUNKS_A.length,
+      CHUNKS_A.length,
+    ]);
+    expect(await backend.hasDocument(DOC_A)).toBe(false);
+  });
   it('validates chunks before writing, and treats empty writes as no-ops', async () => {
     const { backend, sdk } = setup();
     await backend.ensureReady();
@@ -453,10 +566,10 @@ describe('PineconeBackend', () => {
     });
     expect(sdk.dense.deleteNamespace).not.toHaveBeenCalled();
   });
-  it('handles absent namespace stats and idempotent not-found on deletion/search/fetch', async () => {
+  it('handles absent completion records and idempotent not-found on deletion/search/fetch', async () => {
     const { backend, sdk } = setup();
     await backend.ensureReady();
-    sdk.dense.describeIndexStats.mockResolvedValueOnce({});
+    sdk.dense.fetch.mockRejectedValueOnce({ status: 404 });
     expect(await backend.hasDocument(DOC_A)).toBe(false);
     sdk.dense.deleteNamespace.mockRejectedValueOnce({ status: 404 });
     sdk.sparse.deleteNamespace.mockRejectedValueOnce(
@@ -656,7 +769,7 @@ describe('PineconeBackend', () => {
     });
     expect(hits.map((hit) => hit.score)).toEqual([2, 1]);
   });
-  it('keeps an existing document after a failed re-upsert or leak a cleanup error', async () => {
+  it('keeps existing chunks after a failed re-upsert, invalidates completion, and sanitizes cleanup errors', async () => {
     const { backend, sdk } = setup();
     await backend.ensureReady();
     await backend.upsertChunks(DOC_A, CHUNKS_A);
@@ -664,7 +777,13 @@ describe('PineconeBackend', () => {
     await expect(backend.upsertChunks(DOC_A, CHUNKS_A)).rejects.toMatchObject({
       code: 'BACKEND_UNAVAILABLE',
     });
-    expect(await backend.hasDocument(DOC_A)).toBe(true);
+    expect(await backend.hasDocument(DOC_A)).toBe(false);
+    expect(
+      await backend.getChunks(
+        DOC_A,
+        CHUNKS_A.map((chunk) => chunk.id),
+      ),
+    ).toHaveLength(CHUNKS_A.length);
     sdk.sparse.upsert.mockRejectedValueOnce({ status: 429 });
     sdk.dense.deleteNamespace.mockRejectedValueOnce(
       new Error('cleanup secret'),
