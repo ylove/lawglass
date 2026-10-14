@@ -1,3 +1,6 @@
+import { load } from 'cheerio';
+import { parseHtml } from '../parse/html.js';
+import { readParseLimits } from '../parse/limits.js';
 import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,6 +11,11 @@ import { BRAND } from '../brand.js';
 import { documentId, writeCache } from './cache.js';
 import { safeFetch, type SafeFetchOptions } from './index.js';
 import type { Resolver } from './resolve.js';
+
+vi.mock('cheerio', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('cheerio')>();
+  return { ...actual, load: vi.fn(actual.load) };
+});
 
 let agent: MockAgent;
 let cacheDir: string;
@@ -628,4 +636,81 @@ describe('safeFetch', () => {
       safeFetch(origin, { ...opts, cacheDir: file }),
     ).rejects.toMatchObject({ code: 'FETCH_FAILED' });
   });
+});
+
+it('loads HTML once across wrapper inspection and bill parsing', async () => {
+  vi.mocked(load).mockClear();
+  const html =
+    '<html><body><h2>SECTION 1.</h2><p>(a) Grants. (b) Eligibility.</p><nav><a href="bill.pdf">PDF</a></nav></body></html>';
+  agent
+    .get(origin)
+    .intercept({ path: '/single.html' })
+    .reply(200, html, { headers: { 'content-type': 'text/html' } });
+  const fetched = await safeFetch(`${origin}/single.html`, opts);
+  expect(fetched.preparedHtml).toBeDefined();
+  expect(vi.mocked(load)).toHaveBeenCalledOnce();
+  const doc = parseHtml(fetched.bytes, {
+    sourceUrl: fetched.finalUrl,
+    fetchedAt: fixedNow().toISOString(),
+    preparedHtml: fetched.preparedHtml,
+  });
+  expect(doc.sections).toHaveLength(1);
+  expect(vi.mocked(load)).toHaveBeenCalledOnce();
+});
+
+it('refuses deep HTML before cheerio and before caching the bytes', async () => {
+  vi.mocked(load).mockClear();
+  agent
+    .get(origin)
+    .intercept({ path: '/deep.html' })
+    .reply(200, '<html>' + '<div>'.repeat(20_000), {
+      headers: { 'content-type': 'text/html' },
+    });
+  await expect(safeFetch(`${origin}/deep.html`, opts)).rejects.toMatchObject({
+    code: 'TOO_LARGE',
+    userMessage: expect.stringContaining('nested deeper') as unknown,
+  });
+  expect(vi.mocked(load)).not.toHaveBeenCalled();
+  expect(await readdir(cacheDir)).toEqual([]);
+});
+
+it('applies HTML and non-PDF caps on downloads and cached responses', async () => {
+  vi.mocked(load).mockClear();
+  const limits = {
+    ...readParseLimits(true, {}),
+    maxHtmlBytes: 10,
+    maxNonPdfBytes: 30,
+  };
+  agent
+    .get(origin)
+    .intercept({ path: '/large.html' })
+    .reply(200, '<html><p>oversized HTML</p></html>', {
+      headers: { 'content-type': 'text/html' },
+    });
+  await expect(
+    safeFetch(`${origin}/large.html`, { ...opts, parseLimits: limits }),
+  ).rejects.toMatchObject({ code: 'TOO_LARGE' });
+  expect(vi.mocked(load)).not.toHaveBeenCalled();
+  const bytes = new TextEncoder().encode('x'.repeat(31));
+  await writeCache(
+    bytes,
+    {
+      url: `${origin}/cached.txt`,
+      finalUrl: `${origin}/cached.txt`,
+      contentType: 'text/plain',
+      fetchedAt: fixedNow().toISOString(),
+    },
+    cacheDir,
+  );
+  await expect(
+    safeFetch(`${origin}/cached.txt`, { ...opts, parseLimits: limits }),
+  ).rejects.toMatchObject({ code: 'TOO_LARGE' });
+  agent
+    .get(origin)
+    .intercept({ path: '/big.pdf' })
+    .reply(200, '%PDF-' + 'x'.repeat(40));
+  expect(
+    (await safeFetch(`${origin}/big.pdf`, { ...opts, parseLimits: limits }))
+      .format,
+  ).toBe('pdf');
 });

@@ -11,8 +11,8 @@ const manifest = readManifest();
 const fixture = manifest.fixtures[0];
 if (!fixture) throw new Error('The manifest needs at least one fixture');
 
-test('the committed manifest contains six validated public sources', () => {
-  expect(manifest.fixtures).toHaveLength(6);
+test('the committed manifest contains seven validated public sources', () => {
+  expect(manifest.fixtures).toHaveLength(7);
   expect(manifest.fixtures.map(({ name }) => name)).toEqual([
     'us-s202-119-is',
     'us-s202-119-is-html',
@@ -20,9 +20,12 @@ test('the committed manifest contains six validated public sources', () => {
     'oh-sb203-133-in',
     'oh-hb62-135-in',
     'us-hr5009-118-enr',
+    'oh-columbus-issue8-2026',
   ]);
   expect(
-    manifest.fixtures.every(({ retrievedAt }) => retrievedAt === '2026-10-13'),
+    manifest.fixtures.every(({ retrievedAt }) =>
+      ['2026-10-13', '2026-10-14'].includes(retrievedAt),
+    ),
   ).toBe(true);
 });
 

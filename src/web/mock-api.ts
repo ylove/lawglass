@@ -15,6 +15,8 @@ import {
   type IngestEvent,
   type IngestRequest,
   type Scenario,
+  type ScenarioRequest,
+  type ScenarioResponse,
   type SectionExcerpt,
   type SponsorProfile,
   type SummaryResponse,
@@ -44,6 +46,15 @@ const CHIPS: ClientConfig['chips'] = [
   { id: 'definitions', label: 'Key definitions' },
   { id: 'sponsors', label: 'Who sponsored it?' },
 ];
+
+/** Suggested subjects for the sample bill, as the server derives them from a bill's own words. */
+const SAMPLE_PERSONAS = [
+  'a renter',
+  'a homeowner',
+  'a taxpayer',
+  'a small business owner',
+] as const;
+const MOCK_JUDGING = /\b(?:good|bad|unfair|fair|harmful|burden\w*)\b/i;
 
 const SAMPLE_ID = 'a'.repeat(64);
 const NOW = '2026-10-13T12:00:00.000Z';
@@ -175,6 +186,8 @@ const ANSWERS: Record<ChipId, string> = {
     'Here is what the official record says about how this bill got here.\n\nKey actions:\n- 2026-02-03: Introduced in the House.\n- 2026-03-10: Reported by the House Water Committee.\n\nThe record lists no amendments to this bill.',
   sponsors:
     'Sponsored by Rep. A. Rivera, Rep. J. Chen. Cosponsors, if any, are not included.',
+  // Placeholder: the delegations chip is not in the served chip list until #202.
+  delegations: "This document doesn't address that question.",
 };
 
 /** Invented example for the `who-affected` demo. Every frame cites a section the answer cites. */
@@ -363,6 +376,7 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
     provider: 'mock',
     model: 'mock-1',
     chips: CHIPS,
+    scenariosEnabled: !publicMode,
   };
 
   const need = (docId: string): DocSummary => {
@@ -480,6 +494,7 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
             ],
         hasLineNumbers: hasLines(doc),
         ...(sample ? { history: structuredClone(SAMPLE_HISTORY) } : {}),
+        ...(sample ? { scenarioPersonas: [...SAMPLE_PERSONAS] } : {}),
         preview: sample
           ? {
               kind: 'purpose',
@@ -509,6 +524,26 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
       if (summariesStarted.has(docId)) return cached();
       summariesStarted.add(docId);
       return { status: 'pending' };
+    },
+
+    // Same contract as POST /api/docs/:id/scenario. Scripted: a judging subject is refused the way
+    // the server refuses it, "none" shows the no-result state, anything else gets the sample story.
+    async getScenario(docId, req: ScenarioRequest): Promise<ScenarioResponse> {
+      need(docId);
+      if (publicMode) return { status: 'disabled' };
+      await sleep(delay);
+      const subject = req.subject.trim().replace(/\s+/g, ' ');
+      if (
+        !/^[\p{L}\p{N} '\-,.()/&]+$/u.test(subject) ||
+        MOCK_JUDGING.test(subject)
+      )
+        throw new ApiError(
+          'INVALID_INPUT',
+          'Describe who the example is about in neutral words, without judging the bill.',
+        );
+      if (/\bnobody\b/i.test(subject)) return { status: 'none' };
+      const scenario = structuredClone(SAMPLE_SCENARIO);
+      return { status: 'ok', scenario };
     },
 
     // eslint-disable-next-line @typescript-eslint/require-await

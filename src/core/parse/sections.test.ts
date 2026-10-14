@@ -1192,3 +1192,33 @@ describe('structure is read from the text as amended (struck text never names a 
     expect(sections[0]!.children[0]!.spans[0]!.text).toBe(text);
   });
 });
+
+describe('charter section headings', () => {
+  const headingOf = (text: string) => {
+    const [section] = [...walkSections(detectSections(lines(text)))];
+    return section;
+  };
+
+  it.each([
+    ['Sec. 3. - Legislative powers.', 'sec-3', 'Legislative powers.'],
+    ['Sec. 3.- Legislative powers.', 'sec-3', 'Legislative powers.'],
+    ['Sec. 46-3 - Initiative petitions.', 'sec-46-3', 'Initiative petitions.'],
+    ['Sec. 3 – Council.', 'sec-3', 'Council.'],
+    ['Sec. 3. Council.', 'sec-3', 'Council.'],
+  ])('%s', (text, id, heading) => {
+    const section = headingOf(text);
+    expect(section?.id).toBe(id);
+    expect(section?.heading).toBe(heading);
+  });
+
+  it('keeps a wrapped cross-reference as body text, not a heading', () => {
+    const all = [
+      ...walkSections(
+        detectSections(
+          lines('Sec. 1. - Powers.', 'Sec. 3 of the charter is amended.'),
+        ),
+      ),
+    ];
+    expect(all.map((s) => s.id)).toEqual(['sec-1']);
+  });
+});

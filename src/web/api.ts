@@ -7,10 +7,12 @@ import {
   DocDetail,
   DocSummary,
   IngestEvent,
+  ScenarioResponse,
   SectionExcerpt,
   SummaryResponse,
   type AskRequest,
   type IngestRequest,
+  type ScenarioRequest,
 } from '../core/model/index.js';
 import { createMockApi } from './mock-api.js';
 import { ApiError, readSseEvents } from './sse.js';
@@ -27,6 +29,12 @@ export interface ApiClient {
   getSection(docId: string, sectionId: string): Promise<SectionExcerpt>;
   /** The summary shown on arrival: cached, still being made (poll again), or off. */
   getSummary(docId: string): Promise<SummaryResponse>;
+  /** An illustrated example for a subject the reader names (`POST .../scenario`). */
+  getScenario(
+    docId: string,
+    req: ScenarioRequest,
+    signal?: AbortSignal,
+  ): Promise<ScenarioResponse>;
   ingest(req: IngestRequest, signal?: AbortSignal): AsyncIterable<IngestEvent>;
   ask(
     docId: string,
@@ -100,6 +108,13 @@ export function createHttpApi(options: HttpApiOptions = {}): ApiClient {
     getDoc: (docId) => request(docPath(docId), DocDetail),
     getSummary: (docId) =>
       request(`${docPath(docId)}/summary`, SummaryResponse),
+    getScenario: (docId, req, signal) =>
+      request(`${docPath(docId)}/scenario`, ScenarioResponse, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(req),
+        ...(signal ? { signal } : {}),
+      }),
     getSection: (docId, sectionId) =>
       request(
         `${docPath(docId)}/sections/${encodeURIComponent(sectionId)}`,

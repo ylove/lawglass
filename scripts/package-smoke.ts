@@ -16,8 +16,8 @@ try {
   const list = await app.cli('list');
   assert(list.includes(SAMPLE_LABEL));
   assert.match(list, /pdf/);
-  const server = await app.serve();
-  console.log(`Packed CLI and /api/health passed (${server.url}).`);
+  await app.serve();
+  console.log('Packed CLI and /api/health passed.');
 } finally {
   await app.dispose();
 }

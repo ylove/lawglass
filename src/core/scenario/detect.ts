@@ -150,7 +150,7 @@ export function classifyBill(sections: readonly Section[]): BillShape {
 
 /** Groups people ask about by name. A story about them is the natural answer. */
 const GROUP =
-  '(?:renters?|tenants?|landlords?|homeowners?|famil(?:y|ies)|households?|parents?|kids?|children|workers?|employees?|employers?|(?:small )?business(?:es)?|retirees?|seniors?|students?|farmers?|veterans?|drivers?|taxpayers?)';
+  '(?:renters?|tenants?|landlords?|homeowners?|famil(?:y|ies)|households?|parents?|kids?|children|workers?|employees?|employers?|(?:small )?business(?:es)?|retirees?|seniors?|students?|farmers?|veterans?|drivers?|taxpayers?|voters?|residents?|candidates?|(?:public )?officials?|public employees?)';
 
 /**
  * Affect-me, family, household and business phrasings. Each entry is one shape of question,

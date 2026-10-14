@@ -127,8 +127,11 @@ describe('chip definitions', () => {
     expect(getChip('history')).toBe(CHIPS[at + 1]);
   });
 
-  it('defines exactly the nine chips of the ChipId contract, each valid', () => {
-    expect(CHIPS.map((c) => c.id).sort()).toEqual([...ChipId.options].sort());
+  it('defines exactly the nine served chips of the ChipId contract, each valid', () => {
+    // `delegations` is in the contract but not served until #202.
+    expect(CHIPS.map((c) => c.id).sort()).toEqual(
+      ChipId.options.filter((id) => id !== 'delegations').sort(),
+    );
     for (const c of CHIPS) {
       expect(ChipDefinition.safeParse(c).success).toBe(true);
       expect(getChip(c.id)).toBe(c);

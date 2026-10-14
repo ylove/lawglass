@@ -43,7 +43,13 @@ const REFERENCE_CONTINUATIONS = [
   ...['provides', 'requires', 'takes', 'governs'],
 ].join('|');
 const SECTION_NUMBER = String.raw`(\d+(?:\.\d+)*[a-zA-Z]?(?:-[a-zA-Z0-9]+)*)`;
-const SECTION_TAIL = String.raw`(?!\.?\s+(?:${REFERENCE_CONTINUATIONS})\b)(?:\.(?=\s|$)|(?=\s|$))`;
+const SECTION_TAIL = String.raw`(?!\.?\s+(?:${REFERENCE_CONTINUATIONS})\b)(?:\.(?=\s|$|-)|(?=\s|$))`;
+
+/**
+ * Charters print "Sec. 3. - Legislative powers." and "Sec. 3.- Legislative powers.": the
+ * dash is a separator, not part of the heading. A lone ".", ":" or dash is dropped too.
+ */
+const LEADING_HEADING_PUNCTUATION = /^(?:[.:]\s*)?(?:[-\u2013\u2014]+\s*)?/;
 
 /** Ordered, replaceable patterns. Decimal dots belong to the section number. */
 export const DEFAULT_SECTION_PATTERNS: readonly SectionPattern[] = [
@@ -159,7 +165,7 @@ function matchHeading(
       heading: trimmed
         .slice(match[0].length)
         .trim()
-        .replace(/^[.:]\s*/, ''),
+        .replace(LEADING_HEADING_PUNCTUATION, ''),
     };
   }
   return undefined;

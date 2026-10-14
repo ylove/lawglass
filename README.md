@@ -210,6 +210,16 @@ Caveats: 21 to 28 questions per bill means one question moves recall@5 by about 
 
 Provider keys are sent only over `https:` or to `localhost`, `127.0.0.1` or `[::1]`. An Ollama or LM Studio server on a LAN over plain `http:` gets no key, which is fine because it needs none; set `LAWGLASS_ALLOW_INSECURE_KEY=1` to send one anyway. The `claude-cli` provider never reads your stored keys, forwards no API credentials unless you opt in (see above), and is never chosen automatically ([decision 0003](docs/decisions/0003-claude-cli-provider.md), [provider details](docs/llm-providers.md)). Override models with `LAWGLASS_ANSWER_MODEL` and `LAWGLASS_EXTRACT_MODEL`.
 
+Ingest limits are set through environment variables, outside `config.json`:
+
+| Variable                    | Local default | Public default |
+| --------------------------- | ------------- | -------------- |
+| `LAWGLASS_MAX_PAGES`        | 5,000         | Fixed at 200   |
+| `LAWGLASS_PARSE_TIMEOUT_MS` | 120,000 ms    | 30,000 ms      |
+| `LAWGLASS_MAX_CHUNKS`       | 20,000        | 3,000          |
+
+Values must be positive integers. HTML is limited to 15 MiB locally and 5 MiB publicly, with a conservative nesting ceiling of 512 levels checked before DOM construction. Other non-PDF formats keep the 50 MiB local byte cap and use 10 MiB publicly; PDF downloads keep the 50 MiB byte cap. PDF page limits are checked before page extraction. Parse deadlines and cancellation are cooperative for synchronous HTML/XML work, with checks between input chunks or DOM nodes; PDF waits can also be cancelled. The chunk ceiling includes definition records added during enrichment.
+
 #### Backends
 
 - **local** (default): no Docker, no account. Dense vectors from quantized `bge-small-en-v1.5` (384 dimensions) via transformers.js, sparse search with an explicit BM25 (`k1=1.2`, `b=0.75`), and a quantized MiniLM cross-encoder as reranker. About 59 MB of models download once, from revisions pinned in [`models.lock.json`](models.lock.json). Code: [`src/core/index/local/`](src/core/index/local/).
@@ -257,7 +267,7 @@ CI ([`ci.yml`](.github/workflows/ci.yml)) runs these jobs:
 | `no-fixtures-guard` | Fails if real legislation files are committed                                                                       |
 | `secrets`           | Gitleaks over full history                                                                                          |
 | `dependency-review` | Blocks high-severity vulnerabilities and GPL-3.0/AGPL-3.0 licences on pull requests                                 |
-| `eval-smoke`        | Synthetic golden set end to end; fails if `hybrid_rerank` < `dense`                                                 |
+| `eval-smoke`        | Synthetic golden set end to end (fails if `hybrid_rerank` < `dense`), then the prompt-injection eval                |
 | `package-smoke`     | Packs the tarball (allowlisted contents), installs it in a clean dir, runs `init`, `ingest`, `ask`, `list`, `serve` |
 | `e2e`               | Chromium against the packed build: chip streaming, citation drawer, SSRF block, remove                              |
 

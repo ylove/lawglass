@@ -301,3 +301,39 @@ describe('documentPreview', () => {
     expect(documentPreview(doc([front('To x')]))?.text).toBe('To x');
   });
 });
+
+describe('documentPreview for charter amendments', () => {
+  const run = (text: string) => documentPreview(parseText(text, options))?.text;
+
+  it('uses a leading "To amend the City Charter" ballot question', () => {
+    expect(
+      run(
+        'To amend the City Charter to create an independent redistricting commission.\nSec. 3. - Powers.\nThe council shall act.',
+      ),
+    ).toBe(
+      'To amend the City Charter to create an independent redistricting commission.',
+    );
+  });
+
+  it('uses a "Shall the Charter ... be amended" question and stops at its question mark', () => {
+    expect(
+      run(
+        'Shall the Charter of the City of Columbus be amended to add Section 46-3?\nExplanation follows here.\nSec. 46-3 - Recall.\nText.',
+      ),
+    ).toBe(
+      'Shall the Charter of the City of Columbus be amended to add Section 46-3?',
+    );
+  });
+
+  it('stops before a dash-style section heading', () => {
+    expect(run('To amend the Charter.\nSec. 3.- Powers.\nBody.')).toBe(
+      'To amend the Charter.',
+    );
+  });
+
+  it('does not treat other "Shall" sentences as ballot questions', () => {
+    expect(run('Shall the board meet monthly?\nSec. 1. Meetings.\nX.')).toBe(
+      undefined,
+    );
+  });
+});

@@ -1,3 +1,4 @@
+import { vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import {
@@ -302,6 +303,34 @@ describe('parseHtml amendment markup', () => {
     const { sections } = parse(page(body, head));
     expect(textWithStatus(sections, 'deleted')).toEqual(['1', '2']);
     expect(textWithStatus(sections, 'inserted')).toEqual(['4']);
+  });
+
+  it.each([
+    ['brace-free text', 'x'.repeat(200_000)],
+    ['unclosed comments', '/*'.repeat(100_000)],
+    ['nested @media blocks', '@media screen{'.repeat(20_000)],
+    [
+      'balanced nested @media blocks',
+      '@media screen{'.repeat(5_000) + '}'.repeat(5_000),
+    ],
+    ['unmatched open braces', 'a{'.repeat(100_000)],
+  ])('reads hostile stylesheets in linear time: %s', (_name, css) => {
+    // These patterns were quadratic in the old regex-based reader.
+    const started = Date.now();
+    const { sections } = parse(
+      page('<p>Plain text.</p>', `<style>${css}</style>`),
+    );
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(textWithStatus(sections, 'deleted')).toEqual([]);
+  });
+
+  it('still reads a rule after a stray brace and an unclosed nested block', () => {
+    const head =
+      '<style>}{ .gone{text-decoration:line-through} a{ .x{}</style>';
+    const body = '<p><i class="gone">1</i></p>';
+    expect(textWithStatus(parse(page(body, head)).sections, 'deleted')).toEqual(
+      ['1'],
+    );
   });
 
   it('lets inline style override a stylesheet class', () => {
@@ -727,4 +756,57 @@ describe('parseHtml review fixes', () => {
       'SEC. 1. A.\nrate and 5\nmore',
     );
   });
+});
+
+it('refuses deep nesting quickly and caps HTML bytes including UTF-8 strings', () => {
+  const options = {
+    sourceUrl: 'https://example.gov/bill.html',
+    fetchedAt: '2026-10-13T00:00:00.000Z',
+  };
+  const html = '<div>'.repeat(20_000) + 'Bill text' + '</div>'.repeat(20_000);
+  const start = performance.now();
+  expect(() => parseHtml(html, options)).toThrow(/nesting depth/);
+  expect(performance.now() - start).toBeLessThan(200);
+  expect(() =>
+    parseHtml('<p>éé</p>', { ...options, maxHtmlBytes: 10 }),
+  ).toThrow(/byte limit/);
+});
+
+it.each(['<div a=x">', "<div a=x'>", '<div "a>'])(
+  'refuses depth hidden behind literal quotes in %s within 200 ms',
+  (prefix) => {
+    const html = prefix + '<div>'.repeat(20_000);
+    const start = performance.now();
+    expect(() => parseHtml(html, options)).toThrow(
+      expect.objectContaining({
+        code: 'TOO_LARGE',
+        message: 'HTML nesting depth limit exceeded.',
+      }) as AppError,
+    );
+    expect(performance.now() - start).toBeLessThan(200);
+  },
+);
+
+it('checks HTML cancellation and a synchronous deadline before DOM loading', () => {
+  const options = {
+    sourceUrl: 'https://example.gov/bill.html',
+    fetchedAt: '2026-10-13T00:00:00.000Z',
+  };
+  const controller = new AbortController();
+  controller.abort();
+  expect(() =>
+    parseHtml('<p>Bill</p>', { ...options, signal: controller.signal }),
+  ).toThrow(/aborted/);
+  const clock = vi
+    .spyOn(performance, 'now')
+    .mockReturnValueOnce(0)
+    .mockReturnValueOnce(0)
+    .mockReturnValue(11);
+  try {
+    expect(() =>
+      parseHtml('<p>Bill</p>', { ...options, timeoutMs: 10 }),
+    ).toThrow(/time budget/);
+  } finally {
+    clock.mockRestore();
+  }
 });

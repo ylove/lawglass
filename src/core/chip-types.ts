@@ -9,6 +9,7 @@ import type {
   BillMetadata,
   Citation,
   Definition,
+  ScanStatus,
   LlmProvider,
   RetrievalBackend,
   RetrievalMode,
@@ -26,6 +27,8 @@ export interface ChipDoc {
   definitions?: readonly Definition[] | undefined;
   /** The stored official record, read by `history`. Absent when none was fetched. */
   history?: BillHistory | undefined;
+  /** Per-page read quality for scanned PDFs; `what-changes` will not claim "no changes" on a doubtful one. */
+  scan?: ScanStatus | undefined;
 }
 
 export interface ChipDeps {

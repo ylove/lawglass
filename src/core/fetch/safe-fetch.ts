@@ -1,5 +1,11 @@
 import { fetch, type Dispatcher, type Response } from 'undici';
 import { AppError } from '../model/index.js';
+import { prepareHtml, type PreparedHtml } from '../parse/html.js';
+import {
+  ParseBudget,
+  readParseLimits,
+  type ParseLimits,
+} from '../parse/limits.js';
 import { BRAND } from '../brand.js';
 import {
   defaultCacheDir,
@@ -19,6 +25,7 @@ import { sniffFormat, type SniffedFormat } from './sniff.js';
 import { findCandidateLinks, isLikelyWrapper } from './wrapper.js';
 
 export interface SafeFetchOptions {
+  parseLimits?: ParseLimits | undefined;
   /** Re-read mutable official records while still caching the downloaded snapshot. */
   refresh?: boolean | undefined;
   /** Additional source policy, applied before DNS on every hop, including cached redirects. */
@@ -41,6 +48,7 @@ export interface SafeFetchOptions {
   now?: () => Date;
 }
 export interface SafeFetchResult {
+  preparedHtml?: PreparedHtml | undefined;
   docId: string;
   bytes: Uint8Array;
   finalUrl: string;
@@ -82,17 +90,32 @@ function makeResult(
   finalUrl: string,
   contentType: string,
   fromCache: boolean,
+  opts: SafeFetchOptions,
 ): SafeFetchResult {
   const format = sniffFormat(bytes, contentType, finalUrl);
+  const limits = opts.parseLimits ?? readParseLimits();
+  if (format !== 'pdf' && bytes.byteLength > limits.maxNonPdfBytes)
+    throw new AppError('TOO_LARGE');
+  let preparedHtml: PreparedHtml | undefined;
   if (format === 'html') {
-    const html = new TextDecoder().decode(bytes);
-    if (isLikelyWrapper(html)) {
+    const budget = new ParseBudget({
+      signal: opts.signal,
+      timeoutMs: limits.timeoutMs,
+    });
+    preparedHtml = prepareHtml(
+      bytes,
+      { contentType, maxHtmlBytes: limits.maxHtmlBytes },
+      budget,
+    );
+    if (isLikelyWrapper(preparedHtml.dom)) {
       throw new AppError('WRAPPER_PAGE', undefined, {
-        details: { links: findCandidateLinks(html, finalUrl) },
+        details: { links: findCandidateLinks(preparedHtml.dom, finalUrl) },
       });
     }
+    budget.check();
   }
   return {
+    ...(preparedHtml ? { preparedHtml } : {}),
     docId: documentId(bytes),
     bytes,
     finalUrl,
@@ -185,7 +208,13 @@ export async function safeFetch(
       if (final.href !== original.href)
         await resolvePublicAddress(final, resolver, signal);
       signal.throwIfAborted();
-      return makeResult(cached.bytes, final.href, cached.contentType, true);
+      return makeResult(
+        cached.bytes,
+        final.href,
+        cached.contentType,
+        true,
+        opts,
+      );
     }
     for (let redirects = 0; ; redirects++) {
       signal.throwIfAborted();
@@ -224,7 +253,7 @@ export async function safeFetch(
         const bytes = await readBody(response, maxBytes, controller);
         const contentType = response.headers.get('content-type') ?? '';
         signal.throwIfAborted();
-        const result = makeResult(bytes, url.href, contentType, false);
+        const result = makeResult(bytes, url.href, contentType, false, opts);
         await writeCache(
           bytes,
           {

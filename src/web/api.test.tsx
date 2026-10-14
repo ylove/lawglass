@@ -114,6 +114,7 @@ describe('HTTP client', () => {
     provider: 'mock',
     model: 'm',
     chips: [{ id: 'summary', label: 'Summary' }],
+    scenariosEnabled: true,
   };
 
   test('getConfig validates the body', async () => {
@@ -123,6 +124,23 @@ describe('HTTP client', () => {
     const api = createHttpApi({ fetchImpl });
     await expect(api.getConfig()).resolves.toMatchObject({ productName: 'X' });
     expect(fetchImpl).toHaveBeenCalledWith('/api/config', undefined);
+  });
+
+  test('getScenario posts the subject and validates the response', async () => {
+    const fetchImpl = vi.fn(() =>
+      Promise.resolve(Response.json({ status: 'none' })),
+    ) as unknown as typeof fetch;
+    const api = createHttpApi({ fetchImpl });
+    await expect(
+      api.getScenario('d1', { subject: 'a renter' }),
+    ).resolves.toEqual({ status: 'none' });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      '/api/docs/d1/scenario',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ subject: 'a renter' }),
+      }),
+    );
   });
 
   test('a body that breaks the contract is rejected', async () => {
