@@ -5,6 +5,7 @@
  */
 import type { SpanStatus } from '../model/index.js';
 import {
+  lineY,
   markLine,
   type GlyphWidths,
   type MarkIssue,
@@ -80,7 +81,7 @@ interface TextLine {
 
 /** Group items into lines by baseline, top to bottom, each sorted left to right. */
 export function groupLines(items: readonly PdfTextItem[]): PdfTextItem[][] {
-  const sorted = [...items].sort((a, b) => b.y - a.y || a.x - b.x);
+  const sorted = [...items].sort((a, b) => lineY(b) - lineY(a) || a.x - b.x);
   const lines: PdfTextItem[][] = [];
   for (const item of sorted) {
     const line = lines.at(-1);
@@ -88,7 +89,7 @@ export function groupLines(items: readonly PdfTextItem[]): PdfTextItem[][] {
     if (
       line &&
       first &&
-      Math.abs(first.y - item.y) <=
+      Math.abs(lineY(first) - lineY(item)) <=
         LAYOUT.lineTolerance * Math.max(first.fontSize, item.fontSize)
     )
       line.push(item);
@@ -121,7 +122,7 @@ function marginSide(
   const neighbours = others.filter(
     (other) =>
       other !== number &&
-      Math.abs(other.y - number.y) <=
+      Math.abs(lineY(other) - lineY(number)) <=
         LAYOUT.lineTolerance * Math.max(other.fontSize, number.fontSize),
   );
   if (neighbours.length === 0) return undefined;
@@ -140,7 +141,7 @@ function marginSide(
 /** Values read top to bottom must rise, mostly by exactly one. */
 function isLineSequence(members: readonly PdfTextItem[]): boolean {
   const values = [...members]
-    .sort((a, b) => b.y - a.y)
+    .sort((a, b) => lineY(b) - lineY(a))
     .map((item) => Number(item.text.trim()));
   if (values.length < 2) return true;
   let steps = 0;
@@ -296,7 +297,10 @@ export function joinLine(
     const previous = items[index - 1];
     if (previous) {
       const gap = item.x - (previous.x + previous.width);
-      if (gap >= LAYOUT.wordGap * Math.min(previous.fontSize, item.fontSize))
+      if (
+        item.spaceBefore ||
+        gap >= LAYOUT.wordGap * Math.min(previous.fontSize, item.fontSize)
+      )
         chars.push({ char: ' ', status: 'unchanged' });
     }
     for (let unit = 0; unit < item.text.length; unit++) {
@@ -427,10 +431,10 @@ export function layoutPages(pages: readonly PageContent[]): PageLayoutResult {
     const lines: TextLine[] = groupLines(
       items.filter((item) => !numbers.includes(item)),
     ).map((items) => {
-      const y = items[0]?.y ?? 0;
+      const y = items[0] ? lineY(items[0]) : 0;
       const em = Math.max(...items.map((item) => item.fontSize));
       const nearest = numbers
-        .map((number) => ({ number, distance: Math.abs(number.y - y) }))
+        .map((number) => ({ number, distance: Math.abs(lineY(number) - y) }))
         .filter(({ distance }) => distance <= 0.5 * em)
         .sort((a, b) => a.distance - b.distance)[0];
       return {

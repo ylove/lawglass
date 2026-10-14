@@ -19,6 +19,8 @@ import {
   type BillHistory,
   type NormalizedDoc,
 } from '../core/model/index.js';
+import { makeScannedPreset } from '../../tests/synth/scanned-pdf.js';
+import { parsePdf } from '../core/parse/index.js';
 import { readSseEvents } from '../web/sse.js';
 import { createSessionTestApp as createApp } from '../../tests/support/session-app.js';
 import {
@@ -316,5 +318,40 @@ describe('scenarioPersonasFor', () => {
     );
     const d = await detail(await ingestDoc('https://example.gov/rent.txt'));
     expect(d.scenarioPersonas).toContain('a renter');
+  });
+});
+
+describe('GET /api/docs/:docId detail for a scanned PDF', () => {
+  test('carries the per-page scan status and the OCR warning', async () => {
+    const scanEnv = await makePipelineEnv({ parsePdf });
+    try {
+      const { bytes } = await makeScannedPreset('clean');
+      scanEnv.serve(
+        'https://example.gov/scan.pdf',
+        { bytes },
+        'application/pdf',
+      );
+      const scanApp = createApp(scanEnv.runtime, { localOnly: false });
+      const res = await scanApp.request('/api/ingest', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ url: 'https://example.gov/scan.pdf' }),
+      });
+      let docId = '';
+      for await (const e of readSseEvents(res, IngestEvent))
+        if (e.type === 'done') docId = e.doc.docId;
+      const d = DocDetail.parse(
+        await (await scanApp.request(`/api/docs/${docId}`)).json(),
+      );
+      expect(d.scan).toEqual({ pages: [{ page: 1, marks: 'not-read' }] });
+      expect(d.warnings.join(' ')).toContain('Scanned document');
+    } finally {
+      await scanEnv.cleanup();
+    }
+  });
+
+  test('has no scan status for a text document', async () => {
+    const d = await detail(await ingestDoc('https://example.gov/a.txt'));
+    expect(d.scan).toBeUndefined();
   });
 });

@@ -21,6 +21,12 @@ import {
   type PdfTextItem,
   type Rect,
 } from './pdf-geometry.js';
+import {
+  classifyScanPage,
+  OCR_PRODUCER,
+  scanOperators,
+  type ScanForm,
+} from './pdf-scan.js';
 import { layoutPages, type PageContent, type StyledLine } from './pdf-lines.js';
 import {
   detectSections,
@@ -44,6 +50,17 @@ const context = z.object({ sourceUrl: z.url(), fetchedAt: z.iso.datetime() });
  * (a page number, "HB 5"): fewer than this many visible characters on every page.
  */
 const SCANNED_MAX_PAGE_CHARACTERS = 50;
+
+/**
+ * Text turned this far from horizontal is scan skew, not a stamp. Issue 8 reads 0.46 to 0.66
+ * degrees; a page still a little crooked after 2 degrees would defeat the mark geometry anyway.
+ */
+const MAX_SKEW_DEGREES = 2;
+const MAX_SKEW_SLOPE = Math.tan((MAX_SKEW_DEGREES * Math.PI) / 180);
+
+/** Shown on every document with an OCR-scan page (docs/decisions/0010). */
+export const SCAN_WARNING =
+  'Scanned document. The text comes from OCR and may contain errors; struck and inserted words were not read from the page image, so struck text may appear as current text. Check the original.';
 
 type PdfJs = typeof import('pdfjs-dist/legacy/build/pdf.mjs');
 
@@ -114,6 +131,28 @@ interface ExtractedPage extends PageContent {
   images: number;
   /** Rotated or vertical text was skipped. */
   skippedRotated: boolean;
+  /** Set when the page's text is OCR output over a page image. */
+  scan?: ScanForm;
+}
+
+/**
+ * Baseline slope of a text matrix if it is horizontal enough to read as a line of body text
+ * (0 for level text), else undefined. A shear on either axis beyond the skew limit is a
+ * rotated stamp or watermark.
+ */
+function skewSlope([a, b, c, d]: readonly [
+  number,
+  number,
+  number,
+  number,
+  number,
+  number,
+]): number | undefined {
+  const slope = a === 0 ? Number.POSITIVE_INFINITY : b / a;
+  const lean = d === 0 ? Number.POSITIVE_INFINITY : c / d;
+  if (Math.abs(slope) > MAX_SKEW_SLOPE || Math.abs(lean) > MAX_SKEW_SLOPE)
+    return undefined;
+  return slope;
 }
 
 async function extractPage(
@@ -121,20 +160,30 @@ async function extractPage(
   pageNumber: number,
   { OPS, AnnotationMode }: PdfJs,
   budget: ParseBudget,
+  ocrProducer: boolean,
 ): Promise<ExtractedPage> {
   const content = await budget.wait(page.getTextContent());
   const items: PdfTextItem[] = [];
   let characters = 0;
   let skippedRotated = false;
+  // OCR writes a real space item between words but gives it almost no width, so the gap
+  // between the words on either side is too small to read as a space ("ofthe").
+  let spaceBefore = false;
   for (const raw of content.items) {
     const parsed = textItem.safeParse(raw);
-    // Marked-content entries have no text; whitespace-only items (PDF.js emits them for gaps,
-    // including one beside every printed line number) carry nothing a gap cannot.
-    if (!parsed.success || !/\S/.test(parsed.data.str)) continue;
+    if (!parsed.success) continue; // Marked-content entries have no text.
+    if (!/\S/.test(parsed.data.str)) {
+      spaceBefore ||= parsed.data.str.length > 0;
+      continue;
+    }
+    const pendingSpace = spaceBefore;
+    spaceBefore = false;
     characters += parsed.data.str.replace(/\s/g, '').length;
-    const [a, b, c, d, x, y] = parsed.data.transform;
-    // Amendment geometry assumes horizontal text; margin stamps and watermarks are not body text.
-    if (Math.abs(b) > 1e-3 * Math.abs(a) || Math.abs(c) > 1e-3 * Math.abs(d)) {
+    const [, , , d, x, y] = parsed.data.transform;
+    // Amendment geometry assumes horizontal text; margin stamps and watermarks are not body
+    // text. Scan skew is kept and carried as a slope, so lines still group and rules still match.
+    const slope = skewSlope(parsed.data.transform);
+    if (slope === undefined) {
       skippedRotated = true;
       continue;
     }
@@ -145,6 +194,8 @@ async function extractPage(
       width: parsed.data.width,
       fontSize: Math.abs(d),
       fontName: parsed.data.fontName,
+      ...(slope === 0 ? {} : { slope }),
+      ...(pendingSpace ? { spaceBefore: true } : {}),
     });
   }
   // Annotations are reader markup (a reviewer's strikeout), never the bill's own amendments;
@@ -169,6 +220,7 @@ async function extractPage(
       ];
     },
   );
+  const scanStats = scanOperators(operators.fnArray, operators.argsArray, OPS);
   const imageOps = new Set<number>([
     OPS.paintImageXObject,
     OPS.paintInlineImageXObject,
@@ -179,6 +231,7 @@ async function extractPage(
     OPS.paintImageMaskXObjectRepeat,
   ]);
   const [x0 = 0, y0 = 0, x1 = 0, y1 = 0] = page.view;
+  const scan = classifyScanPage(scanStats, { x0, y0, x1, y1 }, ocrProducer);
   return {
     page: pageNumber,
     view: [x0, y0, x1, y1],
@@ -191,7 +244,34 @@ async function extractPage(
     characters,
     images: operators.fnArray.filter((fn) => imageOps.has(fn)).length,
     skippedRotated,
+    ...(scan ? { scan } : {}),
   };
+}
+
+const documentInfo = z.object({
+  Producer: z.string().optional(),
+  Creator: z.string().optional(),
+});
+
+/** Whether the document's Producer or Creator names an OCR tool (Adobe Paper Capture, ...). */
+async function producerNamesOcr(
+  document: { getMetadata(): Promise<{ info: unknown }> },
+  budget: ParseBudget,
+): Promise<boolean> {
+  try {
+    const { info } = await budget.wait(document.getMetadata());
+    const parsed = documentInfo.safeParse(info);
+    return (
+      parsed.success &&
+      [parsed.data.Producer, parsed.data.Creator].some(
+        (value) => value !== undefined && OCR_PRODUCER.test(value),
+      )
+    );
+  } catch (cause) {
+    // Unreadable metadata only costs the ClearScan rule; budget aborts must still stop the parse.
+    if (cause instanceof AppError) throw cause;
+    return false;
+  }
 }
 
 async function extractPages(
@@ -212,7 +292,8 @@ async function extractPages(
     // PDF.js fetching them (and warning that no font path was given).
     useSystemFonts: true,
     // PDF.js silently drops images over maxImageSize (ignoreErrors is true).
-    // OCR-scan work (#192) must account for these missing images.
+    // So a scan whose image is dropped still shows as an OCR scan: all-invisible text counts
+    // whether or not an image operator is present (pdf-scan.ts).
     maxImageSize: 40_000_000,
     isOffscreenCanvasSupported: false,
     isImageDecoderSupported: false,
@@ -237,6 +318,7 @@ async function extractPages(
       options.maxPages ?? readParseLimits().maxPages,
       options.publicMode,
     );
+    const ocrProducer = await producerNamesOcr(document, budget);
     const pages: ExtractedPage[] = [];
     for (let number = 1; number <= document.numPages; number++) {
       // Node cancellation events and timers need a turn between page extractions,
@@ -244,7 +326,7 @@ async function extractPages(
       await budget.wait(setImmediate());
       const page = await budget.wait(document.getPage(number));
       try {
-        pages.push(await extractPage(page, number, api, budget));
+        pages.push(await extractPage(page, number, api, budget, ocrProducer));
       } finally {
         // Keep only the extracted geometry; long bills run to thousands of pages.
         page.cleanup();
@@ -291,12 +373,16 @@ export async function parsePdf(
     throw new AppError('PARSE_FAILED', 'The PDF contains no text.');
   }
   // A page with any text is not a scan, however short ("HB 5" on a cover page).
-  const warnings = pages
-    .filter((page) => page.characters === 0 && page.images > 0)
-    .map(
-      ({ page }) =>
-        `Page ${String(page)} has no text layer (it may be a scanned image), so its content is missing.`,
-    );
+  const scanPages = pages.filter((page) => page.scan);
+  const warnings: string[] = scanPages.length > 0 ? [SCAN_WARNING] : [];
+  warnings.push(
+    ...pages
+      .filter((page) => page.characters === 0 && page.images > 0)
+      .map(
+        ({ page }) =>
+          `Page ${String(page)} has no text layer (it may be a scanned image), so its content is missing.`,
+      ),
+  );
   for (const { page, skippedRotated } of pages) {
     if (skippedRotated)
       warnings.push(
@@ -319,6 +405,17 @@ export async function parsePdf(
     externalRefs: [],
     warnings,
     pageCount: pages.length,
+    // Marks are not read from pixels yet (#193), so an OCR-scan page is never `read`.
+    ...(scanPages.length > 0
+      ? {
+          scan: {
+            pages: scanPages.map(({ page }) => ({
+              page,
+              marks: 'not-read' as const,
+            })),
+          },
+        }
+      : {}),
   };
   budget.check();
   const normalized = NormalizedDoc.parse(doc);
