@@ -1,11 +1,13 @@
 import { OPS } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { describe, expect, it } from 'vitest';
 import {
+  baselineAt,
   classifyMarkHeight,
   collectGlyphWidths,
   extractMarkSegments,
   GEOMETRY,
   glyphExtents,
+  lineY,
   markLine,
   maxMarkThickness,
   withoutLinkUnderlines,
@@ -632,5 +634,56 @@ describe('whole-line rules (review finding 3)', () => {
     expect(
       markLine(words, [rule(100, 118), rule(124, 154)], noWidths).issues,
     ).toEqual(new Set());
+  });
+});
+
+describe('skewed baselines', () => {
+  it('lineY is the same along a rising baseline, and baselineAt follows it', () => {
+    const start = item({ x: 40, y: 500.4, slope: 0.01 });
+    const far = item({ x: 540, y: 505.4, slope: 0.01 });
+    expect(lineY(start)).toBeCloseTo(lineY(far));
+    expect(baselineAt(start, 540)).toBeCloseTo(505.4);
+    expect(lineY(item({ x: 40, y: 500 }))).toBe(500);
+    expect(baselineAt(item({ x: 40, y: 500 }), 400)).toBe(500);
+  });
+
+  it('judges a level rule against the baseline at the rule, not at the item start', () => {
+    // Over 400pt the baseline climbs 4pt, 0.4em at 10pt: a level strike at the far end of the
+    // line sits 4pt above the baseline at the start and would read as outside the strike band.
+    const text = item({ x: 100, y: 500, slope: 0.01, width: 400 });
+    const strike: MarkSegment = {
+      x0: 450,
+      x1: 490,
+      y: 504.7 + 3,
+      thickness: 0.6,
+    };
+    const { statuses } = markLine([text], [strike], noWidths);
+    expect(statuses[0]?.some((status) => status === 'deleted')).toBe(true);
+    const flat = markLine([{ ...text, slope: 0 }], [strike], noWidths);
+    expect(flat.statuses[0]?.some((status) => status === 'deleted')).toBe(
+      false,
+    );
+  });
+
+  it('uses the baseline where a long rule meets the item, not at the rule middle', () => {
+    // A 500pt rule starts under a short word at the line's far end; its own middle is 250pt
+    // away, where the skewed baseline is 2.5pt (0.25em) lower.
+    const word = item({
+      x: 540,
+      y: 505.4,
+      slope: 0.01,
+      width: 40,
+      text: 'word',
+    });
+    const rule: MarkSegment = { x0: 40, x1: 590, y: 505.4 + 3, thickness: 0.6 };
+    const left = item({
+      x: 40,
+      y: 500.4,
+      slope: 0.01,
+      width: 20,
+      text: 'left',
+    });
+    const { statuses } = markLine([left, word], [rule], noWidths);
+    expect(statuses[1]?.includes('deleted')).toBe(true);
   });
 });
