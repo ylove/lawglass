@@ -42,6 +42,9 @@ import {
   type Section,
 } from './model/index.js';
 
+/** Bump when summary instructions, the shared answer prompt, or summary assembly change. */
+export const SUMMARY_PROMPT_VERSION = '1';
+
 /** Descend through container levels until there are at least this many map units... */
 export const MIN_MAP_UNITS = 12;
 /** ...but never use more than this many; the rest are reported as not covered. */
