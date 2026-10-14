@@ -38,12 +38,19 @@ const UNPARSEABLE_QUANTITY = new RegExp(
     `\\b(?:${[...SMALL, ...TENS, 'hundred', 'thousand', 'million', 'billion'].join('|')}|\\d+)-?fold\\b`,
     '\\b\\d+(?:\\.\\d+)?\\s*[x\u00d7](?!\\w)',
     '\\b(?:one|two|three|four|five|a|an)[ -](?:half|third|quarter|fourth|fifth|tenth)s?\\b',
+    '\\b(?:twice|thrice|halved|doubled|tripled|quadrupled|lakhs?|crores?|hundredths?|thousandths?)\\b',
+    '\\b(?:a|an) (?:first|second|third|\\w+th)s? of\\b',
+    '\\bquarters? of\\b',
+    '\\b\\d+(?:\\.\\d{3})+\\b',
+    '\\b0x[0-9a-f]+\\b',
     '\\b(?:halves|thirds|quarters|fourths|fifths|sixths|eighths|tenths)\\b',
   ].join('|'),
   'gi',
 );
 // Digits from other scripts and Roman-numeral glyphs; NFKC folds some of them to ASCII.
 const FOREIGN_DIGIT = /(?![0-9])\p{Nd}/u;
+const ORDINAL_WORD =
+  /^(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)$/i;
 const ROMAN_GLYPH = /[\u2160-\u2188]/;
 
 export function normalizeUnit(unit: string): string {
@@ -77,9 +84,16 @@ export interface NumberToken extends TextNumber {
 }
 
 /** Whole tokens and their boundaries; labels are blanked, never numeric substrings. */
-export function numberTokens(text: string): NumberToken[] {
+export function numberTokens(
+  text: string,
+  options: { ignoreOrdinals?: boolean } = {},
+): NumberToken[] {
   const normalized = text
     .normalize('NFKC')
+    // "first quarter" is a period of time, not a fraction.
+    .replace(/\b(?:first|second|third|fourth)\s+quarter\b/gi, (m) =>
+      ' '.repeat(m.length),
+    )
     .replace(
       /\b(?:Section|Sec\.|Form)\s+\d+(?:\.\d+)*\b|§\s*\d+(?:\.\d+)*/gi,
       (match) => ' '.repeat(match.length),
@@ -93,6 +107,8 @@ export function numberTokens(text: string): NumberToken[] {
     numbers.push({ value: NaN, unit: '', start: 0, end: 0 });
   for (const match of normalized.matchAll(pattern)) {
     const { amount = '', currency, unit, scale } = match.groups ?? {};
+    // Code-validated setup labels ("second job") may use ordinal words.
+    if (options.ignoreOrdinals && ORDINAL_WORD.test(amount)) continue;
     // Ordinary pronouns/adjectives ("no one", "one-time") are qualitative.
     if (amount.toLowerCase() === 'one' && !unit && !currency && !scale)
       continue;

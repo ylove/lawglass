@@ -2,7 +2,7 @@ import type { Scenario } from '../model/index.js';
 import { normalizeUnit } from './numbers.js';
 
 const CLAIM_WORD =
-  /\b(?:bill|law|act|require\w*|must|shall|would|will|eligib\w*|pay\w*|owe\w*|receiv\w*|increas\w*|decreas\w*|reduc\w*|abolish\w*|exempt\w*|waiv\w*|tax(?:es|ed|ing)|ban\w*|repeal\w*|rais\w*|lower\w*|cut\w*|mandat\w*|prohibit\w*|permit\w*|allow\w*|grant\w*|impos\w*|collect\w*|eliminat\w*|entitl\w*|chang\w*|establish\w*|creat\w*|authoriz\w*|expand\w*|restrict\w*|remove\w*|enabl\w*|includ\w*|exclud\w*|appl\w*|refund\w*|deduct\w*|credit\w*|charg\w*|lev\w*)\b/i;
+  /\b(?:bill|law|act|require\w*|must|shall|would|will|eligib\w*|pay\w*|owe\w*|receiv\w*|increas\w*|decreas\w*|reduc\w*|abolish\w*|exempt\w*|waiv\w*|tax(?:es|ed|ing)|ban\w*|repeal\w*|rais\w*|lower\w*|cut\w*|mandat\w*|prohibit\w*|permit\w*|allows|allowed|allowing|grant\w*|impos\w*|collect\w*|eliminat\w*|entitl\w*|chang\w*|establish\w*|creat\w*|authoriz\w*|expand\w*|restrict\w*|remove\w*|enabl\w*|includ\w*|exclud\w*|appl\w*|refund\w*|deducts|deducted|deducting|credits|credited|crediting|charg\w*|lev\w*)\b/i;
 
 const ASSUMPTION_UNITS = new Set([
   'usd',

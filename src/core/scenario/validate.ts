@@ -7,6 +7,8 @@ import {
 } from '../model/index.js';
 import { computedIsGrounded } from './grounding.js';
 import {
+  MAX_SETUP_ASSUMPTIONS,
+  setupAssumptionCount,
   setupCaption,
   validProfileLabel,
   validAssumptionUnit,
@@ -57,11 +59,21 @@ function markup(text: string): boolean {
   return MARKUP.test(text.normalize('NFKC'));
 }
 
+/** Only assumptions the composed setup caption displays may support a figure. */
+function shownAssumptions(
+  scenario: Scenario,
+): Scenario['profile']['assumptions'] {
+  return scenario.profile.assumptions.slice(
+    0,
+    setupAssumptionCount(scenario.profile),
+  );
+}
+
 function matchesAssumption(
   figure: Pick<ScenarioFigure, 'value' | 'unit'>,
   scenario: Scenario,
 ): boolean {
-  return scenario.profile.assumptions.some(
+  return shownAssumptions(scenario).some(
     (assumption) =>
       assumption.value === figure.value &&
       normalizeUnit(assumption.unit) === normalizeUnit(figure.unit),
@@ -120,14 +132,16 @@ function frameReason(
       !computedIsGrounded(
         figure,
         figures,
-        scenario.profile.assumptions,
+        shownAssumptions(scenario),
         citedText,
       )
     )
       return { reason: 'figure' };
   }
   // No expression removal: every complete caption token must equal a declared value.
-  const numbers = numberTokens(frame.caption);
+  const numbers = numberTokens(frame.caption, {
+    ignoreOrdinals: frame.kind === 'setup',
+  });
   const matches = (figure: ScenarioFigure, number: (typeof numbers)[number]) =>
     figure.value === number.value &&
     (!number.unit || normalizeUnit(figure.unit) === number.unit);
@@ -171,6 +185,7 @@ export function validateScenario(
   if (
     !PERSONA_NAMES.some((name) => name === profile.name) ||
     !/\bexample\b/i.test(profile.label) ||
+    profile.assumptions.length > MAX_SETUP_ASSUMPTIONS ||
     new Set(keys).size !== keys.length ||
     keys.some(
       (key) => !/^[A-Za-z_][A-Za-z_0-9]*$/.test(key) || key.startsWith('bill_'),

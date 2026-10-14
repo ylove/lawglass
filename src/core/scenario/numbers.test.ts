@@ -110,10 +110,29 @@ describe('fail-closed caption numbers', () => {
     'The rate is ٥٪.',
     'The fee is Ⅻ dollars.',
     'The fee is ⅷ dollars.',
+    'Twice the tax is owed.',
+    'The tax is thrice as high.',
+    'The tax was halved.',
+    'The tax was doubled.',
+    'The tax was tripled.',
+    'The tax was quadrupled.',
+    'A hundredth of income.',
+    'A thousandth of income.',
+    'A fifth of income.',
+    'An eighth of income.',
+    'A quarter of income.',
+    'One quarter of income.',
+    'Quarter of income.',
+    'Five lakh dollars.',
+    'A crore of dollars.',
+    'The fee is 1.000.000 dollars.',
+    'The fee is 0x10.',
   ])('reports an undeclared number in %s', (caption) => {
     expect(numberTokens(caption).length).toBeGreaterThan(0);
   });
   it('keeps ordinary prose number-free', () => {
+    expect(numberTokens('Due in the first quarter.')).toEqual([]);
+    expect(numberTokens('Paid each quarter.')).toEqual([]);
     expect(numberTokens('The manifold forms are crossed out.')).toEqual([]);
     expect(numberTokens('Alex files a form.')).toEqual([]);
   });

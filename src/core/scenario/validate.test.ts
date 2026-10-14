@@ -9,6 +9,7 @@ import {
   exampleScenario,
   scenarioExcerpts,
 } from '../../../tests/synth/scenario.js';
+import { composeSetupFrames } from './profile.js';
 import { validateScenario } from './validate.js';
 
 function rejectedFrame(
@@ -686,5 +687,54 @@ describe('fail-closed caption numbers in frames', () => {
     'The fee is Ⅻ dollars.',
   ])('drops %s as a figure', (caption) => {
     rejectedFrame({ caption, figures: undefined }, 'figure');
+  });
+});
+
+describe('round 3: every assumption a result relies on is visible', () => {
+  const assumption = (key: string, value: number, label = 'other amount') => ({
+    key,
+    label,
+    value,
+    unit: 'USD',
+  });
+  it('rejects a profile with a fourth, hidden assumption used in a calculation', () => {
+    const scenario = exampleScenario();
+    scenario.profile.assumptions = [
+      assumption('income', 50000, 'annual income'),
+      assumption('savings', 1),
+      assumption('rent', 2),
+      assumption('ded', 10000),
+    ];
+    scenario.frames[2] = calculated('(income - ded) * 4 / 100', 1600);
+    expect(validateScenario(scenario, scenarioExcerpts())).toEqual({
+      dropped: [{ frameIndex: -1, reason: 'profile' }],
+    });
+  });
+  it('does not let an expression name an assumption the 200-character setup caption omits', () => {
+    const scenario = exampleScenario();
+    const long = 'a'.repeat(60);
+    scenario.profile.assumptions = [
+      assumption('income', 50000, long),
+      assumption('rent', 2, long),
+      assumption('ded', 10000, long),
+    ];
+    scenario.frames[2] = calculated('(income - ded) * 4 / 100', 1600);
+    expect(
+      validateScenario(composeSetupFrames(scenario), scenarioExcerpts())
+        .dropped,
+    ).toEqual([{ frameIndex: 2, reason: 'figure' }]);
+  });
+  it('accepts ordinary tax-profile labels and ordinal words in setup', () => {
+    const scenario = exampleScenario();
+    scenario.profile.label = 'Example worker with a second job';
+    scenario.profile.assumptions = [
+      assumption('income', 50000, 'standard deduction'),
+      assumption('vehicles', 1, 'third vehicle'),
+    ];
+    scenario.profile.assumptions[1]!.unit = 'count';
+    expect(
+      validateScenario(composeSetupFrames(scenario), scenarioExcerpts())
+        .dropped,
+    ).toEqual([]);
   });
 });

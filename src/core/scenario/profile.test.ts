@@ -12,6 +12,9 @@ describe('code-composed example profiles', () => {
     'Example employee',
     "Example worker's household",
     'Example self-employed worker',
+    'Example standard deduction',
+    'Example worker with a second job',
+    'Example allowance for a third vehicle',
     "Example part-time worker's household a b c d",
     'Example a b c d e f g',
     `Example ${'a'.repeat(52)}`,
@@ -26,6 +29,8 @@ describe('code-composed example profiles', () => {
     `Example ${'a'.repeat(53)}`,
     'Example exempts households',
     'Example office establishes taxes',
+    'Example office deducts income',
+    'Example employer allows leave',
   ])('rejects claim text and invalid labels: %s', (label) => {
     expect(validProfileLabel(label)).toBe(false);
   });
