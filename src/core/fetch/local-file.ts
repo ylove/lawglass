@@ -1,7 +1,7 @@
 import { constants } from 'node:fs';
 import { open, stat } from 'node:fs/promises';
-import { resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { basename, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { AppError } from '../model/index.js';
 import { DEFAULT_MAX_BYTES, documentId } from './cache.js';
 import type { SafeFetchResult } from './safe-fetch.js';
@@ -73,7 +73,9 @@ export async function readLocalFile(
         chunks.push(Buffer.from(buffer.subarray(0, bytesRead)));
       }
       const bytes = Buffer.concat(chunks, total);
-      const finalUrl = pathToFileURL(path).href;
+      // Record only the file name. The absolute path would expose the user's directory layout
+      // (often their username) through the registry, `/api/docs` and `serve --public`.
+      const finalUrl = localFileUrl(path);
       return {
         bytes,
         docId: documentId(bytes),
@@ -95,4 +97,14 @@ export async function readLocalFile(
           : 'That file could not be read. Check its permissions and try again.',
     });
   }
+}
+
+/** A `file:` URL that names only the file, e.g. `file:///bill%20%231.txt`. */
+export function localFileUrl(path: string): string {
+  return `file:///${encodeURIComponent(basename(path))}`;
+}
+
+/** The file name a `localFileUrl` names. */
+export function localFileName(url: string): string {
+  return decodeURIComponent(new URL(url).pathname.slice(1));
 }

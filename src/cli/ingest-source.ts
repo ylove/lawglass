@@ -1,7 +1,5 @@
 import { stat } from 'node:fs/promises';
-import { basename } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { readLocalFile } from '../core/fetch/local-file.js';
+import { localFileName, readLocalFile } from '../core/fetch/local-file.js';
 import { AppError } from '../core/model/index.js';
 import type { Fetcher } from '../core/pipeline/index.js';
 
@@ -29,7 +27,7 @@ export async function prepareIngestSource(
 
   const snapshot = await readLocalFile(input);
   const known = entries.find((entry) => entry.docId === snapshot.docId);
-  const base = basename(fileURLToPath(snapshot.finalUrl))
+  const base = localFileName(snapshot.finalUrl)
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 80);

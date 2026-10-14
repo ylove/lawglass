@@ -39,7 +39,8 @@ test('reads paths and encoded file URLs into the fetch result shape', async () =
     expect(result).toEqual({
       bytes,
       docId: documentId(bytes),
-      finalUrl: pathToFileURL(path).href,
+      // Only the file name: no directory (and so no username) is recorded.
+      finalUrl: 'file:///bill%20%231%20%C3%BC.txt',
       contentType: '',
       format: 'text',
       fromCache: false,

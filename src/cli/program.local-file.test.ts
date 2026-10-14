@@ -80,9 +80,10 @@ test.each(['pdf', 'xml', 'html', 'text'] as const)(
     expect(doc).toMatchObject({
       docId: documentId(sample.bytes),
       label: 'downloaded bill',
-      sourceUrl: pathToFileURL(path).href,
+      sourceUrl: 'file:///downloaded%20bill',
       format,
     });
+    expect(doc!.sourceUrl).not.toContain(dir);
     expect(await backend.hasDocument(doc!.docId)).toBe(true);
     const { hits } = await backend.search({
       docId: doc!.docId,
