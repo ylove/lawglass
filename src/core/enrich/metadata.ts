@@ -81,9 +81,10 @@ export interface ExtractMetadataOptions {
 }
 
 const HEAD_CHARS = 500;
-const CHARTER =
-  /\bcharter\s+amendment\b|\bamend(?:ing)?\s+(?:the\s+)?(?:[a-z]+\s+){0,3}?charter\b(?!\s+schools?)/i;
-const CHAMBER_NUMBER = /^(?:s|h)\.?\s*(?:b|r|j|con|res|\d)/i;
+const CHARTER_PURPOSE =
+  /^(?:A\s+BILL\s+)?(?:to\s+amend|shall)\b.*?\bcharter\b(?!\s+schools?)/i;
+const CHAMBER_NUMBER =
+  /^(?:(?:s|h)\.?\s*(?:b|r|j|con|res|\d)|senate\s+bill|house\s+bill)/i;
 
 /**
  * Classify the document from its own title, number and opening text; no model involved.
@@ -95,14 +96,23 @@ export function inferDocKind(
 ): DocKind | undefined {
   if (metadata.docKind !== undefined) return metadata.docKind;
   const number = metadata.billNumber ?? '';
-  const head = `${metadata.title ?? ''}\n${number}\n${text.slice(0, HEAD_CHARS)}`;
-  if (CHARTER.test(head)) return 'charter_amendment';
-  if (/\bordinance\b/i.test(head)) return 'ordinance';
-  if (/^\s*issue\b/i.test(number) || /^\s*issue\s+\d/im.test(head))
-    return 'ballot_issue';
-  if (/\bresolution\b/i.test(number) && !CHAMBER_NUMBER.test(number))
-    return 'resolution';
+  // A chamber-style number is the document's own designation: it beats any passing mention.
   if (CHAMBER_NUMBER.test(number)) return 'bill';
+  const lines = [metadata.title ?? '', ...text.slice(0, HEAD_CHARS).split('\n')]
+    .map((l) => l.trim())
+    .filter(Boolean);
+  const designates = (re: RegExp): boolean =>
+    re.test(number) || lines.some((l) => re.test(l));
+  // Only the designation or purpose line counts ("To amend the City Charter ...", a line
+  // that starts "Ordinance No."), never a mention inside running prose.
+  if (
+    designates(/^(?:proposed\s+)?charter\s+amendment\b/i) ||
+    lines.some((l) => CHARTER_PURPOSE.test(l))
+  )
+    return 'charter_amendment';
+  if (designates(/^(?:an\s+)?ordinance\b/i)) return 'ordinance';
+  if (designates(/^issue\s+\d/i)) return 'ballot_issue';
+  if (/^resolution\b/i.test(number)) return 'resolution';
   return undefined;
 }
 

@@ -68,21 +68,39 @@ function billPairs(tokens: string[]): string[] {
 const LOCAL_NUMBER =
   /^(?:proposed\s+)?(issue|ordinance|resolution|charter\s+amendment)(?:\s+(?:no\.?|number|#))?\s*([a-z0-9][a-z0-9.-]*)?$/i;
 
-function localNumberTokens(s: string): string[] | null {
-  const m = LOCAL_NUMBER.exec(s.trim());
-  if (!m?.[1]) return null;
-  const kind = words(m[1]);
-  const number = m[2] === undefined ? [] : words(m[2]);
-  if (number.length === 0 && kind[0] !== 'charter') return null;
-  return [...kind, ...number];
+interface LocalNumber {
+  kind: string;
+  /** Complete identifier, suffix included ("1234-2026"); undefined for a bare "Charter Amendment". */
+  id: string | undefined;
 }
 
-/** The kind word and number must appear together as whole tokens ("no" and "proposed" ignored). */
+function parseLocalNumber(s: string): LocalNumber | null {
+  const m = LOCAL_NUMBER.exec(s.trim());
+  if (!m?.[1]) return null;
+  const id = m[2]?.replace(/[.-]+$/, '').toLowerCase();
+  const kind = m[1].toLowerCase().replace(/\s+/g, ' ');
+  if (!id && kind !== 'charter amendment') return null;
+  return { kind, id: id === '' ? undefined : id };
+}
+
+/**
+ * The kind and the COMPLETE identifier must be printed together. Whole identifiers are compared,
+ * not token runs, so "Ordinance No. 1234" cannot verify against "Ordinance No. 1234-2026".
+ */
 function verifyLocalNumber(value: string, text: string): boolean {
-  const claimed = localNumberTokens(value);
+  const claimed = parseLocalNumber(value);
   if (claimed === null) return false;
-  const source = words(text).filter((w) => w !== 'no' && w !== 'proposed');
-  return containsSequence(source, claimed);
+  const kind = claimed.kind.replace(' ', '\\s+');
+  if (claimed.id === undefined)
+    return new RegExp(`\\b${kind}\\b`, 'i').test(text);
+  const printed = new RegExp(
+    `\\b${kind}(?:\\s+(?:no\\.?|number|#))?\\s*([a-z0-9][a-z0-9.-]*)`,
+    'gi',
+  );
+  for (const m of text.matchAll(printed)) {
+    if (m[1]?.replace(/[.-]+$/, '').toLowerCase() === claimed.id) return true;
+  }
+  return false;
 }
 
 /** Chamber token and exact number must both appear, adjacent, as whole tokens. */
@@ -341,6 +359,17 @@ function verifyLocalJurisdiction(
     return hostPlace;
   const source = words(text);
   if (!claim.phrases.some((p) => containsSequence(source, p))) return null;
+  // A claimed state needs its own evidence, and may not contradict the host's place.
+  if (claim.state !== undefined) {
+    // The host's state counts as evidence too: a Franklin County, Ohio page vouches for
+    // "Ohio" even when the document never prints it (the city name still must appear).
+    const evidence =
+      containsSequence(source, claim.state.split(' ')) ||
+      hostClaim?.state === claim.state;
+    if (!evidence) return null;
+    if (hostClaim?.phrases[0]?.join(' ') === claim.phrases[0]?.join(' '))
+      return null; // same place on a known host, but the host failed the state check above
+  }
   return value.trim().replace(/\s+/g, ' ');
 }
 

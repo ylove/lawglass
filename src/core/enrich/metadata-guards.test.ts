@@ -207,7 +207,7 @@ describe('sourceFor', () => {
 });
 
 describe('local measures', () => {
-  const CHARTER = `City of Columbus\nISSUE 8\nTo amend the City Charter.\nProposed Charter Amendment No. 2\nOrdinance No. 1234-2026\nResolution No. 12R-2026\nFranklin County Board of Elections`;
+  const CHARTER = `City of Columbus, Ohio\nISSUE 8\nTo amend the City Charter.\nProposed Charter Amendment No. 2\nOrdinance No. 1234-2026\nResolution No. 12R-2026\nFranklin County Board of Elections`;
 
   it.each([
     'Issue 8',
@@ -292,5 +292,48 @@ describe('local measures', () => {
 
   it('leaves state and federal behavior unchanged', () => {
     expect(verifyJurisdiction('Ohio', 'City of Columbus')).toBeNull();
+  });
+});
+
+describe('local measures: review fixes', () => {
+  it('rejects truncated identifiers', () => {
+    const text = 'Ordinance No. 1234-2026 and Resolution No. 12R-2026';
+    expect(verifyBillNumber('Ordinance No. 1234', text)).toBe(false);
+    expect(verifyBillNumber('Ordinance No. 1234-2026', text)).toBe(true);
+    expect(verifyBillNumber('Resolution No. 12R', text)).toBe(false);
+    expect(verifyBillNumber('Issue 8', 'Issue 8.')).toBe(true);
+  });
+
+  it('requires the claimed state to be supported', () => {
+    const text = 'the City of Columbus, Ohio';
+    expect(verifyJurisdiction('City of Columbus, Georgia', text)).toBeNull();
+    expect(
+      verifyJurisdiction(
+        'City of Columbus, Georgia',
+        text,
+        'https://columbus.gov/x',
+      ),
+    ).toBeNull();
+    expect(verifyJurisdiction('City of Columbus, Ohio', text)).toBe(
+      'City of Columbus, Ohio',
+    );
+  });
+});
+
+describe('host state as evidence', () => {
+  const text =
+    'the City of Columbus and the general election laws of the state';
+  const host = 'https://vote.franklincountyohio.gov/getmedia/x.pdf';
+  it('accepts the city when the host supplies the state', () => {
+    expect(verifyJurisdiction('City of Columbus, Ohio', text, host)).toBe(
+      'City of Columbus, Ohio',
+    );
+  });
+  it('still rejects a conflicting state, or no host', () => {
+    expect(
+      verifyJurisdiction('City of Columbus, Georgia', text, host),
+    ).toBeNull();
+    expect(verifyJurisdiction('City of Columbus, Ohio', text)).toBeNull();
+    expect(verifyJurisdiction('City of Dayton, Ohio', text, host)).toBeNull();
   });
 });

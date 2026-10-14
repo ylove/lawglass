@@ -391,3 +391,31 @@ describe('local measures and docKind', () => {
     ).toBe('other');
   });
 });
+
+describe('inferDocKind anchoring', () => {
+  const md = (billNumber: string | null): BillMetadata => ({
+    ...EMPTY_METADATA,
+    billNumber,
+  });
+  it('lets a chamber-style number beat passing mentions', () => {
+    expect(inferDocKind(md('H.B. 9'), 'Regarding a local ordinance')).toBe(
+      'bill',
+    );
+    expect(
+      inferDocKind(md('H.R. 9'), 'It mentions a city charter amendment'),
+    ).toBe('bill');
+  });
+  it('ignores mentions in prose without a number', () => {
+    expect(
+      inferDocKind(md(null), 'Notes about a city charter amendment here'),
+    ).toBeUndefined();
+  });
+  it('anchors on a purpose line or a designation line', () => {
+    expect(inferDocKind(md(null), 'x\nTo amend the City Charter.')).toBe(
+      'charter_amendment',
+    );
+    expect(inferDocKind(md(null), 'Ordinance No. 5-2026\nParking')).toBe(
+      'ordinance',
+    );
+  });
+});
