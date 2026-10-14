@@ -7,7 +7,7 @@ What the numbers in [`eval/results.md`](../eval/results.md) and [`eval/results-a
 - **Golden sets**: five, frozen at commit `7639f18` before the first run and not edited since. 119 questions: 31 exact lookups, 43 paraphrases, 19 definition questions, 11 "what does it remove" questions and 15 unanswerable ones (three per set).
 - **Bills**: Ohio HB 62, SB 113 and SB 203 (PDFs with printed line numbers), federal S. 202 (XML) and federal H.R. 5009, the FY2025 NDAA (XML, 8,618 sections, about 450k tokens of text).
 - **Retrieval**: local backend only: `bge-small-en-v1.5` embeddings, BM25, `ms-marco-MiniLM-L-6-v2` cross-encoder. Pinecone rows are pending until the nightly job runs with a key.
-- **Answers**: `claude-cli` provider with the `sonnet` model (Claude Sonnet 5.5), default mode `hybrid_rerank` only. Answering all five modes would have been 476 model calls for little extra information.
+- **Answers**: `claude-cli` provider with the `sonnet` model (Claude Sonnet 5.5), default mode `hybrid_rerank` only, at commit `a651f35` (retrieval tables are from the same commit). Answering all five modes would have been 476 model calls for little extra information.
 - Small samples: one question moves recall@5 by about 0.05 on a set of 20. Read differences of one or two questions as noise.
 
 ## Retrieval
@@ -54,7 +54,23 @@ Average MRR went from 0.797 to 0.841. S. 202 lost two borderline definition ques
 
 ## Answers
 
-<!-- ANSWERS -->
+All 119 golden questions, default mode, Claude Sonnet 5.5 through the `claude-cli` provider, commit `a651f35` ([`eval/results-answers.md`](../eval/results-answers.md)):
+
+| Bill              | Citation validity | Unanswerable declined | Deleted-text leakage (heuristic) | Mean reading grade | Removal acknowledged     |
+| ----------------- | ----------------- | --------------------- | -------------------------------- | ------------------ | ------------------------ |
+| Ohio HB 62        | 100%              | 3 of 3                | 4.3% (1 answer; see below)       | 8.7                | 80%                      |
+| Ohio SB 113       | 100%              | 3 of 3                | 0%                               | 9.6                | 100%                     |
+| Ohio SB 203       | 100%              | 3 of 3                | 0%                               | 8.5                | 100%                     |
+| Federal S. 202    | 100%              | 1 of 3                | 0%                               | 10.2               | n/a (no such questions)¹ |
+| Federal H.R. 5009 | 100%              | 3 of 3                | 0%                               | 8.8                | 100%                     |
+
+¹ The generated file prints 0.0% here: it was produced before the n/a fix in this change.
+
+- **Every citation pointed at a section the model was shown.** Citations are checked after generation, so this is a hard guarantee for what is shown, not a model behaviour.
+- **Struck text.** HB 62 is the only bill with struck text. Re-asking its 23 questions and reading every answer the leakage check flagged: both flags were false positives. One answer said _"The excerpts show the bill removing one provision…"_ and then described that provision in the next sentence; the other paraphrased live text (2901.05(B)(1)) that shares a four-word run with a struck clause elsewhere. No answer stated repealed text as current law. The heuristic's limits are tracked in #88.
+- **Plain-language change questions were the biggest find.** Before #101, _"What does the bill **cross out**…?"_, _"What old wording is **crossed out**…?"_ and _"Does the bill **get rid of** the rule…?"_ were not recognised as questions about changes, so the struck text never reached the model and it declined or, worse, said nothing had been struck. After the fix, removal acknowledgement on HB 62 rose from 60% to 80%. Two gaps remain: a one-word strike (_"presented"_) is still too small to retrieve on its own (#102; the "What does it change?" chip handles it), and one answer named only one of the two struck words in a definition. Wider phrasings ("take away", "the old law") are tracked in #104.
+- **Declines vary from run to run.** S. 202's unanswerable questions were declined 1, 2 and 3 times out of 3 in three runs. Asking each three more times gave six exact declines and three "soft declines" (_"The excerpts don't show any tax cuts. They describe a pilot program…"_, with citations). None invented an answer; the metric counts only the exact decline sentence (#109).
+- **Reading level** averages grade 8.5 to 10.2 against a target of about grade 7. Legal terms ("trier of fact", "affirmative defense") push the score up; the prompt asks for plain language but the measured result is above target.
 
 ## Retrieval or the whole bill in the prompt?
 
@@ -80,6 +96,7 @@ So on this sample the whole bill was as accurate or more, and retrieval's case r
 ## Known limits of the metrics
 
 - **Deleted-text leakage** is a heuristic: a run of four or more words from struck text, not also found in live text, quoted as a claim. It over-counts when an answer paraphrases live text that shares a word sequence with a struck passage. Re-asking HB 62's questions, the one answer it flagged was such a case (it restated live 2901.05(B)(1); the matching four words occur only in struck clauses elsewhere). See #88.
-- **Removal acknowledged** is the share of "removed" questions whose answers use removal language. It is n/a for a set with no such questions.
+- **Removal acknowledged** is the share of "removed" questions whose answers use removal language ("removes", "strikes", "no longer"...). It is n/a for a set with no such questions.
+- **Declined** means the answer is exactly the decline sentence; a correct "the bill doesn't cover this" in other words counts as answered.
 - **Ranks are chunk ranks**: the first chunk whose section, or an ancestor, descendant or merged child of it, is expected.
 - Two questions name their section numbers (hb62-03, sb203-08), and some paraphrases reuse rare words from the text, which makes them easier for BM25.
