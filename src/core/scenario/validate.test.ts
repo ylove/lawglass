@@ -129,6 +129,17 @@ describe('scenario validation', () => {
     rejectedFrame({ caption: `This is ${word}.` }, 'language');
   });
 
+  it.each(['Harmony Office', 'bank teller', 'benefice', 'Burdock Road'])(
+    'does not treat %s as evaluative',
+    (text) => {
+      const scenario = exampleScenario();
+      scenario.subject = text;
+      expect(validateScenario(scenario, scenarioExcerpts()).dropped).toEqual(
+        [],
+      );
+    },
+  );
+
   it('rejects evaluative titles and profiles, but not substrings', () => {
     const scenario = exampleScenario();
     scenario.subject = 'Great tax bill';
