@@ -13,6 +13,7 @@ import {
   type RuntimeFactory,
 } from './runtime.js';
 import { promptChoice, promptSecret } from './secret-prompt.js';
+import { createLauncher, type Launcher } from '../server/launch.js';
 
 function notImplemented(issue: number): () => void {
   return () => {
@@ -26,8 +27,23 @@ export interface CliDependencies {
   runtime?: RuntimeFactory;
   /** Where command output goes. Default: process.stdout. */
   write?: (text: string) => void;
-  /** Start the local server and open the browser (issue #29). Absent until it lands. */
-  serve?: (runtime: CliRuntime, docId: string) => Promise<void>;
+  /** Starts the web server (and opens the browser unless public). Default: the real one. */
+  serve?: Launcher;
+}
+
+interface PortOptions {
+  port?: string;
+  host?: string;
+}
+
+function parsePort(value: string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 0 || port > 65535)
+    throw new AppError('INVALID_INPUT', 'Bad port.', {
+      userMessage: 'The port must be a whole number from 0 to 65535.',
+    });
+  return port;
 }
 
 interface BackendOption {
@@ -118,12 +134,11 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
     .argument('<url>', 'ingest a URL, then serve and open its document')
     .option('--backend <backend>', 'retrieval backend (pinecone or local)')
     .action(async (url: string, options: BackendOption) => {
-      const { runtime, docId } = await ingestUrl(url, options);
-      if (dependencies.serve) await dependencies.serve(runtime, docId);
-      else
-        write(
-          `\nThe web UI is not available yet. Ask questions with: ${BRAND.name} ask ${docId.slice(0, 12)} "<question>"\n`,
-        );
+      const { runtime } = await ingestUrl(url, options);
+      // The UI lists the most recently used document first, which is the one just ingested.
+      await (dependencies.serve ?? createLauncher({ write }))(runtime, {
+        publicMode: false,
+      });
     });
 
   program
@@ -226,9 +241,20 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
   program
     .command('serve')
     .description('serve the local web UI')
-    .option('--port <port>', 'local server port', '4317')
+    .option('--backend <backend>', 'retrieval backend (pinecone or local)')
+    .option('--port <port>', 'local server port (default 4317)')
+    .option('--host <host>', 'address to bind (default 127.0.0.1)')
     .option('--public', 'allow only question chips in the web UI')
-    .action(notImplemented(29));
+    .action(
+      async (options: BackendOption & PortOptions & { public?: boolean }) => {
+        const runtime = await open(options, true);
+        await (dependencies.serve ?? createLauncher({ write }))(runtime, {
+          publicMode: options.public ?? false,
+          port: parsePort(options.port),
+          host: options.host,
+        });
+      },
+    );
   program
     .command('eval')
     .description('evaluate retrieval on fixtures')

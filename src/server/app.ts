@@ -1,0 +1,463 @@
+/**
+ * The Hono app: the /api routes from core/model/api.ts plus the built web UI. All pipeline work
+ * (ingest, ask, excerpts) is delegated to core/pipeline; this layer only does HTTP, SSE framing,
+ * public-mode policy and error mapping.
+ */
+import { getConnInfo } from '@hono/node-server/conninfo';
+import { Hono, type Context } from 'hono';
+import { streamSSE } from 'hono/streaming';
+import { z } from 'zod';
+import packageJson from '../../package.json' with { type: 'json' };
+import type { CliRuntime } from '../cli/runtime.js';
+import { BRAND } from '../core/brand.js';
+import {
+  AppError,
+  AskRequest,
+  CandidateLink,
+  DocDetail,
+  DocSummary,
+  IngestRequest,
+  isAppError,
+  type AskEvent,
+  type ClientConfig,
+  type ErrorPayload,
+  type IngestEvent,
+  type OutlineItem,
+  type Section,
+} from '../core/model/index.js';
+import { ask, ingest, sectionExcerpt } from '../core/pipeline/index.js';
+import type { RegistryEntry } from '../core/registry.js';
+import { CHIP_LABELS } from './chips.js';
+import { SlidingWindowLimiter } from './rate-limit.js';
+import { staticAssets } from './static.js';
+import { noopTurnstile, type TurnstileVerifier } from './turnstile.js';
+
+export interface PublicLimits {
+  questionsPerHour: number;
+  ingestsPerHour: number;
+  /** PDFs longer than this are refused before anything is embedded. */
+  maxPages: number;
+  /** Total documents the server will hold; ingests beyond it are refused, never evicting others. */
+  maxDocs: number;
+}
+
+export const DEFAULT_PUBLIC_LIMITS: PublicLimits = {
+  questionsPerHour: 20,
+  ingestsPerHour: 3,
+  maxPages: 200,
+  maxDocs: 50,
+};
+
+export interface AppOptions {
+  publicMode?: boolean;
+  /** Directory holding the built web UI (dist/web). Omit to serve the API only. */
+  webRoot?: string;
+  limits?: Partial<PublicLimits>;
+  turnstile?: TurnstileVerifier;
+  /** Heartbeat comment interval for SSE streams. Default 15 s. */
+  heartbeatMs?: number;
+  /** Override how the client's address is found (tests, unusual proxies). */
+  clientIp?: (c: Context) => string;
+  /** Read the client address from X-Forwarded-For. Only enable behind a proxy you control. */
+  trustProxy?: boolean;
+  /** Reject requests whose Host is not loopback (DNS-rebinding defence). Default: not public. */
+  localOnly?: boolean;
+  now?: () => number;
+}
+
+const HOUR_MS = 60 * 60 * 1000;
+const GENERIC_ERROR = 'Something went wrong. Please try again.';
+
+const STATUS: Partial<Record<AppError['code'], 400 | 403 | 404 | 429>> = {
+  INVALID_INPUT: 400,
+  SSRF_BLOCKED: 400,
+  UNSUPPORTED_FORMAT: 400,
+  DOC_NOT_FOUND: 404,
+  PUBLIC_MODE_FORBIDDEN: 403,
+  DOC_CAP_REACHED: 403,
+  RATE_LIMITED: 429,
+};
+
+/** Only an AppError's plain-language message may reach the client; anything else is generic. */
+export function toErrorPayload(error: unknown): ErrorPayload {
+  return isAppError(error)
+    ? { code: error.code, message: error.userMessage }
+    : { code: 'INTERNAL', message: GENERIC_ERROR };
+}
+
+function invalid(userMessage: string): AppError {
+  return new AppError('INVALID_INPUT', userMessage, { userMessage });
+}
+
+function outlineOf(sections: readonly Section[]): OutlineItem[] {
+  return sections.flatMap((s) => [
+    {
+      id: s.id,
+      level: s.level,
+      ...(s.num === undefined ? {} : { num: s.num }),
+      ...(s.heading === undefined ? {} : { heading: s.heading }),
+    },
+    ...outlineOf(s.children),
+  ]);
+}
+
+function hasLineNumbers(sections: readonly Section[]): boolean {
+  return sections.some(
+    (s) =>
+      s.spans.some((span) => span.line !== undefined) ||
+      hasLineNumbers(s.children),
+  );
+}
+
+const isLoopbackHost = (host: string): boolean =>
+  /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(host);
+
+export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
+  const publicMode = options.publicMode ?? false;
+  const limits = { ...DEFAULT_PUBLIC_LIMITS, ...options.limits };
+  const turnstile = options.turnstile ?? noopTurnstile;
+  const heartbeatMs = options.heartbeatMs ?? 15_000;
+  const now = options.now ?? Date.now;
+  const questions = new SlidingWindowLimiter(
+    limits.questionsPerHour,
+    HOUR_MS,
+    now,
+  );
+  const ingests = new SlidingWindowLimiter(limits.ingestsPerHour, HOUR_MS, now);
+  let ingestsInFlight = 0;
+
+  const clientIp =
+    options.clientIp ??
+    ((c: Context): string => {
+      if (options.trustProxy) {
+        const forwarded = c.req
+          .header('x-forwarded-for')
+          ?.split(',')[0]
+          ?.trim();
+        if (forwarded) return forwarded;
+      }
+      try {
+        return getConnInfo(c).remote.address ?? 'unknown';
+      } catch {
+        return 'unknown';
+      }
+    });
+
+  const app = new Hono();
+
+  app.use('*', async (c, next) => {
+    const host = c.req.header('host') ?? new URL(c.req.url).host;
+    if ((options.localOnly ?? !publicMode) && !isLoopbackHost(host))
+      return c.json(
+        { error: { code: 'INVALID_INPUT', message: 'Unexpected host.' } },
+        403,
+      );
+    // Browsers attach Origin to cross-site writes; only our own pages may call the API.
+    const origin = c.req.header('origin');
+    if (origin && c.req.path.startsWith('/api/')) {
+      let originHost = '';
+      try {
+        originHost = new URL(origin).host;
+      } catch {
+        /* treated as a mismatch below */
+      }
+      if (originHost !== host)
+        return c.json(
+          {
+            error: { code: 'INVALID_INPUT', message: 'Cross-origin request.' },
+          },
+          403,
+        );
+    }
+    await next();
+  });
+
+  app.onError((error, c) => {
+    if (isAppError(error))
+      return c.json(
+        { error: toErrorPayload(error) },
+        STATUS[error.code] ?? 500,
+      );
+    return c.json({ error: toErrorPayload(error) }, 500);
+  });
+
+  app.get('/api/health', (c) =>
+    c.json({ ok: true as const, version: packageJson.version }),
+  );
+
+  app.get('/api/config', (c) => {
+    // The provider may be unconfigured (no API key yet); the UI still needs to load.
+    let provider = 'none';
+    let model = '';
+    try {
+      ({ id: provider, model } = runtime.answerProvider);
+    } catch {
+      /* reported when a question is asked */
+    }
+    const config: ClientConfig = {
+      productName: BRAND.displayName,
+      publicMode,
+      freeformEnabled: !publicMode,
+      backend: runtime.backend.kind,
+      provider,
+      model,
+      chips: CHIP_LABELS,
+    };
+    return c.json(config);
+  });
+
+  const summaries = async (): Promise<DocSummary[]> => {
+    const entries = await runtime.registry.list();
+    return entries
+      .sort((a, b) => b.lastUsedAt.localeCompare(a.lastUsedAt))
+      .map((e) => DocSummary.parse(e));
+  };
+
+  app.get('/api/docs', async (c) => c.json(await summaries()));
+
+  const entryFor = async (docId: string): Promise<RegistryEntry> => {
+    const entry = (await runtime.registry.list()).find(
+      (e) => e.docId === docId,
+    );
+    if (!entry) throw new AppError('DOC_NOT_FOUND');
+    return entry;
+  };
+
+  app.get('/api/docs/:docId', async (c) => {
+    const entry = await entryFor(c.req.param('docId'));
+    const doc = await runtime.registry.getDocument(entry.docId);
+    const detail: DocDetail = {
+      doc: DocSummary.parse(entry),
+      metadata: doc.metadata,
+      outline: outlineOf(doc.sections),
+      externalRefs: doc.externalRefs,
+      warnings: doc.warnings,
+      hasLineNumbers: hasLineNumbers(doc.sections),
+    };
+    return c.json(detail);
+  });
+
+  app.delete('/api/docs/:docId', async (c) => {
+    // Public servers share one library; visitors must not be able to wipe each other's documents.
+    if (publicMode) throw new AppError('PUBLIC_MODE_FORBIDDEN');
+    const entry = await entryFor(c.req.param('docId'));
+    if (entry.backend === runtime.backend.kind)
+      await runtime.backend.deleteDocument(entry.docId);
+    await runtime.registry.remove(entry.docId);
+    return c.body(null, 204);
+  });
+
+  app.get('/api/docs/:docId/sections/:sectionId', async (c) => {
+    const entry = await entryFor(c.req.param('docId'));
+    const doc = await runtime.registry.getDocument(entry.docId);
+    try {
+      return c.json(sectionExcerpt(doc, c.req.param('sectionId')));
+    } catch (error) {
+      if (isAppError(error) && error.code === 'INVALID_INPUT')
+        return c.json({ error: toErrorPayload(error) }, 404);
+      throw error;
+    }
+  });
+
+  /**
+   * Streams events as `data: <json>` frames with a heartbeat comment, and cancels `run`'s signal
+   * when the client goes away. Failures become a final `error` event with the user-safe message.
+   */
+  function sse<E extends { type: string }>(
+    c: Context,
+    run: (emit: (event: E) => void, signal: AbortSignal) => Promise<void>,
+    errorEvent: (error: ErrorPayload) => E,
+    /** Called once the stream is over, whatever the outcome. */
+    release: () => void = () => undefined,
+  ): Response {
+    c.header('x-accel-buffering', 'no');
+    return streamSSE(c, async (stream) => {
+      const controller = new AbortController();
+      const abort = (): void => {
+        controller.abort();
+      };
+      stream.onAbort(abort);
+      c.req.raw.signal.addEventListener('abort', abort);
+      const heartbeat = setInterval(() => {
+        stream.write(': ping\n\n').catch(() => undefined);
+      }, heartbeatMs);
+      let tail: Promise<unknown> = Promise.resolve();
+      // Events are queued so concurrent callbacks cannot interleave their frames.
+      const emit = (event: E): void => {
+        tail = tail
+          .then(() => stream.writeSSE({ data: JSON.stringify(event) }))
+          .catch(() => undefined);
+      };
+      try {
+        await run(emit, controller.signal);
+      } catch (error) {
+        // Nobody is listening after an abort, so there is nobody to tell.
+        if (!controller.signal.aborted) emit(errorEvent(toErrorPayload(error)));
+      } finally {
+        clearInterval(heartbeat);
+        c.req.raw.signal.removeEventListener('abort', abort);
+        release();
+        await tail;
+      }
+    });
+  }
+
+  async function parseBody<T>(
+    c: Context,
+    schema: z.ZodType<T>,
+    message: string,
+  ): Promise<T> {
+    const parsed = schema.safeParse(await c.req.json().catch(() => undefined));
+    if (!parsed.success) throw invalid(message);
+    return parsed.data;
+  }
+
+  /** Public-mode gate shared by the two expensive endpoints. */
+  async function guardPublic(
+    c: Context,
+    limiter: SlidingWindowLimiter,
+    token: string | undefined,
+  ): Promise<void> {
+    if (!publicMode) return;
+    const ip = clientIp(c);
+    if (!(await turnstile(token, ip)))
+      throw new AppError('PUBLIC_MODE_FORBIDDEN', 'Turnstile check failed.', {
+        userMessage: 'The bot check failed. Reload the page and try again.',
+      });
+    if (!limiter.take(ip)) throw new AppError('RATE_LIMITED');
+  }
+
+  app.post('/api/ingest', async (c) => {
+    const body = await parseBody(
+      c,
+      IngestRequest,
+      'Enter a full web address, starting with http:// or https://.',
+    );
+    await guardPublic(c, ingests, body.turnstileToken);
+    if (
+      publicMode &&
+      (await runtime.registry.list()).length + ingestsInFlight >= limits.maxDocs
+    )
+      throw new AppError('DOC_CAP_REACHED');
+
+    const { parsePdf } = runtime;
+    ingestsInFlight++;
+    return sse<IngestEvent>(
+      c,
+      async (emit, signal) => {
+        try {
+          const result = await ingest(
+            body.url,
+            {
+              backend: runtime.backend,
+              provider: runtime.extractProvider,
+              registry: runtime.registry,
+              fetcher: runtime.fetcher,
+              now: runtime.now,
+              // Public servers never evict: a visitor must not push out someone else's document.
+              maxDocs: publicMode ? limits.maxDocs : runtime.maxDocs,
+              parsePdf:
+                publicMode && parsePdf
+                  ? async (bytes, context) => {
+                      const doc = await parsePdf(bytes, context);
+                      if ((doc.pageCount ?? 0) > limits.maxPages)
+                        throw new AppError('TOO_LARGE', undefined, {
+                          userMessage: `This public server accepts documents up to ${String(limits.maxPages)} pages.`,
+                        });
+                      return doc;
+                    }
+                  : parsePdf,
+            },
+            {
+              ...(body.label === undefined ? {} : { label: body.label }),
+              signal,
+              onProgress: (p) => {
+                emit({ type: 'progress', ...stripUndefined(p) });
+              },
+            },
+          );
+          emit({ type: 'done', doc: result.doc, stats: result.stats });
+        } catch (error) {
+          if (isAppError(error) && error.code === 'WRAPPER_PAGE') {
+            // Never auto-followed: the user picks which linked file to ingest.
+            const links = z
+              .array(CandidateLink)
+              .safeParse(error.details?.links);
+            emit({
+              type: 'candidates',
+              links: links.success ? links.data : [],
+            });
+            return;
+          }
+          throw error;
+        }
+      },
+      (error) => ({ type: 'error', error }),
+      () => {
+        ingestsInFlight--;
+      },
+    );
+  });
+
+  app.post('/api/docs/:docId/ask', async (c) => {
+    const body = await parseBody(
+      c,
+      AskRequest,
+      'Choose a question or type one (up to 500 characters).',
+    );
+    if (publicMode && body.question !== undefined)
+      throw new AppError('PUBLIC_MODE_FORBIDDEN');
+    const entry = await entryFor(c.req.param('docId'));
+    await guardPublic(c, questions, body.turnstileToken);
+
+    return sse<AskEvent>(
+      c,
+      async (emit, signal) => {
+        const result = await ask(
+          entry.docId,
+          body.chipId === undefined
+            ? { question: body.question ?? '' }
+            : { chipId: body.chipId },
+          {
+            backend: runtime.backend,
+            provider: runtime.answerProvider,
+            registry: runtime.registry,
+            retrievalMode: runtime.retrievalMode,
+            chips: runtime.chips,
+          },
+          {
+            signal,
+            onToken: (text) => {
+              emit({ type: 'token', text });
+            },
+          },
+        );
+        emit({
+          type: 'retrieval',
+          mode: result.mode,
+          refs: result.refs,
+          latencyMs: result.latencyMs,
+        });
+        emit({ type: 'done', answer: result.answer });
+      },
+      (error) => ({ type: 'error', error }),
+    );
+  });
+
+  app.all('/api/*', (c) =>
+    c.json(
+      { error: { code: 'DOC_NOT_FOUND', message: 'No such endpoint.' } },
+      404,
+    ),
+  );
+
+  if (options.webRoot) app.use('*', staticAssets(options.webRoot));
+
+  return app;
+}
+
+function stripUndefined<T extends object>(value: T): T {
+  return Object.fromEntries(
+    Object.entries(value).filter(([, v]) => v !== undefined),
+  ) as T;
+}
