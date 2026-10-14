@@ -208,6 +208,91 @@ describe('runChip: sponsors (metadata only)', () => {
     );
   });
 
+  it('uses official-record roles in sponsor-then-cosponsor order and streams without retrieval', async () => {
+    deps.doc.metadata = {
+      ...SPONSORS,
+      sponsors: ['Legacy name'],
+      sponsorProfiles: [
+        { name: 'Sen. Grace Hopper', role: 'cosponsor', links: [] },
+        { name: 'Rep. Ada Lovelace', role: 'sponsor', links: [] },
+        { name: 'Rep. Katherine Johnson', role: 'cosponsor', links: [] },
+      ],
+    };
+    const tokens: string[] = [];
+    const run = await runChip(getChip('sponsors'), DOC, deps, {
+      onToken: (text) => tokens.push(text),
+    });
+    expect(run.answer.text).toBe(
+      'Sponsored by Rep. Ada Lovelace. Cosponsors (2): Sen. Grace Hopper, Rep. Katherine Johnson.',
+    );
+    expect(tokens.join('')).toBe(run.answer.text);
+    expect(run.answer.provider).toBe('none');
+    expect(run.answer.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
+    expect(run.hits).toEqual([]);
+    expect(provider.calls).toHaveLength(0);
+    expect(retrieveSpy).not.toHaveBeenCalled();
+  });
+
+  it.each([1, 10, 11])(
+    'counts %i cosponsors and lists names only for ten or fewer',
+    async (count) => {
+      const names = Array.from(
+        { length: count },
+        (_, i) => `Member ${String(i + 1)}`,
+      );
+      deps.doc.metadata = {
+        ...SPONSORS,
+        sponsorProfiles: [
+          { name: 'Primary Member', role: 'sponsor', links: [] },
+          ...names.map((name) => ({
+            name,
+            role: 'cosponsor' as const,
+            links: [],
+          })),
+        ],
+      };
+      const run = await runChip(getChip('sponsors'), DOC, deps);
+      const listed = count <= 10 ? `: ${names.join(', ')}` : '';
+      expect(run.answer.text).toBe(
+        `Sponsored by Primary Member. Cosponsors (${String(count)})${listed}.`,
+      );
+    },
+  );
+
+  it('omits the legacy disclaimer for profiles with no cosponsors', async () => {
+    deps.doc.metadata = {
+      ...SPONSORS,
+      sponsors: null,
+      sponsorProfiles: [
+        { name: 'Rep. Ada Lovelace', role: 'sponsor', links: [] },
+        { name: 'Sen. Grace Hopper', role: 'sponsor', links: [] },
+      ],
+    };
+    const run = await runChip(getChip('sponsors'), DOC, deps);
+    expect(run.answer.text).toBe(
+      'Sponsored by Rep. Ada Lovelace, Sen. Grace Hopper.',
+    );
+  });
+
+  it('does not call cosponsors primary sponsors when the record has only cosponsors', async () => {
+    deps.doc.metadata = {
+      ...SPONSORS,
+      sponsorProfiles: [
+        { name: 'Sen. Grace Hopper', role: 'cosponsor', links: [] },
+      ],
+    };
+    const run = await runChip(getChip('sponsors'), DOC, deps);
+    expect(run.answer.text).toBe(
+      "This document doesn't say who sponsored it. Cosponsors (1): Sen. Grace Hopper.",
+    );
+  });
+
+  it('treats an empty official profile list as having no named sponsors', async () => {
+    deps.doc.metadata = { ...SPONSORS, sponsorProfiles: [] };
+    const run = await runChip(getChip('sponsors'), DOC, deps);
+    expect(run.answer.text).toBe("This document doesn't say who sponsored it.");
+  });
+
   it.each([null, [], ['  ']])('says so when sponsors are %j', async (value) => {
     deps.doc.metadata = { ...SPONSORS, sponsors: value };
     const run = await runChip(getChip('sponsors'), DOC, deps);
