@@ -4,12 +4,14 @@
  */
 import { answer } from '../answer/index.js';
 import { getChip, runChip } from '../chips.js';
+import { readHistory } from '../history/history-store.js';
 import { asksAboutChanges, retrieve } from '../retrieve/index.js';
 import {
   AppError,
   type AnswerResult,
   type ChipId,
   type BackendUsage,
+  type BillHistory,
   type LlmProvider,
   type NormalizedDoc,
   type SearchHit,
@@ -30,7 +32,10 @@ export type ChipRunner = (
     backend: RetrievalBackend;
     provider: LlmProvider;
     /** The full cached document: `definitions` lists document-wide definitions first. */
-    doc: Pick<NormalizedDoc, 'metadata' | 'sections' | 'definitions'>;
+    doc: Pick<NormalizedDoc, 'metadata' | 'sections' | 'definitions'> & {
+      /** Only loaded for the history chip. */
+      history?: BillHistory | undefined;
+    };
   },
   opts: {
     signal?: AbortSignal | undefined;
@@ -148,10 +153,19 @@ export async function ask(
   if ('chipId' in input) {
     const runChipFor = deps.chips ?? defaultChipRunner;
     const guard = guarded(backend, docId, signal);
+    // The record lives in a sidecar file; only the history chip reads it.
+    const history =
+      input.chipId === 'history'
+        ? await readHistory(registry.configDir, docId)
+        : undefined;
     const ran = await runChipFor(
       input.chipId,
       docId,
-      { backend: guard.backend, provider: deps.provider, doc },
+      {
+        backend: guard.backend,
+        provider: deps.provider,
+        doc: { ...doc, history },
+      },
       { signal, onToken: opts.onToken },
     );
     await registry.touch(docId, {

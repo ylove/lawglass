@@ -473,7 +473,7 @@ describe('document flow', () => {
     const chips = within(
       screen.getByRole('group', { name: 'What would you like to know?' }),
     ).getAllByRole('button');
-    expect(chips).toHaveLength(8);
+    expect(chips).toHaveLength(9);
     for (const c of chips) expect(c.tagName).toBe('BUTTON');
   });
 

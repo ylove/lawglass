@@ -13,4 +13,5 @@ export const CHIP_LABELS: ClientConfig['chips'] = [
   { id: 'money', label: 'Taxes, fees, and spending' },
   { id: 'definitions', label: 'Key definitions' },
   { id: 'sponsors', label: 'Who sponsored it?' },
+  { id: 'history', label: 'How did it get here?' },
 ];

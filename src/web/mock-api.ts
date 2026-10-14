@@ -38,6 +38,7 @@ const CHIPS: ClientConfig['chips'] = [
   { id: 'money', label: 'Taxes, fees, and spending' },
   { id: 'definitions', label: 'Key definitions' },
   { id: 'sponsors', label: 'Who sponsored it?' },
+  { id: 'history', label: 'How did it get here?' },
 ];
 
 const SAMPLE_ID = 'a'.repeat(64);
@@ -152,8 +153,7 @@ const SECTIONS: MockSection[] = [
   },
 ];
 
-// `history` is not served yet (#128), so it has no canned answer.
-const ANSWERS: Record<Exclude<ChipId, 'history'>, string> = {
+const ANSWERS: Record<ChipId, string> = {
   summary:
     'This bill requires water utilities to replace lead pipes and sets fines for missing the deadline [S:sec-4/b]. It takes effect on July 1, 2027 [S:sec-7].\n\nIt also defines the key terms it uses, such as "public water system" and "utility" [S:sec-2/a].',
   'what-changes':
@@ -167,6 +167,8 @@ const ANSWERS: Record<Exclude<ChipId, 'history'>, string> = {
     'The only dollar amount in the text is the daily fine of up to $1,000 for a late utility [S:sec-6]. The bill does not set aside money for the pipe work.',
   definitions:
     '- Public water system: a system that supplies drinking water to at least 25 people [S:sec-2/a].\n- Utility: any public or private operator of a public water system [S:sec-2/a].',
+  history:
+    'Here is what the official record says about how this bill got here.\n\nKey actions:\n- 2026-02-03: Introduced in the House.\n- 2026-03-10: Reported by the House Water Committee.\n\nThe record lists no amendments to this bill.',
   sponsors:
     'Sponsored by Rep. A. Rivera, Rep. J. Chen. Cosponsors, if any, are not included.',
 };
@@ -472,11 +474,11 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
         req.question !== undefined && /moon|recipe|weather/i.test(req.question);
       const text = declined
         ? DECLINE_TEXT
-        : req.chipId && req.chipId !== 'history'
+        : req.chipId
           ? ANSWERS[req.chipId]
           : ANSWERS.penalties;
 
-      if (req.chipId !== 'sponsors') {
+      if (req.chipId !== 'sponsors' && req.chipId !== 'history') {
         await sleep(delay, signal);
         yield {
           type: 'retrieval',

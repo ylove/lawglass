@@ -208,7 +208,6 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
           options.chip === undefined
             ? undefined
             : ChipId.safeParse(options.chip);
-        // `history` parses as a ChipId but is not implemented yet (#128).
         const served = CHIPS.map((c) => c.id as string);
         if (chip && (!chip.success || !served.includes(chip.data)))
           throw new AppError('INVALID_INPUT', 'Unknown chip.', {

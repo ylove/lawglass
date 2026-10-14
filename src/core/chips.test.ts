@@ -116,16 +116,18 @@ const optionsOf = (call: number): Record<string, unknown> =>
   retrieveSpy.mock.calls[call]![1] as Record<string, unknown>;
 
 describe('chip definitions', () => {
-  it('refuses the history chip until it is implemented', () => {
-    expect(CHIPS.some((c) => c.id === 'history')).toBe(false);
-    expect(() => getChip('history')).toThrow(/Unknown chip.*not available yet/);
+  it('serves the history chip last, labeled "How did it get here?"', () => {
+    expect(CHIPS).toHaveLength(9);
+    expect(CHIPS.at(-1)).toMatchObject({
+      id: 'history',
+      label: 'How did it get here?',
+      strategy: 'metadata',
+    });
+    expect(getChip('history')).toBe(CHIPS.at(-1));
   });
 
-  it('defines exactly the eight spec chips, each valid against the contract', () => {
-    // `history` is in the contract but not served until #128.
-    expect(CHIPS.map((c) => c.id).sort()).toEqual(
-      ChipId.options.filter((id) => id !== 'history').sort(),
-    );
+  it('defines exactly the nine chips of the ChipId contract, each valid', () => {
+    expect(CHIPS.map((c) => c.id).sort()).toEqual([...ChipId.options].sort());
     for (const c of CHIPS) {
       expect(ChipDefinition.safeParse(c).success).toBe(true);
       expect(getChip(c.id)).toBe(c);
@@ -161,6 +163,7 @@ describe('chip definitions', () => {
       money: 'retrieve',
       definitions: 'definitions',
       sponsors: 'metadata',
+      history: 'metadata',
     });
   });
 

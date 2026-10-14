@@ -9,6 +9,7 @@ import {
 } from '../../../tests/support/pipeline-env.js';
 import { AppError, DECLINE_TEXT, type SearchHit } from '../model/index.js';
 import { ask, type AskDeps, type ChipRunner } from './ask.js';
+import { writeHistory } from '../history/history-store.js';
 import { ingest } from './ingest.js';
 
 let env: PipelineEnv;
@@ -179,6 +180,31 @@ test('chips default to the real chip strategies (no runner injected)', async () 
   expect(result.answer.provider).toBe('none');
   expect(result.answer.text).toMatch(/sponsor/i);
   expect(tokens.join('')).toBe(result.answer.text);
+});
+
+test('the history chip reads the stored sidecar, and says so when there is none', async () => {
+  const docId = await load(
+    'https://example.gov/s9002.xml',
+    makeCongressionalBillXml(),
+  );
+  const none = await ask(docId, { chipId: 'history' }, askDeps());
+  expect(none.answer.text).toContain("Legislative history isn't available");
+  expect(none.answer.provider).toBe('none');
+  await writeHistory(env.registry.configDir, docId, {
+    versions: [],
+    actions: [
+      {
+        date: '2026-01-02',
+        text: 'Introduced in the Senate.',
+        chamber: 'Senate',
+      },
+    ],
+    amendments: [],
+    sources: [],
+  });
+  const some = await ask(docId, { chipId: 'history' }, askDeps());
+  expect(some.answer.text).toContain('2026-01-02: Introduced in the Senate.');
+  expect(some.mode).toBe('none');
 });
 
 test('chips dispatch through the injected runner and record its usage', async () => {

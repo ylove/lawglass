@@ -91,9 +91,11 @@ describe('basic routes', () => {
       backend: 'local',
       provider: 'mock',
     });
-    expect(config.chips).toHaveLength(8);
-    // `history` is in the ChipId contract but not served until #128.
-    expect(config.chips.map((c) => c.id)).not.toContain('history');
+    expect(config.chips).toHaveLength(9);
+    expect(config.chips.at(-1)).toEqual({
+      id: 'history',
+      label: 'How did it get here?',
+    });
   });
 
   test('config still loads when no provider is configured', async () => {

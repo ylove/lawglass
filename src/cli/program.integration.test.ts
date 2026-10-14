@@ -118,6 +118,10 @@ test('ask validates its arguments and chips', async () => {
   output = '';
   await run(['ask', 'g', '--chip', 'sponsors']);
   expect(output).toMatch(/sponsor/i);
+  // history is served too; this document has no sidecar, so it says so without a model call.
+  output = '';
+  await run(['ask', 'g', '--chip', 'history']);
+  expect(output).toContain("Legislative history isn't available");
   await expect(run(['ask', 'missing', 'q'])).rejects.toMatchObject({
     code: 'DOC_NOT_FOUND',
   });
