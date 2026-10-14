@@ -169,6 +169,101 @@ describe('chunkDocument', () => {
     expect(chunk?.embedText).toBe(`Sec. 2: ${chunk!.text}`);
   });
 
+  it('does not duplicate labels already in spans, including split inserted markers and heading-only text', () => {
+    const doc = document([
+      section('sec-4', '', {
+        num: '4',
+        children: [
+          section('sec-4/a', '', {
+            num: '(a)',
+            heading: 'Eligibility',
+            spans: [
+              { text: ' \n(a', status: 'unchanged', page: 2, line: 10 },
+              {
+                text: ') Eligibility. Residents may apply.\n\n',
+                status: 'inserted',
+                page: 2,
+                line: 11,
+              },
+            ],
+          }),
+          section('sec-4/b', '(b) The board shall report.\n\n\n', {
+            num: '(b)',
+          }),
+          section('sec-4/c', 'Deadline. Apply by June.', {
+            num: '(c)',
+            heading: 'Deadline',
+          }),
+          section('sec-4/d', 'Duties. The board shall comply.', {
+            heading: 'Duties',
+          }),
+        ],
+      }),
+    ]);
+    const [chunk] = chunkDocument(doc);
+    expect(chunk?.text).toBe(
+      '(a) Eligibility. Residents may apply.\n\n(b) The board shall report.\n\n(c) Deadline. Apply by June.\n\nDuties. The board shall comply.',
+    );
+    expect(chunk).toMatchObject({
+      amendmentStatus: 'inserted',
+      pageStart: 2,
+      lineStart: 10,
+      lineEnd: 11,
+    });
+    expect(chunk?.embedText).toBe(`Sec. 4: ${chunk!.text}`);
+    for (const label of [
+      '(a) Eligibility',
+      '(b) The board',
+      '(c) Deadline',
+      'Duties.',
+    ])
+      expect(chunk!.text.split(label)).toHaveLength(2);
+  });
+
+  it('does not mistake a partial heading match for a printed label', () => {
+    const [chunk] = chunkDocument(
+      document([
+        section('sec-4', '', {
+          children: [
+            section('sec-4/a', 'EligibilityExtra must be supplied.', {
+              heading: 'Eligibility',
+            }),
+            section('sec-4/b', 'Residents shall comply.', { num: '(b)' }),
+          ],
+        }),
+      ]),
+    );
+    expect(chunk?.text).toBe(
+      'Eligibility. EligibilityExtra must be supplied.\n\n(b) Residents shall comply.',
+    );
+  });
+
+  it.each(['unchanged', 'inserted', 'deleted'] as const)(
+    'collapses excess newlines in %s excerpts without changing source locations',
+    (status) => {
+      const doc = document([
+        section('sec-4', '', {
+          spans: [
+            { text: 'First paragraph.\n\n\n\n', status, page: 1, line: 2 },
+            { text: 'Second paragraph.', status, page: 2, line: 5 },
+          ],
+        }),
+      ]);
+      const before = JSON.stringify(doc);
+      const [chunk] = chunkDocument(doc);
+      expect(chunk).toMatchObject({
+        text: 'First paragraph.\n\nSecond paragraph.',
+        amendmentStatus: status,
+        pageStart: 1,
+        pageEnd: 2,
+        lineStart: 2,
+        lineEnd: 5,
+      });
+      expect(chunk!.tokenCount).toBe(estimateTokens(chunk!.embedText));
+      expect(JSON.stringify(doc)).toBe(before);
+    },
+  );
+
   it('limits sibling merges to the target and never merges through branches, empty leaves, or deletions', () => {
     const children = Array.from({ length: 5 }, (_, n) =>
       section(`sec-1/${String(n)}`, words(`s${String(n)}`, 100)),

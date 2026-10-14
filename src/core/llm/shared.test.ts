@@ -1,8 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { AppError } from '../model/index.js';
 import {
   anthropicUsage,
+  DEFAULT_TIMEOUT_MS,
   jsonSchema,
   parseJson,
   providerFailure,
@@ -66,19 +67,49 @@ describe('provider boundary helpers', () => {
     expect(requireKey('test')).toBe('test');
     for (const key of [undefined, '', ' '])
       expect(() => requireKey(key)).toThrow(new AppError('MISSING_KEY'));
+    const timeoutSignal = vi.fn(() => new AbortController().signal);
     for (const timeout of [0, -1, NaN])
-      expect(() => requestSignal(undefined, timeout)).toThrow(
+      expect(() => requestSignal(undefined, timeout, timeoutSignal)).toThrow(
         new AppError('INVALID_INPUT'),
       );
-    expect(() => requestSignal(AbortSignal.abort())).toThrow(
-      new AppError('PROVIDER_ERROR'),
-    );
+    expect(() =>
+      requestSignal(AbortSignal.abort(), undefined, timeoutSignal),
+    ).toThrow(new AppError('PROVIDER_ERROR'));
+    expect(timeoutSignal).not.toHaveBeenCalled();
     expect(requestSignal().aborted).toBe(false);
     const ac = new AbortController();
     const combined = requestSignal(ac.signal);
     ac.abort();
     expect(combined.aborted).toBe(true);
   });
+  it.each([undefined, 30])(
+    'uses the injected timeout signal with timeout %s',
+    (timeoutMs) => {
+      const timeout = new AbortController();
+      const timeoutSignal = vi.fn(() => timeout.signal);
+      const signal = requestSignal(undefined, timeoutMs, timeoutSignal);
+      expect(timeoutSignal).toHaveBeenCalledExactlyOnceWith(
+        timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      );
+      expect(signal).toBe(timeout.signal);
+      expect(signal.aborted).toBe(false);
+      timeout.abort();
+      expect(signal.aborted).toBe(true);
+    },
+  );
+  it.each(['timeout', 'caller'] as const)(
+    'combines caller cancellation with the injected timeout (%s aborts)',
+    (source) => {
+      const caller = new AbortController();
+      const timeout = new AbortController();
+      const signal = requestSignal(caller.signal, 30, () => timeout.signal);
+      expect(signal.aborted).toBe(false);
+      const controller = source === 'timeout' ? timeout : caller;
+      controller.abort(new Error(source));
+      expect(signal.aborted).toBe(true);
+      expect(signal.reason).toBe(controller.signal.reason);
+    },
+  );
   it('counts cached input tokens', () => {
     expect(
       anthropicUsage({

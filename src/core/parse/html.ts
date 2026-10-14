@@ -10,7 +10,7 @@ import {
   walkSections,
   type SpanStatus,
 } from '../model/index.js';
-import { detectSections } from './sections.js';
+import { detectSections, subdivisionHeading } from './sections.js';
 import type { TextParseOptions } from './text.js';
 
 export type HtmlParseOptions = TextParseOptions & {
@@ -179,6 +179,7 @@ interface Chunk {
 /** Collects flowed text into lines of status-tagged chunks. */
 class LineBuilder {
   readonly lines: Chunk[][] = [];
+  readonly headings = new Set<Chunk[]>();
   private current: Chunk[] = [];
 
   private atLineStart(): boolean {
@@ -245,12 +246,16 @@ function walk(
   }
   const block = BLOCK_TAGS.has(name);
   if (block) builder.endLine();
+  const firstLine = builder.lines.length;
   if (CELL_TAGS.has(name)) builder.addFlowed(' ', status);
   const childStatus = combine(status, ownStatus(node, rules));
   const childPre = pre || name === 'pre';
   for (const child of node.children)
     walk(child, builder, rules, childStatus, childPre);
   if (block) builder.endLine();
+  if (/^h[1-6]$/.test(name))
+    for (const line of builder.lines.slice(firstLine))
+      builder.headings.add(line);
 }
 
 /** Re-attach per-character amendment status to spans that detectSections produced. */
@@ -501,7 +506,10 @@ function removeNoise($: CheerioAPI): string[] {
  * `detectSections` derives `heading`/`num` from the raw line, struck text included. Recompute
  * them from the non-deleted text so deleted words never reach breadcrumbs or embeddings.
  */
-function refineHeading(section: Section): boolean {
+function refineHeading(
+  section: Section,
+  printedHeadings: ReadonlySet<string>,
+): boolean {
   const line: { char: string; deleted: boolean }[] = [];
   collect: for (const span of section.spans) {
     for (const char of span.text) {
@@ -511,8 +519,13 @@ function refineHeading(section: Section): boolean {
   }
   while (/\s/.test(line.at(-1)?.char ?? 'x')) line.pop();
   const before = section.num;
-  const heading = section.heading ?? '';
   const raw = line.map((c) => c.char).join('');
+  const enumeration = section.num?.startsWith('(');
+  // Read the raw marker independently of the heading: headingless subdivisions still
+  // need their amended number refined, and a dash heading may have body text after it.
+  const heading = enumeration
+    ? raw.replace(/^\s*\([^)]+\)\s*/, '')
+    : (section.heading ?? '');
   if (!raw.endsWith(heading)) return false;
   const split = line.length - heading.length;
   const visible = (part: typeof line) =>
@@ -521,12 +534,15 @@ function refineHeading(section: Section): boolean {
       .map((c) => c.char)
       .join('');
 
-  if (line.slice(split).some((c) => c.deleted)) {
+  if (enumeration || line.slice(split).some((c) => c.deleted)) {
     const cleaned = visible(line.slice(split))
       .replace(/\s+/g, ' ')
       .trim()
       .replace(/^[.:]\s*/, '');
-    if (cleaned) section.heading = cleaned;
+    const title = enumeration
+      ? subdivisionHeading(cleaned, printedHeadings.has(raw))
+      : cleaned;
+    if (title) section.heading = title;
     else delete section.heading;
   }
   const prefix = line.slice(0, split);
@@ -559,11 +575,14 @@ function reprefix(section: Section, from: string, to: string): void {
  * A section whose number is entirely struck keeps its original id: that id is the stable
  * position-derived name (nothing visible is left to derive one from).
  */
-function refineIds(roots: Section[]): void {
+function refineIds(
+  roots: Section[],
+  printedHeadings: ReadonlySet<string>,
+): void {
   const used = new Set<string>();
   for (const section of walkSections(roots)) used.add(section.id);
   const visit = (section: Section, parentId: string | undefined): void => {
-    if (refineHeading(section) && section.num) {
+    if (refineHeading(section, printedHeadings) && section.num) {
       const old = section.id;
       const segment = old.slice(old.lastIndexOf('/') + 1).replace(/~\d+$/, '');
       const kind = /^(sec|chapter|article)-/.exec(segment)?.[1];
@@ -674,7 +693,11 @@ export function parseHtml(
   if (lines.length === 0)
     throw new AppError('PARSE_FAILED', 'The HTML document has no text.');
 
-  const lineTexts = lines.map((line) => line.map((c) => c.text).join(''));
+  const sourceLines = lines.map((line) => ({
+    text: line.map((c) => c.text).join(''),
+    printedHeading: builder.headings.has(line),
+  }));
+  const lineTexts = sourceLines.map((line) => line.text);
   const fullText = lineTexts.join('\n');
   const statuses: SpanStatus[] = [];
   for (const [index, line] of lines.entries()) {
@@ -685,7 +708,10 @@ export function parseHtml(
     if (index < lines.length - 1) statuses.push('unchanged');
   }
   // Chunk text is built from UTF-16 code units, matching String.length used above.
-  const sections = detectSections(lineTexts.map((text) => ({ text })));
+  const printedHeadings = new Set(
+    sourceLines.filter((line) => line.printedHeading).map((line) => line.text),
+  );
+  const sections = detectSections(sourceLines);
   // detectSections never alters source text, so this only fails if that invariant breaks.
   if (!applyStatuses(sections, statuses, fullText)) {
     throw new AppError(
@@ -693,7 +719,7 @@ export function parseHtml(
       'Could not align amendment markup with the detected sections.',
     );
   }
-  refineIds(sections);
+  refineIds(sections, printedHeadings);
   for (const section of walkSections(sections)) collapseGaps(section);
   return NormalizedDoc.parse({
     docId: createHash('sha256').update(bytes).digest('hex'),

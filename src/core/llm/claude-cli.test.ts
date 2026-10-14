@@ -239,11 +239,56 @@ describe('Claude CLI isolation and lifecycle', () => {
   });
   it('kills timed out children and removes their cwd', async () => {
     const fake = fakeCli({ stall: true });
-    await expect(
-      drain(new ClaudeCliProvider({ ...config, timeoutMs: 30 }, fake)),
-    ).rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
-    expect(fake.children[0]!.kills).toContain('SIGKILL');
-    expect(existsSync(String(fake.calls[0]!.options.cwd))).toBe(false);
+    const timeout = new AbortController();
+    let notifySpawn: () => void;
+    const spawned = new Promise<void>((resolve) => {
+      notifySpawn = resolve;
+    });
+    // Node's AbortSignal.timeout uses internal timers that vi.useFakeTimers does not replace.
+    const timeoutSignal = vi.fn((timeoutMs: number) => {
+      setTimeout(() => {
+        timeout.abort(new DOMException('Timed out', 'TimeoutError'));
+      }, timeoutMs);
+      return timeout.signal;
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const pending = drain(
+      new ClaudeCliProvider(
+        { ...config, timeoutMs: 30 },
+        {
+          timeoutSignal,
+          spawn: (...args) => {
+            const child = fake.spawn(...args);
+            notifySpawn();
+            return child;
+          },
+        },
+      ),
+    );
+    // Attach the rejection assertion before firing the timer to avoid an unhandled rejection.
+    const rejected = expect(pending).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+    });
+    try {
+      // Let filesystem setup finish before advancing time; no real deadline races the I/O.
+      await spawned;
+      expect(timeoutSignal).toHaveBeenCalledExactlyOnceWith(30);
+      const child = fake.children[0]!;
+      const cwd = String(fake.calls[0]!.options.cwd);
+      expect(existsSync(cwd)).toBe(true);
+      await vi.advanceTimersByTimeAsync(29);
+      expect(child.kills).toEqual([]);
+      expect(timeout.signal.aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await rejected;
+      expect(child.kills).toEqual(['SIGKILL']);
+      expect(child.signalCode).toBe('SIGKILL');
+      expect(existsSync(cwd)).toBe(false);
+    } finally {
+      timeout.abort();
+      await pending.catch(() => undefined);
+      vi.useRealTimers();
+    }
   });
   it('kills an aborted child and aborts before spawning when already cancelled', async () => {
     const fake = fakeCli({ stall: true });
