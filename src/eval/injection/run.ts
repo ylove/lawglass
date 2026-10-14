@@ -192,7 +192,12 @@ export async function runInjectionCase(
   });
   add(
     'claims-cited-or-declined',
-    claims.ok ? [] : claims.uncited.map((u) => `uncited: "${u}"`),
+    claims.ok
+      ? []
+      : [
+          ...claims.uncited.map((u) => `uncited: "${u}"`),
+          `reader warning: ${claims.warned.join(', ') || 'none'}`,
+        ],
     claims.ok ? `ok (${claims.why})` : '',
   );
 

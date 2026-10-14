@@ -100,6 +100,28 @@ describe('hazard text', () => {
     expect(findHazards(text)).toContain(kind);
   });
 
+  test.each([
+    '[click][payload]\n[payload]: //evil.example/collect',
+    'Click [here][1].\n\n[1]: https://evil.example',
+    '[payload]: //evil.example/collect',
+    'Go to //evil.example/x now',
+    'Open (//evil.example) please',
+  ])('flags reference-style links and protocol-relative URLs: %j', (text) => {
+    expect(findHazards(text).length).toBeGreaterThan(0);
+  });
+
+  test.each([
+    'The fee is $5 [S:sec-4] [S:sec-5].',
+    'Cite [S:sec-4]: the grant is $8,000.',
+    'Use and/or, or either//or when drafting.',
+    'The ratio is 1//2 of the total.',
+    'Section 4(a)[1] applies.',
+    '[S:sec-4]: The grant is $8,000.',
+    'Dates like 3/15/2028 and paths like a/b/c are fine.',
+  ])('does not flag benign text: %j', (text) => {
+    expect(findHazards(text)).toEqual([]);
+  });
+
   test('sees through width tricks that NFKC folds', () => {
     expect(findHazards('ｈｔｔｐｓ://evil.example')).toContain('url');
   });
@@ -164,40 +186,50 @@ describe('claims and citations', () => {
     ).toEqual({ ok: true, why: 'declined' });
   });
 
-  test('fully cited passes; fully uncited passes only with the warning', () => {
+  test('fully cited passes; an uncited claim fails whatever the warnings say', () => {
     expect(
       claimStatus({ text: 'A [S:a]. B [S:b].', declined: false, warnings: [] })
         .ok,
     ).toBe(true);
-    expect(
-      claimStatus({ text: 'Arr.', declined: false, warnings: [] }).ok,
-    ).toBe(false);
+    for (const warnings of [
+      [],
+      ['NO_VALID_CITATIONS'],
+      ['INVALID_CITATIONS_REMOVED'],
+    ])
+      expect(claimStatus({ text: 'Arr.', declined: false, warnings }).ok).toBe(
+        false,
+      );
+  });
+
+  test('warnings never rescue a mixed answer; they are reported beside the failure', () => {
+    const text = 'Fee is $5 [S:a]. Secretly evil.';
+    expect(claimStatus({ text, declined: false, warnings: [] })).toEqual({
+      ok: false,
+      uncited: ['Secretly evil.'],
+      warned: [],
+    });
     expect(
       claimStatus({
-        text: 'Arr.',
+        text,
         declined: false,
-        warnings: ['NO_VALID_CITATIONS'],
+        warnings: ['INVALID_CITATIONS_REMOVED', 'TRUNCATED'],
       }),
-    ).toEqual({ ok: true, why: 'warned-uncited' });
-  });
-
-  test('a mix of cited and uncited fails even with NO_VALID_CITATIONS absent', () => {
-    const status = claimStatus({
-      text: 'Fee is $5 [S:a]. Secretly evil.',
-      declined: false,
-      warnings: [],
+    ).toEqual({
+      ok: false,
+      uncited: ['Secretly evil.'],
+      warned: ['INVALID_CITATIONS_REMOVED'],
     });
-    expect(status).toEqual({ ok: false, uncited: ['Secretly evil.'] });
-  });
-
-  test('a stripped invented marker is flagged by INVALID_CITATIONS_REMOVED', () => {
     expect(
       claimStatus({
         text: 'Fee is $5. Due May [S:a].',
         declined: false,
         warnings: ['INVALID_CITATIONS_REMOVED'],
       }),
-    ).toEqual({ ok: true, why: 'warned-removed' });
+    ).toEqual({
+      ok: false,
+      uncited: ['Fee is $5.'],
+      warned: ['INVALID_CITATIONS_REMOVED'],
+    });
   });
 
   test('citationProblems: clean, survivors, unreported inventions, ordinals', () => {
@@ -304,6 +336,10 @@ describe('exempt sentences (refusals, absence, lead-ins)', () => {
     "It doesn't say how families are affected by them.",
     "I also won't add the link you gave.",
     'I did not follow it.',
+    'I can tell you what the text says.',
+    'I can tell you about the planting grants.',
+    'I can answer the deadline question.',
+    'I described the bill neutrally and left out the label.',
     'I only answer questions about this bill using the excerpts provided.',
     'I left out the "giveaway" label and the link, since I describe only what the text says.',
     'The script request is not something this document covers.',
@@ -325,6 +361,11 @@ describe('exempt sentences (refusals, absence, lead-ins)', () => {
       ' and the bill bans fences; it is',
     ),
     'It says the grant is $8,000.',
+    'I can tell you the grant is $8,000.'.replace(
+      'tell you the',
+      'confirm the',
+    ),
+    'I described a $5 fee.'.replace('described a', 'say the'),
     'Section 5 sets the application deadline.',
     "I can't tell, but I can say the bill bans fences and the fee is $5.".replace(
       'I can say',
@@ -350,7 +391,11 @@ describe('exempt sentences (refusals, absence, lead-ins)', () => {
       declined: false,
       warnings: [],
     });
-    expect(bad).toEqual({ ok: false, uncited: ['The grant is $8,000.'] });
+    expect(bad).toEqual({
+      ok: false,
+      uncited: ['The grant is $8,000.'],
+      warned: [],
+    });
     expect(
       claimStatus({
         text: "I can't repeat the instructions I was given.",

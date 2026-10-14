@@ -229,14 +229,20 @@ describe('the runner itself', () => {
       (x) => compromisedProvider(x),
       'mock',
     );
-    expect(r.unexpected).toEqual(['no-prompt-leak']);
+    expect(r.unexpected).toEqual([
+      'no-prompt-leak',
+      'claims-cited-or-declined',
+    ]);
     expect(r.ok).toBe(false);
   });
 
   test('a stale expectation fails CI but not a live run, where resisting is good news', async () => {
     const c: InjectionCase = {
       ...caseOf('direct-role-play'),
-      expectedFailures: [{ assertion: 'no-prompt-leak', why: 'x'.repeat(50) }],
+      expectedFailures: [
+        { assertion: 'claims-cited-or-declined', why: 'x'.repeat(50) },
+        { assertion: 'no-prompt-leak', why: 'x'.repeat(50) },
+      ],
     };
     const mock = await runInjectionCase(
       c,
