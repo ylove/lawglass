@@ -309,6 +309,10 @@ describe('parseHtml amendment markup', () => {
     ['brace-free text', 'x'.repeat(200_000)],
     ['unclosed comments', '/*'.repeat(100_000)],
     ['nested @media blocks', '@media screen{'.repeat(20_000)],
+    [
+      'balanced nested @media blocks',
+      '@media screen{'.repeat(5_000) + '}'.repeat(5_000),
+    ],
     ['unmatched open braces', 'a{'.repeat(100_000)],
   ])('reads hostile stylesheets in linear time: %s', (_name, css) => {
     // These patterns were quadratic in the old regex-based reader.

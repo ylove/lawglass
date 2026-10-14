@@ -151,7 +151,7 @@ function cssBlocks(css: string): [selectors: string, body: string][] {
  * rendering a reader sees) are kept as ordinary rules; every other at-rule (`@media print`,
  * `@supports`, `@page`, `@font-face`, ...) is ignored, so a print-only style never marks text.
  */
-function flattenAtRules(css: string, depth = 0): string {
+function flattenAtRules(css: string, nesting = 0): string {
   let out = '';
   let at = 0;
   while (at < css.length) {
@@ -174,10 +174,10 @@ function flattenAtRules(css: string, depth = 0): string {
     const prelude = css.slice(start, open).trim().toLowerCase();
     // Real stylesheets nest @media a level or two; the cap keeps hostile nesting linear.
     if (
-      depth < MAX_AT_RULE_DEPTH &&
+      nesting < MAX_AT_RULE_DEPTH &&
       /^@media\s+(?:only\s+)?(?:screen|all)\s*$/.test(prelude)
     )
-      out += flattenAtRules(css.slice(open + 1, end), depth + 1);
+      out += flattenAtRules(css.slice(open + 1, end), nesting + 1);
     at = end + 1;
   }
   return out;
