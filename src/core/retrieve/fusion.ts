@@ -4,12 +4,14 @@
  * Dense and sparse scores live on different scales (cosine similarity vs. BM25), so raw scores
  * cannot simply be added. Two answers to that problem are implemented here, both pure functions:
  *
- * - `reciprocalRankFusion` (default): ignores scores entirely and only uses *ranks*.
+ * - weighted RRF, `weightedReciprocalRankFusion` (default): ignores scores entirely and only uses
+ *   *ranks*; at the default sparse weight of 0.5 it equals plain `reciprocalRankFusion`.
  * - `weightedFusion` (eval variant): rescales each list's scores to [0, 1], then blends them.
  *
  * Both dedupe by chunk id: a chunk found by both indexes appears once, with a combined score.
  * Within a single list a repeated id counts once, at its first (best) rank; later repeats are
- * ignored, in both methods. Ties are broken by first appearance (dense list first), so output is fully deterministic.
+ * ignored, in both methods. Ties are broken by first appearance (dense list first), so output
+ * is fully deterministic.
  */
 import type { SearchHit } from '../model/index.js';
 

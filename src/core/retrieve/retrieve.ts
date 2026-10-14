@@ -35,16 +35,34 @@ export const DEFAULT_TOP_K = 8;
  */
 export const RERANK_MAX_CANDIDATES = 64;
 
-const CHANGE_PATTERN =
-  /\b(?:remov|strik|struck|delet|repeal|eliminat|no longer|used to|amend|chang)/i;
+/**
+ * Patterns that mark a question as being about changes. Each is tested with `.some`, so one
+ * hit is enough. Bare nouns and stems are avoided on purpose ("snow removal", "climate change",
+ * "report changes in income", "the amendment to section 5", "workers strike" must not match):
+ * a verb counts only in a question form ("does it strike", "what changes") or as a participle.
+ */
+const CHANGE_PATTERNS: readonly RegExp[] = [
+  // Past participles: "was struck", "is repealed", "has changed".
+  /\b(?:removed|struck|stricken|deleted|repealed|eliminated|replaced|substituted|revised|modified|amended|changed)\b/i,
+  // A change verb after an auxiliary, up to two words later: "does the bill remove", "to amend".
+  /\b(?:do|does|did|to)\s+(?:\w+\s+){0,2}(?:remove|strike|delete|repeal|eliminate|replace|substitute|revise|modify|amend|change)\b/i,
+  // "what changes for renters", "which sections change".
+  /\b(?:what|which)\s+(?:\w+\s+)?chang(?:e|es)\b/i,
+  // Fixed phrases about the law as it was.
+  /\bno longer\b/i,
+  /\bused to (?:be|say|require|allow)\b/i,
+  /\b(?:current|existing) law\b/i,
+  /\binstead of\b/i,
+  /\b(?:say|said|law) before\b/i,
+  /\bdiffer/i,
+];
 
 /**
  * Whether a question is about changes or removals, i.e. whether deleted (struck) text is
- * relevant to it (spec §5.6). Pure keyword stems matched at a word start, so "changes" and
- * "removed" match but "exchange" does not.
+ * relevant to it (spec §5.6).
  */
 export function asksAboutChanges(question: string): boolean {
-  return CHANGE_PATTERN.test(question);
+  return CHANGE_PATTERNS.some((pattern) => pattern.test(question));
 }
 
 /** Statuses that count as current law. `deleted` chunks hold only struck text. */
@@ -133,10 +151,10 @@ export async function retrieve(
   const startedAt = now();
   signal?.throwIfAborted();
 
-  const filter = buildFilter(
-    options.filter,
-    options.includeDeleted ?? asksAboutChanges(query),
-  );
+  const includeDeleted =
+    (options.includeDeleted ?? asksAboutChanges(query)) ||
+    options.filter?.amendmentStatus?.includes('deleted') === true;
+  const filter = buildFilter(options.filter, includeDeleted);
   const allowedStatuses = filter?.amendmentStatus;
   let usage: BackendUsage = ZERO_USAGE;
   let ranked: SearchHit[] = [];
@@ -157,32 +175,30 @@ export async function retrieve(
     return result.hits;
   };
 
-  {
-    if (mode === 'dense' || mode === 'sparse') {
-      ranked = await search(mode, topK);
-    } else {
-      // Both indexes are independent, so query them concurrently.
-      const [dense, sparse] = await Promise.all([
-        search('dense', HYBRID_CANDIDATES),
-        search('sparse', HYBRID_CANDIDATES),
-      ]);
-      const fused =
-        options.fusion === 'weighted'
-          ? weightedFusion(dense, sparse, options.sparseWeight)
-          : weightedReciprocalRankFusion(dense, sparse, options.sparseWeight);
+  if (mode === 'dense' || mode === 'sparse') {
+    ranked = await search(mode, topK);
+  } else {
+    // Both indexes are independent, so query them concurrently.
+    const [dense, sparse] = await Promise.all([
+      search('dense', HYBRID_CANDIDATES),
+      search('sparse', HYBRID_CANDIDATES),
+    ]);
+    const fused =
+      options.fusion === 'weighted'
+        ? weightedFusion(dense, sparse, options.sparseWeight)
+        : weightedReciprocalRankFusion(dense, sparse, options.sparseWeight);
 
-      if (mode === 'hybrid' || fused.length === 0) {
-        ranked = fused.slice(0, topK);
-      } else {
-        const reranked = await backend.rerank({
-          query,
-          hits: fused.slice(0, RERANK_MAX_CANDIDATES),
-          topN: options.rerankTopN ?? topK,
-          signal,
-        });
-        usage = addUsage(usage, reranked.usage);
-        ranked = reranked.hits;
-      }
+    if (mode === 'hybrid' || fused.length === 0) {
+      ranked = fused.slice(0, topK);
+    } else {
+      const reranked = await backend.rerank({
+        query,
+        hits: fused.slice(0, RERANK_MAX_CANDIDATES),
+        topN: options.rerankTopN ?? topK,
+        signal,
+      });
+      usage = addUsage(usage, reranked.usage);
+      ranked = reranked.hits;
     }
   }
 
@@ -198,11 +214,15 @@ export async function retrieve(
       backend,
       docId,
       hits: ranked,
-      amendmentStatus: allowedStatuses,
+      includeDeleted,
       signal,
     });
     usage = addUsage(usage, injection.usage);
-    injected = injection.definitions.filter(inAllowed);
+    // The same chunk (e.g. a struck definition) may already be ranked; show it once.
+    const rankedIds = new Set(ranked.map((hit) => hit.chunk.id));
+    injected = injection.definitions.filter(
+      (hit) => !rankedIds.has(hit.chunk.id),
+    );
   }
 
   return {

@@ -404,7 +404,16 @@ describe('deleted spans', () => {
       'Is the old rule repealed or deleted?',
       'Does the bill eliminate the fee?',
       'What is no longer allowed?',
-      'What used to apply?',
+      'What used to be allowed?',
+      'What used to say about fees?',
+      'Which words were stricken?',
+      'Was the fee replaced?',
+      'What was substituted?',
+      'Was the rule revised or modified?',
+      'How does the new rule differ?',
+      'What does current law say?',
+      'Is it used instead of the old fee?',
+      'What did the law say before?',
       'How does it amend the code?',
       'Which words does it strike?',
     ]) {
@@ -415,6 +424,13 @@ describe('deleted spans', () => {
       'Who is an eligible town?',
       'What is the penalty per day?',
       'How is the exchange rate set?',
+      'Who pays for snow removal?',
+      'What is the climate change policy?',
+      'How do I report changes in income?',
+      'Can public workers strike?',
+      'What does the amendment to section 5 cover?',
+      'What used to apply?',
+      'Is it before noon?',
       '',
     ]) {
       expect(asksAboutChanges(q), q).toBe(false);
@@ -544,6 +560,34 @@ describe('definition injection', () => {
         { chunk: user(2, ['town']), score: 1 },
       ]),
     ).toEqual(['town']);
+  });
+
+  it('does not show a struck definition twice when it is also ranked', async () => {
+    const backend = new MemoryBackend();
+    const struck = { ...defChunk('t1'), amendmentStatus: 'deleted' as const };
+    await backend.upsertChunks(DOC_A, [struck, user(1, ['t1'])]);
+    const r = await retrieve(backend, {
+      docId: DOC_A,
+      query: 'term t1 means something widget rule',
+      mode: 'sparse',
+      includeDeleted: true,
+    });
+    expect(ids(r).filter((id) => id === struck.id)).toHaveLength(1);
+    expect(r.injectedDefinitions).toEqual([]);
+  });
+
+  it('injects live definitions even when the chip filter is only inserted+deleted', async () => {
+    const backend = new MemoryBackend();
+    const used = { ...user(1, ['t1']), amendmentStatus: 'inserted' as const };
+    await backend.upsertChunks(DOC_A, [defChunk('t1'), used]);
+    const r = await retrieve(backend, {
+      docId: DOC_A,
+      query: 'widget rule',
+      mode: 'sparse',
+      filter: { amendmentStatus: ['inserted', 'deleted'] },
+    });
+    expect(r.injectedDefinitions.map((c) => c.definesTerm)).toEqual(['t1']);
+    expect(r.injectedDefinitions[0]!.amendmentStatus).toBe('unchanged');
   });
 
   it('falls back to a struck definition only when no live one exists', async () => {

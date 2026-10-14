@@ -53,8 +53,11 @@ export interface InjectionRequest {
   backend: RetrievalBackend;
   docId: string;
   hits: readonly SearchHit[];
-  /** Same amendment-status restriction as the main search, so deleted definitions stay out. */
-  amendmentStatus: ChunkFilter['amendmentStatus'];
+  /**
+   * Status policy, independent of any chip's status focus: live definitions always; a struck
+   * one only as a fallback when this is true.
+   */
+  includeDeleted: boolean;
   signal?: AbortSignal | undefined;
 }
 
@@ -76,9 +79,10 @@ export async function findDefinitionsToInject(
   // starve the others. The filter does the real work; the query only orders candidates.
   // Live (unchanged/inserted) definitions are preferred; a struck one is only a fallback when
   // deleted text is allowed and no live definition exists.
-  const allowed = req.amendmentStatus;
-  const live = (allowed ?? LIVE).filter((s) => s !== 'deleted');
-  const lookup = (term: string, statuses: ChunkFilter['amendmentStatus']) =>
+  const lookup = (
+    term: string,
+    statuses: NonNullable<ChunkFilter['amendmentStatus']>,
+  ) =>
     req.backend.search({
       docId: req.docId,
       index: 'dense',
@@ -87,29 +91,19 @@ export async function findDefinitionsToInject(
       filter: {
         definesTerm: [term],
         chunkType: ['definition'],
-        ...(statuses ? { amendmentStatus: statuses } : {}),
+        amendmentStatus: statuses,
       },
       signal: req.signal,
     });
   const results = await Promise.all(
     terms.map(async (term) => {
-      const [first, ...rest] = live;
-      let usage = ZERO_USAGE;
-      if (first !== undefined) {
-        const r = await lookup(term, [first, ...rest]);
-        usage = addUsage(usage, r.usage);
-        if (r.hits.length > 0) return { hits: r.hits, usage };
-      }
-      // Fall back to the full allowed set only if it can contain deleted definitions.
-      if (allowed !== undefined && !allowed.includes('deleted')) {
-        return { hits: [], usage };
-      }
-      if (allowed === undefined) {
-        const r = await lookup(term, undefined);
-        return { hits: r.hits, usage: addUsage(usage, r.usage) };
-      }
-      const r = await lookup(term, allowed);
-      return { hits: r.hits, usage: addUsage(usage, r.usage) };
+      const liveResult = await lookup(term, LIVE);
+      if (liveResult.hits.length > 0 || !req.includeDeleted) return liveResult;
+      const struck = await lookup(term, ['deleted']);
+      return {
+        hits: struck.hits,
+        usage: addUsage(liveResult.usage, struck.usage),
+      };
     }),
   );
   let usage = ZERO_USAGE;
