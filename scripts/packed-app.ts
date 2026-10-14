@@ -128,7 +128,7 @@ export async function startPackedServer(
   // Port 0 is assigned by the OS, avoiding a free-port probe/bind race.
   const child = spawn(
     process.execPath,
-    [binary, 'serve', '--backend', 'local', '--port', '0'],
+    [binary, 'serve', '--backend', 'local', '--port', '0', '--no-open'],
     {
       cwd,
       env,

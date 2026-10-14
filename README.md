@@ -35,7 +35,7 @@ npx lawglass ask hb62 "When does this take effect?"
 npx lawglass ask hb62 --chip what-changes
 npx lawglass list
 npx lawglass remove hb62
-npx lawglass serve --port 4317          # local web UI; --public allows chips only
+npx lawglass serve --port 4317          # local web UI; --public allows chips only; --no-open skips the browser
 ```
 
 `<doc>` is a label or a doc-id prefix. Flags are defined in [`src/cli/program.ts`](src/cli/program.ts).

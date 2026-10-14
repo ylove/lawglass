@@ -218,6 +218,26 @@ test('serve defaults to a private local server', async () => {
   });
 });
 
+test('the bare URL form passes --no-open to the launcher', async () => {
+  const serve = vi.fn(() => Promise.resolve());
+  await run(['https://example.gov/gardens.txt', '--no-open'], { serve });
+  expect(serve).toHaveBeenCalledWith(env.runtime, {
+    publicMode: false,
+    noOpen: true,
+  });
+});
+
+test('serve passes --no-open to the launcher', async () => {
+  const serve = vi.fn(() => Promise.resolve());
+  await run(['serve', '--no-open'], { serve });
+  expect(serve).toHaveBeenCalledWith(env.runtime, {
+    publicMode: false,
+    port: undefined,
+    host: undefined,
+    noOpen: true,
+  });
+});
+
 test('serve rejects a port that is not a number', async () => {
   const serve = vi.fn(() => Promise.resolve());
   await expect(
