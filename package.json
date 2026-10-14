@@ -36,6 +36,7 @@
     "history:canary": "tsx scripts/history-canary.ts",
     "fixtures:fetch": "tsx scripts/fetch-fixtures.ts",
     "eval:smoke": "tsx scripts/eval-smoke.ts",
+    "eval:injection": "tsx scripts/eval-injection.ts",
     "models:fetch": "tsx scripts/fetch-models.ts",
     "test:models": "LOCAL_MODELS=1 vitest run src/core/index/local/models.integration.test.ts",
     "check": "npm run lint && npm run typecheck && npm run format:check && npm run test:coverage",

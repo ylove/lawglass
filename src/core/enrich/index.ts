@@ -13,6 +13,7 @@ import {
   mergeDefinitions,
   segmentDefinitions,
 } from './definitions.js';
+import { detectAmends, restatedCharterSections } from './amends.js';
 import { collectExternalRefs, findInternalRefs } from './refs.js';
 import { buildSectionIndex, type SectionIndex } from './section-index.js';
 
@@ -30,6 +31,7 @@ export {
   findExternalMatches,
   findInternalRefs,
 } from './refs.js';
+export { detectAmends } from './amends.js';
 export { buildSectionIndex } from './section-index.js';
 
 export interface EnrichedDocument {
@@ -177,10 +179,23 @@ export function enrichDocument(
     doc.definitions,
     extractDefinitions(doc.sections, index),
   );
+  const amends =
+    doc.metadata.amends ?? detectAmends(doc.sections, doc.metadata);
+  // Only a charter amendment restates charter text; elsewhere "Section 3 of the charter" is
+  // outside law even when this document has a Section 3 of its own.
+  const charterSections: ReadonlySet<string> =
+    amends !== undefined || doc.metadata.docKind === 'charter_amendment'
+      ? new Set(restatedCharterSections(doc.sections))
+      : new Set();
+  const refOptions = {
+    jurisdiction: doc.metadata.jurisdiction,
+    charterSections,
+  };
   const externalRefs = collectExternalRefs(
     doc.sections,
     index,
     doc.externalRefs,
+    refOptions,
   );
   const termsUsed = createTermMatcher(definitions);
 
@@ -195,9 +210,12 @@ export function enrichDocument(
     const covered = coveredFor(base, index, p.start, p.end);
     const embedText = contextualText({ breadcrumb: base.breadcrumb, text });
     // Cross-references only: sections already covered by this very chunk are not refs.
-    const refs = findInternalRefs(text, base.sectionId, index).filter(
-      (id) => !(covered ?? [base.sectionId]).includes(id),
-    );
+    const refs = findInternalRefs(
+      text,
+      base.sectionId,
+      index,
+      refOptions,
+    ).filter((id) => !(covered ?? [base.sectionId]).includes(id));
     return Chunk.parse({
       ...rest,
       id: makeChunkId(base.docId, base.sectionId, n),
@@ -215,5 +233,10 @@ export function enrichDocument(
       refs,
     });
   });
-  return { doc: { ...doc, definitions, externalRefs }, chunks: enriched };
+  const metadata =
+    amends === undefined ? doc.metadata : { ...doc.metadata, amends };
+  return {
+    doc: { ...doc, metadata, definitions, externalRefs },
+    chunks: enriched,
+  };
 }

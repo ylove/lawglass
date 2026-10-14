@@ -144,7 +144,9 @@ jobs:
           comment-summary-in-pr: never
 
   # Offline plumbing check on the synthetic golden set: local backend, fake models, mock LLM.
-  # Fails if the pipeline breaks or hybrid_rerank recall@5 drops below dense.
+  # Fails if the pipeline breaks or hybrid_rerank recall@5 drops below dense. Also runs the
+  # prompt-injection eval with a model fake that obeys every injection (issue #183); it fails if
+  # an output-side defense stops holding or a documented gap stops reproducing.
   eval-smoke:
     name: eval-smoke
     runs-on: ubuntu-latest
@@ -161,6 +163,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run eval:smoke
+      - run: npm run eval:injection
 
   # Installs the packed tarball in a clean directory and runs init, ingest (a synthetic PDF by
   # path), ask, list and serve + /api/health with real local models and the mock LLM.

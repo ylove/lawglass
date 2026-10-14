@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'vitest';
-import { AskEvent, DocDetail, SummaryResponse } from '../core/model/index.js';
+import {
+  AskEvent,
+  DocDetail,
+  ScenarioResponse,
+  SummaryResponse,
+} from '../core/model/index.js';
 import { createMockApi } from './mock-api.js';
 
 async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
@@ -198,5 +203,42 @@ describe('mock API', () => {
       d.sourceUrl.endsWith('new.pdf'),
     );
     expect(await pub.getSummary(other!.docId)).toEqual({ status: 'disabled' });
+  });
+
+  test('scenario: ok for a plain subject, refused when judging, none for the empty case, disabled when public', async () => {
+    const m = api();
+    const sample = (await m.listDocs())[0]!;
+    const ok = await m.getScenario(sample.docId, { subject: 'a renter' });
+    expect(ok.status).toBe('ok');
+    expect(
+      ScenarioResponse.parse(ok).scenario?.frames.length,
+    ).toBeGreaterThanOrEqual(3);
+    await expect(
+      m.getScenario(sample.docId, { subject: 'unfair burden' }),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    await expect(
+      m.getScenario(sample.docId, { subject: '<b>x</b>' }),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    expect(
+      await m.getScenario(sample.docId, { subject: 'nobody at all' }),
+    ).toEqual({
+      status: 'none',
+    });
+    await expect(
+      m.getScenario('z'.repeat(64), { subject: 'a renter' }),
+    ).rejects.toThrow();
+    const pub = createMockApi({ delayMs: 0, publicMode: true });
+    expect(
+      await pub.getScenario(sample.docId, { subject: 'a renter' }),
+    ).toEqual({
+      status: 'disabled',
+    });
+  });
+
+  test('the sample document offers scenario personas', async () => {
+    const m = api();
+    const sample = (await m.listDocs())[0]!;
+    const detail = DocDetail.parse(await m.getDoc(sample.docId));
+    expect(detail.scenarioPersonas?.length).toBeGreaterThanOrEqual(3);
   });
 });

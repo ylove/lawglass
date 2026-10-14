@@ -126,6 +126,23 @@ describe('HTTP client', () => {
     expect(fetchImpl).toHaveBeenCalledWith('/api/config', undefined);
   });
 
+  test('getScenario posts the subject and validates the response', async () => {
+    const fetchImpl = vi.fn(() =>
+      Promise.resolve(Response.json({ status: 'none' })),
+    ) as unknown as typeof fetch;
+    const api = createHttpApi({ fetchImpl });
+    await expect(
+      api.getScenario('d1', { subject: 'a renter' }),
+    ).resolves.toEqual({ status: 'none' });
+    expect(fetchImpl).toHaveBeenCalledWith(
+      '/api/docs/d1/scenario',
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ subject: 'a renter' }),
+      }),
+    );
+  });
+
   test('a body that breaks the contract is rejected', async () => {
     const fetchImpl = (() =>
       Promise.resolve(Response.json({ nope: 1 }))) as typeof fetch;

@@ -17,10 +17,17 @@ import {
   DocDetail,
   IngestEvent,
   type BillHistory,
+  type NormalizedDoc,
 } from '../core/model/index.js';
 import { readSseEvents } from '../web/sse.js';
 import { createSessionTestApp as createApp } from '../../tests/support/session-app.js';
-import { OFFICIAL_SUMMARY_MAX_LENGTH, truncateHistory } from './doc-detail.js';
+import {
+  OFFICIAL_SUMMARY_MAX_LENGTH,
+  PERSONA_RULES,
+  scenarioPersonasFor,
+  truncateHistory,
+} from './doc-detail.js';
+import { checkScenarioSubject } from '../core/scenario/subject.js';
 
 let env: PipelineEnv;
 beforeEach(async () => {
@@ -198,5 +205,116 @@ describe('GET /api/docs/:docId detail', () => {
     expect(
       (await detail(docId)).metadata.sponsorProfiles?.[0]?.links[0],
     ).toMatchObject({ kind: 'official', verified: true });
+  });
+});
+
+describe('scenarioPersonasFor', () => {
+  const docWith = (
+    title: string,
+    heading: string,
+    text: string,
+  ): NormalizedDoc => ({
+    docId: 'c'.repeat(64),
+    sourceUrl: 'https://example.gov/x',
+    format: 'text',
+    fetchedAt: '2026-10-14T00:00:00.000Z',
+    metadata: {
+      title,
+      billNumber: null,
+      jurisdiction: null,
+      session: null,
+      version: null,
+      sponsors: null,
+      source: 'extracted',
+    },
+    sections: [
+      {
+        id: 'sec-1',
+        level: 1,
+        heading,
+        spans: [{ text: 'Intro.', status: 'unchanged' }],
+        children: [
+          {
+            id: 'sec-1/a',
+            level: 2,
+            spans: [
+              { text, status: 'unchanged' },
+              { text: 'mortgage payments', status: 'deleted' },
+            ],
+            children: [],
+          },
+        ],
+      },
+    ],
+    definitions: [],
+    externalRefs: [],
+    warnings: [],
+  });
+
+  test('an election bill suggests voters and candidates', () => {
+    const personas = scenarioPersonasFor(
+      docWith(
+        'City Charter Amendment',
+        'Council elections',
+        'Voters in each district elect a member.',
+      ),
+    );
+    expect(personas).toEqual([
+      'a voter in a council district',
+      'someone running for city council',
+    ]);
+  });
+
+  test('a tenant bill suggests renters, and struck text does not count', () => {
+    const personas = scenarioPersonasFor(
+      docWith(
+        'Housing Act',
+        'Leases',
+        'A landlord shall give notice of any rent change. Tax is unchanged.',
+      ),
+    );
+    expect(personas).toEqual(['a renter', 'a landlord', 'a taxpayer']);
+    expect(personas).not.toContain('a homeowner');
+  });
+
+  test('is capped at five, deterministic, and every suggestion passes the subject check', () => {
+    const everything = docWith(
+      'Omnibus',
+      'Everything',
+      'elections tenants tax homeowners employees students pensions drivers',
+    );
+    const personas = scenarioPersonasFor(everything);
+    expect(personas).toHaveLength(5);
+    expect(scenarioPersonasFor(everything)).toEqual(personas);
+    for (const persona of personas)
+      expect(checkScenarioSubject(persona)).toEqual({
+        ok: true,
+        subject: persona,
+      });
+    for (const rule of PERSONA_RULES.map((r) => r.personas))
+      for (const persona of rule)
+        expect(checkScenarioSubject(persona).ok).toBe(true);
+  });
+
+  test('no keyword, no suggestions, and the detail omits the field', async () => {
+    expect(
+      scenarioPersonasFor(docWith('Gardens', 'Short title', 'Grants.')),
+    ).toEqual([]);
+    const d = await detail(await ingestDoc('https://example.gov/a.txt'));
+    expect(d.scenarioPersonas).toBeUndefined();
+  });
+
+  test('the detail includes suggestions for a document that matches', async () => {
+    env.serve(
+      'https://example.gov/rent.txt',
+      {
+        bytes: new TextEncoder().encode(
+          'Rent Bill\nSection 1. Leases\nA landlord shall not raise rent for a tenant twice a year.\n',
+        ),
+      },
+      'text/plain',
+    );
+    const d = await detail(await ingestDoc('https://example.gov/rent.txt'));
+    expect(d.scenarioPersonas).toContain('a renter');
   });
 });
