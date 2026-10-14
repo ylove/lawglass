@@ -100,12 +100,58 @@ interface ClassRule {
   status: SpanStatus;
 }
 
+/** Nested `@media` levels flattened before the rest is ignored. */
+const MAX_AT_RULE_DEPTH = 4;
+
+/**
+ * Remove CSS comments in one pass. A lazy regex here rescans to the end of the text
+ * for every unclosed `/*`, which is quadratic on hostile input.
+ */
+function stripCssComments(css: string): string {
+  let out = '';
+  let at = 0;
+  while (at < css.length) {
+    const open = css.indexOf('/*', at);
+    if (open < 0) return out + css.slice(at);
+    out += css.slice(at, open);
+    const close = css.indexOf('*/', open + 2);
+    if (close < 0) return out;
+    at = close + 2;
+  }
+  return out;
+}
+
+/**
+ * The `selectors { body }` blocks of a flat stylesheet, in one linear pass. Matches what
+ * `/([^{}]+)\{([^{}]*)\}/g` would find, without its quadratic backtracking on brace-free text.
+ */
+function cssBlocks(css: string): [selectors: string, body: string][] {
+  const blocks: [string, string][] = [];
+  let segmentStart = 0;
+  for (let i = 0; i < css.length; i++) {
+    const ch = css[i];
+    if (ch === '}') {
+      segmentStart = i + 1;
+      continue;
+    }
+    if (ch !== '{') continue;
+    let j = i + 1;
+    while (j < css.length && css[j] !== '{' && css[j] !== '}') j++;
+    if (i > segmentStart && css[j] === '}') {
+      blocks.push([css.slice(segmentStart, i), css.slice(i + 1, j)]);
+      i = j;
+    }
+    segmentStart = i + 1;
+  }
+  return blocks;
+}
+
 /**
  * At-rules are handled conservatively: the contents of `@media screen` / `@media all` (the
  * rendering a reader sees) are kept as ordinary rules; every other at-rule (`@media print`,
  * `@supports`, `@page`, `@font-face`, ...) is ignored, so a print-only style never marks text.
  */
-function flattenAtRules(css: string): string {
+function flattenAtRules(css: string, depth = 0): string {
   let out = '';
   let at = 0;
   while (at < css.length) {
@@ -126,8 +172,12 @@ function flattenAtRules(css: string): string {
       else if (css[end] === '}' && --depth === 0) break;
     }
     const prelude = css.slice(start, open).trim().toLowerCase();
-    if (/^@media\s+(?:only\s+)?(?:screen|all)\s*$/.test(prelude))
-      out += flattenAtRules(css.slice(open + 1, end));
+    // Real stylesheets nest @media a level or two; the cap keeps hostile nesting linear.
+    if (
+      depth < MAX_AT_RULE_DEPTH &&
+      /^@media\s+(?:only\s+)?(?:screen|all)\s*$/.test(prelude)
+    )
+      out += flattenAtRules(css.slice(open + 1, end), depth + 1);
     at = end + 1;
   }
   return out;
@@ -140,10 +190,8 @@ function flattenAtRules(css: string): string {
  */
 function readClassRules(css: string): ClassRule[] {
   const rules: ClassRule[] = [];
-  const stripped = flattenAtRules(css.replace(/\/\*[\s\S]*?\*\//g, ''));
-  for (const [, selectors = '', body = ''] of stripped.matchAll(
-    /([^{}]+)\{([^{}]*)\}/g,
-  )) {
+  const stripped = flattenAtRules(stripCssComments(css));
+  for (const [selectors, body] of cssBlocks(stripped)) {
     const status = decorationFromDeclarations(body);
     if (!status) continue;
     for (const selector of selectors.split(',')) {

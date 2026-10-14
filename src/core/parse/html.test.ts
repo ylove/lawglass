@@ -305,6 +305,30 @@ describe('parseHtml amendment markup', () => {
     expect(textWithStatus(sections, 'inserted')).toEqual(['4']);
   });
 
+  it.each([
+    ['brace-free text', 'x'.repeat(200_000)],
+    ['unclosed comments', '/*'.repeat(100_000)],
+    ['nested @media blocks', '@media screen{'.repeat(20_000)],
+    ['unmatched open braces', 'a{'.repeat(100_000)],
+  ])('reads hostile stylesheets in linear time: %s', (_name, css) => {
+    // These patterns were quadratic in the old regex-based reader.
+    const started = Date.now();
+    const { sections } = parse(
+      page('<p>Plain text.</p>', `<style>${css}</style>`),
+    );
+    expect(Date.now() - started).toBeLessThan(500);
+    expect(textWithStatus(sections, 'deleted')).toEqual([]);
+  });
+
+  it('still reads a rule after a stray brace and an unclosed nested block', () => {
+    const head =
+      '<style>}{ .gone{text-decoration:line-through} a{ .x{}</style>';
+    const body = '<p><i class="gone">1</i></p>';
+    expect(textWithStatus(parse(page(body, head)).sections, 'deleted')).toEqual(
+      ['1'],
+    );
+  });
+
   it('lets inline style override a stylesheet class', () => {
     const head = '<style>.strike{text-decoration:line-through}</style>';
     const body =
