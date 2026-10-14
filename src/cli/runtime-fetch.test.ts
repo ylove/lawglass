@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Agent, buildConnector } from 'undici';
 import { afterEach, expect, test, vi } from 'vitest';
+import { envVar } from '../core/brand.js';
 import { getConfigDir } from '../core/config.js';
 import { defaultCacheDir } from '../core/fetch/index.js';
 import { createApp } from '../server/app.js';
@@ -75,7 +76,7 @@ test('disconnecting an ingest stops a streaming download through the production 
   const destroyed = vi.spyOn(dispatcher, 'destroy');
   const runtime = await createRuntimeFrom({
     homeDir: home,
-    env: { LEGSUM_LLM_PROVIDER: 'mock' },
+    env: { [envVar('LLM_PROVIDER')]: 'mock' },
     isTTY: false,
   })({ needsLlm: true });
   const fetcher = vi.spyOn(runtime, 'fetcher');
