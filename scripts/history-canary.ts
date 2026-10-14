@@ -18,7 +18,7 @@ export interface CanaryResult {
   detail: string;
 }
 
-/** Fetch only constructed history URLs. Never fetch text, member links or amendment PDFs. */
+/** Fetch only the four constructed LIS API URLs. Never fetch bill text, amendment PDFs or www.legislature.ohio.gov. */
 export async function runHistoryCanary(
   fixtures: readonly Pick<Fixture, 'name' | 'jurisdiction' | 'url'>[],
   fetcher: (url: string) => Promise<SafeFetchResult>,
@@ -58,7 +58,7 @@ export async function runHistoryCanary(
       results.push({
         name: fixture.name,
         ok: false,
-        detail: 'History unavailable: download or parser check failed.',
+        detail: 'History unavailable: API request or validation failed.',
       });
     }
   }
@@ -72,7 +72,6 @@ async function main(): Promise<void> {
       safeFetch(url, {
         cacheDir,
         refresh: true,
-        acceptHistoryPage: true,
         validateUrl: (url) => {
           assertHistoryUrl('ohio', url);
         },

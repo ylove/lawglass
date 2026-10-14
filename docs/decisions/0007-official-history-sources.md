@@ -7,16 +7,16 @@
 rc.2 adds a bill's legislative history and lets people paste the page they actually have, which is usually a landing page and not the text file. Three facts shaped the design.
 
 - **congress.gov blocks automated clients.** Its bill pages are the URLs people paste, but we cannot fetch them. GovInfo is the official bulk source for the same bills, with the text and a BILLSTATUS XML file per bill. BILLSTATUS carries the actions, committees, sponsors and the Congressional Research Service summary.
-- **Ohio's pages answer an honest client.** On 2026-10-14 `www.legislature.ohio.gov` and `search-prod.lis.state.oh.us` returned 200 to a descriptive User-Agent and 403 only to curl's default.
+- **Ohio's API answers an honest client.** On 2026-10-14 `search-prod.lis.state.oh.us` returned 200 to a descriptive User-Agent and 403 only to curl's default. `www.legislature.ohio.gov` serves the wrong TLS intermediate, which Node cannot verify, so it is never fetched; its bill URLs are only mapped to the LIS API.
 - **Spec §5.1 says never auto-follow links.** That rule stops a page from steering our fetcher, which is an SSRF and prompt-injection risk. We want to keep it.
 
 ## Decision
 
 - **`safeFetch` is unchanged.** It never follows a link found in a page.
 - **Known landing URLs are rewritten before any fetch**, by pure, anchored string mapping (see spec Amendment 9). Nothing is read from page content.
-- **The version is chosen deterministically.** If the pasted URL names one (congress.gov `/text/<code>`, or a GovInfo `BILLS-<congress><type><n><code>` URL), that version is used. Otherwise the latest text version in the official record is used: BILLSTATUS `textVersions` for federal, the Ohio documents/status page for Ohio. Only the version code comes from the record, and the URL is still built by the mapping. If the record cannot be read, ingest fails and asks the user to paste a specific version's URL. We never guess. The UI shows the version read and lists the others.
+- **The version is chosen deterministically.** If the pasted URL names one (congress.gov `/text/<code>`, or a GovInfo `BILLS-<congress><type><n><code>` URL), that version is used. Otherwise the latest text version in the official record is used: BILLSTATUS `textVersions` for federal, the Ohio LIS JSON API for Ohio. Only the version code comes from the record, and the URL is still built by the mapping. If the record cannot be read, ingest fails and asks the user to paste a specific version's URL. We never guess. The UI shows the version read and lists the others.
 - **Unmatched congress.gov URLs are rejected before any fetch**, with a message saying what to paste. This is the one exception to today's behavior: `safeFetch` has no host exclusion, so without it `https://www.congress.gov/help` would be fetched. Every other unmatched host keeps today's behavior.
-- **History adapters fetch only from an exact-host allowlist:** `www.govinfo.gov`, `www.legislature.ohio.gov`, `search-prod.lis.state.oh.us` and `unitedstates.github.io`. Hosts are compared whole, never by suffix, and none comes from user input or from a page.
+- **History adapters fetch only from an exact-host allowlist:** `www.govinfo.gov`, `search-prod.lis.state.oh.us` and `unitedstates.github.io`. Hosts are compared whole, never by suffix, and none comes from user input or from a page.
 - **Every fetch goes through `safeFetch`**, so the SSRF guard, the pinned IP and redirect re-validation still apply.
 - **Sources are official and keyless.** Federal and Ohio only for rc.2.
 - **A history failure never blocks ingest.** The text is read, and the UI says "history unavailable".
