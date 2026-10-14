@@ -132,3 +132,34 @@
   background: var(--soft);
   font-size: 0.95em;
 }
+
+/* "How does this affect...?": suggested people, a free-text field, and the stacked examples. */
+.scenario-picker h3 {
+  margin-top: 0;
+}
+.persona-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 0 0 1rem;
+  padding: 0;
+}
+.persona-form label {
+  display: block;
+  margin-bottom: 0.35rem;
+  font-weight: 500;
+}
+.persona-error {
+  margin: 0.5rem 0 0;
+}
+.persona-loading {
+  margin: 0.75rem 0 0;
+}
+.persona-none {
+  margin: 0 0 1.5rem;
+}
+.scenario h3:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 3px;
+}

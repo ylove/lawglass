@@ -18,6 +18,7 @@ import { ReferencedCard } from './document/ReferencedCard.js';
 import { FactsCard } from './document/FactsCard.js';
 import { HistoryCard } from './document/HistoryCard.js';
 import { ServerDownCard } from './document/ServerDownCard.js';
+import { ScenarioPicker } from './document/ScenarioPicker.js';
 import { SummaryPanel } from './document/SummaryPanel.js';
 import type { Turn } from './document/types.js';
 import { errorMessage } from './errors.js';
@@ -173,6 +174,15 @@ export function DocumentView({
             publicMode={config.publicMode}
             onOpenSection={openSection}
           />
+          {config.scenariosEnabled && !config.publicMode && (
+            <ScenarioPicker
+              key={docId}
+              api={api}
+              docId={docId}
+              personas={detail.scenarioPersonas ?? []}
+              onOpenSection={openSection}
+            />
+          )}
           <ChipRow
             chips={config.chips}
             busy={busy}
