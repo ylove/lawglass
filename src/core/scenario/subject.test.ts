@@ -29,6 +29,14 @@ describe('checkScenarioSubject', () => {
     refused('un​fair');
   });
 
+  it('judges the compatibility-normalized text, so full-width letters cannot hide a judging word', () => {
+    expect(refused('a ｕｎｆａｉｒ renter')).toMatch(/neutral/);
+    expect(refused('ｕｎｆａｉｒ')).toMatch(/neutral/);
+    // The canonical form is what is returned, so generation and the cache key agree.
+    expect(ok('ａ ｒｅｎｔｅｒ')).toBe('a renter');
+    expect(ok('a\u200B ｒenter')).toBe('a renter');
+  });
+
   it('refuses empty, over-long and letterless subjects', () => {
     expect(refused('   ​ ')).toMatch(/who the example is about/);
     expect(refused('a'.repeat(81))).toMatch(/80/);

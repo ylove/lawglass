@@ -59,7 +59,21 @@ interface Flight {
 const flights = new Map<string, Flight>();
 const pendingIo = new Map<string, Promise<unknown>>();
 
-async function documentIo<T>(path: string, run: () => Promise<T>): Promise<T> {
+/**
+ * Bumped when a document is evicted. Anything that began before the bump (a scenario still being
+ * generated, say) must not write afterwards: the registry still lists the document while its
+ * cache directory is being removed, so a registration check alone cannot tell.
+ */
+const evictions = new Map<string, number>();
+export function evictionCount(documentPath: string): number {
+  return evictions.get(documentPath) ?? 0;
+}
+
+/** Per-document serialization shared with sibling caches that live in the same directory. */
+export async function documentIo<T>(
+  path: string,
+  run: () => Promise<T>,
+): Promise<T> {
   const previous = pendingIo.get(path) ?? Promise.resolve();
   const next = previous.catch(() => undefined).then(run);
   pendingIo.set(path, next);
@@ -201,6 +215,7 @@ export class AnswerCache {
   /** All chips, models and old prompt versions die with their document. */
   evictDocument(docId: string): Promise<void> {
     const documentPath = this.documentPath(docId);
+    evictions.set(documentPath, evictionCount(documentPath) + 1);
     for (const [path, flight] of flights) {
       if (flight.documentPath === documentPath) {
         flight.cacheable = false;

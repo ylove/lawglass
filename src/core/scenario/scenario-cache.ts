@@ -15,6 +15,7 @@ import {
   writePrivateJson,
   type ConfigFileSystem,
 } from '../config-files.js';
+import { documentIo, evictionCount } from '../answer-cache.js';
 import { NormalizedDoc, Scenario } from '../model/index.js';
 import { normalizeSubject } from './generate.js';
 
@@ -111,28 +112,35 @@ export class ScenarioCache {
     return scenario ? { status: 'ok', scenario } : undefined;
   }
 
-  private async store(
+  /**
+   * Writes under the same per-document lock eviction uses, and only if no eviction happened since
+   * `startedAt` (the eviction count when generation began). Either alone is not enough: removal
+   * deletes the directory before the registry forgets the document, so a write that waited for
+   * the lock would still find the document registered and recreate its file.
+   */
+  private store(
     key: ScenarioCacheKey,
     result: NonNullable<ScenarioLookup>,
+    startedAt: number,
   ): Promise<void> {
     const path = this.path(key);
-    const registered = async (): Promise<boolean> =>
-      this.isStillRegistered ? await this.isStillRegistered(key.docId) : true;
-    if (!(await registered())) return;
-    await writePrivateJson(
-      path,
-      {
-        status: result.status,
-        ...(result.status === 'ok' ? { scenario: result.scenario } : {}),
-        provider: key.provider,
-        model: key.model,
-        storedAt: this.now(),
-      },
-      this.fs,
-    );
-    // Removal may have run while we wrote; do not leave a private file for a gone document.
-    if (!(await registered()))
-      await this.fs.unlink(path).catch(() => undefined);
+    const documentPath = join(this.dir, key.docId);
+    return documentIo(documentPath, async () => {
+      if (evictionCount(documentPath) !== startedAt) return;
+      if (this.isStillRegistered && !(await this.isStillRegistered(key.docId)))
+        return;
+      await writePrivateJson(
+        path,
+        {
+          status: result.status,
+          ...(result.status === 'ok' ? { scenario: result.scenario } : {}),
+          provider: key.provider,
+          model: key.model,
+          storedAt: this.now(),
+        },
+        this.fs,
+      );
+    });
   }
 
   /**
@@ -146,12 +154,13 @@ export class ScenarioCache {
     const path = this.path(key);
     const existing = flights.get(path);
     if (existing) return existing;
+    const startedAt = evictionCount(join(this.dir, key.docId));
     const flight = Promise.resolve()
       .then(async () => {
         const hit = await this.get(key);
         if (hit) return hit;
         const result = await compute();
-        await this.store(key, result).catch(() => undefined);
+        await this.store(key, result, startedAt).catch(() => undefined);
         return result;
       })
       .finally(() => {

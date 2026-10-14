@@ -19,8 +19,12 @@ export type SubjectCheck =
   { ok: true; subject: string } | { ok: false; reason: string };
 
 export function checkScenarioSubject(raw: string): SubjectCheck {
+  // Canonical form first: full-width "ｕｎｆａｉｒ" must be judged as "unfair". Normalizing before
+  // stripping lets a character that only becomes invisible after NFKC be removed too.
   const subject = raw
+    .normalize('NFKC')
     .replace(INVISIBLE, '')
+    .normalize('NFKC')
     // Typographic apostrophes are ordinary in names of roles; fold them to the allowed one.
     .replace(/[‘’]/g, "'")
     .replace(/\s+/g, ' ')

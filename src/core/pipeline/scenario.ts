@@ -41,6 +41,13 @@ export interface RunScenarioDeps {
   /** Defaults to a cache in the registry's answer-cache directory. */
   cache?: ScenarioCache | undefined;
   now?: (() => number) | undefined;
+  /**
+   * INTEGRATION POINT for the shared core limiter (concurrency and per-minute budget shared with
+   * ask, spec amendment 19; PR #229 / #181). It wraps ONLY the cache-miss computation, so hits and
+   * cool-down `none` results cost no budget, and must release on every exit. Absent: no-op.
+   * Not wired yet: the server passes nothing until #229 merges.
+   */
+  limits?: (<T>(run: () => Promise<T>) => Promise<T>) | undefined;
   signal?: AbortSignal | undefined;
   timeoutMs?: number | undefined;
 }
@@ -75,63 +82,66 @@ export async function runScenario(
     promptVersion: SCENARIO_SUBJECT_PROMPT_VERSION,
   };
 
-  const result = await cache.getOrCompute(key, async () => {
-    if (!(await backend.hasDocument(docId)))
-      throw new AppError('DOC_NOT_FOUND', 'The document has no index.', {
-        userMessage:
-          "This document's search index is missing. Run ingest again for its URL.",
+  const limited = deps.limits ?? (<T>(run: () => Promise<T>) => run());
+  const result = await cache.getOrCompute(key, () =>
+    limited(async () => {
+      if (!(await backend.hasDocument(docId)))
+        throw new AppError('DOC_NOT_FOUND', 'The document has no index.', {
+          userMessage:
+            "This document's search index is missing. Run ingest again for its URL.",
+        });
+      await backend.ensureReady(deps.signal);
+      const retrieved = await retrieve(backend, {
+        docId,
+        query: subject,
+        mode: deps.retrievalMode ?? 'hybrid_rerank',
+        includeDeleted: false,
+        signal: deps.signal,
       });
-    await backend.ensureReady(deps.signal);
-    const retrieved = await retrieve(backend, {
-      docId,
-      query: subject,
-      mode: deps.retrievalMode ?? 'hybrid_rerank',
-      includeDeleted: false,
-      signal: deps.signal,
-    });
-    const subjectHits = retrieved.hits
-      .filter((hit) => hit.chunk.amendmentStatus !== 'deleted')
-      .slice(0, SUBJECT_HITS);
-    const have = new Set(subjectHits.map((hit) => hit.chunk.id));
-    const summaryIds = ((await deps.summaryChunkIds?.()) ?? []).filter(
-      (id) => !have.has(id),
-    );
-    const summaryHits: SearchHit[] = (
-      summaryIds.length ? await backend.getChunks(docId, summaryIds) : []
-    )
-      .slice(0, SUMMARY_HITS)
-      .map((chunk) => ({ chunk, score: 0 }));
-    // The subject's own passages come first: they are what the example is about.
-    const hits = [...subjectHits, ...summaryHits];
+      const subjectHits = retrieved.hits
+        .filter((hit) => hit.chunk.amendmentStatus !== 'deleted')
+        .slice(0, SUBJECT_HITS);
+      const have = new Set(subjectHits.map((hit) => hit.chunk.id));
+      const summaryIds = ((await deps.summaryChunkIds?.()) ?? []).filter(
+        (id) => !have.has(id),
+      );
+      const summaryHits: SearchHit[] = (
+        summaryIds.length ? await backend.getChunks(docId, summaryIds) : []
+      )
+        .slice(0, SUMMARY_HITS)
+        .map((chunk) => ({ chunk, score: 0 }));
+      // The subject's own passages come first: they are what the example is about.
+      const hits = [...subjectHits, ...summaryHits];
 
-    const attached = await attachScenario({
-      provider: deps.provider,
-      hits,
-      subject,
-      docId,
-      signal: deps.signal,
-      timeoutMs: deps.timeoutMs,
-    });
-    await registry.touch(docId, {
-      embedTokens: retrieved.usage.embedTokens,
-      rerankUnits: retrieved.usage.rerankUnits,
-      llmInputTokens: attached.usage.inputTokens,
-      llmOutputTokens: attached.usage.outputTokens,
-    });
-    const frames = attached.scenario?.frames.slice(0, SCENARIO_FRAMES);
-    // Showing the first three that validated must still leave at least one cited frame.
-    if (
-      !attached.scenario ||
-      !frames ||
-      frames.length < SCENARIO_FRAMES ||
-      frames.every((frame) => frame.kind === 'setup')
-    )
-      return { status: 'none' as const };
-    return {
-      status: 'ok' as const,
-      scenario: { ...attached.scenario, frames },
-    };
-  });
+      const attached = await attachScenario({
+        provider: deps.provider,
+        hits,
+        subject,
+        docId,
+        signal: deps.signal,
+        timeoutMs: deps.timeoutMs,
+      });
+      await registry.touch(docId, {
+        embedTokens: retrieved.usage.embedTokens,
+        rerankUnits: retrieved.usage.rerankUnits,
+        llmInputTokens: attached.usage.inputTokens,
+        llmOutputTokens: attached.usage.outputTokens,
+      });
+      const frames = attached.scenario?.frames.slice(0, SCENARIO_FRAMES);
+      // Showing the first three that validated must still leave at least one cited frame.
+      if (
+        !attached.scenario ||
+        !frames ||
+        frames.length < SCENARIO_FRAMES ||
+        frames.every((frame) => frame.kind === 'setup')
+      )
+        return { status: 'none' as const };
+      return {
+        status: 'ok' as const,
+        scenario: { ...attached.scenario, frames },
+      };
+    }),
+  );
   return result.status === 'ok'
     ? { status: 'ok', scenario: result.scenario }
     : { status: 'none' };

@@ -9,6 +9,8 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AnswerCache } from '../answer-cache.js';
+import { configFileSystem } from '../config-files.js';
 import { exampleScenario } from '../../../tests/synth/scenario.js';
 import {
   NONE_RETRY_MS,
@@ -135,17 +137,50 @@ describe('ScenarioCache', () => {
     await expect(readdir(join(dir, DOC))).rejects.toThrow();
   });
 
-  it('removes a file written just before the document disappeared', async () => {
-    let calls = 0;
-    const cache = new ScenarioCache({
-      dir,
-      now: () => clock,
-      isStillRegistered: () => ++calls === 1,
+  it('a write that finishes after the document was evicted is dropped, even though it is still registered', async () => {
+    const cache = make();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
     });
-    await cache.getOrCompute(key, () =>
+    const pending = cache.getOrCompute(key, async () => {
+      await gate;
+      return { status: 'none' as const };
+    });
+    // Removal deletes the directory while the registry still lists the document.
+    await new AnswerCache({ dir }).evictDocument(DOC);
+    release();
+    expect(await pending).toEqual({ status: 'none' });
+    await expect(readdir(join(dir, DOC))).rejects.toThrow();
+    // A later request, started after the eviction, may cache again.
+    await make().getOrCompute(key, () =>
       Promise.resolve({ status: 'none' as const }),
     );
-    expect(await readdir(join(dir, DOC))).toEqual([]);
+    expect(await readdir(join(dir, DOC))).toHaveLength(1);
+  });
+
+  it('a write already queued when eviction starts waits for it and is then dropped', async () => {
+    const cache = make();
+    let finish: () => void = () => undefined;
+    const slowRm = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const result = Promise.resolve({ status: 'none' as const });
+    const writing = cache.getOrCompute(key, () => result);
+    // Evict while the lookup/compute is still in progress, with a slow directory removal.
+    const evicting = new AnswerCache({
+      dir,
+      fs: {
+        ...configFileSystem,
+        rm: async (...args) => {
+          await slowRm;
+          return rm(...args);
+        },
+      },
+    }).evictDocument(DOC);
+    finish();
+    await Promise.all([evicting, writing]);
+    await expect(readdir(join(dir, DOC))).rejects.toThrow();
   });
 
   it('treats corrupt, invalid and unsafe files as misses', async () => {
