@@ -149,7 +149,9 @@ describe('inline struck text', () => {
     new ScriptedProvider({
       reply: (req) => {
         const content = req.messages[0]?.content;
-        return typeof content === 'string' ? content : '';
+        const shown = typeof content === 'string' ? content : '';
+        // Cites a real section and an invented one, to exercise validation.
+        return `${shown}\nThe fee changed [S:sec-1] [S:made-up].`;
       },
     });
 
@@ -169,11 +171,12 @@ describe('inline struck text', () => {
     expect(sent).toContain('[struck]five dollars[/struck]');
     expect(sent).toContain('[inserted]six dollars[/inserted]');
     expect(sent).toContain('section="sec-1"');
-    expect(
-      result.answer.citations.every((c) =>
-        c.chunkIds.every((id) => !id.includes(':~')),
-      ),
-    ).toBe(true);
+    expect(result.answer.citations.map((c) => c.sectionId)).toContain('sec-1');
+    expect(result.answer.invalidCitations).toEqual(['made-up']);
+    // Inline excerpts are synthetic, so their ids must not leak into citations.
+    expect(result.answer.citations.length).toBeGreaterThan(0);
+    for (const c of result.answer.citations)
+      expect(c.chunkIds.some((id) => id.includes(':~'))).toBe(false);
   });
 
   test('an ordinary question never sees struck text or markers', async () => {
