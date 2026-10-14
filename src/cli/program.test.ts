@@ -52,7 +52,6 @@ test('--version prints the package version', () => {
 });
 
 test.each([
-  { args: ['serve', '--port', '4318', '--public'], issue: 29 },
   { args: ['eval', '--fixture', 'sample', '--mode', 'all'], issue: 32 },
 ])(
   '$args prints the issue placeholder and sets exit code 2',

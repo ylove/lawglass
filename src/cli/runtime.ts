@@ -96,7 +96,8 @@ export const createRuntimeFrom =
         configDir,
       ),
       registry: new Registry(configDir),
-      fetcher: (url) => safeFetch(url, { cacheDir }),
+      fetcher: (url, options) =>
+        safeFetch(url, { cacheDir, signal: options?.signal }),
       now: () => new Date(),
       maxDocs: config?.maxDocs ?? 5,
       retrievalMode: config?.retrievalMode ?? 'hybrid_rerank',

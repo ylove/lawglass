@@ -452,6 +452,45 @@ describe('safeFetch', () => {
       }),
     ).rejects.toMatchObject({ code: 'FETCH_TIMEOUT' });
   });
+  it('rejects an already-cancelled caller before DNS or dispatch', async () => {
+    const controller = new AbortController();
+    controller.abort(new Error('secret-key'));
+    const resolver = vi.fn<Resolver>().mockResolvedValue([publicAddress]);
+    const factory = vi.fn(() => agent);
+    const error = await safeFetch(origin, {
+      ...opts,
+      signal: controller.signal,
+      resolver,
+      dispatcherFactory: factory,
+    }).catch((error: unknown) => error);
+    expect(error).toMatchObject({ code: 'FETCH_FAILED', cause: undefined });
+    expect((error as Error).message).not.toContain('secret-key');
+    expect(resolver).not.toHaveBeenCalled();
+    expect(factory).not.toHaveBeenCalled();
+  });
+  it('caller cancellation interrupts hanging DNS', async () => {
+    const controller = new AbortController();
+    const resolver = vi.fn<Resolver>(() => new Promise(() => undefined));
+    const fetching = safeFetch(origin, {
+      ...opts,
+      resolver,
+      signal: controller.signal,
+    });
+    const stopped = expect(fetching).rejects.toMatchObject({
+      code: 'FETCH_FAILED',
+    });
+    expect(resolver).toHaveBeenCalledOnce();
+    controller.abort();
+    await stopped;
+  });
+  it('still enforces the download deadline with a caller signal', async () => {
+    agent.get(origin).intercept({ path: '/' }).reply(200, '<bill/>').delay(100);
+    const controller = new AbortController();
+    await expect(
+      safeFetch(origin, { ...opts, timeoutMs: 10, signal: controller.signal }),
+    ).rejects.toMatchObject({ code: 'FETCH_TIMEOUT' });
+    expect(controller.signal.aborted).toBe(false);
+  });
   it('revalidates cached final URLs, caps cached bytes, and detects cached wrappers', async () => {
     const metadata = {
       url: `${origin}/`,
