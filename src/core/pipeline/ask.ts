@@ -247,6 +247,9 @@ export async function ask(
   const limits = deps.limits ?? sharedLimits();
   const release = await limits.acquire('ask', opts.signal);
   let result: AskResult;
+  // Filled by `askWithinLimits` as soon as a scenario starts, so even a later failure keeps
+  // the permit until that scenario's model call has finished.
+  const started: { scenario?: Promise<unknown> } = {};
   try {
     // Model calls are charged to the per-minute ceiling by the metered provider.
     result = await askWithinLimits(
@@ -254,9 +257,11 @@ export async function ask(
       checked,
       { ...deps, provider: limits.meter(deps.provider) },
       opts,
+      started,
     );
   } catch (error) {
-    release();
+    if (started.scenario) void started.scenario.finally(release);
+    else release();
     throw error;
   }
   if (!result.scenario) {
@@ -272,6 +277,7 @@ async function askWithinLimits(
   input: AskInput,
   deps: AskDeps,
   opts: AskOptions,
+  started: { scenario?: Promise<unknown> },
 ): Promise<AskResult> {
   const { backend, registry } = deps;
   const { signal } = opts;
@@ -305,9 +311,18 @@ async function askWithinLimits(
       input.chipId === 'who-affected' ||
       (input.chipId === 'summary' &&
         classifyBill(doc.sections) === 'single-subject');
+    const pending = startScenario(
+      ran.answer,
+      ran.hits,
+      wanted,
+      deps,
+      undefined,
+      signal,
+    );
+    if (pending) started.scenario = pending;
     const settled = await settleScenario(
       ran.answer,
-      startScenario(ran.answer, ran.hits, wanted, deps, undefined, signal),
+      pending,
       opts.deferScenario === true,
       recorder(registry, docId),
     );
@@ -360,16 +375,18 @@ async function askWithinLimits(
     onToken: opts.onToken,
   });
 
+  const pending = startScenario(
+    result,
+    usable.filter((hit) => !hit.injected),
+    wantsScenario(question),
+    deps,
+    question,
+    signal,
+  );
+  if (pending) started.scenario = pending;
   const settled = await settleScenario(
     result,
-    startScenario(
-      result,
-      usable.filter((hit) => !hit.injected),
-      wantsScenario(question),
-      deps,
-      question,
-      signal,
-    ),
+    pending,
     opts.deferScenario === true,
     recorder(registry, docId),
   );

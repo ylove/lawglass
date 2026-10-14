@@ -72,6 +72,7 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
 
   let raw = '';
   const guard = createEchoGuard(prompt.system);
+  let streamedAny = false;
   let usage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
   let stopReason: string | null = null;
   let finished = false;
@@ -85,7 +86,10 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
       raw += event.text;
       // Never stream a recited system prompt; the final text is replaced by a decline below.
       const safe = guard.push(event.text);
-      if (safe) onToken?.(safe);
+      if (safe) {
+        streamedAny = true;
+        onToken?.(safe);
+      }
     } else {
       usage = event.usage;
       stopReason = event.stopReason;
@@ -117,6 +121,8 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
     if (truncated) onToken?.('…');
   }
   if (echoed) {
+    // Consumers that print only streamed tokens (the CLI) would otherwise show a cut-off answer.
+    onToken?.(streamedAny ? `\n${DECLINE_TEXT}` : DECLINE_TEXT);
     return {
       text: DECLINE_TEXT,
       citations: [],
