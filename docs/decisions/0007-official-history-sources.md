@@ -13,7 +13,9 @@ rc.2 adds a bill's legislative history and lets people paste the page they actua
 ## Decision
 
 - **`safeFetch` is unchanged.** It never follows a link found in a page.
-- **Known landing URLs are rewritten before any fetch**, by pure, anchored string mapping (see spec Amendment 9). Nothing is read from page content. A URL that does not match exactly is treated as before.
+- **Known landing URLs are rewritten before any fetch**, by pure, anchored string mapping (see spec Amendment 9). Nothing is read from page content.
+- **The version is chosen deterministically.** If the pasted URL names one (congress.gov `/text/<code>`, or a GovInfo `BILLS-<congress><type><n><code>` URL), that version is used. Otherwise the latest text version in the official record is used: BILLSTATUS `textVersions` for federal, the Ohio documents/status page for Ohio. Only the version code comes from the record, and the URL is still built by the mapping. If the record cannot be read, ingest fails and asks the user to paste a specific version's URL. We never guess. The UI shows the version read and lists the others.
+- **Unmatched congress.gov URLs are rejected before any fetch**, with a message saying what to paste. This is the one exception to today's behavior: `safeFetch` has no host exclusion, so without it `https://www.congress.gov/help` would be fetched. Every other unmatched host keeps today's behavior.
 - **History adapters fetch only from an exact-host allowlist:** `www.govinfo.gov`, `www.legislature.ohio.gov`, `search-prod.lis.state.oh.us` and `unitedstates.github.io`. Hosts are compared whole, never by suffix, and none comes from user input or from a page.
 - **Every fetch goes through `safeFetch`**, so the SSRF guard, the pinned IP and redirect re-validation still apply.
 - **Sources are official and keyless.** Federal and Ohio only for rc.2.
@@ -26,6 +28,7 @@ rc.2 adds a bill's legislative history and lets people paste the page they actua
 - Pasting a congress.gov or legislature.ohio.gov bill URL works without us touching congress.gov.
 - Adding a jurisdiction means adding a mapping and one allowlisted host, each with tests. That is deliberate friction.
 - The mappings are string patterns, so a site redesign breaks them. They fail closed: no match means the old behavior, and a fetch failure means "history unavailable".
+- A landing URL with no version depends on the official record being readable. When it is not, the user pastes a version URL.
 - Sites that block honest clients stay unsupported. We accept that.
 - The User-Agent exposes the tool's name, version and repository to the sites it calls. That is the point.
 

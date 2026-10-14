@@ -34,7 +34,15 @@ These override the original text below, and the 2026-10-13 amendments above, whe
    - **congress.gov bill URLs**, such as `https://www.congress.gov/bill/118th-congress/house-bill/5009`, map to the GovInfo text URL and to `https://www.govinfo.gov/bulkdata/BILLSTATUS/<congress>/<type>/BILLSTATUS-<congress><type><number>.xml`. congress.gov itself is never fetched. It blocks automated clients, and GovInfo is the official bulk source.
    - **`https://www.legislature.ohio.gov/legislation/<ga>/<bill>`** maps to the Ohio LIS text, `https://search-prod.lis.state.oh.us/api/v2/general_assembly_<ga>/legislation/<bill>/<version>/pdf/`, plus the Ohio history pages (`/status`, `/documents`, `/committee`).
 
-   A URL that does not match a mapping exactly is handled as before. The rules around these fetches:
+   **Version selection is deterministic.** The mappings need a text version, and a landing URL often does not name one.
+   - If the pasted URL names a version, that version is used. For congress.gov this is `/text/<code>`, such as `/text/ih`. For GovInfo it is the `BILLS-<congress><type><n><code>` form.
+   - Otherwise the **latest** text version listed in the official record is used: BILLSTATUS `textVersions` for federal bills, and the Ohio documents/status page for Ohio. Reading that record is allowed because it is an allowlisted history source, not link-following in page content. Only the version code is taken from the record. The text URL is still built by the anchored mapping.
+   - If the record cannot be read, ingest fails with a clear message asking the user to paste a specific version's URL. We never guess a version, because a guess could summarize a different text than the user means.
+   - The UI shows which version was read and lists the other versions from the history, so the user can open one.
+
+   **Unmatched URLs.** Any congress.gov URL that does not match the bill mapping is rejected before any fetch, with a message saying what to paste. Every other unmatched host is handled as before.
+
+   The rules around these fetches:
    - Every fetch still goes through `safeFetch`: SSRF guard, pinned IP, and re-validation on every redirect.
    - History adapters may fetch only from an exact-host allowlist: `www.govinfo.gov`, `www.legislature.ohio.gov`, `search-prod.lis.state.oh.us`, and `unitedstates.github.io` (the legislators directory). No host comes from user input.
    - A history failure never blocks ingest. The text is still read, and the UI says "history unavailable".
@@ -59,7 +67,8 @@ These override the original text below, and the 2026-10-13 amendments above, whe
 
 13. **Scenarios (new §5.9).** A scenario is an illustrated user story of 3 to 4 frames. Each frame is an avatar, an icon and a short caption. It shows how a bill's effects might land on one made-up person.
     - **Numbers.** Profile numbers, such as a made-up person's income, home value or tax bill, are invented. They are always visibly labeled "example". Effects use only rates and amounts stated in the bill, each cited, or a calculation shown from those figures plus the labeled assumptions. When the bill states no figure, the frame stays qualitative.
-    - **Validation.** A validator checks every citation and every figure. A frame that fails is made qualitative. A scenario with fewer than 3 surviving frames is dropped.
+    - **Frame kinds.** A frame is a `setup`, a `rule` or an `effect` frame. A `setup` frame states only the labeled example profile and never makes a claim about the bill. A `rule` or `effect` frame states something the bill does.
+    - **Validation.** Parsing comes first. A scenario that fails schema parsing, such as an unknown avatar or icon or the wrong number of frames, is dropped whole. Then a validator checks each frame. A `setup` frame needs no citation. Every `rule` or `effect` frame needs at least one valid citation, and a frame without one is dropped. A `rule` or `effect` frame whose figure fails validation is also dropped, because its caption embeds the number. Failed frames are never rewritten. A frame is qualitative only if it was generated without figures. If fewer than 3 frames survive, the scenario is dropped. One regeneration attempt is allowed before dropping.
     - **Language.** Neutral. Frames describe effects and never judge them.
     - **When it shows.** With the summary when the bill is focused on one subject. For a bill on many subjects, only alongside answers to questions that benefit from a story, such as "how will this affect me / my family / businesses?".
     - **Closed lists.** Avatars and icons are chosen from closed lists, and persona names come from a fixed neutral list. The model never produces markup.
