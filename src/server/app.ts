@@ -14,7 +14,6 @@ import {
   AppError,
   AskRequest,
   CandidateLink,
-  DocDetail,
   DocSummary,
   IngestRequest,
   isAppError,
@@ -22,14 +21,14 @@ import {
   type ClientConfig,
   type ErrorPayload,
   type IngestEvent,
-  type OutlineItem,
-  type Section,
 } from '../core/model/index.js';
 import { parsePdf as defaultParsePdf } from '../core/parse/index.js';
 import { ask, ingest, sectionExcerpt } from '../core/pipeline/index.js';
 import type { RegistryEntry } from '../core/registry.js';
+import { buildDocDetail } from './doc-detail.js';
 import { CHIP_LABELS } from './chips.js';
 import { SlidingWindowLimiter } from './rate-limit.js';
+import { createSummaryService } from './summary.js';
 import { staticAssets } from './static.js';
 import { noopTurnstile, type TurnstileVerifier } from './turnstile.js';
 
@@ -88,26 +87,6 @@ export function toErrorPayload(error: unknown): ErrorPayload {
 
 function invalid(userMessage: string): AppError {
   return new AppError('INVALID_INPUT', userMessage, { userMessage });
-}
-
-function outlineOf(sections: readonly Section[]): OutlineItem[] {
-  return sections.flatMap((s) => [
-    {
-      id: s.id,
-      level: s.level,
-      ...(s.num === undefined ? {} : { num: s.num }),
-      ...(s.heading === undefined ? {} : { heading: s.heading }),
-    },
-    ...outlineOf(s.children),
-  ]);
-}
-
-function hasLineNumbers(sections: readonly Section[]): boolean {
-  return sections.some(
-    (s) =>
-      s.spans.some((span) => span.line !== undefined) ||
-      hasLineNumbers(s.children),
-  );
 }
 
 const isLoopbackHost = (host: string): boolean =>
@@ -231,15 +210,16 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   app.get('/api/docs/:docId', async (c) => {
     const entry = await entryFor(c.req.param('docId'));
     const doc = await runtime.registry.getDocument(entry.docId);
-    const detail: DocDetail = {
-      doc: DocSummary.parse(entry),
-      metadata: doc.metadata,
-      outline: outlineOf(doc.sections),
-      externalRefs: doc.externalRefs,
-      warnings: doc.warnings,
-      hasLineNumbers: hasLineNumbers(doc.sections),
-    };
-    return c.json(detail);
+    return c.json(await buildDocDetail(runtime, DocSummary.parse(entry), doc));
+  });
+
+  const summary = createSummaryService(runtime, { publicMode, now });
+
+  // Cache-only in public mode and never rate limited: a public visitor cannot start a model
+  // call here, so there is nothing to meter.
+  app.get('/api/docs/:docId/summary', async (c) => {
+    const entry = await entryFor(c.req.param('docId'));
+    return c.json(await summary.get(entry.docId));
   });
 
   app.delete('/api/docs/:docId', async (c) => {
