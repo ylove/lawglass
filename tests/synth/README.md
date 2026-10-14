@@ -12,14 +12,25 @@ body text), header/footer text, layout coordinates, expected top-level section
 numbers, and amendment decoration geometry. Coordinates are PDF points with the
 origin at the bottom left. `makeAmendingBillPdf({ pageCount: 3 })` adds a third
 page; the default is two. Both drawn lines and filled rectangles mark insertions
-and deletions. `makeScannedPdf()` has drawn shapes and zero text-layer items.
+and deletions. `makeScannedPdf()` has a page image, drawn shapes and zero text-layer items.
+
+`makeAmendmentGeometryPdf()` holds one line per amendment-geometry case, on two
+pages whose line numbers restart: strikes and underlines as lines and thin
+rects, at Word's strikeout height and at Ohio's underline depths; marks inside
+one merged text run, down to a single struck comma or inserted letter; an
+underline that runs on over a trailing space; insertions and deletions that wrap
+across a line and across the page break; and struck headings and markers. Its
+`controls` are negative controls the parser must ignore: a table rule between
+lines, a full-width rule through text, a table-cell box, a signature line, a
+line through whitespace only, near misses beside and below text, and a bar too
+thick to be a typographic rule.
 
 The congressional XML borrows only element shapes from the local reference bill;
 all passages and names are invented. `INJECTION_SAMPLES` contains hostile,
 bill-like strings for answer tests; `makeInjectionText(index)` wraps one in the
 same bytes/ground-truth API. Tests check preservation as data, not model resistance.
 
-Production parsers are not implemented yet. Adjacent tests round-trip basic facts
-through PDF.js's legacy ESM build (Node's worker is disabled), the existing
-happy-dom XML/HTML DOM readers, and test-only text section recognizers. Future
-normalization tests can compare parser output directly with these expected facts.
+Adjacent tests round-trip basic facts through PDF.js's legacy ESM build (Node's
+worker is disabled), the existing happy-dom XML/HTML DOM readers, and test-only
+text section recognizers. The PDF parser's tests (`src/core/parse/pdf.test.ts`)
+compare its output directly with these expected facts.

@@ -4,6 +4,7 @@ import {
   Section,
   SectionId,
   sectionText,
+  type SpanStatus,
   walkSections,
 } from '../model/index.js';
 import {
@@ -867,5 +868,257 @@ describe('content, stable ids and source locations', () => {
     expect(() => detectSections([line])).toThrow(
       'Invalid section source lines.',
     );
+  });
+});
+
+describe('issue #51 edge cases', () => {
+  it('splits every item of a colon-introduced inline list into siblings', () => {
+    const sections = detectSections(
+      lines(
+        'Sec. 4.',
+        '(a) The following: (1) x; (2) y; and (3) z.',
+        '(b) Next',
+      ),
+    );
+    const nodes = [...walkSections(sections)];
+    expect(nodes.map((section) => section.id)).toEqual([
+      'sec-4',
+      'sec-4/a',
+      'sec-4/a/1',
+      'sec-4/a/2',
+      'sec-4/a/3',
+      'sec-4/b',
+    ]);
+    expect(
+      nodes.map((section) => sectionText(section, { includeDeleted: true })),
+    ).toEqual([
+      'Sec. 4.\n',
+      '(a) The following: ',
+      '(1) x; ',
+      '(2) y; and ',
+      '(3) z.\n',
+      '(b) Next',
+    ]);
+    expect(nodes[3]?.heading).toBe('y; and');
+  });
+
+  it.each([
+    ['or', '(a) Either: (1) x; or (2) y.'],
+    ['no connector', '(a) Both: (1) x; (2) y.'],
+  ])('accepts a semicolon list with %s', (_, text) => {
+    expect(ids(lines('Sec. 4.', text))).toEqual([
+      'sec-4',
+      'sec-4/a',
+      'sec-4/a/1',
+      'sec-4/a/2',
+    ]);
+  });
+
+  it.each([
+    [
+      'a semicolon without a colon introducer',
+      '(a) Duties (1) x; (2) y.',
+      ['sec-4', 'sec-4/a'],
+    ],
+    [
+      'a non-sibling marker after the semicolon',
+      '(a) The following: (1) x; (3) y.',
+      ['sec-4', 'sec-4/a', 'sec-4/a/1'],
+    ],
+    [
+      'a prose reference after the semicolon',
+      '(a) The following: (1) x; (2) is void.',
+      ['sec-4', 'sec-4/a', 'sec-4/a/1'],
+    ],
+    [
+      'no semicolon at all',
+      '(a) The following: (1) x and (2) y.',
+      ['sec-4', 'sec-4/a', 'sec-4/a/1'],
+    ],
+  ])('does not split %s', (_, text, expected) => {
+    expect(ids(lines('Sec. 4.', text))).toEqual(expected);
+  });
+
+  it.each([
+    'Section 9 shall apply',
+    'Section 9 may be cited',
+    'Section 9 must be read',
+    'Section 9 applies to',
+    'Section 9 takes effect',
+    'Sec. 9 does not',
+    '§ 9 governs',
+  ])('keeps a wrapped reference as text: %s', (wrapped) => {
+    const sections = detectSections(
+      lines('Section 1.', 'as provided in', wrapped),
+    );
+    expect([...walkSections(sections)].map((section) => section.id)).toEqual([
+      'sec-1',
+    ]);
+    expect(sectionText(sections[0]!, { includeDeleted: true })).toContain(
+      wrapped,
+    );
+  });
+
+  it('still opens a heading whose next word is capitalized or not a verb', () => {
+    expect(
+      ids(lines('Section 9 Shall Apply', 'Section 10 Applicability')),
+    ).toEqual(['sec-9', 'sec-10']);
+  });
+});
+
+describe('amendment statuses on source lines', () => {
+  const struck = (text: string, from: number, to: number, status: SpanStatus) =>
+    Array.from(text, (_, index) =>
+      index >= from && index < to ? status : 'unchanged',
+    );
+
+  it('splits spans by status runs, including inside inline heading parts', () => {
+    const text = 'Sec. 4. (A) The fee is ten twenty dollars.';
+    const statuses = struck(text, 23, 26, 'deleted').map((status, index) =>
+      index >= 27 && index < 33 ? 'inserted' : status,
+    );
+    const sections = detectSections([
+      { text, page: 2, line: 7, statuses },
+      { text: 'Next line', page: 2, line: 8 },
+    ]);
+    const division = sections[0]!.children[0]!;
+    expect(sections[0]!.spans).toEqual([
+      { text: 'Sec. 4. ', status: 'unchanged', page: 2, line: 7 },
+    ]);
+    expect(division.spans).toEqual([
+      { text: '(A) The fee is ', status: 'unchanged', page: 2, line: 7 },
+      { text: 'ten', status: 'deleted', page: 2, line: 7 },
+      { text: ' ', status: 'unchanged', page: 2, line: 7 },
+      { text: 'twenty', status: 'inserted', page: 2, line: 7 },
+      { text: ' dollars.\n', status: 'unchanged', page: 2, line: 7 },
+      { text: 'Next line', status: 'unchanged', page: 2, line: 8 },
+    ]);
+    expect(sectionText(division, { includeDeleted: false })).toBe(
+      '(A) The fee is  twenty dollars.\nNext line',
+    );
+  });
+
+  it('attaches the newline to the final run so struck lines vanish whole', () => {
+    const sections = detectSections([
+      { text: 'Section 1.' },
+      { text: 'old words', statuses: struck('old words', 0, 9, 'deleted') },
+      { text: 'kept' },
+    ]);
+    expect(sections[0]!.spans.map((span) => [span.text, span.status])).toEqual([
+      ['Section 1.\n', 'unchanged'],
+      ['old words\n', 'deleted'],
+      ['kept', 'unchanged'],
+    ]);
+    expect(sectionText(sections[0]!, { includeDeleted: false })).toBe(
+      'Section 1.\nkept',
+    );
+  });
+
+  it('carries statuses on leading preamble lines and keeps empty lines', () => {
+    const sections = detectSections([
+      { text: '', statuses: [] },
+      { text: 'new title', statuses: struck('new title', 0, 9, 'inserted') },
+    ]);
+    expect(sections[0]!.spans).toEqual([
+      { text: '\n', status: 'unchanged' },
+      { text: 'new title', status: 'inserted' },
+    ]);
+  });
+
+  it('rejects statuses that do not cover the text exactly', () => {
+    expect(() =>
+      detectSections([{ text: 'abc', statuses: ['deleted'] }]),
+    ).toThrow('Invalid section source lines.');
+  });
+});
+
+describe('structure is read from the text as amended (struck text never names a section)', () => {
+  /** Mark every occurrence of each `[[...]]` run deleted, and strip the brackets. */
+  const amended = (source: string): SourceLine => {
+    let text = '';
+    const statuses: SpanStatus[] = [];
+    for (const [index, part] of source.split(/\[\[|\]\]/).entries()) {
+      text += part;
+      statuses.push(
+        ...Array.from(part, (): SpanStatus =>
+          index % 2 === 1 ? 'deleted' : 'unchanged',
+        ),
+      );
+    }
+    return { text, statuses };
+  };
+
+  it('takes a heading from the kept text only', () => {
+    const [section] = detectSections([
+      amended('Section 2. [[Old rate.]] New rate.'),
+    ]);
+    expect(section).toMatchObject({
+      id: 'sec-2',
+      num: '2',
+      heading: 'New rate.',
+    });
+    expect(section!.spans.map((span) => [span.text, span.status])).toEqual([
+      ['Section 2. ', 'unchanged'],
+      ['Old rate.', 'deleted'],
+      [' New rate.', 'unchanged'],
+    ]);
+  });
+
+  it('numbers a relettered division by its new marker', () => {
+    const sections = detectSections([
+      { text: 'Sec. 7.' },
+      amended('[[(C)]] (B) The fee is due.'),
+    ]);
+    const division = sections[0]!.children[0]!;
+    expect(division).toMatchObject({
+      id: 'sec-7/b',
+      num: '(B)',
+      heading: 'The fee is due.',
+    });
+    expect(division.spans.map((span) => [span.text, span.status])).toEqual([
+      ['(C)', 'deleted'],
+      [' (B) The fee is due.', 'unchanged'],
+    ]);
+  });
+
+  it('never opens a section for a wholly struck heading line', () => {
+    const sections = detectSections([
+      { text: 'Section 1. Kept.' },
+      amended('[[Section 2. Repealed rate.]]'),
+      { text: 'Still section 1 text.' },
+    ]);
+    expect(sections.map((section) => section.id)).toEqual(['sec-1']);
+    expect(sections[0]!.spans.map((span) => [span.text, span.status])).toEqual([
+      ['Section 1. Kept.\n', 'unchanged'],
+      ['Section 2. Repealed rate.\n', 'deleted'],
+      ['Still section 1 text.', 'unchanged'],
+    ]);
+  });
+
+  it('keeps struck text out of inline headings and in the part where it was printed', () => {
+    const sections = detectSections([
+      { text: 'Sec. 8.' },
+      amended('(a) [[Old intro:]] (1) [[stale]] fresh item'),
+    ]);
+    const [division] = sections[0]!.children;
+    const item = division!.children[0]!;
+    expect(division!.heading).toBeUndefined();
+    expect(item).toMatchObject({ num: '(1)', heading: 'fresh item' });
+    expect(division!.spans.map((span) => [span.text, span.status])).toEqual([
+      ['(a) ', 'unchanged'],
+      ['Old intro:', 'deleted'],
+      [' ', 'unchanged'],
+    ]);
+    expect(item.spans.map((span) => [span.text, span.status])).toEqual([
+      ['(1) ', 'unchanged'],
+      ['stale', 'deleted'],
+      [' fresh item', 'unchanged'],
+    ]);
+  });
+
+  it('leaves lines without struck text byte-for-byte as before', () => {
+    const text = '  (a)  Spaced   heading  ';
+    const sections = detectSections([{ text: 'Sec. 9.' }, { text }]);
+    expect(sections[0]!.children[0]!.spans[0]!.text).toBe(text);
   });
 });

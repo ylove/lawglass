@@ -381,10 +381,23 @@ export async function makeAmendingBillPdf(
   return { bytes: await doc.save({ useObjectStreams: false }), groundTruth };
 }
 
+/** A 1x1 grey PNG: stands in for a scanned page image. */
+export const SCAN_PIXEL = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAH2FzhVAAAAAElFTkSuQmCC',
+  'base64',
+);
+
 export async function makeScannedPdf(): Promise<SyntheticSample> {
   const doc = await newDocument();
   const page = doc.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight]);
-  // Draw raster-like bands only: no fonts, text operators, or hidden searchable text.
+  // A scan is an image of the page; draw one across the page, as a scanner would.
+  page.drawImage(await doc.embedPng(SCAN_PIXEL), {
+    x: 0,
+    y: 0,
+    width: LAYOUT.pageWidth,
+    height: LAYOUT.pageHeight,
+  });
+  // Raster-like bands on top: no fonts, text operators, or hidden searchable text.
   for (let line = 0; line < 12; line++) {
     page.drawRectangle({
       x: 72,
@@ -491,6 +504,510 @@ export async function makeFederalStylePdf(): Promise<SyntheticSample> {
             },
           ],
         },
+      ],
+    },
+  };
+}
+
+/** How a true amendment mark is drawn, relative to its text run. */
+interface GeometryMark {
+  status: 'deleted' | 'inserted';
+  shape: 'line' | 'rect';
+  /** Centre of the mark above the baseline, in ems of the body font size. */
+  offsetEm: number;
+  thickness: number;
+}
+
+interface GeometryRun {
+  text: string;
+  mark?: GeometryMark;
+  /** Extra horizontal space after the run, in points (a wide gap between words). */
+  gapAfter?: number;
+}
+
+interface GeometryLine {
+  page: number;
+  /** Ground-truth section this line's text belongs to. */
+  section: string;
+  runs: GeometryRun[];
+  /** Draw the whole line with one text operator, so PDF.js returns one merged item. */
+  merged?: boolean;
+  /** The line is the section's heading, e.g. "Sec. 1.01. Definitions.": no body text. */
+  heading?: string;
+}
+
+/** A drawn rule that is NOT an amendment mark; the parser must leave text unchanged. */
+export interface PdfControl {
+  name: string;
+  page: number;
+  /** The printed line it sits on or beside. */
+  line: number;
+  shape: 'line' | 'rect' | 'box';
+  x: number;
+  /** Line centre for lines; bottom edge for rects and boxes. */
+  y: number;
+  width: number;
+  /** Stroke width for lines and boxes; height for rects. */
+  thickness: number;
+  /** Box height. */
+  height?: number;
+}
+
+export interface PdfGeometryGroundTruth extends PdfGroundTruth {
+  controls: PdfControl[];
+}
+
+const strike = (shape: 'line' | 'rect' = 'line', offsetEm = 0.4) => ({
+  status: 'deleted' as const,
+  shape,
+  offsetEm,
+  thickness: 0.6,
+});
+const underline = (
+  shape: 'line' | 'rect' = 'line',
+  offsetEm = -0.073,
+  thickness = 0.6,
+) => ({ status: 'inserted' as const, shape, offsetEm, thickness });
+
+const SEC = 'sec-1.01';
+/**
+ * Every geometry case, one per printed line. Offsets: 0.4em is the generator's usual strike,
+ * 0.26em is where Word and Courier New put strikeout (below a naive "middle third of the em"),
+ * -0.257em is Ohio SB 113's underline and -0.133em Ohio SB 203's.
+ */
+const GEOMETRY_LINES: GeometryLine[] = [
+  {
+    page: 1,
+    section: SEC,
+    heading: 'Definitions',
+    runs: [{ text: 'Sec. 1.01. Definitions.' }],
+  },
+  {
+    page: 1,
+    section: `${SEC}/A`,
+    runs: [
+      { text: '(A) A ' },
+      { text: 'resident', mark: strike() },
+      { text: ' ' },
+      { text: 'domiciliary', mark: underline() },
+      { text: ' shall file a return.' },
+    ],
+  },
+  {
+    page: 1,
+    section: `${SEC}/B`,
+    runs: [
+      { text: '(B) The fee is ' },
+      { text: 'ten', mark: strike('rect') },
+      { text: ' ' },
+      { text: 'twenty', mark: underline('rect', -0.09) },
+      { text: ' dollars.' },
+    ],
+  },
+  {
+    page: 1,
+    section: `${SEC}/C`,
+    runs: [
+      { text: '(C) The board ' },
+      { text: 'may', mark: strike('line', 0.26) },
+      { text: ' ' },
+      { text: 'shall', mark: underline('line', -0.257, 0.5) },
+      { text: ' adopt rules.' },
+    ],
+  },
+  {
+    page: 1,
+    section: `${SEC}/D`,
+    merged: true,
+    runs: [
+      { text: '(D) A notice shall be mailed ' },
+      { text: 'by certified mail', mark: strike('line', 0.3) },
+      { text: ' within ten days.' },
+    ],
+  },
+  {
+    page: 1,
+    section: `${SEC}/E`,
+    merged: true,
+    runs: [
+      { text: '(E) The agency' },
+      { text: ',', mark: strike('line', 0.3) },
+      { text: ' and the board' },
+      { text: 's', mark: underline('line', -0.1) },
+      { text: ' shall report.' },
+    ],
+  },
+  {
+    page: 1,
+    section: `${SEC}/F`,
+    runs: [
+      { text: '(F) Records ' },
+      // Ohio underlines run on over the trailing space.
+      { text: 'requested by sheriffs ', mark: underline('line', -0.133, 0.7) },
+      { text: 'pursuant to law.' },
+    ],
+  },
+  {
+    page: 1,
+    section: `${SEC}/G`,
+    runs: [
+      { text: '(G) The department shall ' },
+      { text: 'publish the annual', mark: underline() },
+    ],
+  },
+  {
+    page: 1,
+    section: `${SEC}/G`,
+    runs: [
+      { text: 'report online', mark: underline() },
+      { text: ' by March first.' },
+    ],
+  },
+  {
+    page: 1,
+    section: `${SEC}/H`,
+    runs: [{ text: '(H) Signed by the clerk:' }],
+  },
+  {
+    page: 1,
+    section: `${SEC}/I`,
+    runs: [
+      { text: '(I) Effective ', gapAfter: 57 },
+      { text: 'upon enactment.' },
+    ],
+  },
+  {
+    page: 1,
+    section: `${SEC}/J`,
+    runs: [{ text: '(J) Fees are due annually.' }],
+  },
+  {
+    page: 1,
+    section: `${SEC}/K`,
+    runs: [
+      { text: '(K) The following language is ' },
+      { text: 'repealed as of the', mark: strike() },
+    ],
+  },
+  {
+    page: 2,
+    section: `${SEC}/K`,
+    runs: [
+      { text: 'effective date of this act', mark: strike() },
+      { text: '.' },
+    ],
+  },
+  {
+    page: 2,
+    section: 'sec-2',
+    runs: [
+      { text: 'Section 2. This act takes effect ninety days after passage.' },
+    ],
+  },
+  {
+    page: 2,
+    section: 'sec-2',
+    runs: [{ text: 'Table 1. Fee schedule' }],
+  },
+  // Struck headings and markers must never name a section: structure follows the kept text.
+  {
+    page: 2,
+    section: 'sec-3',
+    heading: 'Current rates.',
+    runs: [
+      { text: 'Section 3. ' },
+      { text: 'Obsolete rates.', mark: strike() },
+      { text: ' ' },
+      { text: 'Current rates.', mark: underline() },
+    ],
+  },
+  {
+    page: 2,
+    section: 'sec-3/A',
+    runs: [
+      { text: '(B)', mark: strike() },
+      { text: ' (A) The rate is set by rule.' },
+    ],
+  },
+  {
+    page: 2,
+    section: 'sec-3/A',
+    runs: [{ text: 'Sec. 4. Repealed provisions.', mark: strike() }],
+  },
+];
+
+function lineBaseline(line: number): number {
+  return LAYOUT.firstLineY - (line - 1) * LAYOUT.lineSpacing;
+}
+
+function drawControl(page: PDFPage, control: PdfControl): void {
+  if (control.shape === 'line') {
+    page.drawLine({
+      start: { x: control.x, y: control.y },
+      end: { x: control.x + control.width, y: control.y },
+      thickness: control.thickness,
+      color: rgb(0, 0, 0),
+    });
+  } else if (control.shape === 'rect') {
+    page.drawRectangle({
+      x: control.x,
+      y: control.y,
+      width: control.width,
+      height: control.thickness,
+      color: rgb(0, 0, 0),
+    });
+  } else {
+    page.drawRectangle({
+      x: control.x,
+      y: control.y,
+      width: control.width,
+      height: control.height ?? 0,
+      borderWidth: control.thickness,
+      borderColor: rgb(0, 0, 0),
+    });
+  }
+}
+
+/** Negative controls, placed from the drawn text so they stay correct if the text changes. */
+function geometryControls(font: PDFFont): PdfControl[] {
+  const size = LAYOUT.fontSize;
+  const width = (text: string) => font.widthOfTextAtSize(text, size);
+  const x = LAYOUT.textX;
+  const clerk = width('(H) Signed by the clerk:');
+  const effective = width('(I) Effective');
+  const fees = width('(J) Fees are due annually.');
+  return [
+    {
+      name: 'decorative bar thicker than a typographic rule, through text',
+      page: 1,
+      line: 1,
+      shape: 'rect',
+      x,
+      y: lineBaseline(1) + 0.3 * size - 1.5,
+      width: width('Sec. 1.01.'),
+      thickness: 3,
+    },
+    {
+      name: 'signature line beside its label, at underline height',
+      page: 1,
+      line: 10,
+      shape: 'line',
+      x: x + clerk + 6,
+      y: lineBaseline(10) - 1,
+      width: 144,
+      thickness: 0.6,
+    },
+    {
+      name: 'strike-height line through whitespace only',
+      page: 1,
+      line: 11,
+      shape: 'line',
+      x: x + effective + 3,
+      y: lineBaseline(11) + 0.3 * size,
+      width: 54,
+      thickness: 0.6,
+    },
+    {
+      name: 'strike-height line near the text but not overlapping it',
+      page: 1,
+      line: 12,
+      shape: 'line',
+      x: x + fees + 4,
+      y: lineBaseline(12) + 0.3 * size,
+      width: 60,
+      thickness: 0.6,
+    },
+    {
+      name: 'rule under the text, below the underline band',
+      page: 1,
+      line: 12,
+      shape: 'line',
+      x,
+      y: lineBaseline(12) - 0.6 * size,
+      width: fees,
+      thickness: 0.6,
+    },
+    {
+      name: 'table cell border hugging the text',
+      page: 1,
+      line: 12,
+      shape: 'box',
+      x: x - 2,
+      y: lineBaseline(12) - 2,
+      width: fees + 4,
+      height: 11,
+      thickness: 0.5,
+    },
+    {
+      name: 'table rule between two lines',
+      page: 1,
+      line: 12,
+      shape: 'line',
+      x,
+      y: lineBaseline(12) - LAYOUT.lineSpacing / 2,
+      width: 468,
+      thickness: 0.6,
+    },
+    {
+      name: 'full-width table rule through text at strike height',
+      page: 2,
+      line: 3,
+      shape: 'line',
+      x: 54,
+      y: lineBaseline(3) + 0.3 * size,
+      width: 504,
+      thickness: 0.6,
+    },
+  ];
+}
+
+/** Build the ground-truth tree from the line table; spans omit the printed marker. */
+function geometrySections(): Section[] {
+  const perPage = new Map<number, number>();
+  const nodes = new Map<string, Section>();
+  const roots: Section[] = [];
+  for (const line of GEOMETRY_LINES) {
+    const number = (perPage.get(line.page) ?? 0) + 1;
+    perPage.set(line.page, number);
+    let node = nodes.get(line.section);
+    const opens = !node;
+    if (!node) {
+      const division = /\/([A-Z])$/.exec(line.section)?.[1];
+      const parent = nodes.get(line.section.replace(/\/[A-Z]$/, ''));
+      node = {
+        id: line.section,
+        num: division ? `(${division})` : line.section.slice('sec-'.length),
+        level: parent ? parent.level + 1 : 1,
+        spans: [],
+        children: [],
+        pageStart: line.page,
+        lineStart: number,
+      };
+      nodes.set(line.section, node);
+      (parent?.children ?? roots).push(node);
+    }
+    if (line.heading) node.heading = line.heading;
+    // Parent ranges include their descendants.
+    for (const id of [line.section, line.section.replace(/\/[A-Z]$/, '')]) {
+      const covering = nodes.get(id)!;
+      covering.pageEnd = line.page;
+      covering.lineEnd = number;
+    }
+    line.runs.forEach((run, index) => {
+      // Spans hold body text, as in the other samples: drop the opening line's marker.
+      const text =
+        opens && index === 0
+          ? run.text.replace(/^(?:\([A-Z]\)|Section \d+\.|Sec\. [\d.]+\.) /, '')
+          : run.text;
+      if (text)
+        node.spans.push(
+          span(text, line.page, number, run.mark?.status ?? 'unchanged'),
+        );
+    });
+  }
+  return roots;
+}
+
+/**
+ * Every amendment-geometry case on two numbered pages (numbers restart on page 2): strikes and
+ * underlines drawn as lines and as thin filled rects, at the generator's, Word's and Ohio's
+ * offsets; marks inside one merged text run, including single-character marks; an underline
+ * that runs on over a trailing space; insertions and deletions that wrap across a line and
+ * across the page break; and negative controls that must not mark anything.
+ */
+export async function makeAmendmentGeometryPdf(): Promise<
+  SyntheticSample<PdfGeometryGroundTruth>
+> {
+  const doc = await newDocument();
+  const font = await doc.embedFont(StandardFonts.TimesRoman);
+  const size = LAYOUT.fontSize;
+  const decorations: PdfDecoration[] = [];
+  const pages = [1, 2].map((pageNumber) => {
+    const page = doc.addPage([LAYOUT.pageWidth, LAYOUT.pageHeight]);
+    page.drawText('As Introduced', { x: 250, y: 754, size: 10, font });
+    page.drawText(String(pageNumber), { x: 302, y: 30, size: 10, font });
+    return page;
+  });
+  const truthPages: PdfGroundTruth['pages'] = [1, 2].map((page) => ({
+    page,
+    lines: {},
+    header: 'As Introduced',
+    footer: String(page),
+  }));
+  const counters = new Map<number, number>();
+  for (const spec of GEOMETRY_LINES) {
+    const page = pages[spec.page - 1]!;
+    const line = (counters.get(spec.page) ?? 0) + 1;
+    counters.set(spec.page, line);
+    const y = lineBaseline(line);
+    const full = spec.runs.map((run) => run.text).join('');
+    truthPages[spec.page - 1]!.lines[line] = full;
+    page.drawText(String(line), { x: LAYOUT.lineNumberX, y, font, size: 8 });
+    if (spec.merged) page.drawText(full, { x: LAYOUT.textX, y, font, size });
+    let x = LAYOUT.textX;
+    for (const run of spec.runs) {
+      const width = font.widthOfTextAtSize(run.text, size);
+      if (!spec.merged) {
+        // Marked-content boundaries keep PDF.js from merging runs; they carry no status.
+        if (run.mark) page.pushOperators(beginMarkedContent('Span'));
+        page.drawText(run.text, { x, y, font, size });
+        if (run.mark) page.pushOperators(endMarkedContent());
+      }
+      if (run.mark) {
+        const centre = y + run.mark.offsetEm * size;
+        const mark: PdfDecoration = {
+          text: run.text,
+          status: run.mark.status,
+          shape: run.mark.shape,
+          page: spec.page,
+          line,
+          x,
+          width,
+          thickness: run.mark.thickness,
+          y:
+            run.mark.shape === 'rect'
+              ? centre - run.mark.thickness / 2
+              : centre,
+        };
+        drawDecoration(page, mark);
+        decorations.push(mark);
+      }
+      x += width + (run.gapAfter ?? 0);
+    }
+  }
+  const controls = geometryControls(font);
+  for (const control of controls)
+    drawControl(pages[control.page - 1]!, control);
+  return {
+    bytes: await doc.save({ useObjectStreams: false }),
+    groundTruth: {
+      layout: { ...LAYOUT },
+      pages: truthPages,
+      sections: geometrySections(),
+      expectedSectionNumbers: ['1.01', '2', '3'],
+      decorations,
+      controls,
+      deletedStrings: [
+        'resident',
+        'ten',
+        'may',
+        'by certified mail',
+        ',',
+        'repealed as of the',
+        'effective date of this act',
+        'Obsolete rates.',
+        '(B)',
+        'Sec. 4. Repealed provisions.',
+      ],
+      insertedStrings: [
+        'domiciliary',
+        'twenty',
+        'shall',
+        's',
+        'requested by sheriffs',
+        'publish the annual',
+        'report online',
+        'Current rates.',
       ],
     },
   };

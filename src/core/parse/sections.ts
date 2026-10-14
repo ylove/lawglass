@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { AppError, type Section } from '../model/index.js';
+import { AppError, SpanStatus, type Section } from '../model/index.js';
 
 /** PDF callers supply printed coordinates; text callers leave them absent. */
 export interface SourceLine {
@@ -7,6 +7,17 @@ export interface SourceLine {
   page?: number;
   line?: number;
   x?: number;
+  /**
+   * Amendment status of each UTF-16 code unit of `text` (struck or underlined text in PDFs).
+   * Absent means every character is unchanged. Detection reads the text only; statuses are
+   * carried through to the spans so a struck run stays `deleted` in whatever section it lands.
+   */
+  statuses?: readonly SpanStatus[];
+  /**
+   * Layout says this line continues the paragraph above it (in a first-line-indent PDF it
+   * starts at the left margin), so it never opens a section even if it begins "(F) of ...".
+   */
+  continuation?: boolean;
 }
 
 export type HeadingKind = 'article' | 'chapter' | 'section';
@@ -17,17 +28,32 @@ export interface SectionPattern {
   regex: RegExp;
 }
 
+/**
+ * Lowercase words that, right after a section number at the start of a line, show a
+ * cross-reference that wrapped onto a new line ("section 9 of", "Section 9 shall apply")
+ * rather than a heading. Modals and verbs were added for issue #51.
+ */
+const REFERENCE_CONTINUATIONS = [
+  ...['of', 'and', 'or', 'as', 'to', 'in', 'on', 'for', 'by', 'with'],
+  ...['under', 'from', 'is', 'are', 'was', 'were', 'be', 'has', 'have'],
+  ...['had', 'shall', 'may', 'must', 'will', 'can', 'should', 'would'],
+  ...['could', 'apply', 'applies', 'does', 'do', 'did', 'means'],
+  ...['provides', 'requires', 'takes', 'governs'],
+].join('|');
+const SECTION_NUMBER = String.raw`(\d+(?:\.\d+)*[a-zA-Z]?(?:-[a-zA-Z0-9]+)*)`;
+const SECTION_TAIL = String.raw`(?!\.?\s+(?:${REFERENCE_CONTINUATIONS})\b)(?:\.(?=\s|$)|(?=\s|$))`;
+
 /** Ordered, replaceable patterns. Decimal dots belong to the section number. */
 export const DEFAULT_SECTION_PATTERNS: readonly SectionPattern[] = [
   {
     kind: 'section',
-    regex:
-      /^(?:Section|SECTION|Sec\.?|SEC\.?)\s+(\d+(?:\.\d+)*[a-zA-Z]?(?:-[a-zA-Z0-9]+)*)(?!\.?\s+(?:of|and|or|is|are|was|were|as|to|in|on|for|by|with|under|from)\b)(?:\.(?=\s|$)|(?=\s|$))/,
+    regex: new RegExp(
+      String.raw`^(?:Section|SECTION|Sec\.?|SEC\.?)\s+${SECTION_NUMBER}${SECTION_TAIL}`,
+    ),
   },
   {
     kind: 'section',
-    regex:
-      /^§\s*(\d+(?:\.\d+)*[a-zA-Z]?(?:-[a-zA-Z0-9]+)*)(?!\.?\s+(?:of|and|or|is|are|was|were|as|to|in|on|for|by|with|under|from)\b)(?:\.(?=\s|$)|(?=\s|$))/,
+    regex: new RegExp(String.raw`^§\s*${SECTION_NUMBER}${SECTION_TAIL}`),
   },
   {
     kind: 'article',
@@ -49,12 +75,19 @@ export interface SectionDetectionOptions {
 }
 
 const sourceLines = z.array(
-  z.object({
-    text: z.string(),
-    page: z.number().int().positive().optional(),
-    line: z.number().int().positive().optional(),
-    x: z.number().optional(),
-  }),
+  z
+    .object({
+      text: z.string(),
+      page: z.number().int().positive().optional(),
+      line: z.number().int().positive().optional(),
+      x: z.number().optional(),
+      statuses: z.array(SpanStatus).optional(),
+      continuation: z.boolean().optional(),
+    })
+    .refine(
+      ({ text, statuses }) => !statuses || statuses.length === text.length,
+      'statuses must have one entry per character of text',
+    ),
 );
 
 type MarkerKind =
@@ -129,6 +162,14 @@ function matchHeading(
   return undefined;
 }
 
+/** Whether a line begins with something the patterns would open as a section. */
+export function startsWithHeading(
+  text: string,
+  patterns: readonly SectionPattern[] = DEFAULT_SECTION_PATTERNS,
+): boolean {
+  return matchHeading(text, patterns) !== undefined;
+}
+
 interface LinePart {
   text: string;
   match?: Heading;
@@ -179,13 +220,18 @@ function isNextSibling(current: MarkerContext, next: string): boolean {
   }
 }
 
-/** Split leading chains and plausible continuations at the first heading boundary. */
+/**
+ * Split leading chains and plausible continuations at the first heading boundary.
+ * `inColonList` is set once a colon has introduced inline items on this line
+ * ("(a) The following: (1) x; (2) y; and (3) z."): their siblings may then follow a semicolon.
+ */
 function splitLine(
   text: string,
   patterns: readonly SectionPattern[],
   stack: readonly MarkerContext[],
   x: number | undefined,
   nested = false,
+  inColonList = false,
 ): LinePart[] {
   const match = matchHeading(text, patterns);
   if (!match) return [{ text }];
@@ -203,12 +249,31 @@ function splitLine(
   let nextStart = match.bodyStart + body.length - body.trimStart().length;
   let next = matchHeading(text.slice(nextStart), patterns);
   const leadingChain = next?.kind === 'enumeration';
+  let opensColonList = false;
   if (next?.kind !== 'enumeration') {
     // Check the first heading boundary only: never scan sentences for references to (a).
     const label = /^[^.:…]*?(?:[.:](?:[—–-])?|…)\s*/.exec(body);
-    if (!label) return [{ text, match, nested }];
-    nextStart = match.bodyStart + label[0].length;
-    next = matchHeading(text.slice(nextStart), patterns);
+    if (label) {
+      nextStart = match.bodyStart + label[0].length;
+      next = matchHeading(text.slice(nextStart), patterns);
+      opensColonList = label[0].includes(':');
+    }
+  }
+  if (next?.kind !== 'enumeration' && inColonList && current) {
+    // Inside a colon-introduced list, the next item follows "; ", "; and " or "; or ".
+    // Only the first semicolon is checked, and only the next peer marker opens a sibling.
+    const boundary = /;\s+(?:(?:and|or)\s+)?/.exec(body);
+    const candidate = boundary
+      ? matchHeading(body.slice(boundary.index + boundary[0].length), patterns)
+      : undefined;
+    if (
+      boundary &&
+      candidate?.kind === 'enumeration' &&
+      isNextSibling(current, candidate.marker)
+    ) {
+      nextStart = match.bodyStart + boundary.index + boundary[0].length;
+      next = candidate;
+    }
   }
   if (next?.kind !== 'enumeration') return [{ text, match, nested }];
   const sibling = current !== undefined && isNextSibling(current, next.marker);
@@ -235,7 +300,14 @@ function splitLine(
         heading: text.slice(match.bodyStart, nextStart).trim(),
       },
     },
-    ...splitLine(text.slice(nextStart), patterns, context, undefined, !sibling),
+    ...splitLine(
+      text.slice(nextStart),
+      patterns,
+      context,
+      undefined,
+      !sibling,
+      inColonList || opensColonList,
+    ),
   ];
 }
 
@@ -304,6 +376,58 @@ function enumerationDepth(
   return peer < 0 ? stack.length : peer;
 }
 
+/**
+ * The line as amended: struck characters removed, with a map from each visible character to
+ * its offset in the original text. A space left doubled by a removal is dropped, so a struck
+ * word between kept words reads as one gap ("Section 2. ~~Old~~ New" -> "Section 2. New").
+ */
+function visibleText(line: SourceLine): { text: string; offsets: number[] } {
+  if (!line.statuses?.includes('deleted'))
+    return {
+      text: line.text,
+      offsets: Array.from({ length: line.text.length }, (_, index) => index),
+    };
+  let text = '';
+  const offsets: number[] = [];
+  let removed = false;
+  for (let index = 0; index < line.text.length; index++) {
+    const char = line.text.charAt(index);
+    if (line.statuses[index] === 'deleted') {
+      removed = true;
+      continue;
+    }
+    const doubled = /\s/.test(char) && (text === '' || /\s$/.test(text));
+    if (!(removed && doubled)) {
+      text += char;
+      offsets.push(index);
+    }
+    removed = false;
+  }
+  return { text, offsets };
+}
+
+interface StatusRun {
+  start: number;
+  end: number;
+  status: SpanStatus;
+}
+
+/** Maximal runs of one status in `[start, end)`; always at least one run, even when empty. */
+function statusRuns(
+  statuses: readonly SpanStatus[] | undefined,
+  start: number,
+  end: number,
+): StatusRun[] {
+  const runs: StatusRun[] = [];
+  for (let index = start; index < end; index++) {
+    const status = statuses?.[index] ?? 'unchanged';
+    const last = runs.at(-1);
+    if (last?.status === status) last.end = index + 1;
+    else runs.push({ start: index, end: index + 1, status });
+  }
+  return runs.length > 0 ? runs : [{ start, end, status: 'unchanged' }];
+}
+
 function recordLocation(section: Section, line: SourceLine): void {
   if (line.page !== undefined) {
     section.pageStart ??= line.page;
@@ -359,19 +483,44 @@ export function detectSections(
     return preamble;
   }
 
-  function append(section: Section, line: SourceLine, newline: boolean): void {
-    section.spans.push({
-      text: line.text + (newline ? '\n' : ''),
-      status: 'unchanged',
-      ...(line.page === undefined ? {} : { page: line.page }),
-      ...(line.line === undefined ? {} : { line: line.line }),
-    });
+  /** Append `line.text[start, end)` as one span per status run; the newline joins the last. */
+  function append(
+    section: Section,
+    line: SourceLine,
+    start: number,
+    end: number,
+    newline: boolean,
+  ): void {
+    const runs = statusRuns(line.statuses, start, end);
+    for (const [index, run] of runs.entries()) {
+      section.spans.push({
+        text:
+          line.text.slice(run.start, run.end) +
+          (newline && index === runs.length - 1 ? '\n' : ''),
+        status: run.status,
+        ...(line.page === undefined ? {} : { page: line.page }),
+        ...(line.line === undefined ? {} : { line: line.line }),
+      });
+    }
     recordLocation(section, line);
   }
 
   for (const [index, line] of lines.entries()) {
-    const parts = splitLine(line.text, patterns, enumerations, line.x);
+    // Structure (num, heading, nesting) is read from the text as amended; struck characters
+    // still go into the spans, as deleted runs, via the offset map.
+    const visible = visibleText(line);
+    const parts: LinePart[] = line.continuation
+      ? [{ text: visible.text }]
+      : splitLine(visible.text, patterns, enumerations, line.x);
+    let partStart = 0;
+    let visibleStart = 0;
     for (const [partIndex, part] of parts.entries()) {
+      visibleStart += part.text.length;
+      // Struck text at a boundary stays with the part before it; the last part takes the rest.
+      const partEnd =
+        partIndex === parts.length - 1
+          ? line.text.length
+          : (visible.offsets[visibleStart] ?? line.text.length);
       const match = part.match;
       const nested = part.nested ?? false;
       const x = partIndex > 0 ? undefined : line.x;
@@ -429,14 +578,17 @@ export function detectSections(
         if (!line.text.trim()) continue;
         current = getPreamble();
         for (const pending of leading.slice(0, -1))
-          append(current, pending, true);
+          append(current, pending, 0, pending.text.length, true);
         leading.length = 0;
       }
       append(
         current,
-        { ...line, text: part.text },
+        line,
+        partStart,
+        partEnd,
         partIndex === parts.length - 1 && index < lines.length - 1,
       );
+      partStart = partEnd;
       for (const frame of [...headings, ...enumerations])
         recordLocation(frame.section, line);
       if (headings.length === 0 && enumerations.length > 0 && preamble)
