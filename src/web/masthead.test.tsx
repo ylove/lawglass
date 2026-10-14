@@ -26,19 +26,29 @@ test('the home screen shows the hero line outside the h1', async () => {
   expect(screen.getByRole('banner').contains(hero)).toBe(true);
 });
 
-test('the chip for the current question is marked pressed', async () => {
+test('the chip for the current question is marked current', async () => {
   render(<App api={createMockApi({ delayMs: 0 })} />);
   await screen.findByRole('heading', {
     name: 'Clean Water Infrastructure Act',
   });
   const chip = screen.getByRole('button', { name: 'What does it change?' });
-  expect(chip.getAttribute('aria-pressed')).toBe('false');
+  expect(chip.hasAttribute('aria-current')).toBe(false);
   fireEvent.click(chip);
   await screen.findAllByRole('button', { name: 'Source 1' });
-  expect(chip.getAttribute('aria-pressed')).toBe('true');
+  expect(chip.getAttribute('aria-current')).toBe('true');
   expect(
     screen
       .getByRole('button', { name: 'Key definitions' })
-      .getAttribute('aria-pressed'),
-  ).toBe('false');
+      .hasAttribute('aria-current'),
+  ).toBe(false);
+});
+
+test('the main region is named by the bill title while a bill is open', async () => {
+  render(<App api={createMockApi({ delayMs: 0 })} />);
+  const title = await screen.findByRole('heading', {
+    name: 'Clean Water Infrastructure Act',
+  });
+  const main = screen.getByRole('main');
+  expect(main.getAttribute('aria-labelledby')).toBe(title.id);
+  expect(screen.getByRole('main', { name: title.textContent }).id).toBe('main');
 });
