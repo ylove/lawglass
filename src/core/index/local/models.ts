@@ -6,6 +6,12 @@ import lock from '../../../../models.lock.json' with { type: 'json' };
 import { BRAND } from '../../brand.js';
 import { ensurePrivateSubdirectory } from '../../config-files.js';
 import { AppError } from '../../model/index.js';
+import {
+  REQUIRED_MODEL_FILES,
+  ensureVerifiedModelFiles,
+  type FileFetcher,
+  type LockedModel,
+} from './model-files.js';
 
 export const MODEL_LOCK = lock;
 export const BGE_QUERY_PREFIX =
@@ -50,6 +56,8 @@ export interface LocalModelOptions {
   configDir?: string;
   allowRemoteModels?: boolean;
   logger?: (message: string) => void;
+  /** Test seam for the hash-verified model download. Defaults to global fetch. */
+  fetchFile?: FileFetcher;
 }
 
 interface FloatTensor {
@@ -93,7 +101,7 @@ export function createLocalModels(options: LocalModelOptions = {}): {
   const loadRuntime = () => (runtime ??= import('@huggingface/transformers'));
 
   async function prepare(
-    model: ModelIdentity,
+    model: LockedModel,
   ): Promise<typeof import('@huggingface/transformers')> {
     // Create the cache 0700 ourselves; transformers.js would use the umask default.
     await ensurePrivateSubdirectory(cacheDir);
@@ -103,14 +111,8 @@ export function createLocalModels(options: LocalModelOptions = {}): {
     // Offline loads use the exact revision directory, not an unversioned local model.
     transformers.env.allowLocalModels = !allowRemote;
     transformers.env.useFSCache = true;
-    const required = [
-      'config.json',
-      'tokenizer.json',
-      'tokenizer_config.json',
-      'onnx/model_quantized.onnx',
-    ];
     const cached = await Promise.all(
-      required.map(async (file) => {
+      REQUIRED_MODEL_FILES.map(async (file) => {
         try {
           await access(join(cacheDir, model.id, model.revision, file));
           return true;
@@ -129,6 +131,12 @@ export function createLocalModels(options: LocalModelOptions = {}): {
         `Downloading local models (~${String(mb)} MB, first run only)…`,
       );
     }
+    // Download (if needed) and hash-check every file before transformers.js loads anything.
+    await ensureVerifiedModelFiles(model, {
+      cacheDir,
+      allowRemote,
+      ...(options.fetchFile ? { fetchFile: options.fetchFile } : {}),
+    });
     return transformers;
   }
 
@@ -164,6 +172,8 @@ export function createLocalModels(options: LocalModelOptions = {}): {
       });
     }).catch((cause: unknown) => {
       extractor = undefined;
+      // Keep the specific hash-mismatch / download message instead of masking it.
+      if (cause instanceof AppError) throw cause;
       throw new AppError(
         'BACKEND_UNAVAILABLE',
         'Could not load the local embedding model.',
@@ -202,6 +212,8 @@ export function createLocalModels(options: LocalModelOptions = {}): {
       return { tokenizer, model };
     }).catch((cause: unknown) => {
       classifier = undefined;
+      // Keep the specific hash-mismatch / download message instead of masking it.
+      if (cause instanceof AppError) throw cause;
       throw new AppError(
         'BACKEND_UNAVAILABLE',
         'Could not load the local reranking model.',

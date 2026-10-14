@@ -9,6 +9,8 @@ import {
   defaultConfigDir,
 } from './models.js';
 import { BRAND } from '../../brand.js';
+import { AppError } from '../../model/index.js';
+import { ensureVerifiedModelFiles } from './model-files.js';
 
 const mocks = vi.hoisted(() => {
   const env = {
@@ -65,6 +67,12 @@ vi.mock('@huggingface/transformers', () => ({
   AutoModel: { from_pretrained: mocks.loadEmbeddingModel },
   AutoTokenizer: { from_pretrained: mocks.loadTokenizer },
   AutoModelForSequenceClassification: { from_pretrained: mocks.loadModel },
+}));
+
+// Hash verification has its own offline suite (model-files.test.ts); here it is a spy.
+vi.mock('./model-files.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./model-files.js')>()),
+  ensureVerifiedModelFiles: vi.fn(() => Promise.resolve()),
 }));
 
 describe('lazy Transformers adapters', () => {
@@ -325,5 +333,31 @@ describe('lazy Transformers adapters', () => {
     expect(mocks.env.allowRemoteModels).toBe(false);
     await online.dispose();
     await offline.dispose();
+  });
+
+  it('verifies the locked file hashes before transformers loads anything', async () => {
+    const models = createLocalModels({ configDir, logger: vi.fn() });
+    await models.reranker.ensureReady();
+    expect(ensureVerifiedModelFiles).toHaveBeenCalledExactlyOnceWith(
+      MODEL_LOCK.reranker,
+      expect.objectContaining({
+        cacheDir: join(configDir, 'models'),
+        allowRemote: true,
+      }),
+    );
+    await models.dispose();
+  });
+
+  it('surfaces a hash mismatch as-is and never loads the model', async () => {
+    const mismatch = new AppError(
+      'BACKEND_UNAVAILABLE',
+      'failed its SHA-256 check',
+    );
+    vi.mocked(ensureVerifiedModelFiles).mockRejectedValueOnce(mismatch);
+    const models = createLocalModels({ configDir, logger: vi.fn() });
+    await expect(models.embedder.ensureReady()).rejects.toBe(mismatch);
+    expect(mocks.loadTokenizer).not.toHaveBeenCalled();
+    expect(mocks.loadEmbeddingModel).not.toHaveBeenCalled();
+    await models.dispose();
   });
 });
