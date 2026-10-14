@@ -1,71 +1,43 @@
 /**
  * Chip executor: turns a `ChipDefinition` (src/core/chips.ts) into an answer.
  *
- * It is a pure function over injected dependencies (`backend`, `provider`, document metadata),
- * so the pipeline (`pipeline/ask.ts`) can call it and tests can run it on in-memory doubles.
+ * It is a pure function over injected dependencies (`backend`, `provider`, document info), so
+ * the pipeline (`pipeline/ask.ts`) can call it and tests can run it on in-memory doubles.
  *
- *   retrieve      one `retrieve()` per chip query, merged round-robin, then `answer()`
- *   definitions   same, but a definition chunk is already the answer, so none are injected
- *   outline       first chunk of each top-level section; capped map-reduce on long bills
  *   metadata      formatted from `BillMetadata`; no retrieval and no LLM call
+ *   outline       chip-summary.ts: outline + first chunks, capped map-reduce
+ *   what-changes  chip-changes.ts: struck and underlined runs read from the section tree
+ *   definitions   every definition chunk, document-wide ones first, capped and counted
+ *   retrieve      one `retrieve()` per query, merged, reranked once, then `answer()`
  */
 import { answer, fleschKincaidGrade } from './answer/index.js';
+import { runChangesChip } from './chip-changes.js';
+import { runOutlineChip } from './chip-summary.js';
 import {
-  DEFAULT_TOP_K,
-  retrieve,
-  type RetrievedHit,
-} from './retrieve/index.js';
+  appendNote,
+  type ChipDeps,
+  type ChipRun,
+  type RunChipOptions,
+} from './chip-types.js';
 import {
   addUsage,
-  makeChunkId,
   walkSections,
   ZERO_USAGE,
-  type AnswerResult,
   type BackendUsage,
   type BillMetadata,
   type ChipDefinition,
-  type Citation,
-  type LlmProvider,
-  type RetrievalBackend,
   type SearchHit,
-  type Section,
-  type StoredChunk,
 } from './model/index.js';
+import { MAX_INJECTED_DEFINITIONS } from './retrieve/index.js';
+import { findDefinitionsToInject } from './retrieve/definitions.js';
+import {
+  DEFAULT_TOP_K,
+  RERANK_MAX_CANDIDATES,
+  retrieve,
+} from './retrieve/index.js';
 
-/** Most top-level sections sent to the model in one call. */
-export const MAX_SECTIONS_PER_MAP_CALL = 12;
-/** Most map calls per summary. Sections beyond `MAX_SECTIONS_PER_MAP_CALL * MAX_MAP_CALLS` are left out. */
-export const MAX_MAP_CALLS = 5;
-/** How many chunks (the section's own, then its descendants') are tried to find a section's first chunk. */
-const FIRST_CHUNK_CANDIDATES = 6;
-
-/** What `runChip` needs to know about the document besides its chunks. */
-export interface ChipDoc {
-  metadata: BillMetadata;
-  /** The section tree; only the top level is read, for the `outline` strategy. */
-  sections: readonly Section[];
-}
-
-export interface ChipDeps {
-  backend: RetrievalBackend;
-  provider: LlmProvider;
-  doc: ChipDoc;
-}
-
-export interface RunChipOptions {
-  signal?: AbortSignal | undefined;
-  /** Streamed pieces of the final answer (map-step text is not streamed). */
-  onToken?: ((text: string) => void) | undefined;
-  maxTokens?: number | undefined;
-}
-
-export interface ChipRun {
-  answer: AnswerResult;
-  /** The excerpts the model was shown, best first. Empty for `sponsors`. */
-  hits: SearchHit[];
-  /** Embedding and rerank usage for retrieval (LLM usage is inside `answer.usage`). */
-  backendUsage: BackendUsage;
-}
+/** `definitions` lists at most this many terms; the rest are counted, not shown. */
+export const MAX_LISTED_DEFINITIONS = 25;
 
 export async function runChip(
   chip: ChipDefinition,
@@ -78,10 +50,14 @@ export async function runChip(
       return runMetadataChip(chip, deps.doc.metadata);
     case 'outline':
       return runOutlineChip(chip, docId, deps, options);
-    case 'retrieve':
-      return runRetrieveChip(chip, docId, deps, options, true);
     case 'definitions':
-      return runRetrieveChip(chip, docId, deps, options, false);
+      return runDefinitionsChip(chip, docId, deps, options);
+    case 'retrieve':
+      // The contract has no "spans" strategy, so what-changes is a `retrieve` chip by label
+      // but is answered from the amendment spans (see chip-changes.ts for why).
+      return chip.id === 'what-changes'
+        ? runChangesChip(chip, docId, deps, options)
+        : runRetrieveChip(chip, docId, deps, options);
   }
 }
 
@@ -93,12 +69,15 @@ function runMetadataChip(
   chip: ChipDefinition,
   metadata: BillMetadata,
 ): ChipRun {
-  // Only `sponsors` uses this strategy today; the label doubles as the question.
+  // Structured sources (XML) merge sponsors and cosponsors into one list, so the wording must
+  // be true either way: it says "listed on the bill", not "the sponsors are".
   const names = metadata.sponsors?.filter((s) => s.trim() !== '') ?? [];
   const text =
     names.length === 0
       ? "This document doesn't say who sponsored it."
-      : `${names.length === 1 ? 'Sponsor' : 'Sponsors'}: ${names.join(', ')}.`;
+      : names.length === 1
+        ? `Sponsor listed on the bill: ${names[0] ?? ''}.`
+        : `Sponsor and cosponsors listed on the bill: ${names.join(', ')}.`;
   return {
     answer: {
       text,
@@ -117,7 +96,7 @@ function runMetadataChip(
 }
 
 // ---------------------------------------------------------------------------------------------
-// retrieve / definitions
+// retrieve
 // ---------------------------------------------------------------------------------------------
 
 async function runRetrieveChip(
@@ -125,13 +104,13 @@ async function runRetrieveChip(
   docId: string,
   deps: ChipDeps,
   options: RunChipOptions,
-  injectDefinitions: boolean,
 ): Promise<ChipRun> {
   const topK = chip.retrieval?.topK ?? DEFAULT_TOP_K;
   let backendUsage: BackendUsage = ZERO_USAGE;
-  const perQuery: RetrievedHit[][] = [];
+  const perQuery: SearchHit[][] = [];
 
   // Queries run one after another: they are few (1-3) and sequential keeps backend load flat.
+  // Definitions are injected once at the end, for the final list, not once per query.
   for (const query of chip.queries) {
     const context = await retrieve(deps.backend, {
       docId,
@@ -141,17 +120,41 @@ async function runRetrieveChip(
       topK,
       sparseWeight: chip.retrieval?.sparseWeight,
       includeDeleted: chip.retrieval?.includeDeleted,
-      injectDefinitions,
+      injectDefinitions: false,
       signal: options.signal,
     });
     backendUsage = addUsage(backendUsage, context.usage);
     perQuery.push(context.hits);
   }
 
-  const merged = interleave(perQuery);
-  // Injected definitions ride along beyond the cap; they explain terms used by the ranked hits.
-  const ranked = merged.filter((h) => !h.injected).slice(0, topK);
-  const injected = merged.filter((h) => h.injected);
+  let ranked = interleave(perQuery);
+
+  // Several keyword-style queries make good BM25 input but a weak ranking after interleaving,
+  // so one cross-encoder pass orders the merged candidates against the chip's actual question.
+  if (chip.queries.length > 1 && ranked.length > 1) {
+    const reranked = await deps.backend.rerank({
+      query: chip.label,
+      hits: ranked.slice(0, RERANK_MAX_CANDIDATES),
+      topN: topK,
+      signal: options.signal,
+    });
+    backendUsage = addUsage(backendUsage, reranked.usage);
+    ranked = reranked.hits;
+  }
+  ranked = ranked.slice(0, topK);
+
+  const injection = await findDefinitionsToInject({
+    backend: deps.backend,
+    docId,
+    hits: ranked,
+    includeDeleted: chip.retrieval?.includeDeleted ?? false,
+    signal: options.signal,
+  });
+  backendUsage = addUsage(backendUsage, injection.usage);
+  const rankedIds = new Set(ranked.map((h) => h.chunk.id));
+  const injected = injection.definitions
+    .filter((h) => !rankedIds.has(h.chunk.id))
+    .slice(0, MAX_INJECTED_DEFINITIONS);
 
   const result = await answer({
     provider: deps.provider,
@@ -174,9 +177,9 @@ async function runRetrieveChip(
  * best, and so on. Scores from different queries (or after reranking) are not comparable, but
  * ranks are. A chunk found by several queries is kept once, at its best rank.
  */
-export function interleave(lists: readonly RetrievedHit[][]): RetrievedHit[] {
+export function interleave(lists: readonly SearchHit[][]): SearchHit[] {
   const seen = new Set<string>();
-  const out: RetrievedHit[] = [];
+  const out: SearchHit[] = [];
   const longest = Math.max(0, ...lists.map((l) => l.length));
   for (let rank = 0; rank < longest; rank++) {
     for (const list of lists) {
@@ -191,157 +194,71 @@ export function interleave(lists: readonly RetrievedHit[][]): RetrievedHit[] {
 }
 
 // ---------------------------------------------------------------------------------------------
-// outline (summary)
+// definitions
 // ---------------------------------------------------------------------------------------------
 
-const MAP_INSTRUCTION =
-  'These excerpts are the opening text of consecutive sections of one bill. Summarize what they do in two to five short sentences, citing the sections. Do not guess at sections you cannot see.';
-
-const REDUCE_INSTRUCTION =
-  'Each excerpt below is a partial summary of one part of the bill. It already carries section markers like [S:sec-1]. Combine the partial summaries into one summary, keep the markers on the sentences they support, and use only markers that appear in the partial summaries.';
-
-async function runOutlineChip(
+/**
+ * List the defined terms. Large bills define hundreds, so: fetch every definition chunk, put
+ * definitions that apply to the whole document first (then limited ones), keep document order
+ * within each group, show `MAX_LISTED_DEFINITIONS` and say how many more there are.
+ */
+async function runDefinitionsChip(
   chip: ChipDefinition,
   docId: string,
   deps: ChipDeps,
   options: RunChipOptions,
 ): Promise<ChipRun> {
-  const firstChunks = await firstChunkPerTopLevelSection(
-    deps.backend,
+  const context = await retrieve(deps.backend, {
     docId,
-    deps.doc.sections,
-  );
-  const hits: SearchHit[] = firstChunks.map((chunk) => ({ chunk, score: 1 }));
-  const common = {
-    provider: deps.provider,
+    query: chip.queries[0] ?? 'definitions',
+    mode: chip.retrieval?.mode,
+    filter: chip.filter,
+    topK: chip.retrieval?.topK,
+    injectDefinitions: false,
     signal: options.signal,
-    maxTokens: options.maxTokens,
-  };
-  const context = (h: SearchHit[]) => ({
-    hits: h,
-    metadata: deps.doc.metadata,
   });
 
-  // Short bill: one call over the outline's first chunks.
-  if (hits.length <= MAX_SECTIONS_PER_MAP_CALL) {
-    const result = await answer({
-      ...common,
-      question: chip.label,
-      context: context(hits),
-      chipInstruction: chip.answerInstruction,
-      onToken: options.onToken,
-    });
-    return { answer: result, hits, backendUsage: ZERO_USAGE };
-  }
-
-  // Long bill, map step: summarize batches of sections. The cap bounds cost and latency.
-  const covered = hits.slice(0, MAX_SECTIONS_PER_MAP_CALL * MAX_MAP_CALLS);
-  const batches = chunkArray(covered, MAX_SECTIONS_PER_MAP_CALL);
-  const partials = await Promise.all(
-    batches.map((batch) =>
-      answer({
-        ...common,
-        question: chip.label,
-        context: context(batch),
-        chipInstruction: MAP_INSTRUCTION,
-      }),
+  const order = new Map(
+    [...walkSections(deps.doc.sections)].map((s, i) => [s.id, i] as const),
+  );
+  // scope by "term@section"; absent when the caller gave no definitions.
+  const scopeRank = new Map(
+    (deps.doc.definitions ?? []).map(
+      (d) =>
+        [
+          `${d.term}@${d.sectionId}`,
+          d.scope === 'document' ? 0 : d.scope === 'unknown' ? 1 : 2,
+        ] as const,
     ),
   );
-
-  // Reduce step: the model sees the partial summaries as excerpts. Each stands in for the real
-  // sections its citations point to (`coveredSectionIds`), so citation validation still works.
-  const usable = partials.filter(
-    (p) => !p.declined && p.citations.some((c) => c.valid),
-  );
-  const partHits = usable.map((p, i) => partialSummaryHit(docId, i, p));
-  const final = await answer({
-    ...common,
-    question: chip.label,
-    context: context(partHits),
-    chipInstruction:
-      `${REDUCE_INSTRUCTION} ${chip.answerInstruction ?? ''}`.trim(),
-    onToken: options.onToken,
-  });
-
-  // Point citations back at the real chunks (with page and line) found in the map step.
-  const real = new Map<string, Citation>();
-  for (const c of partials.flatMap((p) => p.citations)) {
-    if (c.valid) real.set(c.sectionId, c);
-  }
-  const usage = [...partials, final].reduce(
-    (sum, r) => ({
-      inputTokens: sum.inputTokens + r.usage.inputTokens,
-      outputTokens: sum.outputTokens + r.usage.outputTokens,
-    }),
-    { inputTokens: 0, outputTokens: 0 },
-  );
-  return {
-    answer: {
-      ...final,
-      citations: final.citations.map((c) => real.get(c.sectionId) ?? c),
-      usage,
-    },
-    hits: covered,
-    backendUsage: ZERO_USAGE,
-  };
-}
-
-/** A map-step summary dressed as a chunk whose "text" is the summary and whose sections are those it cited. */
-function partialSummaryHit(
-  docId: string,
-  index: number,
-  partial: AnswerResult,
-): SearchHit {
-  const ids = [
-    ...new Set(
-      partial.citations.filter((c) => c.valid).map((c) => c.sectionId),
-    ),
+  const rank = (h: SearchHit): [number, number] => [
+    scopeRank.get(`${h.chunk.definesTerm ?? ''}@${h.chunk.sectionId}`) ?? 1,
+    order.get(h.chunk.sectionId) ?? Number.MAX_SAFE_INTEGER,
   ];
-  const [first = ''] = ids;
-  const chunk: StoredChunk = {
-    id: `${docId}:summary-part:${String(index)}`,
-    docId,
-    sectionId: first,
-    breadcrumb: `Partial summary ${String(index + 1)}`,
-    chunkType: 'other',
-    amendmentStatus: 'unchanged',
-    text: partial.text,
-    definedTermsUsed: [],
-    refs: [],
-    coveredSectionIds: ids,
-    tokenCount: partial.usage.outputTokens,
-  };
-  return { chunk, score: 1 };
-}
-
-/**
- * The first live chunk of each top-level section, in document order. A top-level section with
- * no text of its own (a heading over subsections) falls back to its first descendant that has a
- * chunk. Chunk ids are deterministic (`makeChunkId`), so this is one `getChunks` call.
- */
-async function firstChunkPerTopLevelSection(
-  backend: RetrievalBackend,
-  docId: string,
-  sections: readonly Section[],
-): Promise<StoredChunk[]> {
-  const candidates = sections.map((top) =>
-    [...walkSections([top])]
-      .slice(0, FIRST_CHUNK_CANDIDATES)
-      .map((s) => makeChunkId(docId, s.id, 0)),
-  );
-  const found = await backend.getChunks(docId, candidates.flat());
-  const byId = new Map(found.map((c) => [c.id, c]));
-  return candidates.flatMap((ids) => {
-    const chunk = ids
-      .map((id) => byId.get(id))
-      .find((c) => c !== undefined && c.amendmentStatus !== 'deleted');
-    return chunk ? [chunk] : [];
+  const sorted = [...context.hits].sort((a, b) => {
+    const [sa, oa] = rank(a);
+    const [sb, ob] = rank(b);
+    return sa - sb || oa - ob || a.chunk.id.localeCompare(b.chunk.id);
   });
-}
+  const shown = sorted.slice(0, MAX_LISTED_DEFINITIONS);
+  const hidden = sorted.length - shown.length;
 
-function chunkArray<T>(items: readonly T[], size: number): T[][] {
-  const out: T[][] = [];
-  for (let i = 0; i < items.length; i += size)
-    out.push(items.slice(i, i + size));
-  return out;
+  const result = await answer({
+    provider: deps.provider,
+    question: chip.label,
+    context: { hits: shown, metadata: deps.doc.metadata },
+    chipInstruction: chip.answerInstruction,
+    signal: options.signal,
+    onToken: options.onToken,
+    maxTokens: options.maxTokens,
+  });
+  const note =
+    hidden > 0
+      ? `${String(hidden)} more defined ${hidden === 1 ? 'term is' : 'terms are'} in the bill but not listed here.`
+      : '';
+  return {
+    answer: appendNote(result, note, options.onToken),
+    hits: shown,
+    backendUsage: context.usage,
+  };
 }

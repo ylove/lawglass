@@ -23,7 +23,7 @@ export type {
   ChipDoc,
   ChipRun,
   RunChipOptions,
-} from './chip-runner.js';
+} from './chip-types.js';
 
 /** Validate against the contract and freeze deeply, so a chip can never be mutated at runtime. */
 function defineChip(chip: ChipDefinition): ChipDefinition {
@@ -55,23 +55,19 @@ const summary = defineChip({
 
 /**
  * What does it change?
- * Only chunks marked inserted or deleted can describe a change. Listing `deleted` is also what
- * tells `retrieve` to keep struck text (it is dropped from every other chip's results so it is
- * never mistaken for current law).
+ * Spec §3.3 says "filter amendment_status IN [inserted, deleted], group by section". The
+ * executor (chip-changes.ts) does the exact version of that: it reads the struck and underlined
+ * runs from the section tree, so there is no query or filter to configure here. A retrieved
+ * `inserted` chunk is mostly existing law with a few new words, which is the wrong thing to
+ * call "added".
  */
 const whatChanges = defineChip({
   id: 'what-changes',
   label: 'What does it change?',
   strategy: 'retrieve',
-  queries: [
-    'text removed or struck from current law',
-    'new text added to current law',
-    'amend repeal strike insert substitute section',
-  ],
-  filter: { amendmentStatus: ['inserted', 'deleted'] },
-  retrieval: { mode: 'hybrid_rerank', includeDeleted: true, topK: 10 },
+  queries: [],
   answerInstruction:
-    'Group your answer by section. For each section, say what the bill removes (status="deleted") and what it adds (status="inserted"), keeping the two apart. Never describe removed text as something the bill requires.',
+    'Each changed section has up to two excerpts. An excerpt with status="deleted" holds only text the bill strikes out. An excerpt with status="inserted" holds only the new wording the bill adds. Group your answer by section, in the order given. For each section say what the bill removes and what it adds, keeping the two apart. Never describe removed text as something the bill requires.',
 });
 
 /**
@@ -95,7 +91,11 @@ const whoAffected = defineChip({
 /**
  * Penalties and enforcement.
  * The wording is predictable ("fine", "violation", "civil penalty"), so the sparse (BM25) list
- * gets 75% of the vote in weighted RRF. Only penalty and operative chunks are searched.
+ * gets 75% of the vote in weighted RRF. There is deliberately no chunk-type filter: the
+ * classifier gives a chunk the first matching type, so a penalty clause in a section that also
+ * says "for purposes of" is typed `findings`, and a filter would hide it. The BM25 weighting
+ * already does the narrowing. The queries are keyword bags, so the merged candidates get one
+ * cross-encoder pass against the question (see runRetrieveChip).
  */
 const penalties = defineChip({
   id: 'penalties',
@@ -105,7 +105,6 @@ const penalties = defineChip({
     'penalty fine violation',
     'enforce enforcement civil penalty misdemeanor imprisonment',
   ],
-  filter: { chunkType: ['penalty', 'operative'] },
   retrieval: { mode: 'hybrid', sparseWeight: 0.75, topK: 8 },
   answerInstruction:
     'List the penalties and who enforces them. For each, say who can be penalized, for what, and the amount or punishment, using the numbers exactly as written. If the excerpts show no penalties, say so.',
@@ -128,7 +127,9 @@ const effectiveDate = defineChip({
 
 /**
  * Taxes, fees, and spending.
- * Hybrid search over appropriation and operative chunks, which is where amounts are stated.
+ * Hybrid search over appropriation and operative chunks, where amounts are stated, plus
+ * `findings`: the classifier types any chunk containing "for purposes of" as findings, and
+ * those include dollar amounts (on H.R. 5009, 6 of 7 chunks with an amount that `money` missed).
  */
 const money = defineChip({
   id: 'money',
@@ -138,7 +139,7 @@ const money = defineChip({
     'tax rate fee charge payment',
     'appropriation funding spending dollars grant',
   ],
-  filter: { chunkType: ['appropriation', 'operative'] },
+  filter: { chunkType: ['appropriation', 'operative', 'findings'] },
   retrieval: { mode: 'hybrid', topK: 8 },
   answerInstruction:
     'List the taxes, fees and spending in the bill: what is charged or paid, by whom, and how much. Use amounts exactly as written. Do not add up or estimate totals.',
@@ -146,8 +147,9 @@ const money = defineChip({
 
 /**
  * Key definitions.
- * Not a search at all: take the definition chunks and list the terms. Dense mode with a
- * generous `topK` returns all of them when the filter leaves fewer than that.
+ * Not a search at all: the executor takes every definition chunk (the generous `topK` is a
+ * fetch-all, not a relevance cut), puts document-wide definitions first in document order,
+ * lists the first 25 and says how many more there are.
  */
 const definitions = defineChip({
   id: 'definitions',
@@ -155,7 +157,7 @@ const definitions = defineChip({
   strategy: 'definitions',
   queries: ['definitions of terms used in this act'],
   filter: { chunkType: ['definition'] },
-  retrieval: { mode: 'dense', topK: 60 },
+  retrieval: { mode: 'dense', topK: 1000 },
   answerInstruction:
     "List the defined terms, one per line, with the meaning given in the bill in plain words. Use the bill's own definition for each term.",
 });

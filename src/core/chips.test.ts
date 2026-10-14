@@ -2,22 +2,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryBackend } from '../../tests/contracts/memory-backend.js';
 import { ScriptedProvider } from '../../tests/contracts/scripted-provider.js';
 import { CHIPS, getChip, runChip } from './chips.js';
-import {
-  MAX_MAP_CALLS,
-  MAX_SECTIONS_PER_MAP_CALL,
-  interleave,
-  type ChipDeps,
-} from './chip-runner.js';
+import { MAX_LISTED_DEFINITIONS, interleave } from './chip-runner.js';
+import type { ChipDeps } from './chip-types.js';
 import {
   BillMetadata,
   ChipDefinition,
   ChipId,
+  type Definition,
   EMPTY_METADATA,
   makeChunkId,
   type Chunk,
   type Section,
 } from './model/index.js';
-import type { RetrievedHit } from './retrieve/index.js';
+import { MAX_INJECTED_DEFINITIONS } from './retrieve/index.js';
 
 // Spy on `retrieve` while keeping its real behaviour, to assert what each chip passes it.
 const retrieveSpy = vi.hoisted(() => vi.fn());
@@ -170,7 +167,7 @@ describe('runChip: sponsors (metadata only)', () => {
   it('formats sponsors without retrieval or an LLM call', async () => {
     const run = await runChip(getChip('sponsors'), DOC, deps);
     expect(run.answer.text).toBe(
-      'Sponsors: Rep. Ada Lovelace, Sen. Grace Hopper.',
+      'Sponsor and cosponsors listed on the bill: Rep. Ada Lovelace, Sen. Grace Hopper.',
     );
     expect(run.answer.declined).toBe(false);
     expect(run.answer.provider).toBe('none');
@@ -182,7 +179,9 @@ describe('runChip: sponsors (metadata only)', () => {
   it('uses the singular for one sponsor', async () => {
     deps.doc.metadata = { ...SPONSORS, sponsors: ['Rep. Ada Lovelace'] };
     const run = await runChip(getChip('sponsors'), DOC, deps);
-    expect(run.answer.text).toBe('Sponsor: Rep. Ada Lovelace.');
+    expect(run.answer.text).toBe(
+      'Sponsor listed on the bill: Rep. Ada Lovelace.',
+    );
   });
 
   it.each([null, [], ['  ']])('says so when sponsors are %j', async (value) => {
@@ -194,21 +193,6 @@ describe('runChip: sponsors (metadata only)', () => {
 });
 
 describe('runChip: retrieve chips', () => {
-  it('what-changes opts in to deleted chunks with an inserted/deleted filter', async () => {
-    const run = await runChip(getChip('what-changes'), DOC, deps);
-    for (let i = 0; i < retrieveSpy.mock.calls.length; i++) {
-      expect(optionsOf(i)).toMatchObject({
-        mode: 'hybrid_rerank',
-        includeDeleted: true,
-        filter: { amendmentStatus: ['inserted', 'deleted'] },
-      });
-    }
-    const ids = run.hits.map((h) => h.chunk.sectionId).sort();
-    expect(ids).toEqual(['sec-7', 'sec-8']);
-    expect(promptOf()).toContain('Group your answer by section');
-    expect(promptOf()).toContain('status=\\"deleted\\"');
-  });
-
   it('who-affected uses hybrid_rerank and reranks', async () => {
     const rerank = vi.spyOn(backend, 'rerank');
     await runChip(getChip('who-affected'), DOC, deps);
@@ -216,14 +200,20 @@ describe('runChip: retrieve chips', () => {
     expect(rerank).toHaveBeenCalled();
   });
 
-  it('penalties is sparse-weighted 0.75 over penalty/operative chunks, current law only', async () => {
+  it('penalties is sparse-weighted 0.75 with no chunk-type filter, current law only, one final rerank', async () => {
     const search = vi.spyOn(backend, 'search');
+    const rerank = vi.spyOn(backend, 'rerank');
     const run = await runChip(getChip('penalties'), DOC, deps);
     expect(optionsOf(0)).toMatchObject({
       mode: 'hybrid',
       sparseWeight: 0.75,
-      filter: { chunkType: ['penalty', 'operative'] },
+      injectDefinitions: false,
     });
+    expect(optionsOf(0).filter).toBeUndefined();
+    // Both queries ran; the merged candidates are reranked once against the chip's question.
+    expect(retrieveSpy).toHaveBeenCalledTimes(2);
+    expect(rerank).toHaveBeenCalledTimes(1);
+    expect(rerank.mock.calls[0]![0].query).toBe('Penalties and enforcement');
     const filters = search.mock.calls.map(([r]) => r.filter);
     expect(
       filters.every((f) => f?.amendmentStatus?.includes('deleted') === false),
@@ -234,19 +224,23 @@ describe('runChip: retrieve chips', () => {
     );
   });
 
-  it('effective-date is sparse-heavy (0.85) with no chunk-type filter', async () => {
+  it('effective-date is sparse-heavy (0.85) with no chunk-type filter and a single query, so no extra rerank', async () => {
+    const rerank = vi.spyOn(backend, 'rerank');
     const run = await runChip(getChip('effective-date'), DOC, deps);
     expect(optionsOf(0)).toMatchObject({ mode: 'hybrid', sparseWeight: 0.85 });
     expect(optionsOf(0).filter).toBeUndefined();
     expect(run.hits[0]?.chunk.sectionId).toBe('sec-5');
+    expect(rerank).not.toHaveBeenCalled();
     expect(run.answer.text).toContain('[S:sec-3]');
   });
 
-  it('money filters to appropriation/operative chunks', async () => {
+  it('money filters to appropriation/operative/findings chunks and reranks once', async () => {
+    const rerank = vi.spyOn(backend, 'rerank');
     const run = await runChip(getChip('money'), DOC, deps);
     expect(optionsOf(0)).toMatchObject({
-      filter: { chunkType: ['appropriation', 'operative'] },
+      filter: { chunkType: ['appropriation', 'operative', 'findings'] },
     });
+    expect(rerank).toHaveBeenCalledTimes(1);
     expect(run.hits.some((h) => h.chunk.sectionId === 'sec-6')).toBe(true);
     expect(run.hits.every((h) => h.chunk.chunkType !== 'penalty')).toBe(true);
   });
@@ -294,25 +288,108 @@ describe('runChip: retrieve chips', () => {
   });
 });
 
+describe('definitions injected once per run', () => {
+  it('retrieves without injection, then injects at most MAX_INJECTED_DEFINITIONS for the final list', async () => {
+    const terms = Array.from({ length: 9 }, (_, i) => `term${String(i)}`);
+    await backend.upsertChunks(DOC, [
+      ...terms.map((t, i) =>
+        chunk(`def-${String(i)}`, 0, {
+          text: `The term "${t}" means something about fines and money.`,
+          chunkType: 'definition',
+          definesTerm: t,
+        }),
+      ),
+      chunk('use', 0, {
+        text: 'A fine or money penalty uses every term.',
+        definedTermsUsed: terms,
+      }),
+    ]);
+    const search = vi.spyOn(backend, 'search');
+    const run = await runChip(getChip('penalties'), DOC, deps);
+    for (let i = 0; i < retrieveSpy.mock.calls.length; i++) {
+      expect(optionsOf(i).injectDefinitions).toBe(false);
+    }
+    const lookups = search.mock.calls.filter(([r]) => r.filter?.definesTerm);
+    expect(lookups.length).toBeLessThanOrEqual(MAX_INJECTED_DEFINITIONS);
+    const injected = run.hits.filter((h) => h.chunk.chunkType === 'definition');
+    expect(injected.length).toBeLessThanOrEqual(MAX_INJECTED_DEFINITIONS + 1);
+  });
+});
+
 describe('runChip: definitions', () => {
-  it('lists definition chunks and does not inject more definitions', async () => {
+  const defChunks = (n: number): Chunk[] =>
+    Array.from({ length: n }, (_, i) =>
+      chunk(`d-${String(i).padStart(3, '0')}`, 0, {
+        text: `The term "t${String(i)}" means thing ${String(i)}.`,
+        chunkType: 'definition',
+        definesTerm: `t${String(i)}`,
+      }),
+    );
+
+  it('fetches definition chunks (no injection) and lists them', async () => {
     const run = await runChip(getChip('definitions'), DOC, deps);
     expect(optionsOf(0)).toMatchObject({
       mode: 'dense',
-      topK: 60,
+      topK: 1000,
       injectDefinitions: false,
       filter: { chunkType: ['definition'] },
     });
     expect(run.hits.map((h) => h.chunk.sectionId)).toEqual(['sec-2']);
     expect(promptOf()).toContain('List the defined terms');
+    expect(run.answer.text).not.toContain('more defined');
+  });
+
+  it('caps the list, keeps document order, and says how many more exist', async () => {
+    const extra = MAX_LISTED_DEFINITIONS + 7;
+    await backend.upsertChunks(DOC, defChunks(extra));
+    // Document order is reverse of id order, so a sort by id would fail this test.
+    deps.doc.sections = [
+      ...Array.from({ length: extra }, (_, i) =>
+        section(`d-${String(extra - 1 - i).padStart(3, '0')}`),
+      ),
+    ];
+    const run = await runChip(getChip('definitions'), DOC, deps);
+    expect(run.hits).toHaveLength(MAX_LISTED_DEFINITIONS);
+    expect(run.hits[0]?.chunk.sectionId).toBe(
+      `d-${String(extra - 1).padStart(3, '0')}`,
+    );
+    // 32 new definitions + the one in sec-2 = 33 total, 25 shown.
+    expect(run.answer.text).toMatch(
+      /\n\n8 more defined terms are in the bill but not listed here\.$/,
+    );
+  });
+
+  it('puts document-wide definitions before section-limited ones', async () => {
+    await backend.upsertChunks(DOC, defChunks(3));
+    const defs: Definition[] = [
+      {
+        term: 't0',
+        text: 'x',
+        sectionId: 'd-000',
+        scope: 'section',
+        scopeSectionId: 'd-000',
+      },
+      { term: 't1', text: 'x', sectionId: 'd-001', scope: 'unknown' },
+      { term: 't2', text: 'x', sectionId: 'd-002', scope: 'document' },
+    ];
+    deps.doc.definitions = defs;
+    deps.doc.sections = ['d-000', 'd-001', 'd-002', 'sec-2'].map((id) =>
+      section(id),
+    );
+    const run = await runChip(getChip('definitions'), DOC, deps);
+    expect(run.hits.map((h) => h.chunk.definesTerm)).toEqual([
+      't2',
+      't1',
+      'eligible town',
+      't0',
+    ]);
   });
 });
 
 describe('interleave', () => {
-  const h = (id: string): RetrievedHit => ({
-    chunk: { id } as RetrievedHit['chunk'],
+  const h = (id: string) => ({
+    chunk: { id } as Parameters<typeof interleave>[0][0][0]['chunk'],
     score: 1,
-    injected: false,
   });
   it('merges by rank and keeps duplicates once', () => {
     const merged = interleave([
@@ -323,116 +400,5 @@ describe('interleave', () => {
   });
   it('handles no lists', () => {
     expect(interleave([])).toEqual([]);
-  });
-});
-
-describe('runChip: summary (outline)', () => {
-  it('summarizes a short bill in one call from each section opening', async () => {
-    const run = await runChip(getChip('summary'), DOC, deps);
-    expect(provider.calls).toHaveLength(1);
-    expect(run.hits.map((h) => h.chunk.sectionId)).toEqual([
-      'sec-1',
-      'sec-2',
-      'sec-3',
-    ]);
-    expect(retrieveSpy).not.toHaveBeenCalled();
-    expect(promptOf()).toContain('Summarize the whole bill');
-  });
-
-  it('falls back to a descendant chunk when a top-level section has no text of its own', async () => {
-    deps.doc.sections = [section('sec-9', [section('sec-3')])];
-    const run = await runChip(getChip('summary'), DOC, deps);
-    expect(run.hits.map((h) => h.chunk.sectionId)).toEqual(['sec-3']);
-  });
-
-  it('skips sections whose only chunk is deleted or missing', async () => {
-    deps.doc.sections = ['sec-8', 'sec-404', 'sec-1'].map((id) => section(id));
-    const run = await runChip(getChip('summary'), DOC, deps);
-    expect(run.hits.map((h) => h.chunk.sectionId)).toEqual(['sec-1']);
-  });
-
-  it('declines without a model call when the outline is empty', async () => {
-    deps.doc.sections = [];
-    const run = await runChip(getChip('summary'), DOC, deps);
-    expect(run.answer.declined).toBe(true);
-    expect(provider.calls).toHaveLength(0);
-  });
-
-  describe('long bill (map-reduce)', () => {
-    const many = (n: number): Chunk[] =>
-      Array.from({ length: n }, (_, i) =>
-        chunk(`long-${String(i)}`, 0, {
-          text: `Part ${String(i)} of the act.`,
-        }),
-      );
-    const withSections = async (n: number): Promise<void> => {
-      await backend.upsertChunks(DOC, many(n));
-      deps.doc.sections = Array.from({ length: n }, (_, i) =>
-        section(`long-${String(i)}`),
-      );
-    };
-
-    it('maps batches of at most N sections, then reduces', async () => {
-      await withSections(MAX_SECTIONS_PER_MAP_CALL + 3);
-      provider = new ScriptedProvider({
-        reply: (req) =>
-          req.messages[0]!.content.includes('partial summary')
-            ? 'Combined [S:long-0] [S:long-13].'
-            : req.messages[0]!.content.includes('section="long-0"')
-              ? 'First part [S:long-0].'
-              : 'Second part [S:long-13].',
-      });
-      deps.provider = provider;
-      const run = await runChip(getChip('summary'), DOC, deps);
-
-      expect(provider.calls).toHaveLength(3); // 2 map + 1 reduce
-      const [map1, map2] = provider.calls as unknown as {
-        messages: { content: string }[];
-      }[];
-      expect(map1!.messages[0]!.content.match(/<excerpt /g)).toHaveLength(
-        MAX_SECTIONS_PER_MAP_CALL,
-      );
-      expect(map2!.messages[0]!.content.match(/<excerpt /g)).toHaveLength(3);
-      expect(run.answer.text).toBe('Combined [S:long-0] [S:long-13].');
-      expect(run.answer.invalidCitations).toEqual([]);
-      // Citations point at the real chunks, not at the synthetic partial summaries.
-      expect(run.answer.citations.map((c) => c.chunkIds)).toEqual([
-        [makeChunkId(DOC, 'long-0', 0)],
-        [makeChunkId(DOC, 'long-13', 0)],
-      ]);
-      expect(run.answer.usage.outputTokens).toBeGreaterThan(3);
-    });
-
-    it('caps the number of map calls and drops the remaining sections', async () => {
-      await withSections(MAX_SECTIONS_PER_MAP_CALL * MAX_MAP_CALLS + 10);
-      provider = new ScriptedProvider({ reply: 'Part [S:long-0].' });
-      deps.provider = provider;
-      const run = await runChip(getChip('summary'), DOC, deps);
-      expect(provider.calls).toHaveLength(MAX_MAP_CALLS + 1);
-      expect(run.hits).toHaveLength(MAX_SECTIONS_PER_MAP_CALL * MAX_MAP_CALLS);
-    });
-
-    it('streams only the reduce step', async () => {
-      await withSections(MAX_SECTIONS_PER_MAP_CALL + 1);
-      const tokens: string[] = [];
-      await runChip(getChip('summary'), DOC, deps, {
-        onToken: (t) => tokens.push(t),
-      });
-      // Map replies cite sec-3, which is not in the long bill, so partials are unusable.
-      expect(tokens.join('')).toBe(
-        "This document doesn't address that question.",
-      );
-    });
-
-    it('declines when every map step declined', async () => {
-      await withSections(MAX_SECTIONS_PER_MAP_CALL + 1);
-      provider = new ScriptedProvider({
-        reply: "This document doesn't address that question.",
-      });
-      deps.provider = provider;
-      const run = await runChip(getChip('summary'), DOC, deps);
-      expect(run.answer.declined).toBe(true);
-      expect(provider.calls).toHaveLength(2); // both map calls; reduce has nothing to read
-    });
   });
 });
