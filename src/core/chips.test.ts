@@ -167,7 +167,7 @@ describe('runChip: sponsors (metadata only)', () => {
   it('formats sponsors without retrieval or an LLM call', async () => {
     const run = await runChip(getChip('sponsors'), DOC, deps);
     expect(run.answer.text).toBe(
-      'Listed on the bill as sponsor or cosponsor: Rep. Ada Lovelace, Sen. Grace Hopper.',
+      "Sponsored by Rep. Ada Lovelace, Sen. Grace Hopper. Cosponsors, if any, are listed on the bill's first page.",
     );
     expect(run.answer.declined).toBe(false);
     expect(run.answer.provider).toBe('none');
@@ -196,7 +196,7 @@ describe('runChip: sponsors (metadata only)', () => {
     deps.doc.metadata = { ...SPONSORS, sponsors: ['Rep. Ada Lovelace'] };
     const run = await runChip(getChip('sponsors'), DOC, deps);
     expect(run.answer.text).toBe(
-      'Listed on the bill as sponsor or cosponsor: Rep. Ada Lovelace.',
+      "Sponsored by Rep. Ada Lovelace. Cosponsors, if any, are listed on the bill's first page.",
     );
   });
 
