@@ -13,6 +13,9 @@ describe('code-composed example profiles', () => {
     "Example worker's household",
     'Example self-employed worker',
     'Example standard deduction',
+    'Example worker with an allowance',
+    'Example worker with a tax credit',
+    'Example worker with a deduction to claim',
     'Example worker with a second job',
     'Example allowance for a third vehicle',
     "Example part-time worker's household a b c d",
@@ -31,6 +34,14 @@ describe('code-composed example profiles', () => {
     'Example office establishes taxes',
     'Example office deducts income',
     'Example employer allows leave',
+    'Example landlord to allow tenants',
+    'Example employer to deduct wages',
+    'Example office may credit accounts',
+    'Example office can exempt fees',
+    'Example office could waive fees',
+    'Example office will raise fees',
+    'Example office to credit refunds',
+    'Example office shall repeal rules',
   ])('rejects claim text and invalid labels: %s', (label) => {
     expect(validProfileLabel(label)).toBe(false);
   });

@@ -41,6 +41,8 @@ const UNPARSEABLE_QUANTITY = new RegExp(
     '\\b(?:twice|thrice|halved|doubled|tripled|quadrupled|lakhs?|crores?|hundredths?|thousandths?)\\b',
     '\\b(?:a|an) (?:first|second|third|\\w+th)s? of\\b',
     '\\bquarters? of\\b',
+    // Bare "quarter" as a fraction; "each/every/per quarter" is a period.
+    '(?<!\\b(?:each|every|per)[ -])\\bquarter\\s+(?:shares?|portions?|rates?)\\b',
     '\\b\\d+(?:\\.\\d{3})+\\b',
     '\\b0x[0-9a-f]+\\b',
     '\\b(?:halves|thirds|quarters|fourths|fifths|sixths|eighths|tenths)\\b',
@@ -51,6 +53,18 @@ const UNPARSEABLE_QUANTITY = new RegExp(
 const FOREIGN_DIGIT = /(?![0-9])\p{Nd}/u;
 const ORDINAL_WORD =
   /^(?:first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)$/i;
+// Nouns that make an ordinal a label, not a quantity ("third party"). Keep this list short and explicit.
+const ORDINAL_NOUNS =
+  'party|parties|job|jobs|home|homes|vehicle|vehicles|form|forms|reading|readings|offense|offenses|offence|offences|child|children|house|houses|property|properties|spouse|dependent|dependents|time|times|year|years|place|class|degree|amendment|clause|paragraph|subsection|tier|level|round';
+const MONTHS =
+  'January|February|March|April|May|June|July|August|September|October|November|December';
+const ORDINALS =
+  'first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth';
+// "third of May" is a date; "a third of income" (a fraction) is not matched here.
+const ORDINAL_LABEL = new RegExp(
+  `\\b(?:${ORDINALS})\\s+(?:(?:${ORDINAL_NOUNS})\\b|of\\s+(?:${MONTHS})\\b)`,
+  'gi',
+);
 const ROMAN_GLYPH = /[\u2160-\u2188]/;
 
 export function normalizeUnit(unit: string): string {
@@ -94,6 +108,7 @@ export function numberTokens(
     .replace(/\b(?:first|second|third|fourth)\s+quarter\b/gi, (m) =>
       ' '.repeat(m.length),
     )
+    .replace(ORDINAL_LABEL, (m) => ' '.repeat(m.length))
     .replace(
       /\b(?:Section|Sec\.|Form)\s+\d+(?:\.\d+)*\b|§\s*\d+(?:\.\d+)*/gi,
       (match) => ' '.repeat(match.length),

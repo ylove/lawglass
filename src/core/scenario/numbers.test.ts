@@ -123,6 +123,9 @@ describe('fail-closed caption numbers', () => {
     'A quarter of income.',
     'One quarter of income.',
     'Quarter of income.',
+    'The quarter share applies.',
+    'A quarter portion is due.',
+    'The quarter rate is set.',
     'Five lakh dollars.',
     'A crore of dollars.',
     'The fee is 1.000.000 dollars.',
@@ -136,6 +139,26 @@ describe('fail-closed caption numbers', () => {
     expect(numberTokens('The manifold forms are crossed out.')).toEqual([]);
     expect(numberTokens('Alex files a form.')).toEqual([]);
   });
+  it.each([
+    'Each quarter share is paid.',
+    'Paid every quarter.',
+    'Paid quarterly.',
+    'A per-quarter rate applies.',
+    'Due in the second quarter.',
+    'A third party files.',
+    'A second job pays.',
+    'The first form is filed.',
+    'The third of May is a date.',
+    'The third vehicle is listed.',
+  ])('keeps %s number-free', (caption) => {
+    expect(numberTokens(caption)).toEqual([]);
+  });
+  it.each(['A third of income.', 'The second of three.', 'A third share.'])(
+    'still counts ordinals not followed by an allowed noun: %s',
+    (caption) => {
+      expect(numberTokens(caption).length).toBeGreaterThan(0);
+    },
+  );
   it('does not double count a scale already inside a numeral phrase', () => {
     expect(textNumbers('one thousand dollars')).toEqual([
       { value: 1000, unit: 'usd' },
