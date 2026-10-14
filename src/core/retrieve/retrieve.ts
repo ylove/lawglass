@@ -35,6 +35,13 @@ export const DEFAULT_TOP_K = 8;
  */
 export const RERANK_MAX_CANDIDATES = 64;
 
+const TEXT_NOUN =
+  '(?:text|wording|language|words?|rules?|sections?|provisions?|clauses?|definitions?|sentences?|paragraphs?)';
+const PLAIN_REMOVAL =
+  '(?:cross(?:es|ed|ing)?[\\s-]+out|(?:get(?:s|ting)?|got)\\s+rid\\s+of|(?:takes?|taken|taking|took)\\s+out|scratch(?:es|ed|ing)?[\\s-]+out|lin(?:e|es|ed|ing)[\\s-]+out|strike[\\s-]?through|struck[\\s-]+through)';
+const PASSIVE_REMOVAL =
+  '(?:crossed[\\s-]+out|taken\\s+out|scratched[\\s-]+out|lined[\\s-]+out|strike[\\s-]?through|struck[\\s-]+through)';
+
 /**
  * Patterns that mark a question as being about changes. Each is tested with `.some`, so one
  * hit is enough. Bare nouns and stems are avoided on purpose ("snow removal", "climate change",
@@ -48,6 +55,31 @@ const CHANGE_PATTERNS: readonly RegExp[] = [
   /\b(?:do|does|did|to)\s+(?:\w+\s+){0,2}(?:remove|strike|delete|repeal|eliminate|replace|substitute|revise|modify|amend|change)\b/i,
   // "what changes for renters", "which sections change".
   /\b(?:what|which)\s+(?:\w+\s+)?chang(?:e|es)\b/i,
+  // Everyday removal verbs need a text object, not merely a bill mentioned elsewhere:
+  // "get rid of the rule" counts; "does the bill help get rid of pests" does not.
+  new RegExp(
+    `\\b${PLAIN_REMOVAL}\\s+(?:(?:the|a|an|this|that|these|those|old|existing|previous)\\s+){0,3}${TEXT_NOUN}\\b`,
+    'i',
+  ),
+  // The text object can precede a passive phrase: "words were crossed out".
+  new RegExp(
+    `\\b${TEXT_NOUN}\\s+(?:(?:is|are|was|were|be|been|being|gets?|got|has|have|had)\\s+){0,3}${PASSIVE_REMOVAL}\\b`,
+    'i',
+  ),
+  // An object question can leave the removed wording implicit: "what did it take out?".
+  new RegExp(
+    `\\b(?:what|which(?:\\s+${TEXT_NOUN})?)\\s+(?:do|does|did)\\s+(?:it|(?:the|this)\\s+(?:bill|law|act))\\s+${PLAIN_REMOVAL}\\b`,
+    'i',
+  ),
+  new RegExp(
+    `\\bwhat\\s+(?:is|are|was|were|has been|have been)\\s+${PASSIVE_REMOVAL}\\b`,
+    'i',
+  ),
+  // Historical wording is relevant in a question or when attached to legislation.
+  /\b(?:what|which)\s+(?:(?:is|was|are|were|the)\s+){0,2}old\s+(?:wording|language|text|version)\b/i,
+  /\b(?:bill|law|act|section)(?:['’]s)?\s+(?:the\s+)?old\s+(?:wording|language|text|version)\b/i,
+  /\bold\s+(?:wording|language|text|version)\s+(?:of|in|from)\s+(?:(?:the|this)\s+)?(?:bill|law|act|section)\b/i,
+  /\bwhat\s+(?:(?:did|does)\s+)?(?:it|the law)\s+(?:used to|previously)\s+say\b/i,
   // Fixed phrases about the law as it was.
   /\bno longer\b/i,
   /\bused to (?:be|say|require|allow)\b/i,

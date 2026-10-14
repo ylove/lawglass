@@ -49,6 +49,12 @@ function spy(inner: RetrievalBackend) {
 const ids = (r: { hits: { chunk: { id: string } }[] }) =>
   r.hits.map((h) => h.chunk.id);
 
+const REPORTED_CHANGE_QUESTIONS = [
+  'What does the bill cross out about the places where a person has no duty to retreat?',
+  'What old wording is crossed out where the bill says what "residence" means?',
+  "Does the bill get rid of the rule that a jury can't consider…?",
+];
+
 let memory: MemoryBackend;
 beforeAll(async () => {
   memory = new MemoryBackend();
@@ -377,6 +383,38 @@ describe('deleted spans', () => {
     );
   });
 
+  it.each(REPORTED_CHANGE_QUESTIONS)(
+    'retrieves deleted spans for the reported question: %s',
+    async (query) => {
+      for (const mode of [
+        'dense',
+        'sparse',
+        'hybrid',
+        'hybrid_rerank',
+      ] as const) {
+        const options = { docId: DOC_A, query, mode, topK: 20 };
+        // The shared synthetic deleted chunk overlaps each question ("the"/"of").
+        expect(ids(await retrieve(memory, options))).toContain(deletedId);
+        expect(
+          ids(await retrieve(memory, { ...options, includeDeleted: false })),
+        ).not.toContain(deletedId);
+      }
+    },
+  );
+
+  it.each([
+    'Does the bill let people take out a loan?',
+    'Does the bill help people get rid of pests?',
+    'Does the bill let people cross out of state?',
+  ])(
+    'keeps deleted spans excluded for an unrelated question: %s',
+    async (query) => {
+      const r = await retrieve(memory, { docId: DOC_A, query, topK: 20 });
+      expect(r.hits.length).toBeGreaterThan(0);
+      expect(ids(r)).not.toContain(deletedId);
+    },
+  );
+
   it('drops hits outside the effective filter even if the backend ignores it', async () => {
     const leaky: RetrievalBackend = {
       ...spy(memory).backend,
@@ -396,45 +434,123 @@ describe('deleted spans', () => {
     );
   });
 
-  it('asksAboutChanges detects change and removal questions', () => {
-    for (const q of [
-      'What changes for renters?',
-      'What does this bill remove from current law?',
-      'Which sections are struck?',
-      'Is the old rule repealed or deleted?',
-      'Does the bill eliminate the fee?',
-      'What is no longer allowed?',
-      'What used to be allowed?',
-      'What used to say about fees?',
-      'Which words were stricken?',
-      'Was the fee replaced?',
-      'What was substituted?',
-      'Was the rule revised or modified?',
-      'How does the new rule differ?',
-      'What does current law say?',
-      'Is it used instead of the old fee?',
-      'What did the law say before?',
-      'How does it amend the code?',
-      'Which words does it strike?',
-    ]) {
-      expect(asksAboutChanges(q), q).toBe(true);
-    }
-    for (const q of [
-      'When does it take effect?',
-      'Who is an eligible town?',
-      'What is the penalty per day?',
-      'How is the exchange rate set?',
-      'Who pays for snow removal?',
-      'What is the climate change policy?',
-      'How do I report changes in income?',
-      'Can public workers strike?',
-      'What does the amendment to section 5 cover?',
-      'What used to apply?',
-      'Is it before noon?',
-      '',
-    ]) {
-      expect(asksAboutChanges(q), q).toBe(false);
-    }
+  it.each([
+    'What changes for renters?',
+    'What does this bill remove from current law?',
+    'Which sections are struck?',
+    'Is the old rule repealed or deleted?',
+    'Does the bill eliminate the fee?',
+    'What is no longer allowed?',
+    'What used to be allowed?',
+    'What used to say about fees?',
+    'Which words were stricken?',
+    'Was the fee replaced?',
+    'What was substituted?',
+    'Was the rule revised or modified?',
+    'How does the new rule differ?',
+    'What does current law say?',
+    'Is it used instead of the old fee?',
+    'What did the law say before?',
+    'How does it amend the code?',
+    'Which words does it strike?',
+    ...REPORTED_CHANGE_QUESTIONS,
+    'Does the bill cross out the wording about fees?',
+    'The bill crosses out the existing rule.',
+    'Which words are crossed out?',
+    'Is the bill crossing out this section?',
+    'Show the crossed-out text.',
+    'What is crossed out?',
+    'Does the law get rid of a rule?',
+    'The bill gets rid of the previous language.',
+    'Is the bill getting rid of those provisions?',
+    'The bill got rid of this clause.',
+    'What does it get rid of?',
+    'Does the bill take out the section about fees?',
+    'The bill takes out the old definition.',
+    'Which words were taken out?',
+    'Is it taking out a paragraph?',
+    'The bill took out the sentence about fees.',
+    'What did it take out?',
+    'Which words does this bill take out?',
+    'What was taken out?',
+    'What old wording appears here?',
+    'Which old language applies to fees?',
+    'What was the old text?',
+    'What is the old version?',
+    "Show the bill's old wording.",
+    'Explain the law’s old language.',
+    'Show the section old text.',
+    'Show the old version of the bill.',
+    'Explain the old wording in this law.',
+    'Show the old language from the act.',
+    'What it used to say about fees',
+    'What the law used to say about fees',
+    'What did it previously say about fees?',
+    'What did the law previously say about fees?',
+    'Which words are scratched out?',
+    'Does it scratch out a rule?',
+    'Which text is lined out?',
+    'Does the bill line out a clause?',
+    'Show the strikethrough text.',
+    'Which words have strikethrough?',
+    'Show the strike-through wording.',
+    'Show the struck-through text.',
+    'Which words were struck through?',
+    'WHAT DOES THIS BILL CROSS\nOUT?',
+    'Does the bill get\trid of\nthat rule?',
+  ])('recognises a change question: %s', (question) => {
+    expect(asksAboutChanges(question)).toBe(true);
+  });
+
+  it.each([
+    'When does it take effect?',
+    'Who is an eligible town?',
+    'What is the penalty per day?',
+    'How is the exchange rate set?',
+    'Who pays for snow removal?',
+    'What is the climate change policy?',
+    'How do I report changes in income?',
+    'Can public workers strike?',
+    'What does the amendment to section 5 cover?',
+    'What used to apply?',
+    'Is it before noon?',
+    'Can I take out a loan?',
+    'Does the bill let people take out a loan?',
+    'The law lets a bank take out a loan.',
+    'A person takes out insurance.',
+    'Was a loan taken out?',
+    'Who took out the trash?',
+    'Is the business taking out insurance?',
+    'How can I get rid of pests?',
+    'Does the bill help get rid of pests?',
+    'The rule gets rid of pests.',
+    'Who gets rid of pests?',
+    'Are towns getting rid of pests?',
+    'Can people cross out of state?',
+    'Does the bill let people cross out of state?',
+    'Does the bill cross out of state?',
+    'Who crosses out of state?',
+    'Who crossed out a drawing?',
+    'Is someone crossing out a picture?',
+    'Show the crossed-out picture.',
+    'Was a lottery ticket scratched out?',
+    'Are parking spaces lined out?',
+    'Is strikethrough available in the editor?',
+    'Who reviews strike-through artwork?',
+    'Is the old wording on the sign legible?',
+    'Can people speak an old language?',
+    'Who has old text messages?',
+    'Is the old version of the app supported?',
+    'Explain what it previously said about music.',
+    'Does it get rid of pests? What is the bill about?',
+    'cross out',
+    'get rid of',
+    'take out',
+    'The bill cross outwards.',
+    'Does it take out the ruler?',
+    '',
+  ])('rejects an unrelated question: %s', (question) => {
+    expect(asksAboutChanges(question)).toBe(false);
   });
 
   it('passes chip filters through to the backend', async () => {
