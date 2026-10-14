@@ -25,6 +25,23 @@ lines, a full-width rule through text, a table-cell box, a signature line, a
 line through whitespace only, near misses beside and below text, and a bar too
 thick to be a typographic rule.
 
+`makeScannedRedlinePdf()` (`scanned-pdf.ts`) mimics an Acrobat "Paper Capture"
+scan for the raster strike/underline detector (#193): a page image with strikes
+and underlines in the pixels only, under an invisible (render mode 3) OCR text
+layer with one text item per OCR word. Words are rasterized with a built-in 5x7
+bitmap font (`scanned-font.ts`, no canvas). Page text uses a tiny markup:
+`[-struck-]`, `{+inserted+}`, and `[-old-]{+new+}` for one OCR word spanning both.
+Options: `dpi`, `skewDegrees` (rotates the raster only, so OCR boxes drift from the
+ink), `noise`, `encoding` (`flate` or `jpeg`, via `jpeg-js`), `strips`, `noImage`,
+`markThicknessPx`, `seed`. The result is `{ bytes, truth }`; `truth` lists each
+word's status, OCR box, baseline, x-height and exact mark geometry in PDF points
+before skew (`inkPositionAfterSkew` maps a point to where the skewed ink lands).
+`SCANNED_PRESETS` / `makeScannedPreset(name)` hold the required cases: clean,
+merged, tricky-negatives (e crossbars, hyphens, dashes), short-words, skewed (2
+degrees), low-dpi (90), strips and no-image. The generator is deterministic.
+Note: pdfjs merges neighbouring same-size text chunks, so each OCR word alternates
+its font size by 0.001pt to stay a separate text item.
+
 The congressional XML borrows only element shapes from the local reference bill;
 all passages and names are invented. `INJECTION_SAMPLES` contains hostile,
 bill-like strings for answer tests; `makeInjectionText(index)` wraps one in the
