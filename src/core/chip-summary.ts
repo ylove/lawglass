@@ -19,6 +19,7 @@
  * that marker stripped and flagged, instead of silently pointing at the wrong section.
  */
 import { answer } from './answer/index.js';
+import { promptVersion } from './answer/prompt.js';
 import {
   appendNote,
   realHits,
@@ -42,9 +43,6 @@ import {
   type Section,
 } from './model/index.js';
 
-/** Bump when summary instructions, the shared answer prompt, or summary assembly change. */
-export const SUMMARY_PROMPT_VERSION = '1';
-
 /** Descend through container levels until there are at least this many map units... */
 export const MIN_MAP_UNITS = 12;
 /** ...but never use more than this many; the rest are reported as not covered. */
@@ -56,11 +54,23 @@ export const OUTLINE_CHAR_BUDGET = 2500;
 /** How many chunks (the unit's own, then its descendants') are tried for a unit's first chunk. */
 const FIRST_CHUNK_CANDIDATES = 6;
 
-const MAP_INSTRUCTION =
+export const SUMMARY_LABEL = 'Summarize this bill';
+export const SUMMARY_INSTRUCTION =
+  'Summarize the whole bill in a short paragraph, then a short list of its main parts, one line per part. Say what the bill does first. Keep struck-out text out of the summary except to say what the bill removes.';
+
+export const MAP_INSTRUCTION =
   "These excerpts come from consecutive parts of one bill. For each part there is an outline (the headings inside it) and its opening text. Summarize what each part does in one to three short sentences. Cite the section of the opening text you are summarizing; cite an outline's section only for what its outline lists. Use the outline only for what a part covers; do not guess at text you cannot see.";
 
-const REDUCE_INSTRUCTION =
+export const REDUCE_INSTRUCTION =
   "Each excerpt below is a partial summary of one part of the bill. Its text already carries section markers like [S:sec-1]. Combine the partial summaries into one summary. Keep the markers on the sentences they support, copy them exactly from the partial text, and never cite an excerpt's own section attribute or number.";
+
+/** Changing any summary prompt or the shared system prompt invalidates cached answers. */
+export const SUMMARY_PROMPT_VERSION = promptVersion(
+  SUMMARY_LABEL,
+  SUMMARY_INSTRUCTION,
+  MAP_INSTRUCTION,
+  REDUCE_INSTRUCTION,
+);
 
 /**
  * A container groups sections and has no text of its own: a division, title or subtitle.

@@ -12,6 +12,7 @@ import {
 } from './model/index.js';
 import { parseText } from './parse/text.js';
 import { parsePdf } from './parse/pdf.js';
+import { parseHtml } from './parse/html.js';
 import { parseXml } from './parse/xml.js';
 import { detectSections } from './parse/sections.js';
 import { documentPreview, PREVIEW_MAX_LENGTH } from './preview.js';
@@ -100,6 +101,55 @@ describe('documentPreview', () => {
     expect(documentPreview(parsed)).toEqual({
       kind: 'purpose',
       text: 'To amend sections 5747.01 and 5747.02 of the Revised Code to establish a community garden credit.',
+      sectionId: 'preamble',
+    });
+  });
+
+  it('preserves an Ohio purpose wrapped before a lowercase section reference', () => {
+    const text =
+      'To amend sections 2929.28 and 5122.311 and to enact\n' +
+      'section 2923.27 of the Revised Code to regulate\n' +
+      'the transfer of firearms at a gun show.\n' +
+      'BE IT ENACTED BY THE GENERAL ASSEMBLY OF THE STATE OF OHIO:\n' +
+      'Section 1. That section 2923.27 be enacted.';
+    expect(documentPreview(doc([front(text)]))).toEqual({
+      kind: 'purpose',
+      text: 'To amend sections 2929.28 and 5122.311 and to enact section 2923.27 of the Revised Code to regulate the transfer of firearms at a gun show.',
+      sectionId: 'preamble',
+    });
+  });
+
+  it.each(['section 1.', 'Section 1', 'Section 2923.27'])(
+    'keeps a wrapped reference rather than treating %s as an operative section',
+    (reference) => {
+      expect(
+        documentPreview(
+          doc([
+            front(
+              `To amend\n${reference} of the code.\nBe it enacted by the legislature.`,
+            ),
+          ]),
+        )?.text,
+      ).toBe(`To amend ${reference} of the code.`);
+    },
+  );
+
+  it.each([
+    '_______\nIN THE SENATE OF THE UNITED STATES',
+    'IN THE SENATE OF THE UNITED STATES',
+    'IN THE HOUSE OF REPRESENTATIVES',
+    '121st CONGRESS',
+    '122nd CONGRESS',
+    '123rd CONGRESS',
+    '119th CONGRESS',
+  ])('ends a GovInfo HTML purpose before federal boilerplate: %s', (tail) => {
+    const parsed = parseHtml(
+      `<pre>A BILL\nTo require garden grants and for other purposes.\n${tail}\nJanuary 23, 2025\nA senator introduced the following bill.</pre>`,
+      options,
+    );
+    expect(documentPreview(parsed)).toEqual({
+      kind: 'purpose',
+      text: 'To require garden grants and for other purposes.',
       sectionId: 'preamble',
     });
   });

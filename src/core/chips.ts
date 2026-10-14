@@ -16,6 +16,7 @@
  * ./chip-runner.ts (re-exported here), so this file stays plain, readable configuration.
  */
 import { AppError, ChipDefinition, type ChipId } from './model/index.js';
+import { SUMMARY_INSTRUCTION, SUMMARY_LABEL } from './chip-summary.js';
 
 export { runChip } from './chip-runner.js';
 export type {
@@ -46,11 +47,10 @@ function defineChip(chip: ChipDefinition): ChipDefinition {
  */
 const summary = defineChip({
   id: 'summary',
-  label: 'Summarize this bill',
+  label: SUMMARY_LABEL,
   strategy: 'outline',
   queries: [],
-  answerInstruction:
-    'Summarize the whole bill in a short paragraph, then a short list of its main parts, one line per part. Say what the bill does first. Keep struck-out text out of the summary except to say what the bill removes.',
+  answerInstruction: SUMMARY_INSTRUCTION,
 });
 
 /**

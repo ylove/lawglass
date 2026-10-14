@@ -25,10 +25,13 @@ function compact(text: string): string {
 function purpose(text: string): string | undefined {
   const match = /(?:^|\n)[ \t]*(?:A\s+BILL\s+)?(To\s+\S[\s\S]*)/i.exec(text);
   if (!match?.[1]) return undefined;
-  // Keep decimal code references intact; a full stop is not a safe sentence boundary in Ohio.
+  // Enacting text is the main stop. Keep wrapped lowercase and decimal code references
+  // intact; only a capitalized operative section marker or federal boilerplate ends them.
+  const beforeEnactment = match[1].split(/\bBe\s+it\s+enacted\b/i)[0] ?? '';
   const clause =
-    match[1].split(/\bBe\s+it\s+enacted\b|\n\s*(?:Section|Sec\.)\s+\d/i)[0] ??
-    '';
+    beforeEnactment.split(
+      /_{3,}|\n[ \t]*(?:(?:Section|Sec\.)[ \t]+\d+\.(?=\s|$)|IN THE (?:SENATE|HOUSE)\b|\d+(?:st|nd|rd|th) CONGRESS\b)/,
+    )[0] ?? '';
   return compact(clause) || undefined;
 }
 

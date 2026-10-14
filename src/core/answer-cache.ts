@@ -45,6 +45,8 @@ export interface AnswerCacheOptions {
   /** Answer directory, normally <configDir>/cache/answers. */
   dir: string;
   fs?: AnswerCacheFileSystem;
+  /** Registry wiring can prevent writes for a document removed before generation finishes. */
+  isStillRegistered?: (docId: string) => boolean | Promise<boolean>;
 }
 
 interface Flight {
@@ -69,16 +71,26 @@ async function documentIo<T>(path: string, run: () => Promise<T>): Promise<T> {
 }
 
 function cacheable(answer: AnswerResult): boolean {
-  return !answer.declined && !answer.warnings.includes('NO_VALID_CITATIONS');
+  return (
+    !answer.declined &&
+    !answer.warnings.some(
+      (warning) =>
+        warning === 'NO_VALID_CITATIONS' ||
+        warning === 'TRUNCATED' ||
+        warning === 'NO_RELEVANT_EXCERPTS',
+    )
+  );
 }
 
 export class AnswerCache {
   private readonly dir: string;
   private readonly fs: AnswerCacheFileSystem;
+  private readonly isStillRegistered: AnswerCacheOptions['isStillRegistered'];
 
   constructor(options: AnswerCacheOptions) {
     this.dir = resolve(options.dir);
     this.fs = options.fs ?? { ...configFileSystem, rm: nodeFs.rm };
+    this.isStillRegistered = options.isStillRegistered;
   }
 
   private documentPath(docId: string): string {
@@ -139,6 +151,12 @@ export class AnswerCache {
     if (!cacheable(parsed.data)) return Promise.resolve();
     return documentIo(documentPath, async () => {
       if (flight && !flight.cacheable) return;
+      if (
+        flight &&
+        this.isStillRegistered &&
+        !(await this.isStillRegistered(key.docId))
+      )
+        return;
       try {
         await this.fs.mkdir(this.dir, { recursive: true, mode: 0o700 });
         await this.fs.chmod(this.dir, 0o700);
@@ -149,7 +167,7 @@ export class AnswerCache {
     });
   }
 
-  /** Concurrent callers share the entire read/compute/write, including its rejection. */
+  /** Concurrent callers share generation; storage failures never discard a computed answer. */
   getOrCompute(
     key: AnswerCacheKey,
     compute: () => Promise<AnswerResult>,
@@ -165,7 +183,11 @@ export class AnswerCache {
           const hit = await this.get(key);
           if (hit) return hit;
           const answer = await compute();
-          await this.store(key, answer, flight);
+          try {
+            await this.store(key, answer, flight);
+          } catch {
+            // The cache is optional. Return the paid result without exposing storage errors.
+          }
           return answer;
         })
         .finally(() => {

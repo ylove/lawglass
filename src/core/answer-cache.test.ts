@@ -141,13 +141,17 @@ describe('AnswerCache', () => {
   it.each([
     { declined: true, text: DECLINE_TEXT },
     { warnings: ['NO_VALID_CITATIONS'] as AnswerResult['warnings'] },
-  ])('never caches a decline or citation failure: %j', async (overrides) => {
+    { warnings: ['TRUNCATED'] as AnswerResult['warnings'] },
+    { warnings: ['NO_RELEVANT_EXCERPTS'] as AnswerResult['warnings'] },
+  ])('never caches a decline or failed answer: %j', async (overrides) => {
     const invalid = { ...result, ...overrides };
     const compute = vi.fn(() => Promise.resolve(invalid));
     expect(await cache.getOrCompute(key, compute)).toEqual(invalid);
     await cache.getOrCompute(key, compute);
     expect(compute).toHaveBeenCalledTimes(2);
     expect(await cache.get(key)).toBeUndefined();
+    await cache.set(key, invalid);
+    await expect(fs.stat(pathFor())).rejects.toMatchObject({ code: 'ENOENT' });
     // An old or tampered file must obey the same policy on read.
     await fs.mkdir(join(dir, DOC_A), { recursive: true, mode: 0o700 });
     await fs.writeFile(pathFor(), JSON.stringify(invalid), { mode: 0o600 });
@@ -273,7 +277,78 @@ describe('AnswerCache', () => {
     expect(await cache.get(key)).toBeUndefined();
   });
 
-  it('sanitizes write and eviction errors and allows a retry after failed storage', async () => {
+  it('checks registry membership after compute, including requests started after eviction', async () => {
+    let registered = true;
+    const isStillRegistered = vi.fn((docId: string) =>
+      Promise.resolve(docId === DOC_A && registered),
+    );
+    const guarded = new AnswerCache({ dir, isStillRegistered });
+    const ready = deferred<undefined>();
+    const pending = deferred<AnswerResult>();
+    const first = guarded.getOrCompute(key, () => {
+      ready.resolve(undefined);
+      return pending.promise;
+    });
+    await ready.promise;
+    await cache.evictDocument(DOC_A);
+    registered = false;
+    expect(await guarded.getOrCompute(key, () => Promise.resolve(result))).toBe(
+      result,
+    );
+    expect(isStillRegistered).toHaveBeenCalledWith(DOC_A);
+    pending.resolve(result);
+    expect(await first).toBe(result);
+    expect(await cache.get(key)).toBeUndefined();
+    await expect(fs.stat(join(dir, DOC_A))).rejects.toMatchObject({
+      code: 'ENOENT',
+    });
+    registered = true;
+    expect(
+      await guarded.getOrCompute(key, () => Promise.resolve(result)),
+    ).toEqual(result);
+    expect(await cache.get(key)).toEqual(result);
+  });
+
+  it('returns the answer when a document leaves the registry during compute', async () => {
+    let registered = true;
+    const guarded = new AnswerCache({
+      dir,
+      isStillRegistered: () => registered,
+    });
+    const ready = deferred<undefined>();
+    const pending = deferred<AnswerResult>();
+    const first = guarded.getOrCompute(key, () => {
+      ready.resolve(undefined);
+      return pending.promise;
+    });
+    await ready.promise;
+    registered = false;
+    pending.resolve(result);
+    expect(await first).toBe(result);
+    expect(await cache.get(key)).toBeUndefined();
+  });
+
+  it('returns the computed answer unchanged when rename fails, and retries storage', async () => {
+    const rename = vi
+      .fn()
+      .mockRejectedValue(new Error(`sensitive file contents at ${pathFor()}`));
+    const failing = new AnswerCache({ dir, fs: { ...fs, rename } });
+    const compute = vi.fn(() => Promise.resolve(result));
+    const before = structuredClone(result);
+    expect(await failing.getOrCompute(key, compute)).toBe(result);
+    expect(result).toEqual(before);
+    expect(JSON.stringify(result)).not.toContain(pathFor());
+    expect(JSON.stringify(result)).not.toContain('sensitive file contents');
+    expect(await cache.get(key)).toBeUndefined();
+    expect(await fs.readdir(join(dir, DOC_A))).toEqual([]);
+    expect(await failing.getOrCompute(key, compute)).toBe(result);
+    expect(compute).toHaveBeenCalledTimes(2);
+    expect(rename).toHaveBeenCalledTimes(2);
+    expect(await cache.getOrCompute(key, compute)).toEqual(result);
+    expect(await cache.get(key)).toEqual(result);
+  });
+
+  it('keeps explicit write and eviction errors strict and sanitized', async () => {
     const failing = new AnswerCache({
       dir,
       fs: {
@@ -282,9 +357,9 @@ describe('AnswerCache', () => {
         rm: vi.fn().mockRejectedValue(new Error('sensitive path')),
       },
     });
-    await expect(
-      failing.getOrCompute(key, () => Promise.resolve(result)),
-    ).rejects.toThrow('The local data file could not be saved.');
+    await expect(failing.set(key, result)).rejects.toThrow(
+      'The local data file could not be saved.',
+    );
     await expect(failing.evictDocument(DOC_A)).rejects.toThrow(
       'The cached answers could not be removed.',
     );
