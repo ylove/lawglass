@@ -53,6 +53,35 @@ describe('SSE parsing', () => {
     expect(events.map((e) => e.text)).toEqual(['héllo', 'héllo']);
   });
 
+  test('a CRLF split between CR and LF across chunks is one line break', async () => {
+    const events = await collect(
+      readSseEvents(
+        sseResponse([
+          'data: {"type":"token",\r',
+          '\ndata: "text":"x"}\r\n\r\n',
+        ]),
+        Tok,
+      ),
+    );
+    expect(events).toEqual([{ type: 'token', text: 'x' }]);
+    const split = await collect(
+      readSseEvents(
+        sseResponse(['data: {"type":"token","text":"y"}\r\n\r', '\n']),
+        Tok,
+      ),
+    );
+    expect(split).toEqual([{ type: 'token', text: 'y' }]);
+  });
+
+  test('a stream that ends mid-event reports the answer was cut off', async () => {
+    await expect(
+      collect(readSseEvents(sseResponse(['data: {"type":"token","te']), Tok)),
+    ).rejects.toThrow('cut off');
+    await expect(
+      collect(readSseEvents(sseResponse(['data: nope\n\n']), Tok)),
+    ).rejects.toThrow('unreadable');
+  });
+
   test('a final event without a trailing blank line is still delivered', async () => {
     const events = await collect(
       readSseEvents(sseResponse(['data: {"type":"token","text":"x"}']), Tok),

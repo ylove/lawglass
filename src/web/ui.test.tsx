@@ -274,16 +274,91 @@ describe('document flow', () => {
     expect(screen.queryByRole('heading', { name: 'Sources' })).toBeNull();
   });
 
-  test('the answer area is a polite live region', async () => {
+  test('screen readers hear status lines, not every token', async () => {
     render(<App api={mock()} />);
     await ready();
     fireEvent.click(
       screen.getByRole('button', { name: 'Who does it affect?' }),
     );
-    const live = (
-      await screen.findAllByRole('button', { name: 'Source 1' })
-    )[0]!.closest('[aria-live]');
-    expect(live?.getAttribute('aria-live')).toBe('polite');
+    const status = screen.getByRole('status');
+    expect(status.textContent).toBe('Searching the document...');
+    await screen.findAllByRole('button', { name: 'Source 1' });
+    await waitFor(() => {
+      expect(status.textContent).toBe('Answer ready');
+    });
+    // The answer text itself is outside any live region.
+    const cite = screen.getAllByRole('button', { name: 'Source 1' })[0]!;
+    expect(cite.closest('[aria-live]')).toBeNull();
+    expect(cite.closest('[role="status"]')).toBeNull();
+  });
+
+  test('a streaming answer announces "Writing the answer..."', async () => {
+    const api = mock();
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    api.ask = async function* () {
+      yield { type: 'token' as const, text: 'Partial answer ' };
+      await gate;
+    };
+    render(<App api={api} />);
+    await ready();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Who does it affect?' }),
+    );
+    await screen.findByText('Partial answer');
+    expect(screen.getByRole('status').textContent).toBe(
+      'Writing the answer...',
+    );
+    release();
+  });
+
+  test('a busy chip stays focused and aria-disabled, and ignores clicks', async () => {
+    const api = mock();
+    const real = api.ask.bind(api);
+    let calls = 0;
+    api.ask = (...args) => {
+      calls += 1;
+      return real(...args);
+    };
+    render(<App api={api} />);
+    await ready();
+    const chip = screen.getByRole('button', { name: 'Who does it affect?' });
+    chip.focus();
+    fireEvent.click(chip);
+    expect(chip.getAttribute('aria-disabled')).toBe('true');
+    expect((chip as HTMLButtonElement).disabled).toBe(false);
+    expect(document.activeElement).toBe(chip);
+    fireEvent.click(chip);
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Summarize this bill' }),
+    );
+    await screen.findAllByRole('button', { name: 'Source 1' });
+    expect(calls).toBe(1);
+    expect(document.activeElement).toBe(chip);
+    expect(chip.getAttribute('aria-disabled')).toBe('false');
+  });
+
+  test('a TRUNCATED warning is explained in plain language', async () => {
+    const api = mock();
+    const real = api.ask.bind(api);
+    api.ask = async function* (...args) {
+      for await (const e of real(...args)) {
+        if (e.type === 'done') e.answer.warnings = ['TRUNCATED'];
+        yield e;
+      }
+    };
+    render(<App api={api} />);
+    await ready();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Who does it affect?' }),
+    );
+    expect(
+      await screen.findByText(
+        'This answer was cut short, so it may be incomplete.',
+      ),
+    ).toBeTruthy();
   });
 
   test('stream errors and cut-off streams are reported', async () => {
@@ -376,7 +451,7 @@ describe('public mode', () => {
     render(<App api={mock()} />);
     await ready();
     const ask = screen.getByRole<HTMLButtonElement>('button', { name: 'Ask' });
-    expect(ask.disabled).toBe(true);
+    expect(ask.getAttribute('aria-disabled')).toBe('true');
     fireEvent.submit(ask.closest('form')!);
     expect(screen.getByText(/Choose a question above/)).toBeTruthy();
   });
@@ -562,6 +637,30 @@ describe('ingest flow', () => {
 });
 
 describe('sidebar and shell', () => {
+  test('the document list is a collapsible disclosure for narrow screens', async () => {
+    render(<App api={mock()} />);
+    await ready();
+    const toggle = screen.getByRole('button', { name: 'Your documents (1)' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    const panel = document.getElementById(
+      toggle.getAttribute('aria-controls')!,
+    )!;
+    expect(panel.classList.contains('open')).toBe(false);
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(panel.classList.contains('open')).toBe(true);
+    fireEvent.click(within(panel).getByRole('button', { name: 'Add a bill' }));
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    await screen.findByRole('heading', { name: 'Add a bill' });
+    fireEvent.click(toggle);
+    fireEvent.click(
+      within(panel).getByRole('button', {
+        name: /^Clean Water Infrastructure Act\s+HB 214$/,
+      }),
+    );
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  });
+
   test('remove asks first; keeping it changes nothing; confirming removes and shows ingest', async () => {
     render(<App api={mock()} />);
     await ready();

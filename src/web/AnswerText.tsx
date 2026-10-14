@@ -1,9 +1,9 @@
 // Renders answer text. While streaming, citation markers are hidden (they would flash as raw
 // `[S:...]` text); once the answer is final they become numbered superscript buttons.
 import { Fragment, type ReactNode } from 'react';
-import type { Citation } from '../core/model/index.js';
+import { CITATION_PATTERN, type Citation } from '../core/model/index.js';
 
-const MARKER = /\[S:([^\]\s]+)\]/g;
+const MARKER = new RegExp(CITATION_PATTERN.source, 'g');
 
 /** Removes complete markers and a trailing half-typed one, for display mid-stream. */
 export function stripMarkers(text: string): string {

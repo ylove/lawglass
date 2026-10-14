@@ -3,6 +3,8 @@
 // event is one JSON object carrying its own `type`.
 import type { ZodType } from 'zod';
 
+export const CUT_OFF = 'The answer was cut off. Please try again.';
+
 export class ApiError extends Error {
   readonly code: string;
   constructor(code: string, message: string) {
@@ -42,14 +44,26 @@ export async function* readSseEvents<T>(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
+  // A chunk may end between the \r and \n of one CRLF; hold the \r back so it is not read as a
+  // line break of its own.
+  let heldCr = false;
   try {
     for (;;) {
       const { done, value } = await reader.read();
-      buffer += decoder.decode(value, { stream: !done });
+      let text: string =
+        (heldCr ? '\r' : '') + decoder.decode(value, { stream: !done });
+      heldCr = !done && text.endsWith('\r');
+      if (heldCr) text = text.slice(0, -1);
+      buffer += text.replace(/\r\n?/g, '\n');
       let rest = buffer;
-      for (const item of parseSseBlocks(buffer, done)) {
+      // At end of stream, an unterminated final event may simply have been cut off.
+      const cutOff = done && buffer.trim() !== '' && !buffer.endsWith('\n\n');
+      const items = [...parseSseBlocks(buffer, done)];
+      for (const [i, item] of items.entries()) {
         if ('rest' in item) {
           rest = item.rest;
+        } else if (cutOff && i === items.length - 2) {
+          yield parseFinalEvent(item.data, schema);
         } else {
           yield parseEvent(item.data, schema);
         }
@@ -61,6 +75,16 @@ export async function* readSseEvents<T>(
     // Stops the download when the consumer stops early (cancelled request, unmounted view).
     await reader.cancel().catch(() => undefined);
   }
+}
+
+/** Like parseEvent, but unreadable JSON here means the stream ended mid-event. */
+function parseFinalEvent<T>(data: string, schema: ZodType<T>): T {
+  try {
+    JSON.parse(data);
+  } catch {
+    throw new ApiError('BAD_RESPONSE', CUT_OFF);
+  }
+  return parseEvent(data, schema);
 }
 
 function parseEvent<T>(data: string, schema: ZodType<T>): T {

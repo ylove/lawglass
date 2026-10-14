@@ -12,6 +12,7 @@ import type { ApiClient } from './api.js';
 import { AnswerText, stripMarkers } from './AnswerText.js';
 import { CitationDrawer, describeLocation } from './CitationDrawer.js';
 import { errorMessage } from './errors.js';
+import { CUT_OFF } from './sse.js';
 
 const WARNING_TEXT: Record<AnswerWarning, string> = {
   NO_VALID_CITATIONS:
@@ -20,6 +21,14 @@ const WARNING_TEXT: Record<AnswerWarning, string> = {
     'Some references in this answer did not match the document and were removed.',
   NO_RELEVANT_EXCERPTS:
     'No passages in the document matched this question closely.',
+  TRUNCATED: 'This answer was cut short, so it may be incomplete.',
+};
+
+const STATUS_TEXT: Record<Phase, string> = {
+  searching: 'Searching the document...',
+  writing: 'Writing the answer...',
+  done: 'Answer ready',
+  error: '',
 };
 
 const KIND_LABEL = {
@@ -114,7 +123,10 @@ export function DocumentView({
     };
   }, [api, docId]);
 
+  const busy = turn?.phase === 'searching' || turn?.phase === 'writing';
+
   async function run(req: AskRequest, label: string) {
+    if (busy) return;
     abort.current?.abort();
     const controller = new AbortController();
     abort.current = controller;
@@ -149,7 +161,7 @@ export function DocumentView({
           ? {
               ...t,
               phase: 'error',
-              error: 'The answer was cut off. Please try again.',
+              error: CUT_OFF,
             }
           : t,
       );
@@ -171,7 +183,6 @@ export function DocumentView({
   }
   if (!detail) return <p role="status">Loading the document...</p>;
 
-  const busy = turn?.phase === 'searching' || turn?.phase === 'writing';
   const showFreeform = config.freeformEnabled && !config.publicMode;
   const citations = turn?.result?.citations.filter((c) => c.valid) ?? [];
 
@@ -192,8 +203,10 @@ export function DocumentView({
               key={chip.id}
               type="button"
               className="chip"
-              disabled={busy}
+              aria-disabled={busy}
               onClick={() => {
+                // aria-disabled (not disabled) keeps keyboard focus on the chip.
+                if (busy) return;
                 void run({ chipId: chip.id }, chip.label);
               }}
             >
@@ -227,7 +240,7 @@ export function DocumentView({
             <button
               type="submit"
               className="btn primary"
-              disabled={busy || question.trim() === ''}
+              aria-disabled={busy || question.trim() === ''}
             >
               Ask
             </button>
@@ -248,11 +261,20 @@ export function DocumentView({
               <span className="sr-only">Question: </span>
               {turn.label}
             </p>
-            <div aria-live="polite" aria-busy={busy} className="answer-body">
+            <p role="status" className="sr-only">
+              {STATUS_TEXT[turn.phase]}
+            </p>
+            <div aria-busy={busy} className="answer-body">
               {turn.phase === 'searching' && (
                 <p className="muted">Searching the document...</p>
               )}
-              {turn.phase === 'writing' && <p>{stripMarkers(turn.text)}</p>}
+              {turn.phase === 'writing' && (
+                <AnswerText
+                  text={stripMarkers(turn.text)}
+                  citations={[]}
+                  onOpenCitation={() => undefined}
+                />
+              )}
               {turn.phase === 'done' && turn.result && (
                 <AnswerText
                   text={turn.result.text}
