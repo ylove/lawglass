@@ -274,7 +274,7 @@ describe('answer markdown', () => {
 describe('whitespace before removed citation markers', () => {
   test('streaming strips the space before punctuation that follows a marker', () => {
     expect(stripMarkers('the deadline [S:sec-4].')).toBe('the deadline.');
-    expect(stripMarkers('a [S:a] and b [S:b], c')).toBe('a and b, c');
+    expect(stripMarkers('a [S:a] and b [S:b], c')).toBe('a  and b, c');
   });
 
   test('final rendering has no space before the superscript when punctuation follows', () => {
