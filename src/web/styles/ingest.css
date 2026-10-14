@@ -1,0 +1,33 @@
+.progress ol {
+  list-style: none;
+  padding: 0;
+}
+.progress li {
+  padding: 0.25rem 0 0.25rem 1.75rem;
+  position: relative;
+  color: var(--muted);
+}
+.progress li::before {
+  content: '\25CB';
+  position: absolute;
+  left: 0;
+}
+.progress li[data-state='done']::before {
+  content: '\2713';
+  color: var(--accent);
+}
+.progress li[data-state='current'] {
+  color: var(--ink);
+  font-weight: 600;
+}
+.progress li[data-state='current']::before {
+  content: '\25B6';
+  color: var(--accent);
+}
+.candidates li {
+  list-style: none;
+  margin-bottom: 0.5rem;
+}
+.candidates ul {
+  padding: 0;
+}

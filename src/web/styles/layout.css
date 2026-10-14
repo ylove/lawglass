@@ -1,0 +1,27 @@
+.site-header {
+  padding: 1rem 1rem 0.5rem;
+  max-width: 72rem;
+  margin: 0 auto;
+}
+.site-header p {
+  margin: 0;
+}
+.layout {
+  display: grid;
+  grid-template-columns: 16rem minmax(0, 1fr);
+  gap: 1.5rem;
+  max-width: 72rem;
+  margin: 0 auto;
+  padding: 1rem;
+}
+main:focus {
+  outline: none;
+}
+.site-footer {
+  max-width: 72rem;
+  margin: 1rem auto 0;
+  padding: 1rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.95rem;
+}

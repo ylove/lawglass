@@ -1,0 +1,48 @@
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgb(0 0 0 / 0.45);
+  display: flex;
+  justify-content: flex-end;
+  align-items: stretch;
+  z-index: 20;
+}
+.drawer {
+  background: var(--surface);
+  color: var(--ink);
+  width: min(32rem, 100%);
+  overflow-y: auto;
+  padding: 1rem;
+  border-left: 1px solid var(--line);
+}
+.drawer-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+}
+.breadcrumb {
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+.location {
+  font-weight: 600;
+}
+.excerpt {
+  border-left: 4px solid var(--line);
+  padding-left: 0.75rem;
+}
+.excerpt-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+del {
+  text-decoration: line-through;
+  background: var(--del-bg);
+  color: var(--muted);
+}
+ins {
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  background: var(--ins-bg);
+}
