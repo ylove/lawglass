@@ -1,6 +1,6 @@
 {
   "fixture": "us-s202-119-is",
-  "frozenAtCommit": null,
+  "frozenAtCommit": "7639f1834cb50bdbd84506716639f9166f44f629",
   "questions": [
     {
       "id": "s202-01",

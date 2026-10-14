@@ -77,13 +77,12 @@ describe('golden sets', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  it('records one freeze for every set (null only while drafting)', () => {
+  // Frozen sets are never tuned to make a mode win (spec §10); a corrected set needs a new freeze.
+  it('records one freeze commit for every set', () => {
     const frozen = new Set(
       FIXTURES.map((fixture) => parsed(fixture).frozenAtCommit),
     );
-    expect(frozen.size).toBe(1);
-    const [commit] = frozen;
-    if (commit !== null) expect(commit).toMatch(/^[0-9a-f]{40}$/);
+    expect([...frozen]).toEqual([expect.stringMatching(/^[0-9a-f]{40}$/)]);
   });
 
   // The schema is what keeps a hand-edited set honest; prove it rejects the likely mistakes.
