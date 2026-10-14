@@ -17,6 +17,7 @@ import { AnthropicProvider } from '../../src/core/llm/anthropic.js';
 import { GoogleProvider } from '../../src/core/llm/google.js';
 import { OpenAIProvider } from '../../src/core/llm/openai.js';
 import {
+  AppError,
   AskEvent,
   IngestEvent,
   type LlmProvider,
@@ -60,9 +61,12 @@ function describeError(error: unknown): string {
 }
 
 type TransportMode = 'throws' | 'http-401';
+/** How many requests reached a failing transport; proves each failure path really ran. */
+let transportCalls = 0;
 /** A fetch whose failures embed the key: in the thrown message, its cause, and the body. */
 function leakyFetch(key: string, mode: TransportMode): typeof fetch {
   return (input, init) => {
+    transportCalls++;
     const request = new Request(input, init);
     const echo = `Incorrect API key provided: ${key}. Authorization: Bearer ${key}`;
     if (mode === 'throws')
@@ -129,10 +133,30 @@ function leakyPinecone(): PineconeBackend {
   });
 }
 
+// The entrypoint builds its own program; route it to the runtime under test. Hoisted so the
+// mock can read it, and the program module itself stays the real one.
+const runtimeForEntrypoint = vi.hoisted(() => ({
+  current: undefined as CliRuntime | undefined,
+}));
+vi.mock('../../src/cli/program.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../src/cli/program.js')>();
+  return {
+    ...actual,
+    createProgram: (deps: Parameters<typeof actual.createProgram>[0]) =>
+      actual.createProgram(
+        deps ?? {
+          runtime: () => Promise.resolve(runtimeForEntrypoint.current!),
+        },
+      ),
+  };
+});
+
 let env: PipelineEnv;
 let captured: string[];
 beforeEach(async () => {
   captured = [];
+  transportCalls = 0;
   const record =
     (name: string) =>
     (...args: unknown[]): void => {
@@ -153,7 +177,16 @@ beforeEach(async () => {
   vi.stubEnv('PINECONE_API_KEY', KEYS.pinecone);
   env = await makePipelineEnv();
   env.serve(GARDENS, makeSectionedText(), 'text/plain');
-  env.serve(OTHER, makeSectionedText(), 'text/plain');
+  // Different bytes: identical content would hit the already-indexed (reuse) path and skip extraction.
+  env.serve(
+    OTHER,
+    {
+      bytes: new TextEncoder().encode(
+        `${new TextDecoder().decode(makeSectionedText().bytes)}\nSEC. 900. Appendix\nA second, different document.\n`,
+      ),
+    },
+    'text/plain',
+  );
 });
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -214,14 +247,55 @@ describe('web server: SSE and JSON bodies', () => {
           expect(askBody).toMatch(/PROVIDER_ERROR/);
           expectNoCanary(`${name}/${mode} ask SSE`, askBody);
 
-          const summary = await app.request(`/api/docs/${docId}/summary`);
-          expectNoCanary(
-            `${name}/${mode} summary`,
-            `${String(summary.status)} ${await summary.text()}`,
-          );
+          // Summary generation runs in the background: poll until it reaches its terminal
+          // state (a failed run reports `disabled`) and only then audit.
+          const before = transportCalls;
+          const summaryBodies: string[] = [];
+          let status = 'pending';
+          for (let i = 0; i < 500 && status === 'pending'; i++) {
+            const res = await app.request(`/api/docs/${docId}/summary`);
+            const text = await res.text();
+            summaryBodies.push(`${String(res.status)} ${text}`);
+            status = (JSON.parse(text) as { status: string }).status;
+            if (status === 'pending')
+              await new Promise((r) => setTimeout(r, 10));
+          }
+          expect(status, 'summary must settle').toBe('disabled');
+          expect(
+            transportCalls,
+            'summary used the failing transport',
+          ).toBeGreaterThan(before);
+          expectNoCanary(`${name}/${mode} summary`, summaryBodies.join('\n'));
 
+          // A different document, so ingest extracts metadata through the failing transport.
+          const callsBeforeIngest = transportCalls;
           const ingest = await app.request('/api/ingest', post({ url: OTHER }));
-          expectNoCanary(`${name}/${mode} ingest SSE`, await sseText(ingest));
+          const ingestBody = await sseText(ingest);
+          expectNoCanary(`${name}/${mode} ingest SSE`, ingestBody);
+          expect(ingestBody).toContain('"type":"done"');
+          expect(
+            transportCalls,
+            'extraction used the failing transport',
+          ).toBeGreaterThan(callsBeforeIngest);
+          const done = ingestBody
+            .split('\n')
+            .filter((line) => line.startsWith('data: '))
+            .map(
+              (line) =>
+                JSON.parse(line.slice(6)) as {
+                  type: string;
+                  doc?: { docId: string };
+                },
+            )
+            .find((event) => event.type === 'done');
+          const detail = await app.request(
+            `/api/docs/${String(done?.doc?.docId)}`,
+          );
+          const detailText = await detail.text();
+          expect(detailText).toContain(
+            'Metadata extraction failed (PROVIDER_ERROR)',
+          );
+          expectNoCanary(`${name}/${mode} doc detail`, detailText);
           expectNoCanary(`${name}/${mode} console`, captured.join('\n'));
         },
       );
@@ -325,54 +399,65 @@ describe('provider adapters: thrown errors', () => {
 });
 
 describe('CLI paths', () => {
-  it('ingest, ask and the entrypoint error printer never show a key', async () => {
-    const provider = providers.openai('http-401');
-    const runtime = runtimeWith({
-      answerProvider: provider,
-      extractProvider: provider,
-    });
-    let stdout = '';
-    const run = (args: string[]) =>
-      createProgram({
-        runtime: () => Promise.resolve(runtime),
-        write: (text) => {
-          stdout += text;
-        },
-      }).parseAsync(args, { from: 'user' });
+  describe.each(Object.keys(providers) as (keyof typeof providers)[])(
+    '%s provider',
+    (name) => {
+      it('ingest, ask and the entrypoint error printer never show a key', async () => {
+        const provider = providers[name]('http-401');
+        const runtime = runtimeWith({
+          answerProvider: provider,
+          extractProvider: provider,
+        });
+        let stdout = '';
+        const run = (args: string[]) =>
+          createProgram({
+            runtime: () => Promise.resolve(runtime),
+            write: (text) => {
+              stdout += text;
+            },
+          }).parseAsync(args, { from: 'user' });
 
-    await run(['ingest', GARDENS, '--name', 'garden']).catch((error: unknown) =>
-      captured.push(describeError(error)),
-    );
-    const asked = await run(['ask', 'garden', 'What is funded?']).then(
-      () => undefined,
-      (error: unknown) => error,
-    );
-    expect(asked, 'ask must fail for this test to mean anything').toBeDefined();
-    captured.push(describeError(asked));
+        // Extraction failures are warnings, so ingest succeeds; the transport must have run.
+        await run(['ingest', GARDENS, '--name', 'garden']);
+        expect(
+          transportCalls,
+          'extraction used the failing transport',
+        ).toBeGreaterThan(0);
+        const asked = await run(['ask', 'garden', 'What is funded?']).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        expect(
+          asked,
+          'ask must fail for this test to mean anything',
+        ).toBeInstanceOf(AppError);
+        captured.push(describeError(asked));
 
-    // The real entrypoint, with the real printer, driven by the leaky runtime.
-    vi.resetModules();
-    vi.doMock('../../src/cli/program.js', () => ({
-      createProgram: () =>
-        createProgram({ runtime: () => Promise.resolve(runtime) }),
-    }));
-    const argv = process.argv;
-    const exitCode = process.exitCode;
-    process.argv = ['node', 'cli', 'ask', 'garden', 'What is funded?'];
-    try {
-      await import('../../src/cli/index.js');
-    } finally {
-      process.argv = argv;
-      process.exitCode = exitCode;
-      vi.doUnmock('../../src/cli/program.js');
-    }
-    // Not vacuous: the entrypoint printer really ran.
-    expect(captured.some((line) => line.startsWith('console.error'))).toBe(
-      true,
-    );
-    expectNoCanary('cli stdout', stdout);
-    expectNoCanary('cli output', captured.join('\n'));
-  });
+        // The real entrypoint and printer, in this module graph so `instanceof AppError`
+        // agrees. The query string makes the entrypoint's top-level code run again.
+        runtimeForEntrypoint.current = runtime;
+        const argv = process.argv;
+        const exitCode = process.exitCode;
+        process.argv = ['node', 'cli', 'ask', 'garden', 'What is funded?'];
+        try {
+          const entrypoint = `../../src/cli/index.ts?provider=${name}`;
+          await import(/* @vite-ignore */ entrypoint);
+          expect(process.exitCode).toBe(1);
+        } finally {
+          process.argv = argv;
+          process.exitCode = exitCode;
+        }
+        const printed = captured.filter((line) =>
+          line.startsWith('console.error'),
+        );
+        // The specific user message, not the generic fallback.
+        expect(printed.join('\n')).toContain((asked as AppError).userMessage);
+        expect(printed.join('\n')).not.toContain('could not be completed');
+        expectNoCanary('cli stdout', stdout);
+        expectNoCanary('cli output', captured.join('\n'));
+      });
+    },
+  );
 });
 
 describe('configuration', () => {

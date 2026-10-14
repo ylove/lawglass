@@ -1287,3 +1287,51 @@ describe('PineconeBackend', () => {
     });
   });
 });
+
+describe('SDK diagnostics never print the API key', () => {
+  const CANARY = 'pcsk_CANARY-diagnostics-0009';
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  // Uses the real SDK with only its HTTP transport replaced, so its own logging code runs.
+  it.each(['PINECONE_DEBUG_CURL', 'PINECONE_DEBUG'])(
+    'with %s=1 a rejected key reaches neither console nor the thrown error',
+    async (variable) => {
+      vi.stubEnv(variable, '1');
+      const output: string[] = [];
+      for (const method of ['log', 'info', 'debug', 'warn', 'error'] as const)
+        vi.spyOn(console, method).mockImplementation((...args: unknown[]) => {
+          output.push(args.map(String).join(' '));
+        });
+      const requests: Request[] = [];
+      const backend = new PineconeBackend({
+        apiKey: CANARY,
+        fetchApi: (input: string | URL | Request, init?: RequestInit) => {
+          const request = new Request(input, init);
+          requests.push(request);
+          return Promise.resolve(
+            new Response(
+              JSON.stringify({ error: { message: `bad key ${CANARY}` } }),
+              { status: 401, headers: { 'content-type': 'application/json' } },
+            ),
+          );
+        },
+      });
+      const error: unknown = await backend
+        .ensureReady()
+        .catch((e: unknown) => e);
+      // The request really went out with the key, so the SDK's logging path was live.
+      expect(requests.length).toBeGreaterThan(0);
+      expect(requests[0]!.headers.get('api-key')).toBe(CANARY);
+      expect(error).toMatchObject({ code: 'MISSING_KEY' });
+      const everything = [...output, String(error), JSON.stringify(error)].join(
+        '\n',
+      );
+      expect(everything).not.toContain(CANARY);
+      expect(everything).not.toContain('CANARY');
+      expect(process.env.PINECONE_DEBUG_CURL).toBeUndefined();
+      expect(process.env.PINECONE_DEBUG).toBeUndefined();
+    },
+  );
+});

@@ -50,7 +50,7 @@ export interface RuntimeOptions {
 export type RuntimeFactory = (options: RuntimeOptions) => Promise<CliRuntime>;
 
 export function createPineconeClient(apiKey: string): PineconeClient {
-  // SDK curl logging exposes API keys; ordinary PINECONE_DEBUG already redacts them.
+  // SDK curl logging exposes API keys. The adapter also disables it; this covers the client built here.
   delete process.env.PINECONE_DEBUG_CURL;
   return new Pinecone({ apiKey, maxRetries: 0 });
 }
