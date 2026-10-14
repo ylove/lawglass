@@ -75,6 +75,50 @@ These override the original text below, and the 2026-10-13 amendments above, whe
 
 14. **Visual direction (§3.2).** The UI has an editorial look, made for interested citizens and self-styled researchers. It uses a trust-building blue palette that is never paired with party red, since red and blue together read as partisan. Fonts are self-hosted, so opening a bill sends nothing to a third party. Struck and inserted text is never shown by color alone: strike-through and underline are always present. The UI meets WCAG AA.
 
+## Amendments (2026-10-14, rc.3)
+
+These override the original text below, and the earlier amendments, where they conflict. Numbering continues. Rationale is in [decision 0010](decisions/0010-scanned-redline-pixels.md), [0011](decisions/0011-who-decides-later.md), [0012](decisions/0012-security-posture.md) and [0013](decisions/0013-agent-access.md). The shared types for these changes arrive through the contract-change issue (#199). Until an item ships, this text is the decision and design, not current behavior.
+
+15. **Local measures and charter amendments (§5.2, §5.3).** City charter amendments, ordinances and ballot issues parse as cleanly as bills. Issues #194 and #195; contract #199.
+    - **`docKind`** is a new optional field on the bill metadata: `bill`, `resolution`, `charter_amendment`, `ballot_issue`, `ordinance` or `other`.
+    - **`amends`** is a new optional field: the name, the jurisdiction and the section list of the document a measure amends. It comes from phrases such as "the City Charter" and "Section 3 of the Charter". Each listed section is cross-checked against the detected section headings. The UI can then say "This amends the Columbus City Charter, Sections 3, 4, ...".
+    - **Headings.** `Sec. 3. - Legislative powers.`, `Sec. 3.- ...` and `Sec. N-N - Heading` all parse, and the leading dash is stripped from the heading.
+    - **Ballot question.** A leading ballot question ("To amend the City Charter to ...") becomes the preview and purpose line.
+    - **Local jurisdictions.** The metadata guard accepts a local jurisdiction, such as a city or county, only when its name appears in the document text or matches the city or county of the source host. Otherwise it is discarded with a visible note, as today.
+    - **Numbers.** "Issue N", "Ordinance No. ...", "Resolution No. ..." and "Charter Amendment" forms are accepted.
+    - **Charter and general-law references.** A reference to "Section 3 of the charter" links internally when the document restates that section. New reference patterns are `kind: other` with a new optional `category` (`charter`, `local_code` or `general_law`): "the general election laws of the state" (mapped to Ohio Revised Code Title 35 only when the jurisdiction is Ohio), a bare "R.C. 3501.01", and municipal code citations. They show as "Referenced, not loaded" with a search link built in the browser. None is ever fetched. The existing reference `kind` values do not change, so a binary from rc.2 sharing the same data directory still reads the data.
+    - **"What changes" honesty.** On a scan whose marks were not read (amendment 16), the chip does not answer "no changes".
+
+16. **Scanned redlines (§5.2).** A scanned document with OCR text (an invisible text layer, or Adobe ClearScan's visible text over a background image) is read, slightly skewed text is kept rather than dropped as a stamp, and strike-through and underline are recovered from the page image and the OCR word junctions. Raster marks are gated on precision; every scanned document carries a warning. Issues #192 and #193; contract #199.
+    - **Detection.** A page whose text is all invisible (render mode 3 or 7) is an OCR scan. `SCANNED_PDF` still fires only when no page has 50 characters of text, counting all characters. Every document with an OCR-scan page carries a warning: the text comes from OCR and may contain errors, and the reader should check the original.
+    - **Method.** Deterministic pixel analysis, not a vision model. Mark segments are synthesized from the pixels and fed into the existing vector `markLine` pipeline (decision 0006), so one set of rules decides what is struck or inserted.
+    - **Abstain and warn.** A page abstains, with a "marks not read on page N" warning, when skew exceeds 1.5 degrees, resolution is under 100 dpi, binarization is weakly bimodal, or the OCR boxes do not line up with the ink. An uncertain strike is applied. An uncertain underline is not. Both warn.
+    - **Scan status.** Each page of a scan is `read`, `uncertain` or `not-read`. The UI and the "What changes" chip use it.
+    - **Release gate.** Raster marks ship on only if struck-word recall is at least 0.95 and precision is at least 0.90 on the labeled scans plus the synthetic suite. Results are recorded in `eval/results-scanned.md`. If the gate fails, raster marks ship off, and scanned documents warn that struck words may appear as current text.
+    - **Packaging.** `jbig2.wasm`, `openjpeg.wasm` and `qcms_bg.wasm` ship in `dist/pdfjs-wasm/`. The `*_nowasm_fallback.js` files and `quickjs-eval` never ship. This amends decision 0006's "no runtime PDF.js files".
+
+17. **Scenarios: a default for every bill, and on demand (§5.9).** This amends amendment 13. Issues #196, #197 and #198; contract #199.
+    - **Default scenario.** The single-subject condition is removed. Every bill gets one 3-panel scenario with its summary. It uses a default subject: the group affected by the summary's most-cited section, chosen deterministically. It has its own cache entry, so already-cached summaries stay valid. If validation fails, nothing is shown and no error appears. Public mode serves it only from the cache.
+    - **On demand.** `POST /api/docs/:docId/scenario` takes a subject of 1 to 80 characters and returns a status of `ok`, `none` or `disabled`. The UI offers "How does this affect...?" with 3 to 5 suggested personas (`DocDetail.scenarioPersonas`) and a "Someone else..." field. Each result is its own strip, separate from the answer.
+    - **Persona names are unchanged.** Names still come from the fixed list, seeded by the document and the normalized subject. The requested subject goes to the model in an escaped element. The model paraphrases it into the profile label, and that label must pass the same profile-label validator as before. The subject is never shown as written.
+    - **Subject checks before any model call.** The subject is checked for markup, evaluative wording and allowed characters. A failure returns a plain 400, so no money is spent on a scenario the validator would drop.
+    - **Grounding is unchanged.** Decision 0009 applies to every scenario, default or on demand.
+    - **Cache and limits.** On-demand results are cached under a key of document, kind, a hash of the normalized subject, provider, model and prompt version. A `none` result has a cool-down before a retry. Requests count against the core budgets (amendment 19). They are disabled in public mode (`ClientConfig.scenariosEnabled` is false).
+    - **Detection.** The "how will this affect ..." detector also recognizes voters, residents, candidates, officials and public employees.
+
+18. **The "Who decides later" chip (§3.3).** A new chip, `delegations`, with the `extract` strategy. Issues #201 to #203, for #144; contract #199.
+    - **Extraction is rule-based** and runs over struck-free text, with a section and line on every item. Decided-later items are limited to rule-making and discretion verbs. Plain duties are excluded. Items record the actor, what is decided and any deadline.
+    - **Depends on** lists other laws and charters, outside agencies or bodies, appropriations, voter approval, and effective-date or contingency triggers. Each group is capped, with a "more" count.
+    - **The answer** is a list grouped "Decided later by", "Depends on" and "Takes effect when", with citations, preceded by a short plain-language lede. The lede is grounded only in the extracted list, and the lede and list are validated together. With no provider, or in public mode, the chip returns the list alone.
+    - The chip row grows from 9 chips to 10. See decision 0011.
+
+19. **Security headers, budgets and public mode (§6, §7).** Issues #87, #179, #180 and #181. See decision 0012.
+    - **Local-only by address.** The server decides whether a bind is local by parsing the address, so every loopback spelling gets the Host and Origin checks.
+    - **Headers.** Every response carries a strict Content-Security-Policy, `nosniff`, `Referrer-Policy: no-referrer`, same-origin opener and resource policies and a restrictive `Permissions-Policy`. Every `/api/*` response, including streams, carries `Cache-Control: no-store`. HSTS is off on localhost. Public mode adds Turnstile's origin to the policy.
+    - **Public mode fails closed.** The §7 "stub hook" is replaced by a real Turnstile check (hostname, action and token age), run through an injected fetcher. Public mode without a verifier refuses to start, unless the operator passes `--no-bot-check`. `--trust-proxy <hops>` replaces the boolean and counts from the right of `X-Forwarded-For`. The rate limiter is bounded and groups IPv6 by /64. Public mode serves the summary from cache only, strips query strings and fragments from listed source URLs, and caps concurrent streams.
+    - **Budgets live in core.** Concurrency limits (2 ingest, 4 ask and scenario), a soft per-minute ceiling for model-backed calls and the 500-character question cap are enforced in `core/pipeline`, so the CLI and any MCP or other non-HTTP caller are covered. The public per-IP daily budget stays in the server.
+    - **Scope.** Localhost stays the primary use. Deploying to the cloud is out of scope for now.
+
 ## 1. Purpose
 
 A local-first tool that takes the URL of any piece of legislation (federal, state, county, municipal), ingests it into Pinecone using structure-aware chunking and hybrid retrieval, and answers questions about it with citations to the exact section, page, and line.
