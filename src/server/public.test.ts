@@ -196,6 +196,43 @@ describe('rate limits', () => {
 });
 
 describe('caps', () => {
+  test('defaults the public cap to the configured document cap for admission and enforcement', async () => {
+    env.runtime.maxDocs = 1;
+    const a = publicApp();
+    const eviction = vi.spyOn(env.registry, 'evictionCandidates');
+    const first = await ingestOk(a, 'https://example.gov/a.txt');
+    env.fetches.length = 0;
+    const res = await post(a, '/api/ingest', {
+      url: 'https://example.gov/b.xml',
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({
+      error: { code: 'DOC_CAP_REACHED' },
+    });
+    expect(eviction).toHaveBeenCalledWith(1);
+    expect(env.fetches).toEqual([]);
+    expect((await env.registry.list()).map((e) => e.docId)).toEqual([first]);
+  });
+
+  test('an explicit public cap overrides the configured cap in the pipeline too', async () => {
+    env.runtime.maxDocs = 1;
+    const a = publicApp({ limits: { maxDocs: 2 } });
+    const eviction = vi.spyOn(env.registry, 'evictionCandidates');
+    const first = await ingestOk(a, 'https://example.gov/a.txt');
+    const second = await ingestOk(a, 'https://example.gov/b.xml');
+    expect(eviction).toHaveBeenLastCalledWith(2);
+    expect((await env.registry.list()).map((e) => e.docId).sort()).toEqual(
+      [first, second].sort(),
+    );
+    const res = await post(a, '/api/ingest', {
+      url: 'https://example.gov/a.txt',
+    });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({
+      error: { code: 'DOC_CAP_REACHED' },
+    });
+  });
+
   test('the global document cap refuses further ingests without evicting', async () => {
     const a = publicApp({ limits: { maxDocs: 1 } });
     const first = await ingestOk(a, 'https://example.gov/a.txt');

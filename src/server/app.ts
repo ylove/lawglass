@@ -42,11 +42,11 @@ export interface PublicLimits {
   maxDocs: number;
 }
 
-export const DEFAULT_PUBLIC_LIMITS: PublicLimits = {
+/** The document cap comes from the runtime configuration unless explicitly overridden. */
+export const DEFAULT_PUBLIC_LIMITS: Omit<PublicLimits, 'maxDocs'> = {
   questionsPerHour: 20,
   ingestsPerHour: 3,
   maxPages: 200,
-  maxDocs: 50,
 };
 
 export interface AppOptions {
@@ -115,7 +115,11 @@ const isLoopbackHost = (host: string): boolean =>
 
 export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   const publicMode = options.publicMode ?? false;
-  const limits = { ...DEFAULT_PUBLIC_LIMITS, ...options.limits };
+  const limits: PublicLimits = {
+    ...DEFAULT_PUBLIC_LIMITS,
+    maxDocs: runtime.maxDocs,
+    ...options.limits,
+  };
   const turnstile = options.turnstile ?? noopTurnstile;
   const heartbeatMs = options.heartbeatMs ?? 15_000;
   const now = options.now ?? Date.now;
@@ -279,6 +283,8 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       };
       stream.onAbort(abort);
       c.req.raw.signal.addEventListener('abort', abort);
+      // Parsing, document lookup and public checks may finish after the client disconnects.
+      if (c.req.raw.signal.aborted || stream.aborted) abort();
       const heartbeat = setInterval(() => {
         stream.write(': ping\n\n').catch(() => undefined);
       }, heartbeatMs);
@@ -290,6 +296,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
           .catch(() => undefined);
       };
       try {
+        controller.signal.throwIfAborted();
         await run(emit, controller.signal);
       } catch (error) {
         // Nobody is listening after an abort, so there is nobody to tell.

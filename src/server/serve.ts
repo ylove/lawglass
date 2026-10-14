@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import type { Server } from 'node:http';
+import { isIP } from 'node:net';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { serve as nodeServe } from '@hono/node-server';
@@ -49,7 +50,8 @@ export async function startServer(
   const host = options.host ?? LOOPBACK;
   const app = createApp(runtime, {
     webRoot: defaultWebRoot(),
-    localOnly: !options.publicMode && ['127.0.0.1', 'localhost'].includes(host),
+    localOnly:
+      !options.publicMode && ['127.0.0.1', 'localhost', '::1'].includes(host),
     ...options,
   });
   const server = await new Promise<Server>((resolve, reject) => {
@@ -71,9 +73,11 @@ export async function startServer(
   });
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : 0;
+  const urlHost =
+    host === LOOPBACK ? 'localhost' : isIP(host) === 6 ? `[${host}]` : host;
   return {
     port,
-    url: `http://${host === LOOPBACK ? 'localhost' : host}:${String(port)}`,
+    url: `http://${urlHost}:${String(port)}`,
     close: () =>
       new Promise((resolve) => {
         server.closeAllConnections();

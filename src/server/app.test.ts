@@ -44,6 +44,7 @@ beforeEach(async () => {
   );
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   await env.cleanup();
 });
 
@@ -442,6 +443,86 @@ async function freeformAnswer(a: Hono, docId: string): Promise<AnswerResult> {
 }
 
 describe('abort and heartbeat', () => {
+  test.each(['body parsing', 'document lookup', 'public checks'])(
+    'an ask cancelled during %s never starts the chip runner',
+    async (phase) => {
+      const doc = await ingestDoc(app());
+      const controller = new AbortController();
+      const body = { chipId: 'summary' };
+      const request = new Request(
+        `http://localhost/api/docs/${doc.docId}/ask`,
+        {
+          method: 'POST',
+          body: JSON.stringify(body),
+          headers: { 'content-type': 'application/json' },
+          signal: controller.signal,
+        },
+      );
+      if (phase === 'body parsing')
+        vi.spyOn(request, 'text').mockImplementation(() => {
+          controller.abort();
+          return Promise.resolve(JSON.stringify(body));
+        });
+      if (phase === 'document lookup') {
+        const list = env.registry.list.bind(env.registry);
+        vi.spyOn(env.registry, 'list').mockImplementationOnce(async () => {
+          const entries = await list();
+          controller.abort();
+          return entries;
+        });
+      }
+      const chips = vi
+        .fn<ChipRunner>()
+        .mockRejectedValue(new Error('must not run'));
+      env.runtime.chips = chips;
+      const a = app({
+        publicMode: true,
+        turnstile: () => {
+          if (phase === 'public checks') controller.abort();
+          return Promise.resolve(true);
+        },
+      });
+      const res = await a.request(request);
+      expect(await res.text()).toBe('');
+      expect(controller.signal.aborted).toBe(true);
+      expect(chips).not.toHaveBeenCalled();
+    },
+  );
+
+  test.each(['body parsing', 'public checks'])(
+    'an ingest cancelled during %s never fetches and releases its admission slot',
+    async (phase) => {
+      const controller = new AbortController();
+      const body = { url: GARDENS };
+      const request = new Request('http://localhost/api/ingest', {
+        method: 'POST',
+        body: JSON.stringify(body),
+        headers: { 'content-type': 'application/json' },
+        signal: controller.signal,
+      });
+      if (phase === 'body parsing')
+        vi.spyOn(request, 'text').mockImplementation(() => {
+          controller.abort();
+          return Promise.resolve(JSON.stringify(body));
+        });
+      const fetcher = vi.spyOn(env.runtime, 'fetcher');
+      const a = app({
+        publicMode: true,
+        limits: { maxDocs: 1 },
+        turnstile: () => {
+          if (phase === 'public checks') controller.abort();
+          return Promise.resolve(true);
+        },
+      });
+      const res = await a.request(request);
+      expect(await res.text()).toBe('');
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(await env.registry.list()).toEqual([]);
+      await ingestDoc(a);
+      expect(fetcher).toHaveBeenCalledOnce();
+    },
+  );
+
   test('aborting an ask cancels the pipeline signal and sends nothing more', async () => {
     const a = app();
     const doc = await ingestDoc(a);

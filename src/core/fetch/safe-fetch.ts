@@ -18,6 +18,8 @@ import { sniffFormat, type SniffedFormat } from './sniff.js';
 import { findCandidateLinks, isLikelyWrapper } from './wrapper.js';
 
 export interface SafeFetchOptions {
+  /** Cancels DNS, redirects and body streaming without replacing the download deadline. */
+  signal?: AbortSignal | undefined;
   resolver?: Resolver;
   /** Injected dispatchers belong to the caller; default agents are destroyed after each hop. */
   dispatcherFactory?: (
@@ -157,7 +159,11 @@ export async function safeFetch(
   }
   const deadline = AbortSignal.timeout(timeoutMs);
   const controller = new AbortController();
-  const signal = AbortSignal.any([deadline, controller.signal]);
+  const signal = AbortSignal.any([
+    deadline,
+    controller.signal,
+    ...(opts.signal ? [opts.signal] : []),
+  ]);
   const resolver = opts.resolver ?? defaultResolver;
   const cacheDir = opts.cacheDir ?? defaultCacheDir();
   try {

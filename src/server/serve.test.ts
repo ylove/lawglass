@@ -76,26 +76,39 @@ describe('a real server on loopback', () => {
     },
   );
 
-  test('refuses a Host header that is not loopback (DNS rebinding)', async () => {
-    server = await startServer(env.runtime, { port: 0 });
-    // fetch() will not let a caller override Host, so speak raw HTTP to loopback.
-    const status = await new Promise<number>((resolve, reject) => {
-      http
-        .get(
-          {
-            host: '127.0.0.1',
-            port: server?.port,
-            path: '/api/health',
-            headers: { host: 'evil.example' },
-          },
-          (res) => {
-            res.resume();
-            resolve(res.statusCode ?? 0);
-          },
-        )
-        .on('error', reject);
+  test.each(['127.0.0.1', '::1'])(
+    'refuses DNS rebinding when bound to %s',
+    async (host) => {
+      server = await startServer(env.runtime, { port: 0, host });
+      // fetch() will not let a caller override Host, so speak raw HTTP to loopback.
+      const status = await new Promise<number>((resolve, reject) => {
+        http
+          .get(
+            {
+              host,
+              port: server?.port,
+              path: '/api/health',
+              headers: { host: 'evil.example', origin: 'http://evil.example' },
+            },
+            (res) => {
+              res.resume();
+              resolve(res.statusCode ?? 0);
+            },
+          )
+          .on('error', reject);
+      });
+      expect(status).toBe(403);
+    },
+  );
+
+  test('IPv6 loopback has a usable URL and accepts its own Host and Origin', async () => {
+    server = await startServer(env.runtime, { port: 0, host: '::1' });
+    expect(server.url).toBe(`http://[::1]:${String(server.port)}`);
+    const res = await fetch(`${server.url}/api/health`, {
+      headers: { origin: server.url },
     });
-    expect(status).toBe(403);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true });
   });
 
   test('a port already in use gives a plain-language error', async () => {
