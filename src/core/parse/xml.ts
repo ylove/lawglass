@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { SaxesParser } from 'saxes';
 import { z } from 'zod';
+import { ParseBudget, type ParseControl } from './limits.js';
 import {
   AppError,
   EMPTY_METADATA,
@@ -13,7 +14,7 @@ import {
   type SpanStatus,
 } from '../model/index.js';
 
-export interface XmlParseOptions {
+export interface XmlParseOptions extends ParseControl {
   sourceUrl: string;
   /** Supplied by the fetch step so parsing is deterministic. */
   fetchedAt: string;
@@ -62,7 +63,7 @@ function decodeBytes(bytes: Uint8Array): string {
   }
 }
 
-function buildTree(text: string): El {
+function buildTree(text: string, budget: ParseBudget): El {
   // Plain mode (no namespace resolution): govinfo declares `xmlns:dc` and nothing else, and
   // generic documents may use undeclared prefixes. We match on local names ourselves.
   const parser = new SaxesParser({ xmlns: false, fragment: false });
@@ -97,8 +98,15 @@ function buildTree(text: string): El {
   parser.on('text', onText);
   parser.on('cdata', onText);
   try {
-    parser.write(text).close();
+    for (let at = 0; at < text.length; at += 64 * 1024) {
+      budget.check();
+      parser.write(text.slice(at, at + 64 * 1024));
+      if (failure) break;
+    }
+    budget.check();
+    parser.close();
   } catch (cause) {
+    if (cause instanceof AppError) throw cause;
     failure ??= cause instanceof Error ? cause : new Error(String(cause));
   }
   if (failure || !root) {
@@ -388,6 +396,7 @@ interface Frame {
 }
 
 interface WalkState {
+  budget: ParseBudget;
   dialect: Dialect;
   ids: Set<string>;
   definitions: Definition[];
@@ -594,6 +603,7 @@ function collectInline(
   state: WalkState,
   noteRefs: boolean,
 ): void {
+  state.budget.check();
   const status = statusOf(el, inherited);
   const isBlock = !INLINE.has(el.name) && el.name !== 'linebreak';
   if (SKIP.has(el.name)) return;
@@ -632,6 +642,7 @@ function walkLevel(
   state: WalkState,
   siblingIndex: number,
 ): Section {
+  state.budget.check();
   const { dialect } = state;
   const parent = frames.at(-1);
   const numEl = childrenNamed(el, dialect.numName)[0];
@@ -852,9 +863,10 @@ export function parseXml(
       'Invalid XML document source or fetch timestamp.',
     );
   }
+  const budget = new ParseBudget(options);
   const bytes = typeof input === 'string' ? Buffer.from(input, 'utf8') : input;
   const text = typeof input === 'string' ? input : decodeBytes(bytes);
-  const root = buildTree(text);
+  const root = buildTree(text, budget);
 
   const detected = detectDialect(root);
   const warnings: string[] = [];
@@ -877,6 +889,7 @@ export function parseXml(
   }
 
   const state: WalkState = {
+    budget,
     dialect,
     ids: new Set(),
     definitions: [],
@@ -899,6 +912,7 @@ export function parseXml(
         (dialect.isLevel(k) || holdsLevel(k)),
     );
   const collect = (el: El): void => {
+    budget.check();
     for (const kid of el.kids) {
       if (typeof kid === 'string' || SKIP.has(kid.name)) continue;
       if (dialect.isLevel(kid)) sections.push(walkLevel(kid, [], state, ++top));
@@ -938,7 +952,8 @@ export function parseXml(
     );
   }
 
-  return NormalizedDoc.parse({
+  budget.check();
+  const doc = NormalizedDoc.parse({
     docId: createHash('sha256').update(bytes).digest('hex'),
     sourceUrl: options.sourceUrl,
     fetchedAt: options.fetchedAt,
@@ -950,4 +965,6 @@ export function parseXml(
     externalRefs: [...state.refs.values()],
     warnings,
   });
+  budget.check();
+  return doc;
 }

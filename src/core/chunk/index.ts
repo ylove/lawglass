@@ -1,4 +1,10 @@
 import {
+  assertChunkLimit,
+  ParseBudget,
+  readParseLimits,
+  type ParseControl,
+} from '../parse/limits.js';
+import {
   AppError,
   NormalizedDoc,
   makeChunkId,
@@ -107,7 +113,16 @@ function location(spans: readonly Span[]): SourceLocation {
  * Oversized words split without losing source text. Invalid input or over-budget
  * breadcrumbs/metadata fail explicitly to avoid losing citation information.
  */
-export function chunkDocument(input: NormalizedDoc): Chunk[] {
+export interface ChunkOptions extends ParseControl {
+  maxChunks?: number | undefined;
+}
+
+export function chunkDocument(
+  input: NormalizedDoc,
+  options: ChunkOptions = {},
+): Chunk[] {
+  const budget = new ParseBudget(options);
+  const maxChunks = options.maxChunks ?? readParseLimits().maxChunks;
   const parsed = NormalizedDoc.safeParse(input);
   if (!parsed.success)
     throw new AppError('INVALID_INPUT', 'Invalid normalized document.');
@@ -163,6 +178,7 @@ export function chunkDocument(input: NormalizedDoc): Chunk[] {
     let previousEnd = 0;
 
     while (start < words.length) {
+      budget.check();
       // Shrink overlap if necessary so every iteration includes new source text.
       while (start < previousEnd && !fits(start, previousEnd + 1, TARGET_MAX))
         start++;
@@ -228,6 +244,7 @@ export function chunkDocument(input: NormalizedDoc): Chunk[] {
           'TOO_LARGE',
           'Chunk metadata exceeds the record budget.',
         );
+      assertChunkLimit(chunks.length + 1, maxChunks);
       chunks.push(chunk);
       counters.set(section.id, n + 1);
       if (end === words.length) break;
@@ -331,5 +348,6 @@ export function chunkDocument(input: NormalizedDoc): Chunk[] {
   }
   validateIds(doc.sections);
   for (const section of doc.sections) visit(section, []);
+  budget.check();
   return chunks;
 }

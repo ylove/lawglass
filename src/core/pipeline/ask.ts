@@ -4,6 +4,7 @@
  */
 import { answer } from '../answer/index.js';
 import { getChip, runChip } from '../chips.js';
+import { withInlineChanges } from './inline-changes.js';
 import { readHistory } from '../history/history-store.js';
 import { asksAboutChanges, retrieve } from '../retrieve/index.js';
 import {
@@ -26,6 +27,7 @@ import {
   attachScenario,
   type AttachedScenario,
 } from '../scenario/attach.js';
+import { withoutSyntheticChunks } from '../chip-types.js';
 import { classifyBill, wantsScenario } from '../scenario/detect.js';
 
 /**
@@ -315,17 +317,25 @@ export async function ask(
   const usable = retrieved.hits.filter(
     (hit) => includeDeleted || hit.chunk.amendmentStatus !== 'deleted',
   );
+  // A question about changes sees each retrieved section with its struck and inserted words in
+  // place (a one-word deletion cannot be retrieved on its own). Others keep plain chunks.
+  const live = usable.filter((hit) => !hit.injected);
   const result = await answer({
     provider: deps.provider,
     question,
     context: {
-      hits: usable.filter((hit) => !hit.injected),
+      hits: includeDeleted ? withInlineChanges(live, doc, docId) : live,
       definitions: usable.filter((hit) => hit.injected),
       metadata: doc.metadata,
     },
     signal,
     onToken: opts.onToken,
   });
+  // Inline excerpts have no stored chunk behind them, so citations name sections only.
+  if (includeDeleted)
+    result.citations = result.citations.map((c) =>
+      withoutSyntheticChunks(c, docId),
+    );
 
   const settled = await settleScenario(
     result,
