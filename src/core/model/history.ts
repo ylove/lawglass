@@ -5,6 +5,7 @@
  * a sponsor, committee or purpose; leave the field out instead. Dates are ISO strings.
  */
 import { z } from 'zod';
+import { HttpsUrl } from './doc.js';
 
 export const BillHistory = z.object({
   /** The official summary, e.g. from the Congressional Research Service. */
@@ -13,7 +14,7 @@ export const BillHistory = z.object({
       text: z.string(),
       /** Who wrote it, e.g. "Congressional Research Service". */
       source: z.string(),
-      url: z.url(),
+      url: HttpsUrl,
       date: z.string().optional(),
     })
     .optional(),
@@ -22,7 +23,7 @@ export const BillHistory = z.object({
       code: z.string(),
       label: z.string(),
       date: z.string().optional(),
-      url: z.url().optional(),
+      url: HttpsUrl.optional(),
     }),
   ),
   actions: z.array(
@@ -31,7 +32,7 @@ export const BillHistory = z.object({
       text: z.string(),
       chamber: z.string().optional(),
       committee: z.string().optional(),
-      url: z.url().optional(),
+      url: HttpsUrl.optional(),
     }),
   ),
   amendments: z.array(
@@ -56,12 +57,12 @@ export const BillHistory = z.object({
       purpose: z.string().optional(),
       description: z.string().optional(),
       date: z.string().optional(),
-      url: z.url().optional(),
+      url: HttpsUrl.optional(),
     }),
   ),
   /** Every host the history was fetched from, for transparency in the UI. */
   sources: z.array(
-    z.object({ host: z.string(), url: z.url(), fetchedAt: z.iso.datetime() }),
+    z.object({ host: z.string(), url: HttpsUrl, fetchedAt: z.iso.datetime() }),
   ),
 });
 export type BillHistory = z.infer<typeof BillHistory>;

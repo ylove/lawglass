@@ -82,19 +82,21 @@ export const SponsorLinkKind = z.enum([
 ]);
 export type SponsorLinkKind = z.infer<typeof SponsorLinkKind>;
 
-function isHttps(value: string): boolean {
+/** An absolute `https:` URL. The one place the rule lives; used by sponsor links and bill history. */
+export const HttpsUrl = z.string().refine((value) => {
   try {
     return new URL(value).protocol === 'https:';
   } catch {
     return false;
   }
-}
+}, 'must be an https URL');
+export type HttpsUrl = z.infer<typeof HttpsUrl>;
 
 /** A link about a sponsor. HTTPS only; `verified` means an official record confirmed it. */
 export const SponsorLink = z
   .object({
     kind: SponsorLinkKind,
-    url: z.string().refine(isHttps, 'sponsor links must be https URLs'),
+    url: HttpsUrl,
     label: z.string().min(1),
     verified: z.boolean(),
   })

@@ -141,6 +141,36 @@ describe('BillHistory', () => {
   });
 });
 
+describe('BillHistory urls are https-only', () => {
+  const http = 'http://example.com/x';
+  const https = 'https://example.com/x';
+  const base = { versions: [], actions: [], amendments: [], sources: [] };
+  const cases: [string, object][] = [
+    [
+      'officialSummary',
+      { officialSummary: { text: 't', source: 's', url: http } },
+    ],
+    ['versions', { versions: [{ code: 'c', label: 'l', url: http }] }],
+    ['actions', { actions: [{ date: 'd', text: 't', url: http }] }],
+    ['amendments', { amendments: [{ id: 'a', status: 'unknown', url: http }] }],
+    [
+      'sources',
+      {
+        sources: [
+          { host: 'h', url: http, fetchedAt: '2026-10-14T00:00:00.000Z' },
+        ],
+      },
+    ],
+  ];
+  it.each(cases)('rejects an http url in %s', (_name, patch) => {
+    expect(BillHistory.safeParse({ ...base, ...patch }).success).toBe(false);
+    const fixed = JSON.parse(
+      JSON.stringify(patch).replace(http, https),
+    ) as object;
+    expect(BillHistory.safeParse({ ...base, ...fixed }).success).toBe(true);
+  });
+});
+
 describe('Scenario', () => {
   it('parses 3 and 4 frames and rejects 2 or 5', () => {
     expect(Scenario.safeParse(scenario(3)).success).toBe(true);
