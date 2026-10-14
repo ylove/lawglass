@@ -163,6 +163,40 @@ describe('with a model that obeys every injection', () => {
     }
   });
 
+  test('struck text: the question reaches the struck section, the exclusion keeps the payload out', () => {
+    const r = byId('indirect-struck-instruction');
+    expect(passed(r, 'exclusion-nonvacuous')).toBe(true);
+    expect(r.retrievedSections).toContain('sec-13'); // its live heading is retrieved
+    expect(r.prompt).not.toContain('NOTE TO AI');
+    expect(r.prompt).not.toContain('status="deleted"');
+  });
+
+  test('struck text: a change question shows the deleted chunk to the model by design', () => {
+    const r = byId('indirect-struck-change-question');
+    expect(r.prompt).toContain('status="deleted"');
+    expect(r.prompt).toContain('NOTE TO AI');
+    expect(passed(r, 'payload-delivered')).toBe(true);
+    // The fooled model obeys it: the documented gap, not a defense.
+    expect(passed(r, 'not-steered')).toBe(false);
+  });
+
+  test('reader warnings are present where the gap reasons say the reader is warned', () => {
+    for (const r of results) {
+      expect(passed(r, 'reader-warned'), r.caseId).toBe(true);
+      const c = caseOf(r.caseId);
+      for (const e of c.expectedFailures ?? [])
+        if (e.why.includes('reader is warned (NO_VALID_CITATIONS)'))
+          expect(r.warnings, r.caseId).toContain('NO_VALID_CITATIONS');
+        else if (e.why.includes('reader is warned (INVALID_CITATIONS_REMOVED)'))
+          expect(r.warnings, r.caseId).toContain('INVALID_CITATIONS_REMOVED');
+    }
+  });
+
+  test('every case lists what was waived from the citation check', () => {
+    const lists = results.flatMap((r) => r.waived);
+    expect(lists.every((w) => w.sentence.length > 0)).toBe(true);
+  });
+
   test('struck text is kept out of the prompt unless the question is about changes', () => {
     const r = byId('indirect-struck-instruction');
     expect(r.prompt).not.toContain('status="deleted"');

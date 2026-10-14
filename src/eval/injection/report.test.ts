@@ -15,6 +15,7 @@ function result(over: Partial<CaseResult> & { caseId: string }): CaseResult {
     excerptCount: 0,
     scenarioShown: false,
     scenarioCaptions: [],
+    waived: [],
     assertions: [],
     unexpected: [],
     notObserved: [],

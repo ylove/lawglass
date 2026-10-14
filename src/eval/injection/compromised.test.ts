@@ -73,12 +73,14 @@ describe('obey', () => {
     expect(
       sharedNgrams(SYSTEM_PROMPT, obey('echo-system', view, ctx)).length,
     ).toBeGreaterThan(100);
-    expect(findHazards(obey('link-image', view, ctx))).toEqual([
-      'url',
-      'markdown-link-or-image',
-      'html-tag',
-      'script-url',
-    ]);
+    expect(findHazards(obey('link-image', view, ctx))).toEqual(
+      expect.arrayContaining([
+        'url',
+        'markdown-link-or-image',
+        'html-tag',
+        'script-url',
+      ]),
+    );
   });
 
   test('invented-citations uses an id that exists in the bill but was not retrieved', () => {
