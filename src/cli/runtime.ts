@@ -101,7 +101,12 @@ export const createRuntimeFrom =
       backend: buildBackend(config, sources),
       registry: new Registry(configDir),
       fetcher: (url, options) =>
-        safeFetch(url, { cacheDir, signal: options?.signal }),
+        safeFetch(url, {
+          cacheDir,
+          signal: options?.signal,
+          validateUrl: options?.validateUrl,
+          refresh: options?.refresh,
+        }),
       now: () => new Date(),
       maxDocs: config.maxDocs,
       retrievalMode: config.retrievalMode,

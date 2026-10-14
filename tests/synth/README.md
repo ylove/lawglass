@@ -30,6 +30,11 @@ all passages and names are invented. `INJECTION_SAMPLES` contains hostile,
 bill-like strings for answer tests; `makeInjectionText(index)` wraps one in the
 same bytes/ground-truth API. Tests check preservation as data, not model resistance.
 
+`makeBillStatusXml()` returns fresh XML bytes for the history adapter, rather
+than a legislation section tree. Its small, hand-written BILLSTATUS record has
+invented sponsors, cosponsors, actions, amendments, text versions, and CRS
+summaries. No downloaded government records are included.
+
 Adjacent tests round-trip basic facts through PDF.js's legacy ESM build (Node's
 worker is disabled), the existing happy-dom XML/HTML DOM readers, and test-only
 text section recognizers. The PDF parser's tests (`src/core/parse/pdf.test.ts`)

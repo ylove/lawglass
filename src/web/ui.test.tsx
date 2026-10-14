@@ -69,6 +69,22 @@ describe('helpers', () => {
 });
 
 describe('document flow', () => {
+  test('history failures leave the document readable and show history unavailable', async () => {
+    const api = mock();
+    const real = api.getDoc.bind(api);
+    api.getDoc = async (id) => ({
+      ...(await real(id)),
+      warnings: [
+        'History unavailable: the official history could not be read or saved.',
+      ],
+    });
+    render(<App api={api} />);
+    await ready();
+    expect(await screen.findByText(/History unavailable/)).toBeTruthy();
+    expect(
+      screen.getByRole('button', { name: 'Summarize this bill' }),
+    ).toBeTruthy();
+  });
   test('chip click streams an answer, then citations open the source drawer', async () => {
     render(<App api={mock()} />);
     await ready();

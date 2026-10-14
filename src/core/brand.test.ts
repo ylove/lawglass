@@ -11,3 +11,11 @@ test('environment variables use the configured brand prefix', () => {
   expect(envVar('MAX_DOCS')).toBe(`${BRAND.envPrefix}_MAX_DOCS`);
   expect(envVar('LLM_PROVIDER')).toBe(`${BRAND.envPrefix}_LLM_PROVIDER`);
 });
+
+test('fetch identity uses package version and the repository’s HTTPS URL', () => {
+  expect(BRAND.version).toBe(packageJson.version);
+  expect(`${BRAND.repositoryUrl}.git`).toBe(
+    packageJson.repository.url.replace(/^git\+/, ''),
+  );
+  expect(new URL(BRAND.repositoryUrl).protocol).toBe('https:');
+});

@@ -71,6 +71,13 @@ export default defineConfig({
           branches: 85,
           statements: 90,
         },
+        'src/core/history/{resolve,allowlist}.ts': {
+          perFile: true,
+          lines: 90,
+          functions: 90,
+          branches: 85,
+          statements: 90,
+        },
         'src/core/answer/citations*.ts': {
           lines: 90,
           functions: 90,
