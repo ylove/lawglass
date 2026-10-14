@@ -211,4 +211,21 @@ describe('fail-closed caption numbers', () => {
   ])('still counts real quantities: %s', (t) => {
     expect(numberTokens(t).length).toBeGreaterThan(0);
   });
+  it.each([
+    'The rate-4 percent applies.',
+    'A flat-500 dollar fee.',
+    'the tax-twenty percent',
+    'a non-4 percent',
+    'Pay re-5 dollars',
+    'A tax-half applies.',
+  ])('audits a number joined to a word by a hyphen: %s', (t) => {
+    expect(numberTokens(t).length).toBeGreaterThan(0);
+  });
+  it.each([
+    ['a 4-percent rate', 4],
+    ['a 500-dollar fee', 500],
+    ['5-10 days', 5],
+  ])('still catches %s', (t, v) => {
+    expect(textNumbers(t).map((n) => n.value)).toContain(v);
+  });
 });

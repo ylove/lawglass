@@ -81,6 +81,10 @@ const ORDINAL_DATE = new RegExp(
   `\\b(?:the|on)\\s+(?:${ORDINALS})\\s+of\\s+(?:${MONTHS})(?=\\s*(?:[.,;:!?)]|$)|\\s+\\d{4}\\b)`,
   'gi',
 );
+// A number may not continue a word or decimal. A hyphen after a letter ("rate-4 percent", "tax-half")
+// does not shield it; the hyphen is only a separator. After a digit, space or start, a hyphen is a
+// minus sign, which the amount group handles itself.
+const NOT_AFTER_WORD_OR_DOT = '(?<![\\w.]|(?<![A-Za-z])-)';
 const ROMAN_GLYPH = /[\u2160-\u2188]/;
 
 export function normalizeUnit(unit: string): string {
@@ -128,11 +132,11 @@ export function numberTokens(
     .replace(ORDINAL_COMPOUND, (m) => ' '.repeat(m.length))
     .replace(ORDINAL_LABEL, (m) => ' '.repeat(m.length))
     .replace(
-      /\b(?:Section|Sec\.|Form)\s+\d+(?:\.\d+)*\b|§\s*\d+(?:\.\d+)*/gi,
+      /\b(?:Section|Sec\.|Form)\s+\d+(?:\.\d+)*\b|\bsec-\d+\b|§\s*\d+(?:\.\d+)*/gi,
       (match) => ' '.repeat(match.length),
     );
   const pattern = new RegExp(
-    `(?<![\\w.\\-])(?<currency>\\$)?(?<amount>[+-]?(?:${DIGITS})(?:e[+-]?\\d+)?(?:st|nd|rd|th)?|${SPELLED}|${[...WORDS.keys()].filter((w) => w.endsWith('th') || ['first', 'second', 'third'].includes(w)).join('|')}|doubles?)(?<scale>\\s*(?:[KMB]\\b|(?:thousand|million|billion)\\b))?(?!\\w|\\.\\d|,\\d)(?:[\\s-]*(?<unit>${UNIT}))?`,
+    `${NOT_AFTER_WORD_OR_DOT}(?<currency>\\$)?(?<amount>[+-]?(?:${DIGITS})(?:e[+-]?\\d+)?(?:st|nd|rd|th)?|${SPELLED}|${[...WORDS.keys()].filter((w) => w.endsWith('th') || ['first', 'second', 'third'].includes(w)).join('|')}|doubles?)(?<scale>\\s*(?:[KMB]\\b|(?:thousand|million|billion)\\b))?(?!\\w|\\.\\d|,\\d)(?:[\\s-]*(?<unit>${UNIT}))?`,
     'gi',
   );
   const numbers: NumberToken[] = [];
