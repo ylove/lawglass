@@ -81,10 +81,10 @@ const ORDINAL_DATE = new RegExp(
   `\\b(?:the|on)\\s+(?:${ORDINALS})\\s+of\\s+(?:${MONTHS})(?=\\s*(?:[.,;:!?)]|$)|\\s+\\d{4}\\b)`,
   'gi',
 );
-// A number may not continue a word or decimal. A hyphen after a letter ("rate-4 percent", "tax-half")
-// does not shield it; the hyphen is only a separator. After a digit, space or start, a hyphen is a
-// minus sign, which the amount group handles itself.
-const NOT_AFTER_WORD_OR_DOT = '(?<![\\w.]|(?<![A-Za-z])-)';
+// A number may not continue a word, identifier or decimal. A hyphen never shields it: after a letter
+// ("rate-4 percent") it is a separator, and after a digit ("5-10 days") the range tail is its own
+// number. A genuine minus sign is matched by the amount group, which starts at the hyphen.
+const NOT_AFTER_WORD_OR_DOT = '(?<![A-Za-z0-9_.])';
 const ROMAN_GLYPH = /[\u2160-\u2188]/;
 
 export function normalizeUnit(unit: string): string {
@@ -132,7 +132,7 @@ export function numberTokens(
     .replace(ORDINAL_COMPOUND, (m) => ' '.repeat(m.length))
     .replace(ORDINAL_LABEL, (m) => ' '.repeat(m.length))
     .replace(
-      /\b(?:Section|Sec\.|Form)\s+\d+(?:\.\d+)*\b|\bsec-\d+\b|§\s*\d+(?:\.\d+)*/gi,
+      /\b(?:Section|Sec\.|Form)\s+\d+(?:\.\d+)*\b|§\s*\d+(?:\.\d+)*/gi,
       (match) => ' '.repeat(match.length),
     );
   const pattern = new RegExp(
