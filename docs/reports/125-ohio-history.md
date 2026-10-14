@@ -38,13 +38,14 @@ read for a history.
 
 ## Mapping
 
-- Versions in stage order, labels from the record, text URLs built from identity
+- Versions oldest first (stage order; the GovInfo adapter stores the same way), labels from the record, text URLs built from identity
   and code (never from a URL in the record). The latest is the highest code.
-- Actions: the actions endpoint, each non-canceled meeting as "Heard in
-  <committee>", plus "Signed by the Governor" and "Effective date" when stated.
+- Actions: the actions endpoint, each non-canceled meeting as "On the
+  <committee> meeting agenda" (a notice does not prove a hearing), plus "Signed by the Governor" and "Effective date" when stated.
   Dates come from the record only. Oldest first.
 - Amendments: number and a constructed PDF URL, status `unknown`. The record's
-  sponsor list is not copied onto the amendment, so nobody is named as offering it.
+  first listed sponsor becomes `sponsor` (name and `memberId`); any others are
+  named in the description. Nobody is named unless the record names them.
 - No official summary: the long title is not a CRS-style summary.
 - Party codes (`party_democrat_1`) map to Democrat, Republican or Independent;
   others are left out.

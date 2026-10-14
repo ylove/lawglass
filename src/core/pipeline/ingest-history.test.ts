@@ -102,7 +102,7 @@ test.each([
     (await historyStore.readHistory(dir, result.doc.docId))?.versions.map(
       (item) => item.code,
     ),
-  ).toEqual(['enr', 'eah', 'eas', 'pcs', 'eh', 'rh', 'ih', '']);
+  ).toEqual(['', 'ih', 'rh', 'eh', 'pcs', 'eas', 'eah', 'enr']);
   agent.assertNoPendingInterceptors();
 });
 

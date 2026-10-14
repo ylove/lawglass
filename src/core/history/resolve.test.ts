@@ -111,8 +111,8 @@ test('explicit version wins; latest follows official list order even with missin
   const plan = resolveHistory(page)!;
   const history: BillHistory = {
     versions: [
-      { code: 'enr', label: 'Enrolled', date: '2024-06-01' },
       { code: 'ih', label: 'Introduced', date: '2024-01-01' },
+      { code: 'enr', label: 'Enrolled', date: '2024-06-01' },
     ],
     actions: [],
     amendments: [],
@@ -139,7 +139,9 @@ test('explicit version wins; latest follows official list order even with missin
       { code: 'ih', label: 'Introduced' },
     ],
   ]) {
-    expect(chooseVersion(plan, { ...history, versions })).toBe('enr');
+    expect(
+      chooseVersion(plan, { ...history, versions: [...versions].reverse() }),
+    ).toBe('enr');
   }
   expect(
     chooseVersion(plan, {
@@ -155,9 +157,9 @@ test('explicit version wins; latest follows official list order even with missin
     ],
     [{ code: '../ih', label: 'Bad', date: '2024-01-01' }],
   ]) {
-    expect(() => chooseVersion(plan, { ...history, versions })).toThrow(
-      'The document could not be downloaded.',
-    );
+    expect(() =>
+      chooseVersion(plan, { ...history, versions: [...versions].reverse() }),
+    ).toThrow('The document could not be downloaded.');
   }
   try {
     chooseVersion(plan);
@@ -175,17 +177,17 @@ test('hr5009 version-list shape chooses dateless Enrolled first, ahead of the la
     '2026-10-14T00:00:00.000Z',
   );
   expect(history.versions.map((item) => item.code)).toEqual([
-    'enr',
-    'eah',
-    'eas',
-    'pcs',
-    'eh',
-    'rh',
-    'ih',
     '',
+    'ih',
+    'rh',
+    'eh',
+    'pcs',
+    'eas',
+    'eah',
+    'enr',
   ]);
-  expect(history.versions[0]?.date).toBeUndefined();
-  expect(history.versions.at(-1)?.date).toBe('2024-12-24T04:59:59Z');
+  expect(history.versions.at(-1)?.date).toBeUndefined();
+  expect(history.versions[0]?.date).toBe('2024-12-24T04:59:59Z');
   expect(chooseVersion(plan, history)).toBe('enr');
 });
 

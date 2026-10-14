@@ -139,6 +139,7 @@ const MeetingRecord = z.object({
 const AmendmentRecord = z.object({
   amendment_number: z.string().regex(/^am[0-9]{1,8}$/),
   version: OptionalText,
+  sponsors: z.array(Member).default([]),
 });
 const VersionList = z.array(VersionRecord).min(1);
 const ActionList = z.array(ActionRecord);
@@ -207,7 +208,7 @@ export function parseOhioHistory(
   if (records.some((r) => r.number && r.number !== plan.bill))
     throw new AppError('PARSE_FAILED');
   const base = apiBase(plan);
-  // Stage order is the numeric prefix (00 introduced ... enrolled last).
+  // Stored versions are oldest first: the numeric prefix is the stage (00 introduced ... enrolled last).
   const ordered = [...records].sort((a, b) =>
     `${a.formatted_version}_${a.version_id}`.localeCompare(
       `${b.formatted_version}_${b.version_id}`,
@@ -230,7 +231,7 @@ export function parseOhioHistory(
       .filter((m) => !m.canceled)
       .map((m) => ({
         date: day(m.meeting_date),
-        text: `Heard in ${m.committee}`,
+        text: `On the ${m.committee} meeting agenda`,
         chamber: capitalize(m.chamber),
         committee: m.committee,
         url: `${base}meetings/`,
@@ -254,20 +255,36 @@ export function parseOhioHistory(
   // Oldest first; the sort is stable so same-day entries keep the record's order.
   actions.sort((a, b) => a.date.localeCompare(b.date));
 
-  // The record lists amendment numbers and the version they amend. Nothing else is stated
-  // that we can attribute (no date or committee), so nothing else is claimed.
+  // The record states no amendment date or committee, so none is claimed. The record's own sponsor list is the official attribution. The first becomes the
+  // sponsor; any others are named in the description.
   const amendments: BillHistory['amendments'] = json(
     AmendmentList,
     responses.amendments,
-  ).map((a) => ({
-    id: a.amendment_number,
-    number: a.amendment_number,
-    status: 'unknown' as const,
-    description: a.version
+  ).map((a) => {
+    const [first, ...others] = a.sponsors;
+    const label = a.version
       ? `Amendment ${a.amendment_number} (${a.version})`
-      : `Amendment ${a.amendment_number}`,
-    url: `${base}amendments/${a.amendment_number}/pdf/`,
-  }));
+      : `Amendment ${a.amendment_number}`;
+    return {
+      id: a.amendment_number,
+      number: a.amendment_number,
+      status: 'unknown' as const,
+      ...(first
+        ? {
+            sponsor: {
+              name: first.full_name,
+              ...(first.member_id == null
+                ? {}
+                : { memberId: String(first.member_id) }),
+            },
+          }
+        : {}),
+      description: others.length
+        ? `${label}. Also sponsored by ${others.map((o) => o.full_name).join(', ')}`
+        : label,
+      url: `${base}amendments/${a.amendment_number}/pdf/`,
+    };
+  });
 
   const sponsored = new Map(
     ordered.map((r) => [`${r.formatted_version}_${r.version_id}`, r]),

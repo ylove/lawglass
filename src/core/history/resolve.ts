@@ -211,10 +211,11 @@ export function chooseVersion(
   if (plan.version) return plan.version;
   if (plan.source === 'ohio') return chooseOhioVersion(history);
   const versions = history?.versions ?? [];
-  // GovInfo lists text versions newest-first. List order is authoritative, including
+  // GovInfo lists text versions newest-first (reversed when stored). List order is authoritative, including
   // equal/inconsistent dates: Enrolled often has <date/>, and a later-dated Public
   // Law can be appended last. Dates must never override the first listed entry.
-  const latest = versions[0];
+  // Stored versions are oldest first, so the first one BILLSTATUS listed is now the last.
+  const latest = versions.at(-1);
   if (!latest || !historySource(plan.source).isVersion(latest.code)) {
     throw new AppError('FETCH_FAILED', undefined, {
       userMessage:

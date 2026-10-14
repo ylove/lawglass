@@ -128,7 +128,7 @@ test('actions combine the record, meetings (not canceled) and signing dates, old
   const { history } = parse();
   expect(history.actions.map((a) => [a.date, a.text])).toEqual([
     ['2024-02-16', 'Introduced'],
-    ['2024-03-04', 'Heard in Finance'],
+    ['2024-03-04', 'On the Finance meeting agenda'],
     ['2024-04-26', 'Passed'],
     ['2024-05-03', 'Refer to Committee'],
     ['2024-06-15', 'Passed'],
@@ -146,7 +146,7 @@ test('actions combine the record, meetings (not canceled) and signing dates, old
 test('an empty amendments list gives no amendments', () => {
   expect(parse().history.amendments).toEqual([]);
 });
-test('amendments keep their number and constructed URL, and name nobody', () => {
+test('amendments keep their number and constructed URL, and name the sponsor the record states', () => {
   const { history } = parse({
     amendments: JSON.stringify(makeOhioAmendmentsJson()),
   });
@@ -155,6 +155,7 @@ test('amendments keep their number and constructed URL, and name nobody', () => 
       id: 'am0168',
       number: 'am0168',
       status: 'unknown',
+      sponsor: { name: 'Alex Example', memberId: '1001' },
       description: 'Amendment am0168 (As Introduced)',
       url: 'https://search-prod.lis.state.oh.us/api/v2/general_assembly_135/legislation/hb9001/amendments/am0168/pdf/',
     },
@@ -312,4 +313,30 @@ test('reading history fetches the four API endpoints and never www.legislature.o
     expect(new URL(url).hostname).not.toBe('www.legislature.ohio.gov');
   expect(record.history.versions).toHaveLength(7);
   expect(record.sponsorProfiles).toHaveLength(4);
+});
+test('several amendment sponsors: the first is the sponsor, the rest go in the description; none gives no sponsor', () => {
+  const [first] = makeOhioAmendmentsJson().flatMap(
+    (a) => (a as { sponsors: unknown[] }).sponsors,
+  );
+  const extra = {
+    ...(first as object),
+    full_name: 'Robin Second',
+    member_id: 7,
+  };
+  const amendment = (sponsors: unknown[]) =>
+    JSON.stringify([
+      { amendment_number: 'am1', version: 'As Introduced', sponsors },
+    ]);
+  const both = parse({ amendments: amendment([first, extra]) });
+  expect(both.history.amendments[0]).toMatchObject({
+    sponsor: { name: 'Alex Example', memberId: '1001' },
+    description:
+      'Amendment am1 (As Introduced). Also sponsored by Robin Second',
+  });
+  const none = parse({ amendments: amendment([]) }).history.amendments[0]!;
+  expect(none.sponsor).toBeUndefined();
+  const noId = parse({
+    amendments: amendment([{ full_name: 'No Id' }]),
+  }).history.amendments[0]!;
+  expect(noId.sponsor).toEqual({ name: 'No Id' });
 });

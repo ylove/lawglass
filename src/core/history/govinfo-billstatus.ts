@@ -295,9 +295,10 @@ export function parseGovinfoBillStatus(
   }
   const history = BillHistory.parse({
     officialSummary,
-    versions: items(child(bill, 'textVersions')).map((item) =>
-      version(item, plan),
-    ),
+    // Stored versions are oldest first. BILLSTATUS lists them newest first, so reverse.
+    versions: items(child(bill, 'textVersions'))
+      .map((item) => version(item, plan))
+      .reverse(),
     actions: items(child(bill, 'actions')).flatMap((item) => {
       const actionDate = date(field(item, 'actionDate'));
       const text = textField(item, 'text');
