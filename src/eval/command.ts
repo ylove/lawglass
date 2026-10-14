@@ -13,7 +13,6 @@ import { MODEL_LOCK } from '../core/index/local/models.js';
 import { MockProvider } from '../core/llm/mock.js';
 import {
   AppError,
-  EvalRun,
   RETRIEVAL_MODES,
   type BackendKind,
   type LlmProvider,
@@ -24,6 +23,7 @@ import { readDownloadedFixture, type EvalFixture } from './fixtures.js';
 import { loadGoldenSets } from './golden.js';
 import { renderResults, type PendingBackend } from './report.js';
 import { runEval, type EvalBackendInput, type SkippedFixture } from './run.js';
+import { DetailedEvalRun } from './details.js';
 
 const run = promisify(execFile);
 
@@ -188,7 +188,7 @@ export async function runEvalCommand(
     const stamp = result.run.runAt.replace(/[:.]/g, '-');
     await writeFile(
       join(runsDir, `${stamp}.json`),
-      `${JSON.stringify(EvalRun.parse(result.run), null, 2)}\n`,
+      `${JSON.stringify(DetailedEvalRun.parse(result.run), null, 2)}\n`,
     );
     deps.write(
       `Wrote ${out} (${String(result.run.rows.length)} rows, ${String(pending.length)} pending backends)\n`,

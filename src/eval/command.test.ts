@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, test } from 'vitest';
 import { AppError } from '../core/model/index.js';
+import { DetailedEvalRun } from './details.js';
 import {
   makePipelineEnv,
   type PipelineEnv,
@@ -77,10 +78,15 @@ test('writes results.md and a run JSON, listing pinecone as pending', async () =
   expect(md).toContain('| pinecone | all | pending (backend unavailable) |');
   const runs = await readdir(join(dir, 'eval', 'runs'));
   expect(runs).toEqual(['2026-10-13T12-00-00-000Z.json']);
-  const saved = JSON.parse(
-    await readFile(join(dir, 'eval', 'runs', runs[0] ?? ''), 'utf8'),
-  ) as { rows: unknown[] };
+  const saved = DetailedEvalRun.parse(
+    JSON.parse(
+      await readFile(join(dir, 'eval', 'runs', runs[0] ?? ''), 'utf8'),
+    ),
+  );
   expect(saved.rows).toHaveLength(5);
+  expect(saved.rows.every((row) => row.questions.length > 0)).toBe(true);
+  expect(md).not.toContain('firstRelevantRank');
+  expect(md).not.toContain('top10');
   expect(output).toContain('Wrote ');
 });
 
