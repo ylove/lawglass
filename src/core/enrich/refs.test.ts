@@ -58,6 +58,28 @@ describe('findInternalRefs', () => {
     expect(findInternalRefs(text, from, index)).toEqual([]);
   });
 
+  it.each([
+    ['such Act', 'section 3 of such Act'],
+    ['that Act', 'section 3 of that Act'],
+    ['Public Law', 'section 3 of Public Law 117-58'],
+    ['Ohio bill', 'section 3 of H.B. 110 of the 134th General Assembly'],
+    ['USC range', 'sections 1 through 3 of title 18, United States Code'],
+    ['title, comma form', 'title 18, United States Code, section 3'],
+    ['such title', 'section 3 of such title'],
+    ['chapter', 'section 3 of chapter 5'],
+    ['subdivision of such Act', 'subsection (A) of section 3 of such Act'],
+  ])('does not resolve %s to a section of this document', (_name, text) => {
+    expect(findInternalRefs(`See ${text}.`, 'sec-9', index)).toEqual([]);
+  });
+
+  it.each([
+    ['section 3, relating to fees', ['sec-3']],
+    ['section 3 of this chapter', ['sec-3']],
+    ['section 3 in this act', ['sec-3']],
+  ])('still resolves %j', (text, expected) => {
+    expect(findInternalRefs(`See ${text}.`, 'sec-9', index)).toEqual(expected);
+  });
+
   it('links a Revised Code section that this document reprints', () => {
     expect(
       findInternalRefs(
@@ -76,6 +98,21 @@ describe('findInternalRefs', () => {
         index,
       ),
     ).toEqual([]);
+  });
+});
+
+describe('findExternalMatches ranges', () => {
+  it('reports a range of United States Code sections', () => {
+    expect(
+      findExternalMatches(
+        'sections 1 through 3 of title 18, United States Code',
+      ).map((m) => m.citation),
+    ).toEqual(['18 U.S.C. 1 to 3']);
+    expect(
+      findExternalMatches(
+        'sections 1 and 3 of title 18, United States Code',
+      ).map((m) => m.citation),
+    ).toEqual(['18 U.S.C. 1', '18 U.S.C. 3']);
   });
 });
 
@@ -106,6 +143,13 @@ describe('findExternalMatches', () => {
     ['Pub. L. 118–31', 'Public Law 118-31', 'public_law'],
     ['Public Law No. 117-2', 'Public Law 117-2', 'public_law'],
     ['40 CFR 60', '40 CFR 60', 'cfr'],
+    ['26 CFR 1.1-1', '26 CFR 1.1-1', 'cfr'],
+    ['title 5, United States Code, section 552', '5 U.S.C. 552', 'us_code'],
+    [
+      'section 2 of H.B. 110 of the 134th General Assembly',
+      'H.B. 110 (134th General Assembly) § 2',
+      'other',
+    ],
     ['40 C.F.R. part 60.1', '40 CFR 60.1', 'cfr'],
     [
       'section 1902 of the Social Security Act',

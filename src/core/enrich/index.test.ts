@@ -13,8 +13,21 @@ import {
   fixturePath,
 } from '../../../tests/support/fixtures.js';
 import { readFileSync } from 'node:fs';
+import { getDocument } from 'pdfjs-dist/legacy/build/pdf.mjs';
 import { docOf, sec } from './fixtures.js';
 import { enrichDocument } from './index.js';
+
+/** Drops everything between `<` and `>` with a scan, so nested or broken tags cannot survive. */
+function stripTags(markup: string): string {
+  let out = '';
+  let depth = 0;
+  for (const ch of markup) {
+    if (ch === '<') depth++;
+    else if (ch === '>' && depth > 0) depth--;
+    else if (depth === 0) out += ch;
+  }
+  return out;
+}
 
 function run(doc: NormalizedDoc) {
   return enrichDocument(doc, chunkDocument(doc));
@@ -188,7 +201,7 @@ describe('enrichDocument (federal style)', () => {
 });
 
 describe('enrichDocument edge cases', () => {
-  it('splits sibling subsections merged by the chunker, keeping their refs', () => {
+  it('splits merged sibling subsections; each piece covers only the sections it holds', () => {
     const doc = docOf([
       sec('sec-1', '', {
         num: '1',
@@ -199,16 +212,106 @@ describe('enrichDocument edge cases', () => {
             level: 2,
           }),
           sec('sec-1/b', '"Beta" means the second.', { num: '(b)', level: 2 }),
+          sec('sec-1/c', 'The director shall act under section 2.', {
+            num: '(c)',
+            level: 2,
+          }),
+        ],
+      }),
+      sec('sec-2', 'Other.', { num: '2' }),
+    ]);
+    const merged = chunkDocument(doc);
+    expect(merged[0]?.coveredSectionIds).toEqual([
+      'sec-1',
+      'sec-1/a',
+      'sec-1/b',
+      'sec-1/c',
+    ]);
+    const { chunks } = enrichDocument(doc, merged);
+    const summary = chunks
+      .filter((c) => c.sectionId === 'sec-1')
+      .map((c) => [c.definesTerm, c.coveredSectionIds, c.refs]);
+    expect(summary).toEqual([
+      ['Alpha', ['sec-1', 'sec-1/a'], ['sec-1/b']],
+      ['Beta', ['sec-1', 'sec-1/b'], []],
+      [undefined, ['sec-1', 'sec-1/c'], ['sec-2']],
+    ]);
+  });
+
+  it('keeps a chunk without merged children free of coveredSectionIds', () => {
+    const { chunks } = run(docOf([sec('sec-1', 'Plain text. See section 2.')]));
+    expect(chunks[0]?.coveredSectionIds).toBeUndefined();
+    expect(chunks[0]?.refs).toEqual([]);
+  });
+
+  it('ends the last definition at the next non-definition label', () => {
+    const doc = docOf([
+      sec('sec-9', '', {
+        num: '9',
+        heading: 'Definitions',
+        spans: [
+          {
+            text: 'As used in this section: (A) "Dependent child" means a person under eighteen. (B) "Employer" means any person that employs one or more individuals. (C) The director shall adopt rules under section 119.03 of the Revised Code.',
+            status: 'unchanged',
+          },
+        ],
+      }),
+    ]);
+    const { chunks, doc: out } = run(doc);
+    const employer = chunks.find((c) => c.definesTerm === 'Employer');
+    expect(employer?.text).toBe(
+      '(B) "Employer" means any person that employs one or more individuals.',
+    );
+    expect(out.definitions.find((d) => d.term === 'Employer')?.text).toBe(
+      employer?.text,
+    );
+    const rule = chunks.find((c) => c.text.startsWith('(C)'));
+    expect(rule?.chunkType).toBe('operative');
+    expect(rule?.definesTerm).toBeUndefined();
+  });
+
+  it('does not glue operative text onto a definition merged by the chunker', () => {
+    const doc = docOf([
+      sec('sec-1', '', {
+        num: '1',
+        children: [
+          sec('sec-1/a', '"Alpha" means the first.', { num: '(a)', level: 2 }),
+          sec('sec-1/b', '"Beta" means the second.', { num: '(b)', level: 2 }),
+          sec('sec-1/c', 'The director shall act under paragraph (a).', {
+            num: '(c)',
+            level: 2,
+          }),
         ],
       }),
     ]);
     const { chunks } = run(doc);
-    expect(chunks.map((c) => c.definesTerm)).toEqual(['Alpha', 'Beta']);
-    expect(
-      chunks.every(
-        (c) => c.refs.includes('sec-1/a') && c.refs.includes('sec-1/b'),
-      ),
-    ).toBe(true);
+    expect(chunks.find((c) => c.definesTerm === 'Beta')?.text).toBe(
+      '(b) "Beta" means the second.',
+    );
+    expect(chunks.at(-1)?.text).toContain('The director shall act');
+  });
+
+  it('records an Ohio cross-definition and its external citation', () => {
+    const doc = docOf([
+      sec('sec-2923.27', '', {
+        num: '2923.27',
+        spans: [
+          {
+            text: 'As used in this section:\n(1) "Federally licensed firearms dealer" has the same\nmeaning as in section 5502.63 of the Revised Code.\n(2) "Point of contact agency" shall have the same meanings as in section 2923.27 of the Revised Code.',
+            status: 'unchanged',
+          },
+        ],
+      }),
+    ]);
+    const { chunks, doc: out } = run(doc);
+    expect(out.definitions.map((d) => d.term)).toEqual([
+      'Federally licensed firearms dealer',
+      'Point of contact agency',
+    ]);
+    expect(chunks.filter((c) => c.definesTerm).map((c) => c.chunkType)).toEqual(
+      ['definition', 'definition'],
+    );
+    expect(out.externalRefs.map((r) => r.citation)).toContain('R.C. 5502.63');
   });
 
   it('puts operative text before a mid-section definition in its own chunk', () => {
@@ -299,13 +402,69 @@ describe('enrichDocument edge cases', () => {
   });
 });
 
+describe('enrichDocument at scale', () => {
+  it('enriches a section of 800 definitions in under two seconds', () => {
+    const text = `As used in this chapter:\n${Array.from(
+      { length: 800 },
+      (_, i) =>
+        `(${String(i + 1)}) "Term ${String(i)}" means a person, place, or thing that is described at some length for the purposes of this chapter.`,
+    ).join('\n')}`;
+    const doc = docOf([
+      sec('sec-1', text, { num: '1', heading: 'Definitions' }),
+    ]);
+    const input = chunkDocument(doc);
+    const started = performance.now();
+    const { chunks, doc: out } = enrichDocument(doc, input);
+    const elapsed = performance.now() - started;
+    expect(out.definitions).toHaveLength(800);
+    expect(chunks.filter((c) => c.definesTerm)).toHaveLength(800);
+    expect(elapsed).toBeLessThan(2000);
+  });
+});
+
+describeWithFixture('oh-sb203-133-in', () => {
+  it('finds the cross-definition and the numbered definitions in the real bill', async () => {
+    const path = fixturePath('oh-sb203-133-in');
+    if (!path) throw new Error('fixture missing');
+    const pdf = await getDocument({
+      data: new Uint8Array(readFileSync(path)),
+    }).promise;
+    let text = '';
+    for (let n = 1; n <= pdf.numPages; n++) {
+      const content = await (await pdf.getPage(n)).getTextContent();
+      for (const item of content.items)
+        if ('str' in item) text += item.str + (item.hasEOL ? '\n' : '');
+      text += '\n';
+    }
+    const doc = parseText(text, {
+      sourceUrl: 'https://search-prod.lis.state.oh.us/bill.pdf',
+      fetchedAt: '2026-10-13T00:00:00.000Z',
+    });
+    const { chunks, doc: out } = run(doc);
+    const terms = out.definitions.map((d) => d.term);
+    expect(terms).toEqual(
+      expect.arrayContaining([
+        'Federally licensed firearms dealer',
+        'Gun show',
+        'Gun show promoter',
+        'Gun show vendor',
+        'Transfer',
+        'Unlicensed transferee',
+        'Unlicensed transferor',
+      ]),
+    );
+    expect(out.externalRefs.map((r) => r.citation)).toContain('R.C. 5502.63');
+    // No definition swallows the next numbered item.
+    for (const d of out.definitions) expect(d.text).not.toMatch(/\n\(\d+\) "/);
+    for (const c of chunks) expect(() => Chunk.parse(c)).not.toThrow();
+  });
+});
+
 describeWithFixture('us-s202-119-is-html', () => {
   it('enriches a real bill without breaking chunk invariants', () => {
     const path = fixturePath('us-s202-119-is-html');
     if (!path) throw new Error('fixture missing');
-    const html = readFileSync(path, 'utf8')
-      .replace(/<[^>]+>/g, '')
-      .replace(/&nbsp;/g, ' ');
+    const html = stripTags(readFileSync(path, 'utf8')).replace(/&nbsp;/g, ' ');
     const doc = parseText(html, {
       sourceUrl:
         'https://www.govinfo.gov/content/pkg/BILLS-119s202is/html/BILLS-119s202is.htm',

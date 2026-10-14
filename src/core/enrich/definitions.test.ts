@@ -27,6 +27,21 @@ describe('segmentDefinitions', () => {
     ],
     ['has the meaning', '"Tax" has the meaning given in section 2.', ['Tax']],
     [
+      'has the same meaning',
+      '"Employer" has the same meaning as in section 4141.01 of the Revised Code.',
+      ['Employer'],
+    ],
+    [
+      'shall have the same meaning',
+      '"Employer" shall have the same meaning as in section 4141.01 of the Revised Code.',
+      ['Employer'],
+    ],
+    [
+      'shall have the same meanings',
+      '"Dealer" shall have the same meanings as in section 2923.27 of the Revised Code.',
+      ['Dealer'],
+    ],
+    [
       'Ohio enumerated',
       '(A) "Taxpayer" means a person.\n(B) "Return" means a form.',
       ['Taxpayer', 'Return'],
@@ -73,6 +88,74 @@ describe('segmentDefinitions', () => {
 
   it('does not double count the quoted and unquoted patterns on one sentence', () => {
     expect(terms('The term "Fund" means the fund.')).toEqual(['Fund']);
+  });
+});
+
+describe('segmentDefinitions ends', () => {
+  it('stops the last labeled definition before a following non-definition label', () => {
+    const text =
+      '(A) "X" means one. (B) "Y" means two. (C) The director shall act.';
+    const segments = segmentDefinitions(text);
+    expect(text.slice(segments[1]?.start, segments[1]?.end).trim()).toBe(
+      '(B) "Y" means two.',
+    );
+  });
+
+  it('stops a middle definition before an operative label, too', () => {
+    const text = '(A) "X" means one.\n(B) Rules apply.\n(C) "Z" means three.';
+    const segments = segmentDefinitions(text);
+    expect(text.slice(segments[0]?.start, segments[0]?.end).trim()).toBe(
+      '(A) "X" means one.',
+    );
+    expect(text.slice(segments[1]?.start).trim()).toBe('(C) "Z" means three.');
+  });
+
+  it('keeps nested sub-items of a definition', () => {
+    const text = '(A) "X" means:\n(1) one;\n(2) two.\n(B) "Y" means three.';
+    const segments = segmentDefinitions(text);
+    expect(text.slice(segments[0]?.start, segments[0]?.end)).toContain(
+      '(2) two.',
+    );
+  });
+
+  it('stops an unlabeled definition at a blank line', () => {
+    const text = '"X" means one.\n\nThe director shall act.';
+    const [segment] = segmentDefinitions(text);
+    expect(text.slice(segment?.start, segment?.end)).toBe('"X" means one.');
+  });
+});
+
+describe('segmentDefinitions performance', () => {
+  const big = (n: number): string =>
+    `As used in this chapter:\n${Array.from(
+      { length: n },
+      (_, i) =>
+        `(${String(i + 1)}) "Term number ${String(i)}" means a person, place, or thing that is described at some length for the purposes of this chapter.`,
+    ).join('\n')}`;
+
+  it('handles 800 definitions in a single section in under two seconds', () => {
+    const text = big(800);
+    const started = performance.now();
+    const found = segmentDefinitions(text);
+    const defs = extractDefinitions([sec('sec-1', text, { num: '1' })]);
+    expect(found).toHaveLength(800);
+    expect(defs).toHaveLength(800);
+    expect(performance.now() - started).toBeLessThan(2000);
+  });
+});
+
+describe('scope phrases', () => {
+  it('reads "as used in this subsection" in mid-sentence', () => {
+    const [def] = extractDefinitions([
+      sec(
+        'sec-1',
+        'Notwithstanding other law, as used in this subsection:\n(A) "Zed" means a letter.',
+        {
+          num: '1',
+        },
+      ),
+    ]);
+    expect(def?.scope).toBe('section');
   });
 });
 
@@ -240,5 +323,24 @@ describe('createTermMatcher', () => {
       def('fee', { sectionId: 'sec-5' }),
     ]);
     expect(match('The fee.', 'sec-9')).toEqual(['Fee']);
+  });
+});
+
+describe('createTermMatcher phrase matching', () => {
+  const def = (term: string) => ({
+    term,
+    text: `"${term}" means x.`,
+    sectionId: 'sec-1',
+    scope: 'document' as const,
+  });
+
+  it('matches a multi-word term across a line wrap and extra spaces', () => {
+    const match = createTermMatcher([def('Gun show')]);
+    expect(match('At a gun\n  show, the', 'sec-2')).toEqual(['Gun show']);
+  });
+
+  it('requires whole words', () => {
+    const match = createTermMatcher([def('Gun show')]);
+    expect(match('A gun shows up; begun show', 'sec-2')).toEqual([]);
   });
 });

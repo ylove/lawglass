@@ -39,8 +39,18 @@ const RC_CHAPTERS =
   /\bchapters?\s+(\d+(?:\.\d+)?)\.?\s+of\s+the\s+(?:Ohio\s+)?Revised\s+Code/gi;
 const USC_TITLE_FIRST =
   /\b(\d{1,2})\s+(?:U\.\s?S\.\s?C\.?|USC)(?:\s+(?:§§?|secs?\.|sections?))?\s*(\d+[A-Za-z0-9]*(?:-\d+[A-Za-z0-9]*)?)/g;
-const USC_SECTION_FIRST =
-  /\bsections?\s+(\d+[A-Za-z0-9]*)(?:\([A-Za-z0-9]+\))*\s+of\s+title\s+(\d{1,2})\s*,?\s+(?:United\s+States\s+Code|U\.\s?S\.\s+Code|U\.\s?S\.\s?C\.)/gi;
+const USC_ITEM = String.raw`\d+[A-Za-z0-9]*(?:\([A-Za-z0-9]+\))*`;
+const USC_LIST = String.raw`${USC_ITEM}(?:\s*(?:,\s*(?:and\s+|or\s+)?|\s+(?:and|or|to|through)\s+)${USC_ITEM})*`;
+const USC_CODE = String.raw`(?:United\s+States\s+Code|U\.\s?S\.\s+Code|U\.\s?S\.\s?C\.)`;
+const USC_SECTION_FIRST = new RegExp(
+  String.raw`\bsections?\s+(${USC_LIST})\s+of\s+title\s+(\d{1,2})\s*,?\s+${USC_CODE}`,
+  'gi',
+);
+// "title 5, United States Code, section 552"
+const USC_TITLE_SECTION = new RegExp(
+  String.raw`\btitle\s+(\d{1,2})\s*,?\s+${USC_CODE},?\s+sections?\s+(${USC_LIST})`,
+  'gi',
+);
 const IRC =
   /\bsections?\s+(\d+[A-Za-z]?)(?:\([A-Za-z0-9]+\))*\s+of\s+the\s+Internal\s+Revenue\s+Code(?:\s+of\s+19\d\d)?/gi;
 // Case-sensitive on purpose: "of the Social Security Act", never "of this act".
@@ -48,8 +58,33 @@ const NAMED_ACT =
   /\bsections?\s+(\d+[A-Za-z]?)(?:\([A-Za-z0-9]+\))*\s+of\s+the\s+((?:[A-Z][A-Za-z'’-]*\s+){1,6}Act(?:\s+of\s+\d{4})?)/g;
 const PUBLIC_LAW =
   /\b(?:Public\s+Law|Pub\.\s*L\.|P\.\s*L\.)\s*(?:No\.\s*)?(\d{1,3})\s*[-–]\s*(\d{1,4})/gi;
+// "H.B. 110 of the 134th General Assembly": another enactment's section, never ours.
+const BILL_SECTION =
+  /\bsections?\s+(\d+[A-Za-z]?)(?:\([A-Za-z0-9]+\))*\s+of\s+(?:(?:Am\.|Sub\.|Substitute|Amended)\s+)*(H\.?\s?B\.?|S\.?\s?B\.?|House\s+Bill|Senate\s+Bill)\s*(?:No\.\s*)?(\d+)(?:\s+of\s+the\s+(\d+)(?:st|nd|rd|th)\s+General\s+Assembly)?/gi;
 const CFR =
-  /\b(\d{1,2})\s+C\.?\s?F\.?\s?R\.?\s*(?:(?:parts?|§§?|sections?)\s*)?(\d+(?:\.\d+)?)/gi;
+  /\b(\d{1,2})\s+C\.?\s?F\.?\s?R\.?\s*(?:(?:parts?|§§?|sections?)\s*)?(\d+(?:\.\d+)?(?:-\d+)?)/gi;
+
+function uscCitations(list: string, title: string): string[] {
+  const items = [...list.matchAll(/(\d+[A-Za-z0-9]*)(?:\([A-Za-z0-9]+\))*/g)];
+  const out: string[] = [];
+  let rangeFrom: number | undefined;
+  items.forEach((item, i) => {
+    const num = item[1] ?? '';
+    const prev = items[i - 1];
+    const between = prev
+      ? list.slice(prev.index + prev[0].length, item.index)
+      : '';
+    if (rangeFrom !== undefined && /\b(?:to|through)\b/i.test(between)) {
+      const from = items[rangeFrom]?.[1] ?? '';
+      out[out.length - 1] = `${title} U.S.C. ${from} to ${num}`;
+      rangeFrom = undefined;
+      return;
+    }
+    rangeFrom = i;
+    out.push(`${title} U.S.C. ${num}`);
+  });
+  return out;
+}
 
 function rcCitations(
   list: string,
@@ -107,7 +142,16 @@ export function findExternalMatches(text: string): ExternalMatch[] {
   for (const m of text.matchAll(USC_TITLE_FIRST))
     add(m, `${m[1] ?? ''} U.S.C. ${(m[2] ?? '').replace(/-$/, '')}`, 'us_code');
   for (const m of text.matchAll(USC_SECTION_FIRST))
-    add(m, `${m[2] ?? ''} U.S.C. ${m[1] ?? ''}`, 'us_code');
+    for (const citation of uscCitations(m[1] ?? '', m[2] ?? ''))
+      add(m, citation, 'us_code');
+  for (const m of text.matchAll(USC_TITLE_SECTION))
+    for (const citation of uscCitations(m[2] ?? '', m[1] ?? ''))
+      add(m, citation, 'us_code');
+  for (const m of text.matchAll(BILL_SECTION)) {
+    const bill = `${/^s/i.test(m[2] ?? '') ? 'S.B.' : 'H.B.'} ${m[3] ?? ''}`;
+    const assembly = m[4] ? ` (${m[4]}th General Assembly)` : '';
+    add(m, `${bill}${assembly} § ${m[1] ?? ''}`, 'other');
+  }
   for (const m of text.matchAll(IRC))
     add(m, `26 U.S.C. ${m[1] ?? ''}`, 'us_code');
   for (const m of text.matchAll(NAMED_ACT))
@@ -187,11 +231,42 @@ const SUB_REF = new RegExp(
   String.raw`\b(?:subsections?|paragraphs?|subparagraphs?|divisions?|subdivisions?|clauses?)\s+((?:${PAREN})+(?:${SEP}(?:${PAREN})+)*)`,
   'gi',
 );
-// What a reference points into, read from the words after it.
-const TAIL = new RegExp(
-  String.raw`^\s*(?:of|in)\s+(?:(this)\s+([a-z]+)|(the\s+\S+)|sections?\s+(${NUM_ITEM}))`,
-  'i',
-);
+type Tail =
+  | { kind: 'this'; unit: string }
+  | { kind: 'section'; num: string }
+  /** "of such Act", "of Public Law ...", "of title 18", "of chapter 5", "of the ...". */
+  | { kind: 'foreign' }
+  | { kind: 'none' };
+
+/**
+ * What a reference points into, read from the words after it. Only a tail that says "this ..."
+ * (or names one of our own sections) keeps it internal; any other "of <something>" points at
+ * a different law, which this document does not contain.
+ */
+function tailOf(after: string): Tail & { length: number } {
+  const lead = /^\s*,?\s*(of|in)\s+/i.exec(after);
+  if (!lead) return { kind: 'none', length: 0 };
+  const rest = after.slice(lead[0].length);
+  const mine = /^this\s+([a-z]+)/i.exec(rest);
+  if (mine)
+    return {
+      kind: 'this',
+      unit: mine[1] ?? '',
+      length: lead[0].length + mine[0].length,
+    };
+  const section = new RegExp(String.raw`^sections?\s+(${NUM_ITEM})`, 'i').exec(
+    rest,
+  );
+  if (section)
+    return {
+      kind: 'section',
+      num: section[1] ?? '',
+      length: lead[0].length + section[0].length,
+    };
+  if (lead[1]?.toLowerCase() === 'of' || /^the\s/i.test(rest))
+    return { kind: 'foreign', length: 0 };
+  return { kind: 'none', length: 0 };
+}
 
 function mask(
   text: string,
@@ -299,16 +374,21 @@ export function findInternalRefs(
   const scopeSpans: { start: number; end: number }[] = [];
   for (const m of scrubbed.matchAll(SUB_REF)) {
     const after = m.index + m[0].length;
-    const tail = TAIL.exec(scrubbed.slice(after));
-    if (tail?.[3]) continue;
+    const tail = tailOf(text.slice(after));
+    if (tail.kind === 'foreign') continue;
     let scopes: Section[] = nearestFirst;
-    if (tail?.[4]) {
-      scopeSpans.push({ start: after, end: after + tail[0].length });
-      const target = resolveSectionItem(index, tail[4]);
+    if (tail.kind === 'section') {
+      // "subsection (a) of section 3 of such Act": the section belongs to another law.
+      if (tailOf(text.slice(after + tail.length)).kind === 'foreign') {
+        scopeSpans.push({ start: after, end: after + tail.length });
+        continue;
+      }
+      scopeSpans.push({ start: after, end: after + tail.length });
+      const target = resolveSectionItem(index, tail.num);
       const section = target === undefined ? undefined : index.byId.get(target);
       scopes = section ? [section] : [];
-    } else if (tail?.[1]) {
-      const unit = (tail[2] ?? '').toLowerCase();
+    } else if (tail.kind === 'this') {
+      const unit = tail.unit.toLowerCase();
       if (unit === 'section') scopes = enclosing ? [enclosing] : [];
       else if (['act', 'chapter', 'title', 'bill'].includes(unit))
         scopes = [...index.byId.values()].filter(
@@ -325,9 +405,9 @@ export function findInternalRefs(
   }
   const sectionsOnly = mask(scrubbed, scopeSpans);
   for (const m of sectionsOnly.matchAll(SECTION_REF)) {
-    const tail = TAIL.exec(sectionsOnly.slice(m.index + m[0].length));
-    // "of the Internal Revenue Code" etc.: someone else's section, not ours.
-    if (tail?.[3]) continue;
+    // "of the Internal Revenue Code", "of such Act": someone else's section, not ours. The
+    // tail is read from the original text because citations were blanked out of the copy.
+    if (tailOf(text.slice(m.index + m[0].length)).kind === 'foreign') continue;
     found.push({
       at: m.index,
       ids: listItems(m[1] ?? '').map((item) => resolveSectionItem(index, item)),

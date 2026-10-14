@@ -1,5 +1,11 @@
 import { estimateTokens } from '../chunk/index.js';
-import { Chunk, NormalizedDoc, AppError, makeChunkId } from '../model/index.js';
+import {
+  Chunk,
+  NormalizedDoc,
+  AppError,
+  makeChunkId,
+  sectionText,
+} from '../model/index.js';
 import { chunkTypeFor } from './chunk-type.js';
 import {
   createTermMatcher,
@@ -8,7 +14,7 @@ import {
   segmentDefinitions,
 } from './definitions.js';
 import { collectExternalRefs, findInternalRefs } from './refs.js';
-import { buildSectionIndex } from './section-index.js';
+import { buildSectionIndex, type SectionIndex } from './section-index.js';
 
 export { chunkTypeFor } from './chunk-type.js';
 export {
@@ -32,27 +38,95 @@ export interface EnrichedDocument {
 interface Piece {
   base: Chunk;
   text: string;
+  /** Offsets of the (trimmed) text within `base.text`. */
+  start: number;
+  end: number;
   definesTerm?: string;
+  /** Text that follows a definition in the same chunk, so the heading no longer describes it. */
+  afterDefinition?: boolean;
+}
+
+function piece(
+  base: Chunk,
+  start: number,
+  end: number,
+  extra: Partial<Piece> = {},
+): Piece | undefined {
+  const raw = base.text.slice(start, end);
+  const text = raw.trim();
+  if (!text) return undefined;
+  const from = start + (raw.length - raw.trimStart().length);
+  return { base, text, start: from, end: from + text.length, ...extra };
 }
 
 /**
- * Splits a chunk so every definition is its own chunk (spec §5.3). Struck text is left alone:
- * it is not current law, so it never defines a term.
+ * Splits a chunk so every definition is its own chunk (spec §5.3). Text before, between and
+ * after definitions stays in plain pieces. Struck text is left alone: it is not current law,
+ * so it never defines a term.
  */
 function split(chunk: Chunk): Piece[] {
-  if (chunk.amendmentStatus === 'deleted')
-    return [{ base: chunk, text: chunk.text }];
+  const whole = piece(chunk, 0, chunk.text.length) ?? {
+    base: chunk,
+    text: chunk.text,
+    start: 0,
+    end: chunk.text.length,
+  };
+  if (chunk.amendmentStatus === 'deleted') return [whole];
   const segments = segmentDefinitions(chunk.text);
-  const first = segments[0];
-  if (!first) return [{ base: chunk, text: chunk.text }];
+  if (segments.length === 0) return [whole];
   const pieces: Piece[] = [];
-  const preamble = chunk.text.slice(0, first.start).trim();
-  if (preamble) pieces.push({ base: chunk, text: preamble });
+  let cursor = 0;
+  let seenDefinition = false;
+  const push = (p: Piece | undefined): void => {
+    if (p) pieces.push(p);
+  };
   for (const segment of segments) {
-    const text = chunk.text.slice(segment.start, segment.end).trim();
-    if (text) pieces.push({ base: chunk, text, definesTerm: segment.term });
+    push(
+      piece(chunk, cursor, segment.start, {
+        afterDefinition: seenDefinition,
+      }),
+    );
+    push(
+      piece(chunk, segment.start, segment.end, { definesTerm: segment.term }),
+    );
+    seenDefinition = true;
+    cursor = segment.end;
   }
+  push(piece(chunk, cursor, chunk.text.length, { afterDefinition: true }));
   return pieces;
+}
+
+/**
+ * Which of a merged chunk's sections have text inside `[start, end)` of the chunk. Merged
+ * children are laid out in order, each as its label and then its text, so each is located by
+ * its opening words. `sectionId` itself always stays. When a child cannot be located (the
+ * chunk window starts inside it) it is kept rather than dropped: citing it stays valid.
+ */
+function coveredFor(
+  chunk: Chunk,
+  index: SectionIndex,
+  start: number,
+  end: number,
+): [string, ...string[]] | undefined {
+  const covered = chunk.coveredSectionIds;
+  if (!covered) return undefined;
+  const kept: string[] = [chunk.sectionId];
+  let cursor = 0;
+  for (const id of covered) {
+    if (id === chunk.sectionId) continue;
+    const section = index.byId.get(id);
+    const body = section ? sectionText(section, { includeDeleted: false }) : '';
+    const head = body.trim().slice(0, 40);
+    const at = head ? chunk.text.indexOf(head, cursor) : -1;
+    if (at === -1) {
+      kept.push(id);
+      continue;
+    }
+    const finish = at + body.trim().length;
+    cursor = at;
+    if (at < end && finish > start) kept.push(id);
+  }
+  return kept as [string, ...string[]];
 }
 
 /**
@@ -61,19 +135,22 @@ function split(chunk: Chunk): Piece[] {
  */
 function dedupeDefinitionPieces(pieces: Piece[]): Piece[] {
   const kept: Piece[] = [];
+  const byKey = new Map<string, Piece[]>();
   for (const piece of pieces) {
-    const same =
-      piece.definesTerm === undefined
-        ? undefined
-        : kept.find(
-            (k) =>
-              k.definesTerm?.toLowerCase() ===
-                piece.definesTerm?.toLowerCase() &&
-              k.base.sectionId === piece.base.sectionId &&
-              (k.text.includes(piece.text) || piece.text.includes(k.text)),
-          );
-    if (!same) kept.push(piece);
-    else if (piece.text.length > same.text.length) Object.assign(same, piece);
+    if (piece.definesTerm === undefined) {
+      kept.push(piece);
+      continue;
+    }
+    const key = `${piece.base.sectionId}\u0000${piece.definesTerm.toLowerCase()}`;
+    const group = byKey.get(key) ?? [];
+    const same = group.find(
+      (k) => k.text.includes(piece.text) || piece.text.includes(k.text),
+    );
+    if (!same) {
+      kept.push(piece);
+      group.push(piece);
+      byKey.set(key, group);
+    } else if (piece.text.length > same.text.length) Object.assign(same, piece);
   }
   return kept;
 }
@@ -106,25 +183,30 @@ export function enrichDocument(
 
   const pieces = dedupeDefinitionPieces(chunks.flatMap(split));
   const counters = new Map<string, number>();
-  const enriched = pieces.map(({ base, text, definesTerm }): Chunk => {
+  const enriched = pieces.map((p): Chunk => {
+    const { base, text, definesTerm } = p;
     const n = counters.get(base.sectionId) ?? 0;
     counters.set(base.sectionId, n + 1);
     // Pieces keep their parent's page/line span: the chunker doesn't record offsets within it.
-    const { definesTerm: _old, ...rest } = base;
+    const { definesTerm: _old, coveredSectionIds: _covered, ...rest } = base;
+    const covered = coveredFor(base, index, p.start, p.end);
     const embedText = `${base.breadcrumb}: ${text}`;
-    const refs = [
-      ...new Set([
-        ...base.refs,
-        ...findInternalRefs(text, base.sectionId, index),
-      ]),
-    ];
+    // Cross-references only: sections already covered by this very chunk are not refs.
+    const refs = findInternalRefs(text, base.sectionId, index).filter(
+      (id) => !(covered ?? [base.sectionId]).includes(id),
+    );
     return Chunk.parse({
       ...rest,
       id: makeChunkId(base.docId, base.sectionId, n),
       text,
       embedText,
       tokenCount: estimateTokens(embedText),
-      chunkType: chunkTypeFor(text, base.heading, definesTerm),
+      ...(covered === undefined ? {} : { coveredSectionIds: covered }),
+      chunkType: chunkTypeFor(
+        text,
+        p.afterDefinition ? undefined : base.heading,
+        definesTerm,
+      ),
       ...(definesTerm === undefined ? {} : { definesTerm }),
       definedTermsUsed: termsUsed(text, base.sectionId, definesTerm),
       refs,
