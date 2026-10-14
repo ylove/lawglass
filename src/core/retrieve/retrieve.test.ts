@@ -12,7 +12,13 @@ import {
   MAX_INJECTED_DEFINITIONS,
   termsNeedingDefinitions,
 } from './definitions.js';
-import { buildFilter, HYBRID_CANDIDATES, retrieve } from './retrieve.js';
+import {
+  asksAboutChanges,
+  buildFilter,
+  HYBRID_CANDIDATES,
+  RERANK_MAX_CANDIDATES,
+  retrieve,
+} from './retrieve.js';
 
 /** Wraps a backend and records every call, so tests can assert on how it was driven. */
 function spy(inner: RetrievalBackend) {
@@ -90,7 +96,9 @@ describe('modes', () => {
     expect(main.map((q) => q.index).sort()).toEqual(['dense', 'sparse']);
     expect(main.every((q) => q.topK === HYBRID_CANDIDATES)).toBe(true);
     expect(s.reranks).toHaveLength(0);
-    expect(r.hits.filter((h) => !h.injected).length).toBeLessThanOrEqual(4);
+    const ranked = r.hits.filter((h) => !h.injected);
+    expect(ranked.length).toBeGreaterThan(0);
+    expect(ranked.length).toBeLessThanOrEqual(4);
     expect(new Set(ids(r)).size).toBe(r.hits.length); // deduped
   });
 
@@ -105,6 +113,47 @@ describe('modes', () => {
     expect(s.reranks[0]!.topN).toBe(8);
     expect(r.usage.rerankUnits).toBe(1);
     expect(ids(r)[0]).toBe(makeChunkId(DOC_A, 'sec-3', 0));
+  });
+
+  it('bounds and dedupes the rerank input', async () => {
+    const mk = (prefix: string, n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        chunk: {
+          id: `${prefix}${String(i)}`,
+          definedTermsUsed: [],
+          amendmentStatus: 'unchanged',
+        } as unknown as never,
+        score: n - i,
+      }));
+    const shared = mk('s', 10);
+    const backendFor = (dense: unknown[], sparse: unknown[]) => {
+      const reranks: string[][] = [];
+      const backend: RetrievalBackend = {
+        ...spy(memory).backend,
+        search: (req: SearchRequest) =>
+          Promise.resolve({
+            hits: (req.index === 'dense' ? dense : sparse) as never,
+            usage: ZERO_USAGE,
+          }),
+        rerank: (req) => {
+          reranks.push(req.hits.map((h) => h.chunk.id));
+          return Promise.resolve({
+            hits: req.hits.slice(0, req.topN),
+            usage: ZERO_USAGE,
+          });
+        },
+      };
+      return { backend, reranks };
+    };
+    // 40 + 40 disjoint candidates: capped at RERANK_MAX_CANDIDATES.
+    const disjoint = backendFor(mk('d', 40), mk('x', 40));
+    await retrieve(disjoint.backend, { docId: DOC_A, query: 'q' });
+    expect(disjoint.reranks[0]).toHaveLength(RERANK_MAX_CANDIDATES);
+    // Overlapping lists: each id reaches the reranker once.
+    const overlap = backendFor(shared, shared);
+    await retrieve(overlap.backend, { docId: DOC_A, query: 'q' });
+    expect(overlap.reranks[0]).toHaveLength(10);
+    expect(new Set(overlap.reranks[0]).size).toBe(10);
   });
 
   it('rerankTopN overrides the rerank size', async () => {
@@ -133,7 +182,11 @@ describe('fusion selection', () => {
   /** Backend returning fixed lists per index, to prove which fusion produced the order. */
   const scripted = (): RetrievalBackend => {
     const stored = (id: string) =>
-      ({ id, definedTermsUsed: [] }) as unknown as Chunk;
+      ({
+        id,
+        definedTermsUsed: [],
+        amendmentStatus: 'unchanged',
+      }) as unknown as Chunk;
     const lists = {
       dense: [stored('a'), stored('b')],
       sparse: [stored('b'), stored('c')],
@@ -159,6 +212,41 @@ describe('fusion selection', () => {
       mode: 'hybrid',
     });
     expect(ids(r)).toEqual(['b', 'a', 'c']);
+  });
+
+  it('applies sparseWeight under the default RRF fusion', async () => {
+    const run = (sparseWeight?: number) =>
+      retrieve(scripted(), {
+        docId: DOC_A,
+        query: 'q',
+        mode: 'hybrid',
+        sparseWeight,
+      });
+    expect(ids(await run(0.5))).toEqual(ids(await run(undefined)));
+    expect(ids(await run(1))[0]).toBe('b'); // sparse #1
+    expect(ids(await run(0))).toEqual(['a', 'b', 'c']);
+    const sparseOnlyTop = await retrieve(
+      {
+        ...scripted(),
+        search: (req: SearchRequest) =>
+          Promise.resolve({
+            hits: (req.index === 'dense'
+              ? ['a', 'b', 'c']
+              : ['c', 'b', 'a']
+            ).map((id, i) => ({
+              chunk: {
+                id,
+                definedTermsUsed: [],
+                amendmentStatus: 'unchanged',
+              } as unknown as never,
+              score: 3 - i,
+            })),
+            usage: ZERO_USAGE,
+          }),
+      },
+      { docId: DOC_A, query: 'q', mode: 'hybrid', sparseWeight: 1 },
+    );
+    expect(ids(sparseOnlyTop)[0]).toBe('c');
   });
 
   it('uses weighted min-max when asked, honouring sparseWeight', async () => {
@@ -190,6 +278,7 @@ describe('deleted spans', () => {
       docId: DOC_A,
       query: 'Section 5747.01 repealed',
       mode: 'sparse',
+      includeDeleted: false,
     });
     expect(ids(r)).not.toContain(deletedId);
     expect(s.searches[0]!.filter?.amendmentStatus).toEqual([
@@ -214,26 +303,122 @@ describe('deleted spans', () => {
       chunkType: ['penalty'],
       amendmentStatus: ['unchanged', 'inserted'],
     });
-    expect(
-      buildFilter({ amendmentStatus: ['inserted', 'deleted'] }, false),
-    ).toEqual({
+    expect(buildFilter({ amendmentStatus: ['inserted'] }, false)).toEqual({
       amendmentStatus: ['inserted'],
     });
     expect(buildFilter({ amendmentStatus: ['deleted'] }, true)).toEqual({
       amendmentStatus: ['deleted'],
     });
-    expect(buildFilter({ amendmentStatus: ['deleted'] }, false)).toBeNull();
   });
 
-  it('returns nothing, without searching, when the chip only wants deleted text but deletions are excluded', async () => {
+  it('treats an explicit deleted in the chip filter as the opt-in', () => {
+    expect(
+      buildFilter({ amendmentStatus: ['inserted', 'deleted'] }, false),
+    ).toEqual({ amendmentStatus: ['inserted', 'deleted'] });
+    expect(buildFilter({ amendmentStatus: ['deleted'] }, false)).toEqual({
+      amendmentStatus: ['deleted'],
+    });
+  });
+
+  it.each(['hybrid_rerank', 'hybrid', 'dense', 'sparse'] as const)(
+    'excludes deleted chunks by default in %s mode',
+    async (mode) => {
+      const r = await retrieve(memory, {
+        docId: DOC_A,
+        query: 'Section 5747.01 taxes imposed',
+        mode,
+        topK: 20,
+      });
+      expect(r.hits.length).toBeGreaterThan(0);
+      expect(ids(r)).not.toContain(deletedId);
+      expect(r.hits.every((h) => h.chunk.amendmentStatus !== 'deleted')).toBe(
+        true,
+      );
+    },
+  );
+
+  it('what-changes shape (inserted+deleted chip filter) retrieves deleted text in hybrid_rerank', async () => {
     const s = spy(memory);
     const r = await retrieve(s.backend, {
       docId: DOC_A,
-      query: 'repealed',
-      filter: { amendmentStatus: ['deleted'] },
+      query: 'Section 5747.01 repealed',
+      filter: { amendmentStatus: ['inserted', 'deleted'] },
+      includeDeleted: true,
+      topK: 20,
     });
-    expect(r.hits).toEqual([]);
-    expect(s.searches).toHaveLength(0);
+    expect(ids(r)).toContain(deletedId);
+    expect(
+      r.hits.every((h) =>
+        ['inserted', 'deleted'].includes(h.chunk.amendmentStatus),
+      ),
+    ).toBe(true);
+    // the chip filter alone (no includeDeleted) is enough
+    const chipOnly = await retrieve(memory, {
+      docId: DOC_A,
+      query: 'Section 5747.01 repealed',
+      filter: { amendmentStatus: ['inserted', 'deleted'] },
+      topK: 20,
+    });
+    expect(ids(chipOnly)).toContain(deletedId);
+  });
+
+  it('derives includeDeleted from the question when left undefined', async () => {
+    const q = (query: string, includeDeleted?: boolean) =>
+      retrieve(memory, {
+        docId: DOC_A,
+        query,
+        mode: 'sparse',
+        topK: 20,
+        includeDeleted,
+      });
+    expect(ids(await q('Section 5747.01 repealed'))).toContain(deletedId);
+    expect(ids(await q('Section 5747.01 repealed', false))).not.toContain(
+      deletedId,
+    );
+  });
+
+  it('drops hits outside the effective filter even if the backend ignores it', async () => {
+    const leaky: RetrievalBackend = {
+      ...spy(memory).backend,
+      search: (req: SearchRequest) =>
+        memory.search({ ...req, filter: undefined }),
+    };
+    const r = await retrieve(leaky, {
+      docId: DOC_A,
+      query: 'Section 5747.01 taxes imposed',
+      mode: 'sparse',
+      topK: 20,
+      includeDeleted: false,
+    });
+    expect(r.hits.length).toBeGreaterThan(0);
+    expect(r.hits.every((h) => h.chunk.amendmentStatus !== 'deleted')).toBe(
+      true,
+    );
+  });
+
+  it('asksAboutChanges detects change and removal questions', () => {
+    for (const q of [
+      'What changes for renters?',
+      'What does this bill remove from current law?',
+      'Which sections are struck?',
+      'Is the old rule repealed or deleted?',
+      'Does the bill eliminate the fee?',
+      'What is no longer allowed?',
+      'What used to apply?',
+      'How does it amend the code?',
+      'Which words does it strike?',
+    ]) {
+      expect(asksAboutChanges(q), q).toBe(true);
+    }
+    for (const q of [
+      'When does it take effect?',
+      'Who is an eligible town?',
+      'What is the penalty per day?',
+      'How is the exchange rate set?',
+      '',
+    ]) {
+      expect(asksAboutChanges(q), q).toBe(false);
+    }
   });
 
   it('passes chip filters through to the backend', async () => {
@@ -335,6 +520,72 @@ describe('definition injection', () => {
     ).toHaveLength(1);
   });
 
+  it('prefers the live definition over a struck one and still fetches it', async () => {
+    const backend = new MemoryBackend();
+    const struck = {
+      ...defChunk('town'),
+      id: makeChunkId(DOC_A, 'def-town-old', 0),
+      amendmentStatus: 'deleted' as const,
+    };
+    const live = { ...defChunk('town'), amendmentStatus: 'inserted' as const };
+    await backend.upsertChunks(DOC_A, [struck, live, user(1, ['town'])]);
+    const r = await retrieve(backend, {
+      docId: DOC_A,
+      query: 'widget rule',
+      mode: 'sparse',
+      includeDeleted: true,
+      topK: 1,
+    });
+    expect(r.injectedDefinitions.map((c) => c.id)).toEqual([live.id]);
+    // a struck definition among the hits does not mark the term as covered
+    expect(
+      termsNeedingDefinitions([
+        { chunk: struck, score: 1 },
+        { chunk: user(2, ['town']), score: 1 },
+      ]),
+    ).toEqual(['town']);
+  });
+
+  it('falls back to a struck definition only when no live one exists', async () => {
+    const backend = new MemoryBackend();
+    await backend.upsertChunks(DOC_A, [
+      { ...defChunk('t1'), amendmentStatus: 'deleted' },
+      user(1, ['t1']),
+    ]);
+    const r = await retrieve(backend, {
+      docId: DOC_A,
+      query: 'widget rule',
+      mode: 'sparse',
+      includeDeleted: true,
+    });
+    expect(r.injectedDefinitions.map((c) => c.amendmentStatus)).toEqual([
+      'deleted',
+    ]);
+  });
+
+  it('a multi-chunk definition does not starve other terms', async () => {
+    const backend = new MemoryBackend();
+    const alpha = [0, 1, 2, 3].map((i) => ({
+      ...defChunk('alpha'),
+      id: makeChunkId(DOC_A, `def-alpha-${String(i)}`, 0),
+    }));
+    await backend.upsertChunks(DOC_A, [
+      ...alpha,
+      defChunk('beta'),
+      user(1, ['alpha', 'beta']),
+    ]);
+    const r = await retrieve(backend, {
+      docId: DOC_A,
+      query: 'widget rule',
+      mode: 'sparse',
+      topK: 1,
+    });
+    expect(r.injectedDefinitions.map((c) => c.definesTerm).sort()).toEqual([
+      'alpha',
+      'beta',
+    ]);
+  });
+
   it('ignores terms with no definition chunk', async () => {
     const backend = new MemoryBackend();
     await backend.upsertChunks(DOC_A, [user(1, ['ghost'])]);
@@ -367,10 +618,41 @@ describe('usage, latency and abort', () => {
       docId: DOC_A,
       query: 'grants for water',
       mode: 'hybrid_rerank',
+      topK: 1,
     });
-    // dense + sparse query tokens (3 each) + definition lookup + one rerank unit
-    expect(r.usage.embedTokens).toBeGreaterThanOrEqual(6);
+    // dense (3) + sparse (3) query tokens, plus one definition lookup per injected term
+    const raw = await retrieve(memory, {
+      docId: DOC_A,
+      query: 'grants for water',
+      mode: 'hybrid_rerank',
+      topK: 1,
+      injectDefinitions: false,
+    });
+    expect(raw.usage.embedTokens).toBe(6);
+    expect(r.injectedDefinitions.length).toBeGreaterThan(0);
+    expect(r.usage.embedTokens).toBeGreaterThan(6);
     expect(r.usage.rerankUnits).toBe(1);
+  });
+
+  it('injectDefinitions: false skips the definition lookup and its embedding', async () => {
+    const run = async (injectDefinitions: boolean) => {
+      const s = spy(memory);
+      const r = await retrieve(s.backend, {
+        docId: DOC_A,
+        query: 'award grants water treatment upgrades',
+        mode: 'sparse',
+        topK: 1,
+        injectDefinitions,
+      });
+      return { r, searches: s.searches };
+    };
+    const on = await run(true);
+    const off = await run(false);
+    expect(off.searches).toHaveLength(1);
+    expect(off.r.injectedDefinitions).toEqual([]);
+    expect(on.searches.length).toBeGreaterThan(1);
+    expect(on.r.injectedDefinitions).toHaveLength(1);
+    expect(on.r.usage.embedTokens).toBeGreaterThan(off.r.usage.embedTokens);
   });
 
   it('measures latency with the injected clock', async () => {

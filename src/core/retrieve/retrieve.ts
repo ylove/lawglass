@@ -22,11 +22,30 @@ import {
   type StoredChunk,
 } from '../model/index.js';
 import { findDefinitionsToInject } from './definitions.js';
-import { reciprocalRankFusion, weightedFusion } from './fusion.js';
+import { weightedFusion, weightedReciprocalRankFusion } from './fusion.js';
 
 /** Candidates fetched from each index before fusion (spec §5.6). */
 export const HYBRID_CANDIDATES = 40;
 export const DEFAULT_TOP_K = 8;
+/**
+ * Most fused candidates sent to `backend.rerank`. Hosted rerankers cap documents per request
+ * (Pinecone's `bge-reranker-v2-m3` and `pinecone-rerank-v0` accept at most 100), and two
+ * disjoint lists of `HYBRID_CANDIDATES` would otherwise be the only bound. Ranks past 64 are
+ * almost never promoted by the reranker, so cutting them also saves cross-encoder latency.
+ */
+export const RERANK_MAX_CANDIDATES = 64;
+
+const CHANGE_PATTERN =
+  /\b(?:remov|strik|struck|delet|repeal|eliminat|no longer|used to|amend|chang)/i;
+
+/**
+ * Whether a question is about changes or removals, i.e. whether deleted (struck) text is
+ * relevant to it (spec §5.6). Pure keyword stems matched at a word start, so "changes" and
+ * "removed" match but "exchange" does not.
+ */
+export function asksAboutChanges(question: string): boolean {
+  return CHANGE_PATTERN.test(question);
+}
 
 /** Statuses that count as current law. `deleted` chunks hold only struck text. */
 const LIVE_STATUSES: NonNullable<ChunkFilter['amendmentStatus']> = [
@@ -47,10 +66,22 @@ export interface RetrieveOptions {
   rerankTopN?: number | undefined;
   /** Hybrid merge method. Default `rrf`; `weighted` is the eval variant. */
   fusion?: FusionMethod | undefined;
-  /** Weight of the sparse list under `weighted` fusion, in [0, 1]. Default 0.5. */
+  /**
+   * Weight of the sparse list in [0, 1]. Default 0.5. Under `rrf` (default) it is weighted RRF
+   * (`w_dense = 2(1 - w)`, `w_sparse = 2w`; 0.5 is plain RRF); under `weighted` it blends
+   * min-max scores.
+   */
   sparseWeight?: number | undefined;
-  /** Keep deleted-span chunks (for "what changes / what is removed" questions and chips). */
+  /**
+   * Keep deleted-span chunks. Default: `asksAboutChanges(query)`. A chip filter that explicitly
+   * lists `deleted` in `amendmentStatus` is also an opt-in.
+   */
   includeDeleted?: boolean | undefined;
+  /**
+   * Append definitions of terms used by the hits (default true). Injection always runs a dense
+   * search, so eval measuring raw modes (embed tokens, latency) should pass false.
+   */
+  injectDefinitions?: boolean | undefined;
   /** Time source in milliseconds; injectable so tests can pin latency. */
   now?: (() => number) | undefined;
   signal?: AbortSignal | undefined;
@@ -62,7 +93,10 @@ export interface RetrievedHit extends SearchHit {
 }
 
 export interface RetrievedContext {
-  /** Ranked search hits first, then injected definitions. */
+  /**
+   * Ranked search hits first, then injected definitions. Eval must score recall on
+   * `hits.filter((h) => !h.injected)` so injection does not inflate per-mode numbers.
+   */
   hits: RetrievedHit[];
   /** The injected definition chunks alone (also present, marked `injected`, in `hits`). */
   injectedDefinitions: StoredChunk[];
@@ -73,21 +107,19 @@ export interface RetrievedContext {
 }
 
 /**
- * Combine the caller's chip filter with the deleted-span exclusion.
- * Returns `null` when the two contradict (e.g. the chip asks only for `deleted` chunks but
- * deleted ones are excluded), meaning nothing can match and no search is needed.
+ * Combine the caller's chip filter with the deleted-span exclusion. Unless deleted text is
+ * wanted (`includeDeleted`, or the chip itself lists `deleted`), restrict to live statuses.
+ * A chip asking only for `deleted` is an explicit opt-in, so it is never narrowed.
  */
 export function buildFilter(
   chipFilter: ChunkFilter | undefined,
   includeDeleted: boolean,
-): ChunkFilter | undefined | null {
-  if (includeDeleted) return chipFilter;
-  const requested = chipFilter?.amendmentStatus;
-  const [first, ...rest] = requested
-    ? requested.filter((s) => LIVE_STATUSES.includes(s))
-    : LIVE_STATUSES;
-  if (first === undefined) return null;
-  return { ...chipFilter, amendmentStatus: [first, ...rest] };
+): ChunkFilter | undefined {
+  if (includeDeleted || chipFilter?.amendmentStatus?.includes('deleted')) {
+    return chipFilter;
+  }
+  const [first, ...rest] = chipFilter?.amendmentStatus ?? LIVE_STATUSES;
+  return { ...chipFilter, amendmentStatus: [first ?? 'unchanged', ...rest] };
 }
 
 export async function retrieve(
@@ -101,7 +133,11 @@ export async function retrieve(
   const startedAt = now();
   signal?.throwIfAborted();
 
-  const filter = buildFilter(options.filter, options.includeDeleted ?? false);
+  const filter = buildFilter(
+    options.filter,
+    options.includeDeleted ?? asksAboutChanges(query),
+  );
+  const allowedStatuses = filter?.amendmentStatus;
   let usage: BackendUsage = ZERO_USAGE;
   let ranked: SearchHit[] = [];
 
@@ -114,15 +150,14 @@ export async function retrieve(
       index,
       query,
       topK: k,
-      // `null` (contradictory filter) never reaches here: the caller skips searching.
-      filter: filter ?? undefined,
+      filter,
       signal,
     });
     usage = addUsage(usage, result.usage);
     return result.hits;
   };
 
-  if (filter !== null) {
+  {
     if (mode === 'dense' || mode === 'sparse') {
       ranked = await search(mode, topK);
     } else {
@@ -134,14 +169,14 @@ export async function retrieve(
       const fused =
         options.fusion === 'weighted'
           ? weightedFusion(dense, sparse, options.sparseWeight)
-          : reciprocalRankFusion([dense, sparse]);
+          : weightedReciprocalRankFusion(dense, sparse, options.sparseWeight);
 
       if (mode === 'hybrid' || fused.length === 0) {
         ranked = fused.slice(0, topK);
       } else {
         const reranked = await backend.rerank({
           query,
-          hits: fused,
+          hits: fused.slice(0, RERANK_MAX_CANDIDATES),
           topN: options.rerankTopN ?? topK,
           signal,
         });
@@ -151,24 +186,31 @@ export async function retrieve(
     }
   }
 
-  const injection = await findDefinitionsToInject({
-    backend,
-    docId,
-    hits: ranked,
-    amendmentStatus:
-      filter === undefined || filter === null
-        ? undefined
-        : filter.amendmentStatus,
-    signal,
-  });
-  usage = addUsage(usage, injection.usage);
+  const inAllowed = (hit: SearchHit): boolean =>
+    allowedStatuses === undefined ||
+    allowedStatuses.includes(hit.chunk.amendmentStatus);
+  // Defense in depth: whatever the backend did with the filter, nothing outside it gets out.
+  ranked = ranked.filter(inAllowed);
+
+  let injected: SearchHit[] = [];
+  if (options.injectDefinitions ?? true) {
+    const injection = await findDefinitionsToInject({
+      backend,
+      docId,
+      hits: ranked,
+      amendmentStatus: allowedStatuses,
+      signal,
+    });
+    usage = addUsage(usage, injection.usage);
+    injected = injection.definitions.filter(inAllowed);
+  }
 
   return {
     hits: [
       ...ranked.map((hit) => ({ ...hit, injected: false })),
-      ...injection.definitions.map((hit) => ({ ...hit, injected: true })),
+      ...injected.map((hit) => ({ ...hit, injected: true })),
     ],
-    injectedDefinitions: injection.definitions.map((hit) => hit.chunk),
+    injectedDefinitions: injected.map((hit) => hit.chunk),
     mode,
     usage,
     latencyMs: now() - startedAt,

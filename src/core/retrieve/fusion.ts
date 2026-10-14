@@ -8,7 +8,8 @@
  * - `weightedFusion` (eval variant): rescales each list's scores to [0, 1], then blends them.
  *
  * Both dedupe by chunk id: a chunk found by both indexes appears once, with a combined score.
- * Ties are broken by first appearance (dense list first), so output is fully deterministic.
+ * Within a single list a repeated id counts once, at its first (best) rank; later repeats are
+ * ignored, in both methods. Ties are broken by first appearance (dense list first), so output is fully deterministic.
  */
 import type { SearchHit } from '../model/index.js';
 
@@ -16,31 +17,59 @@ import type { SearchHit } from '../model/index.js';
 export const RRF_K = 60;
 
 /**
- * Reciprocal Rank Fusion.
+ * Reciprocal Rank Fusion, optionally weighted.
  *
- *   score(chunk) = sum over lists of  1 / (k + rank)      (rank is 1-based)
+ *   score(chunk) = sum over lists of  w_i / (k + rank_i)      (rank is 1-based, w_i defaults to 1)
  *
  * Why it works: a chunk ranked highly in *either* list gets a big contribution, and one ranked
  * well in *both* gets two. `k` damps the gap between rank 1 and rank 2 so a single list can't
  * dominate. No score normalisation is needed, which makes it robust across backends.
+ *
+ * A repeated id within one list counts once, at its first rank (same as `weightedFusion`).
+ * `weights` pairs with `lists` by index; missing entries default to 1.
  */
 export function reciprocalRankFusion(
   lists: readonly (readonly SearchHit[])[],
   k: number = RRF_K,
+  weights: readonly number[] = [],
 ): SearchHit[] {
   const merged = new Map<string, SearchHit>();
-  for (const list of lists) {
+  lists.forEach((list, listIndex) => {
+    const weight = weights[listIndex] ?? 1;
+    const seen = new Set<string>();
     list.forEach((hit, index) => {
-      const rank = index + 1;
-      const contribution = 1 / (k + rank);
+      if (seen.has(hit.chunk.id)) return;
+      seen.add(hit.chunk.id);
+      const contribution = weight / (k + index + 1);
       const existing = merged.get(hit.chunk.id);
       merged.set(hit.chunk.id, {
         chunk: existing?.chunk ?? hit.chunk,
         score: (existing?.score ?? 0) + contribution,
       });
     });
-  }
+  });
   return sortByScore(merged);
+}
+
+/**
+ * RRF with a sparse/dense knob: `w_dense = 2(1 - w)`, `w_sparse = 2w`, so `w = 0.5` is exactly
+ * plain RRF, `w = 0` ignores the sparse list's contribution and `w = 1` ignores the dense one's.
+ */
+export function weightedReciprocalRankFusion(
+  dense: readonly SearchHit[],
+  sparse: readonly SearchHit[],
+  sparseWeight = 0.5,
+  k: number = RRF_K,
+): SearchHit[] {
+  if (!(sparseWeight >= 0 && sparseWeight <= 1)) {
+    throw new RangeError(
+      `sparseWeight must be in [0, 1], got ${String(sparseWeight)}`,
+    );
+  }
+  return reciprocalRankFusion([dense, sparse], k, [
+    2 * (1 - sparseWeight),
+    2 * sparseWeight,
+  ]);
 }
 
 /**

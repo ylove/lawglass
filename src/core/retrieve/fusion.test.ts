@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { SearchHit, StoredChunk } from '../model/index.js';
-import { reciprocalRankFusion, RRF_K, weightedFusion } from './fusion.js';
+import {
+  reciprocalRankFusion,
+  RRF_K,
+  weightedFusion,
+  weightedReciprocalRankFusion,
+} from './fusion.js';
 
 const hit = (id: string, score: number): SearchHit => ({
   chunk: { id } as StoredChunk,
@@ -51,6 +56,53 @@ describe('reciprocalRankFusion', () => {
   it('honours a custom k', () => {
     const [top] = reciprocalRankFusion([[hit('a', 1)]], 10);
     expect(top!.score).toBeCloseTo(1 / 11);
+  });
+});
+
+describe('reciprocalRankFusion duplicates', () => {
+  it('counts an id repeated within one list once, at its first rank', () => {
+    const fused = reciprocalRankFusion([
+      [hit('a', 3), hit('a', 2), hit('b', 1)],
+    ]);
+    expect(fused.find((h) => h.chunk.id === 'a')!.score).toBeCloseTo(
+      1 / (RRF_K + 1),
+    );
+    expect(fused.find((h) => h.chunk.id === 'b')!.score).toBeCloseTo(
+      1 / (RRF_K + 3),
+    );
+  });
+});
+
+describe('weightedReciprocalRankFusion', () => {
+  const dense = [hit('a', 1), hit('b', 1), hit('c', 1)];
+  const sparse = [hit('c', 1), hit('b', 1), hit('a', 1)];
+
+  it('weight 0.5 is identical to plain RRF', () => {
+    expect(weightedReciprocalRankFusion(dense, sparse, 0.5)).toEqual(
+      reciprocalRankFusion([dense, sparse]),
+    );
+    expect(weightedReciprocalRankFusion(dense, sparse)).toEqual(
+      reciprocalRankFusion([dense, sparse]),
+    );
+  });
+
+  it('weight 1 puts the sparse #1 first and weight 0 the dense #1', () => {
+    expect(ids(weightedReciprocalRankFusion(dense, sparse, 1))[0]).toBe('c');
+    expect(ids(weightedReciprocalRankFusion(dense, sparse, 0))[0]).toBe('a');
+  });
+
+  it('scales contributions by 2(1-w) and 2w', () => {
+    const [top] = weightedReciprocalRankFusion(
+      [hit('a', 1)],
+      [hit('b', 1)],
+      0.25,
+    );
+    expect(top!.chunk.id).toBe('a');
+    expect(top!.score).toBeCloseTo((2 * 0.75) / (RRF_K + 1));
+  });
+
+  it('rejects an out-of-range weight', () => {
+    expect(() => weightedReciprocalRankFusion([], [], 1.5)).toThrow(RangeError);
   });
 });
 
