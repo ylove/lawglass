@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { MockAgent } from 'undici';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppError } from '../model/index.js';
+import { BRAND } from '../brand.js';
 import { documentId, writeCache } from './cache.js';
 import { safeFetch, type SafeFetchOptions } from './index.js';
 import type { Resolver } from './resolve.js';
@@ -32,6 +33,94 @@ afterEach(async () => {
 });
 
 describe('safeFetch', () => {
+  it('refreshes a mutable record and replaces its cached URL snapshot', async () => {
+    agent
+      .get(origin)
+      .intercept({ path: '/status' })
+      .reply(200, '<billStatus>old</billStatus>');
+    const old = await safeFetch(`${origin}/status`, opts);
+    agent
+      .get(origin)
+      .intercept({ path: '/status' })
+      .reply(200, '<billStatus>new</billStatus>');
+    const fresh = await safeFetch(`${origin}/status`, {
+      ...opts,
+      refresh: true,
+    });
+    expect(fresh.docId).not.toBe(old.docId);
+    expect(fresh.fromCache).toBe(false);
+    expect((await safeFetch(`${origin}/status`, opts)).docId).toBe(fresh.docId);
+    agent.assertNoPendingInterceptors();
+  });
+  it('sends an honest brand-derived User-Agent on every network hop', async () => {
+    const headers = {
+      'user-agent': `${BRAND.name}/${BRAND.version} (+${BRAND.repositoryUrl})`,
+    };
+    agent
+      .get(origin)
+      .intercept({ path: '/start', headers })
+      .reply(302, '', { headers: { location: '/bill' } });
+    agent
+      .get(origin)
+      .intercept({ path: '/bill', headers })
+      .reply(200, 'A bill.');
+    expect((await safeFetch(`${origin}/start`, opts)).finalUrl).toBe(
+      `${origin}/bill`,
+    );
+    agent.assertNoPendingInterceptors();
+  });
+  it('applies source policy before DNS or transport, including redirect destinations', async () => {
+    const resolver = vi.fn(opts.resolver);
+    const factory = vi.fn(opts.dispatcherFactory);
+    const validateUrl = (url: URL) => {
+      if (url.hostname !== 'example.gov') throw new AppError('SSRF_BLOCKED');
+    };
+    await expect(
+      safeFetch('https://forbidden.gov/bill', {
+        ...opts,
+        resolver,
+        dispatcherFactory: factory,
+        validateUrl,
+      }),
+    ).rejects.toMatchObject({ code: 'SSRF_BLOCKED' });
+    expect(resolver).not.toHaveBeenCalled();
+    expect(factory).not.toHaveBeenCalled();
+    agent
+      .get(origin)
+      .intercept({ path: '/start' })
+      .reply(302, '', { headers: { location: 'https://forbidden.gov/bill' } });
+    await expect(
+      safeFetch(`${origin}/start`, {
+        ...opts,
+        resolver,
+        dispatcherFactory: factory,
+        validateUrl,
+      }),
+    ).rejects.toMatchObject({ code: 'SSRF_BLOCKED' });
+    expect(resolver).toHaveBeenCalledOnce();
+    expect(factory).toHaveBeenCalledOnce();
+  });
+  it('checks a cached redirect destination against the source policy before DNS', async () => {
+    await writeCache(
+      new TextEncoder().encode('A bill.'),
+      {
+        url: `${origin}/cached`,
+        finalUrl: 'https://forbidden.gov/bill',
+        contentType: 'text/plain',
+        fetchedAt: fixedNow().toISOString(),
+      },
+      cacheDir,
+    );
+    const resolver = vi.fn(opts.resolver);
+    const validateUrl = (url: URL) => {
+      if (url.hostname !== 'example.gov') throw new AppError('SSRF_BLOCKED');
+    };
+    await expect(
+      safeFetch(`${origin}/cached`, { ...opts, resolver, validateUrl }),
+    ).rejects.toMatchObject({ code: 'SSRF_BLOCKED' });
+    expect(resolver).toHaveBeenCalledOnce();
+    expect(resolver).toHaveBeenCalledWith('example.gov');
+  });
   it('validates input with default options without touching the network or cache', async () => {
     await expect(safeFetch('invalid url')).rejects.toMatchObject({
       code: 'INVALID_INPUT',

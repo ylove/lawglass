@@ -28,10 +28,23 @@ import {
   type RetrievalBackend,
 } from '../model/index.js';
 import type { Registry, RegistryEntry } from '../registry.js';
+import { assertHistoryUrl } from '../history/allowlist.js';
+import {
+  assertNoCongressFetch,
+  chooseVersion,
+  historySource,
+  resolveHistory,
+  type HistoryRecord,
+} from '../history/resolve.js';
+import { deleteHistory, writeHistory } from '../history/history-store.js';
 
 export type Fetcher = (
   url: string,
-  opts?: { signal?: AbortSignal | undefined },
+  opts?: {
+    signal?: AbortSignal | undefined;
+    validateUrl?: ((url: URL) => void) | undefined;
+    refresh?: boolean | undefined;
+  },
 ) => Promise<SafeFetchResult>;
 
 export interface ParseContext {
@@ -85,6 +98,53 @@ export interface IngestResult {
 
 const DEFAULT_MAX_DOCS = 5;
 const MAX_LABEL = 80;
+const HISTORY_UNAVAILABLE =
+  'History unavailable: the official history could not be read or saved.';
+
+interface HistoryAttachment {
+  record?: HistoryRecord;
+  version: string;
+}
+
+function attachHistory(
+  doc: NormalizedDoc,
+  attachment?: HistoryAttachment,
+): NormalizedDoc {
+  if (!attachment) return doc;
+  const { record, version } = attachment;
+  const label = record?.history.versions.find(
+    (item) => item.code === version,
+  )?.label;
+  return {
+    ...doc,
+    metadata: {
+      ...doc.metadata,
+      version: label ? `${label} (${version})` : version,
+      ...(record ? { sponsorProfiles: record.sponsorProfiles } : {}),
+    },
+    warnings: [
+      ...doc.warnings.filter((item) => item !== HISTORY_UNAVAILABLE),
+      ...(record ? [] : [HISTORY_UNAVAILABLE]),
+    ],
+  };
+}
+
+async function saveHistory(
+  doc: NormalizedDoc,
+  deps: IngestDeps,
+  attachment?: HistoryAttachment,
+): Promise<void> {
+  if (!attachment?.record) return;
+  try {
+    await writeHistory(
+      deps.registry.configDir,
+      doc.docId,
+      attachment.record.history,
+    );
+  } catch {
+    doc.warnings.push(HISTORY_UNAVAILABLE);
+  }
+}
 
 function countSpans(doc: NormalizedDoc): { inserted: number; deleted: number } {
   let inserted = 0;
@@ -267,7 +327,42 @@ export async function ingest(
   const { signal } = opts;
   opts.onProgress?.({ stage: 'fetching', detail: url });
   // WRAPPER_PAGE (with candidate links in `details`) propagates untouched for callers to offer.
-  const fetched = await deps.fetcher(url, { signal });
+  const plan = resolveHistory(url);
+  let attachment: HistoryAttachment | undefined;
+  let fetchUrl = url;
+  let validateUrl: (url: URL) => void = assertNoCongressFetch;
+  if (plan) {
+    const source = historySource(plan.source);
+    validateUrl = (url) => {
+      assertHistoryUrl(plan.source, url);
+    };
+    let record: HistoryRecord | undefined;
+    try {
+      record = await source.read(
+        plan,
+        async (historyUrl) => {
+          assertHistoryUrl(plan.source, historyUrl);
+          const result = await deps.fetcher(historyUrl, {
+            signal,
+            validateUrl,
+            refresh: true,
+          });
+          assertHistoryUrl(plan.source, result.finalUrl);
+          return result;
+        },
+        deps.now,
+      );
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      // An explicit version allows text ingest even when the official history is down.
+    }
+    const version = chooseVersion(plan, record?.history);
+    fetchUrl = plan.textUrl ?? source.textUrl(plan, version);
+    validateUrl(new URL(fetchUrl));
+    attachment = { version, ...(record ? { record } : {}) };
+  }
+  const fetched = await deps.fetcher(fetchUrl, { signal, validateUrl });
+  validateUrl(new URL(fetched.finalUrl));
   signal?.throwIfAborted();
   const docId = createHash('sha256').update(fetched.bytes).digest('hex');
   if (docId !== fetched.docId)
@@ -275,7 +370,9 @@ export async function ingest(
       'FETCH_FAILED',
       'Fetched document id does not match its bytes.',
     );
-  return withDocLock(docId, () => ingestLocked(docId, fetched, deps, opts));
+  return withDocLock(docId, () =>
+    ingestLocked(docId, fetched, deps, opts, attachment),
+  );
 }
 
 async function ingestLocked(
@@ -283,6 +380,7 @@ async function ingestLocked(
   fetched: SafeFetchResult,
   deps: IngestDeps,
   opts: IngestOptions,
+  attachment?: HistoryAttachment,
 ): Promise<IngestResult> {
   const { backend, registry } = deps;
   const { signal } = opts;
@@ -300,8 +398,12 @@ async function ingestLocked(
 
   // Zero-token path: nothing to fetch-parse-embed.
   if (known && alreadyIndexed) {
-    const touched = await registry.touch(docId);
-    const cached = await registry.getDocument(docId);
+    let touched = await registry.touch(docId);
+    const cached = attachHistory(await registry.getDocument(docId), attachment);
+    if (attachment) {
+      await saveHistory(cached, deps, attachment);
+      touched = await registry.updateDocument(cached);
+    }
     const { chunks } = chunkAndEnrich(cached);
     progress({ stage: 'done', detail: 'reused' });
     return {
@@ -357,6 +459,7 @@ async function ingestLocked(
     progress({ stage: 'chunking' });
     ({ doc, chunks } = chunkAndEnrich(withMetadata));
   }
+  doc = attachHistory(doc, attachment);
   signal?.throwIfAborted();
 
   let entry: RegistryEntry;
@@ -368,6 +471,7 @@ async function ingestLocked(
     });
     embedTokens = usage.embedTokens;
     signal?.throwIfAborted();
+    await saveHistory(doc, deps, attachment);
     const spent = {
       embedTokens,
       llmInputTokens: meter.usage.inputTokens,
@@ -376,6 +480,7 @@ async function ingestLocked(
     if (known) {
       // Refresh recency (so the re-indexed doc is not next to be evicted) and count the spend.
       entry = await registry.touch(docId, spent);
+      if (attachment) entry = await registry.updateDocument(doc);
     } else {
       const labels = new Set((await registry.list()).map((e) => e.label));
       entry = await registry.add(doc, {
@@ -391,8 +496,11 @@ async function ingestLocked(
       const registeredMeanwhile =
         !known &&
         (await registry.list().catch(() => [])).some((e) => e.docId === docId);
-      if (!registeredMeanwhile)
+      if (!registeredMeanwhile) {
         await backend.deleteDocument(docId).catch(() => undefined);
+        if (!known)
+          await deleteHistory(registry.configDir, docId).catch(() => undefined);
+      }
     }
     if (error instanceof AppError || signal?.aborted) throw error;
     throw new AppError('BACKEND_UNAVAILABLE', undefined, { cause: error });

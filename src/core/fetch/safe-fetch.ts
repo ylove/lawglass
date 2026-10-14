@@ -1,5 +1,6 @@
 import { fetch, type Dispatcher, type Response } from 'undici';
 import { AppError } from '../model/index.js';
+import { BRAND } from '../brand.js';
 import {
   defaultCacheDir,
   DEFAULT_MAX_BYTES,
@@ -18,6 +19,10 @@ import { sniffFormat, type SniffedFormat } from './sniff.js';
 import { findCandidateLinks, isLikelyWrapper } from './wrapper.js';
 
 export interface SafeFetchOptions {
+  /** Re-read mutable official records while still caching the downloaded snapshot. */
+  refresh?: boolean | undefined;
+  /** Additional source policy, applied before DNS on every hop, including cached redirects. */
+  validateUrl?: ((url: URL) => void) | undefined;
   /** Cancels DNS, redirects and body streaming without replacing the download deadline. */
   signal?: AbortSignal | undefined;
   resolver?: Resolver;
@@ -168,11 +173,15 @@ export async function safeFetch(
   const cacheDir = opts.cacheDir ?? defaultCacheDir();
   try {
     const original = validateUrl(input, allowedPorts);
+    opts.validateUrl?.(original);
     let url = original;
     let address = await resolvePublicAddress(url, resolver, signal);
-    const cached = await readCache(original.href, cacheDir, maxBytes);
+    const cached = opts.refresh
+      ? undefined
+      : await readCache(original.href, cacheDir, maxBytes);
     if (cached) {
       const final = validateUrl(cached.finalUrl, allowedPorts);
+      opts.validateUrl?.(final);
       if (final.href !== original.href)
         await resolvePublicAddress(final, resolver, signal);
       signal.throwIfAborted();
@@ -189,6 +198,9 @@ export async function safeFetch(
           dispatcher,
           redirect: 'manual',
           signal,
+          headers: {
+            'user-agent': `${BRAND.name}/${BRAND.version} (+${BRAND.repositoryUrl})`,
+          },
         });
         if ([301, 302, 303, 307, 308].includes(response.status)) {
           await response.body?.cancel();
@@ -198,6 +210,7 @@ export async function safeFetch(
           if (redirects >= maxRedirects)
             throw new AppError('TOO_MANY_REDIRECTS');
           url = validateUrl(location, allowedPorts, url);
+          opts.validateUrl?.(url);
           address = await resolvePublicAddress(url, resolver, signal);
           continue;
         }
