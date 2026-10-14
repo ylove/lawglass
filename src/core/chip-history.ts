@@ -26,16 +26,25 @@ export const NO_HISTORY_TEXT =
 export const STRIKE_INSERT_SENTENCE =
   'Struck-through and underlined text in this version shows how the bill would change current law. It is not a record of amendments to the bill.';
 
-/** Record text is untrusted: drop control characters and line breaks, then cut it short. */
+/**
+ * Record text is untrusted and is shown by a renderer that understands a little markdown.
+ * Drop control, zero-width and bidi-override characters and line breaks, cut it short, then
+ * backslash-escape what the renderer interprets so the text displays exactly as recorded
+ * (a `[S:...]` in the record must not be read as a citation either).
+ */
 export function cleanRecordText(
   text: string,
   max: number = MAX_FIELD_CHARS,
 ): string {
-  const plain = text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ');
+  const plain = text
+    .replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ')
+    .replace(/[\u200b-\u200f\u202a-\u202e\u2066-\u2069]/g, '');
   const oneLine = plain.replace(/\s+/g, ' ').trim();
-  return oneLine.length <= max
-    ? oneLine
-    : `${oneLine.slice(0, max - 3).trimEnd()}...`;
+  const short =
+    oneLine.length <= max
+      ? oneLine
+      : `${oneLine.slice(0, max - 3).trimEnd()}...`;
+  return short.replace(/[\\*[]/g, (c) => `\\${c}`);
 }
 
 function hasChangedSpans(sections: readonly Section[]): boolean {
@@ -53,27 +62,65 @@ const STATUS_PHRASE: Record<
   rejected: 'was rejected',
   withdrawn: 'was withdrawn',
   // Never turned into a verdict: the record did not say.
-  unknown: 'has a status that is not stated',
+  unknown: 'has a status not stated',
 };
 
 function withRecord(line: string, url: string | undefined): string {
   return url === undefined ? line : `${line} (Record: ${url})`;
 }
 
-function more(total: number): string[] {
-  return total > MAX_HISTORY_ITEMS
-    ? [`- and ${String(total - MAX_HISTORY_ITEMS)} more.`]
-    : [];
+/**
+ * Long lists keep the first item (where the story starts) and the latest ones (where it stands
+ * now), and say how many in between are hidden. Cutting the tail would lose passage,
+ * enrollment and signing, which is the point of the chip.
+ */
+function capKeepingLatest<T>(
+  items: readonly T[],
+  noun: string,
+): { shown: T[]; note: string[] } {
+  if (items.length <= MAX_HISTORY_ITEMS) return { shown: [...items], note: [] };
+  const hidden = items.length - MAX_HISTORY_ITEMS;
+  return {
+    shown: [items[0] as T, ...items.slice(-(MAX_HISTORY_ITEMS - 1))],
+    note: [
+      hidden === 1
+        ? `- 1 ${noun} in between is not shown.`
+        : `- ${String(hidden)} ${noun}s in between are not shown.`,
+    ],
+  };
+}
+
+/** Oldest first when every item is dated (stable); otherwise the stored order. */
+function oldestFirst<T extends { date?: string | undefined }>(
+  items: readonly T[],
+): T[] {
+  return items.every((i) => i.date !== undefined)
+    ? [...items].sort((a, b) => (a.date ?? '').localeCompare(b.date ?? ''))
+    : [...items];
+}
+
+/** Lines for a list, with the "in between" note after the first item. */
+function listLines<T>(
+  items: readonly T[],
+  noun: string,
+  line: (item: T) => string,
+): string[] {
+  const { shown, note } = capKeepingLatest(items, noun);
+  const lines = shown.map(line);
+  // The note goes after the first item, where the hidden middle begins.
+  return note.length === 0
+    ? lines
+    : [...lines.slice(0, 1), ...note, ...lines.slice(1)];
 }
 
 function versionLines(history: BillHistory): string[] {
   if (history.versions.length === 0) return [];
-  const lines = history.versions.slice(0, MAX_HISTORY_ITEMS).map((v) => {
+  const lines = listLines(oldestFirst(history.versions), 'version', (v) => {
     const label = cleanRecordText(v.label);
     const date = v.date === undefined ? '' : `, ${cleanRecordText(v.date, 40)}`;
     return withRecord(`- ${label}${date}.`, v.url);
   });
-  return ['Versions of the bill:', ...lines, ...more(history.versions.length)];
+  return ['Versions of the bill:', ...lines];
 }
 
 function actionLines(history: BillHistory): string[] {
@@ -82,7 +129,7 @@ function actionLines(history: BillHistory): string[] {
   const ordered = [...history.actions].sort((a, b) =>
     a.date.localeCompare(b.date),
   );
-  const lines = ordered.slice(0, MAX_HISTORY_ITEMS).map((a) => {
+  const lines = listLines(ordered, 'action', (a) => {
     // Chamber and committee are shown only when the record has them.
     const where = [a.chamber, a.committee]
       .filter((x): x is string => x !== undefined && x.trim() !== '')
@@ -93,7 +140,7 @@ function actionLines(history: BillHistory): string[] {
       a.url,
     );
   });
-  return ['Key actions:', ...lines, ...more(history.actions.length)];
+  return ['Key actions:', ...lines];
 }
 
 function amendmentLine(a: BillHistory['amendments'][number]): string {
@@ -104,7 +151,7 @@ function amendmentLine(a: BillHistory['amendments'][number]): string {
     sponsor !== undefined && sponsor !== ''
       ? `An amendment offered by ${cleanRecordText(sponsor, 100)}`
       : committee !== undefined && committee !== ''
-        ? `An amendment from ${cleanRecordText(committee, 100)}`
+        ? `An amendment considered in ${cleanRecordText(committee, 100)}`
         : 'An amendment';
   const number =
     a.number === undefined ? '' : ` (${cleanRecordText(a.number, 40)})`;
@@ -127,11 +174,10 @@ function amendmentLine(a: BillHistory['amendments'][number]): string {
 
 function amendmentLines(history: BillHistory): string[] {
   if (history.amendments.length === 0)
-    return ['The record lists no amendments to this bill.'];
+    return ['No amendments appear in the record we found.'];
   return [
     'Amendments to the bill, as recorded:',
-    ...history.amendments.slice(0, MAX_HISTORY_ITEMS).map(amendmentLine),
-    ...more(history.amendments.length),
+    ...listLines(oldestFirst(history.amendments), 'amendment', amendmentLine),
   ];
 }
 

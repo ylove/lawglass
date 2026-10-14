@@ -116,14 +116,15 @@ const optionsOf = (call: number): Record<string, unknown> =>
   retrieveSpy.mock.calls[call]![1] as Record<string, unknown>;
 
 describe('chip definitions', () => {
-  it('serves the history chip last, labeled "How did it get here?"', () => {
+  it('serves the history chip right after who-affected, labeled "How did it get here?"', () => {
     expect(CHIPS).toHaveLength(9);
-    expect(CHIPS.at(-1)).toMatchObject({
+    const at = CHIPS.findIndex((c) => c.id === 'who-affected');
+    expect(CHIPS[at + 1]).toMatchObject({
       id: 'history',
       label: 'How did it get here?',
       strategy: 'metadata',
     });
-    expect(getChip('history')).toBe(CHIPS.at(-1));
+    expect(getChip('history')).toBe(CHIPS[at + 1]);
   });
 
   it('defines exactly the nine chips of the ChipId contract, each valid', () => {

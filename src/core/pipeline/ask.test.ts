@@ -1,3 +1,5 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import {
   makeAmendmentHtml,
@@ -205,6 +207,20 @@ test('the history chip reads the stored sidecar, and says so when there is none'
   const some = await ask(docId, { chipId: 'history' }, askDeps());
   expect(some.answer.text).toContain('2026-01-02: Introduced in the Senate.');
   expect(some.mode).toBe('none');
+});
+
+test('a corrupt history sidecar reads as "not available" for the history chip', async () => {
+  const docId = await load(
+    'https://example.gov/s9003.xml',
+    makeCongressionalBillXml(),
+  );
+  await mkdir(join(env.registry.configDir, 'history'), { recursive: true });
+  await writeFile(
+    join(env.registry.configDir, 'history', `${docId}.json`),
+    '{not json',
+  );
+  const result = await ask(docId, { chipId: 'history' }, askDeps());
+  expect(result.answer.text).toContain("Legislative history isn't available");
 });
 
 test('chips dispatch through the injected runner and record its usage', async () => {

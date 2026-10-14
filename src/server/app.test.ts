@@ -92,7 +92,7 @@ describe('basic routes', () => {
       provider: 'mock',
     });
     expect(config.chips).toHaveLength(9);
-    expect(config.chips.at(-1)).toEqual({
+    expect(config.chips[3]).toEqual({
       id: 'history',
       label: 'How did it get here?',
     });

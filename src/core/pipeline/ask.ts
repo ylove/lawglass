@@ -156,7 +156,8 @@ export async function ask(
     // The record lives in a sidecar file; only the history chip reads it.
     const history =
       input.chipId === 'history'
-        ? await readHistory(registry.configDir, docId)
+        ? // A corrupt sidecar is the same as no history: say "not available", don't fail.
+          await readHistory(registry.configDir, docId).catch(() => undefined)
         : undefined;
     const ran = await runChipFor(
       input.chipId,

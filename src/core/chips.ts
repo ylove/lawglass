@@ -191,12 +191,12 @@ export const CHIPS: readonly ChipDefinition[] = Object.freeze([
   summary,
   whatChanges,
   whoAffected,
+  history,
   penalties,
   effectiveDate,
   money,
   definitions,
   sponsors,
-  history,
 ]);
 
 /** The chip with this id. Every `ChipId` has one (enforced by a test). */

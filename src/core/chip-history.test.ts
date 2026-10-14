@@ -103,7 +103,7 @@ describe('buildHistoryText', () => {
     const text = buildHistoryText(ohio, section('unchanged'));
     expect(text).toContain('As Reported by the House Finance Committee');
     expect(text).toContain(
-      'An amendment from House Finance has a status that is not stated: Technical fixes.',
+      'An amendment considered in House Finance has a status not stated: Technical fixes.',
     );
     expect(text).not.toMatch(/offered by/);
   });
@@ -114,13 +114,13 @@ describe('buildHistoryText', () => {
       [],
     );
     expect(text).toContain('- An amendment was adopted.');
-    expect(text).not.toMatch(/Rep\.|Senator|offered by|from /);
+    expect(text).not.toMatch(/Rep\.|Senator|offered by|considered in/);
   });
 
   it('never turns an unknown status into a verdict', () => {
     const text = buildHistoryText(ohio, []);
     expect(text).not.toMatch(/adopted|rejected|withdrawn/);
-    expect(text).toContain('status that is not stated');
+    expect(text).toContain('status not stated');
   });
 
   it('uses each status wording', () => {
@@ -154,31 +154,102 @@ describe('buildHistoryText', () => {
     );
   });
 
-  it('caps long lists and counts the rest', () => {
-    const many = Array.from({ length: MAX_HISTORY_ITEMS + 5 }, (_, i) => ({
+  it('keeps the first and the latest items of a long list and counts the middle', () => {
+    const actions = Array.from({ length: 30 }, (_, i) => ({
       date: `2026-01-${String(i + 1).padStart(2, '0')}`,
       text: `Action ${String(i)}`,
     }));
+    actions[26]!.text = 'Passed the Senate';
+    actions[27]!.text = 'Enrolled';
+    actions[28]!.text = 'Signed by the Governor';
+    actions[29]!.text = 'Effective date';
     const text = buildHistoryText(
       {
-        versions: many.map((m, i) => ({ code: String(i), label: m.text })),
-        actions: many,
-        amendments: many.map((_, i) => ({
+        versions: [],
+        actions: [...actions].reverse(),
+        amendments: actions.map((_, i) => ({
           id: String(i),
           status: 'offered' as const,
+          date: actions[i]!.date,
         })),
         sources: [],
       },
       [],
     );
-    expect(text.match(/- and 5 more\./g)).toHaveLength(3);
-    expect(text).toContain('Action 11');
-    expect(text).not.toContain('Action 12');
+    expect(text).toContain('Action 0');
+    expect(text).toContain('- 18 actions in between are not shown.');
+    for (const t of [
+      'Passed the Senate',
+      'Enrolled',
+      'Signed by the Governor',
+      'Effective date',
+    ])
+      expect(text).toContain(t);
+    expect(text).not.toContain('Action 5');
+    expect(text).toContain('- 18 amendments in between are not shown.');
+  });
+
+  it('says "1 action" in the singular', () => {
+    const actions = Array.from({ length: MAX_HISTORY_ITEMS + 1 }, (_, i) => ({
+      date: `2026-02-${String(i + 1).padStart(2, '0')}`,
+      text: `A${String(i)}`,
+    }));
+    expect(
+      buildHistoryText(
+        { versions: [], actions, amendments: [], sources: [] },
+        [],
+      ),
+    ).toContain('- 1 action in between is not shown.');
+  });
+
+  it('lists versions oldest first when all are dated, else in stored order', () => {
+    const text = buildHistoryText(federal, []);
+    expect(text.indexOf('Introduced in House')).toBeLessThan(
+      text.indexOf('Reported in House'),
+    );
+    const undated = buildHistoryText(
+      {
+        ...federal,
+        versions: [
+          { code: 'b', label: 'Second', date: '2026-05-01' },
+          { code: 'a', label: 'First' },
+        ],
+      },
+      [],
+    );
+    expect(undated.indexOf('Second')).toBeLessThan(undated.indexOf('First'));
+  });
+
+  it('displays record text literally: escapes markdown and citation markers', () => {
+    const text = buildHistoryText(
+      {
+        ...ohio,
+        amendments: [
+          {
+            id: 'x',
+            status: 'adopted',
+            purpose: '**Technical** [S:sec-1] a\\b',
+          },
+        ],
+      },
+      [],
+    );
+    expect(text).toContain('\\*\\*Technical\\*\\* \\[S:sec-1] a\\\\b');
+  });
+
+  it('strips zero-width and bidi characters', () => {
+    expect(cleanRecordText('a\u200bb\u202ec\u2066d\u200f')).toBe('abcd');
   });
 
   it('gives a clear answer with no history', () => {
     expect(buildHistoryText(undefined, [])).toBe(NO_HISTORY_TEXT);
     expect(NO_HISTORY_TEXT).toMatch(/GovInfo.*Ohio LIS/);
+  });
+
+  it('does not claim the bill has no amendments when the record has none', () => {
+    expect(buildHistoryText({ ...ohio, amendments: [] }, [])).toContain(
+      'No amendments appear in the record we found.',
+    );
   });
 
   it('says so when the record is empty', () => {
