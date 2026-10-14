@@ -42,8 +42,10 @@ export function coveredSectionIds(c: StoredChunk): string[] {
 }
 
 /** Rewrite `[S:a, b]` and `[S:a; S:b]` as `[S:a] [S:b]` so each id is validated. */
-function splitMultiMarkers(text: string): string {
+function splitMultiMarkers(text: string, allowed: ReadonlySet<string>): string {
   return text.replace(/\[S:([^\]]*[,;][^\]]*)\]/g, (whole, inner: string) => {
+    // A section id that itself contains a comma or semicolon is one id, not several.
+    if (allowed.has(inner)) return whole;
     const ids = inner.split(/\s*[,;]\s*/).map((s) => s.replace(/^S:/, ''));
     if (ids.some((id) => !id || /\s/.test(id))) return whole;
     return ids.map((id) => `[S:${id}]`).join(' ');
@@ -117,10 +119,15 @@ export function validateCitations(
   const allowed = new Set(retrievedSectionIds);
   // A cited value that is exactly a prompt chunk id means that chunk's section.
   const byChunkId = new Map(chunks.map((c) => [c.id, c.sectionId]));
-  const text = splitMultiMarkers(rawText).replace(
+  // A bare ordinal ("1") means the Nth excerpt in the prompt, which is the Nth chunk.
+  const ordinals = new Map(
+    chunks.map((c, i) => [String(i + 1), c.sectionId] as const),
+  );
+  const text = splitMultiMarkers(rawText, allowed).replace(
     new RegExp(CITATION_PATTERN.source, 'g'),
     (whole, id: string) => {
-      const section = byChunkId.get(id);
+      const section =
+        byChunkId.get(id) ?? (allowed.has(id) ? undefined : ordinals.get(id));
       return section === undefined ? whole : `[S:${section}]`;
     },
   );

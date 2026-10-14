@@ -33,6 +33,14 @@ export interface AnswerInput {
   maxTokens?: number | undefined;
 }
 
+/** Provider stop reasons meaning the reply was cut off: Anthropic, OpenAI ('length'), Google ('MAX_TOKENS'). */
+const TRUNCATION_STOP_REASONS = new Set([
+  'max_tokens',
+  'model_context_window_exceeded',
+  'length',
+  'MAX_TOKENS',
+]);
+
 export async function answer(input: AnswerInput): Promise<AnswerResult> {
   input.signal?.throwIfAborted();
   const { provider, context, onToken } = input;
@@ -81,7 +89,8 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
     }
   }
   if (!finished) throw new AppError('PROVIDER_BAD_OUTPUT');
-  const truncated = stopReason === 'max_tokens';
+  const truncated =
+    stopReason !== null && TRUNCATION_STOP_REASONS.has(stopReason);
   if (truncated) {
     raw = `${raw.trimEnd()}…`;
     onToken?.('…');

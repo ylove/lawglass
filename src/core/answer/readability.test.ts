@@ -82,6 +82,11 @@ describe('sentence splitting', () => {
       fleschKincaidGrade('Sec 4 applies to U S C 1983 rules.'),
     );
   });
+  it('ends a sentence after a lone capital letter like "Part A."', () => {
+    expect(fleschKincaidGrade('See Part A. It also applies.')).toBe(
+      fleschKincaidGrade('See Part A! It also applies.'),
+    );
+  });
 });
 
 describe('stripCitations', () => {

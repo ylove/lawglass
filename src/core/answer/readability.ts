@@ -31,11 +31,11 @@ export function stripCitations(text: string): string {
     .trim();
 }
 
-const ABBREVIATION = /(?:^|[^A-Za-z])(?:Sec|Secs|No|Nos|[A-Z])$/;
+const ABBREVIATION = /(?:^|[^A-Za-z])(?:Sec|Secs|No|Nos|(?:[A-Z]\.)+[A-Z])$/;
 
 /**
  * A sentence ends at . ! ? followed by space or end, or at a line break (list items).
- * A "." after "Sec" or a single capital letter ("U.S.C.") is not an end.
+ * A "." after "Sec" or inside an initialism ("U.S.C.") is not an end; "Part A." is.
  */
 function countSentences(text: string): number {
   let count = 0;

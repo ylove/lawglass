@@ -208,19 +208,27 @@ describe('answer', () => {
   }
   const usage = { inputTokens: 1, outputTokens: 1 };
 
-  it('adds an ellipsis and TRUNCATED when the model hit max_tokens', async () => {
-    const r = await answer({
-      provider: scripted([
-        { type: 'text', text: 'Grants go to towns [S:sec-1] and ' },
-        { type: 'done', usage, stopReason: 'max_tokens' },
-      ]),
-      question: 'q',
-      context: { hits },
-    });
-    expect(r.text).toBe('Grants go to towns [S:sec-1] and…');
-    expect(r.warnings).toEqual(['TRUNCATED']);
-    expect(AnswerResult.safeParse(r).success).toBe(true);
-  });
+  it.each([
+    'max_tokens',
+    'model_context_window_exceeded',
+    'length',
+    'MAX_TOKENS',
+  ])(
+    'adds an ellipsis and TRUNCATED for stop reason %s',
+    async (stopReason) => {
+      const r = await answer({
+        provider: scripted([
+          { type: 'text', text: 'Grants go to towns [S:sec-1] and ' },
+          { type: 'done', usage, stopReason },
+        ]),
+        question: 'q',
+        context: { hits },
+      });
+      expect(r.text).toBe('Grants go to towns [S:sec-1] and…');
+      expect(r.warnings).toEqual(['TRUNCATED']);
+      expect(AnswerResult.safeParse(r).success).toBe(true);
+    },
+  );
 
   it('fails with PROVIDER_BAD_OUTPUT when the stream has no done event', async () => {
     await expect(

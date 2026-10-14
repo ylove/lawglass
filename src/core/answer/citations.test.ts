@@ -172,6 +172,17 @@ describe('validateCitations', () => {
     expect(r.invalidCitations).toEqual(['nope']);
   });
 
+  it('does not split a marker that is itself an allowed section id', () => {
+    const r = validateCitations('A [S:sec-1, sec-2].', ['sec-1, sec-2'], []);
+    expect(r.text).toBe('A [S:sec-1, sec-2].');
+    expect(r.invalidCitations).toEqual([]);
+  });
+
+  it("maps a cited ordinal to that excerpt's section unless it is an allowed id", () => {
+    const r = validateCitations('A [S:3]. B [S:2].', ['2', 'sec-2'], chunks);
+    expect(r.text).toBe('A [S:sec-2]. B [S:2].');
+  });
+
   it('leaves a comma marker with a bad part alone', () => {
     const r = validateCitations('A [S:sec-1, ].', ids, chunks);
     expect(r.text).toBe('A [S:sec-1, ].');
