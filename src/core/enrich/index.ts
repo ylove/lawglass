@@ -1,4 +1,4 @@
-import { estimateTokens } from '../chunk/index.js';
+import { contextualText, estimateTokens } from '../chunk/index.js';
 import {
   Chunk,
   NormalizedDoc,
@@ -191,7 +191,7 @@ export function enrichDocument(
     // Pieces keep their parent's page/line span: the chunker doesn't record offsets within it.
     const { definesTerm: _old, coveredSectionIds: _covered, ...rest } = base;
     const covered = coveredFor(base, index, p.start, p.end);
-    const embedText = `${base.breadcrumb}: ${text}`;
+    const embedText = contextualText({ breadcrumb: base.breadcrumb, text });
     // Cross-references only: sections already covered by this very chunk are not refs.
     const refs = findInternalRefs(text, base.sectionId, index).filter(
       (id) => !(covered ?? [base.sectionId]).includes(id),
