@@ -1,0 +1,218 @@
+/**
+ * Resource budgets for LLM-backed work (OWASP LLM10, unbounded consumption).
+ *
+ * Two independent defenses, both enforced in core so the CLI, server and MCP get them:
+ *  - a concurrency cap per kind of work. Excess callers QUEUE (they are not failed), so a
+ *    burst slows down instead of fanning out into unbounded provider calls;
+ *  - a soft per-minute ceiling. Past it the call FAILS fast with `RATE_LIMITED`, because a
+ *    queue that grows without bound is the same exhaustion problem moved elsewhere.
+ *
+ * Defaults are far above single-user use. Override with `${BRAND.envPrefix}_MAX_CONCURRENT_INGEST`,
+ * `_MAX_CONCURRENT_ASK`, `_MAX_CONCURRENT_CLAUDE_CLI` and `_MAX_CALLS_PER_MINUTE`
+ * (not `ConfigSettings`, which is strict).
+ */
+import { AppError } from '../model/index.js';
+import { envVar } from '../brand.js';
+
+export const DEFAULT_MAX_CONCURRENT_INGEST = 2;
+export const DEFAULT_MAX_CONCURRENT_ASK = 4;
+export const DEFAULT_MAX_CONCURRENT_CLAUDE_CLI = 2;
+export const DEFAULT_MAX_CALLS_PER_MINUTE = 30;
+
+const MINUTE_MS = 60_000;
+
+/** A FIFO counting semaphore whose waiters can be abandoned by an abort signal. */
+export class Semaphore {
+  private active = 0;
+  private readonly waiters: (() => void)[] = [];
+
+  constructor(readonly max: number) {
+    if (!Number.isInteger(max) || max < 1)
+      throw new RangeError('Semaphore max must be a positive integer.');
+  }
+
+  get inFlight(): number {
+    return this.active;
+  }
+
+  get queued(): number {
+    return this.waiters.length;
+  }
+
+  /** Resolves with a one-shot `release`. Rejects (without taking a slot) if aborted while queued. */
+  async acquire(signal?: AbortSignal): Promise<() => void> {
+    signal?.throwIfAborted();
+    if (this.active < this.max) {
+      this.active += 1;
+      return this.releaser();
+    }
+    return new Promise<() => void>((resolve, reject) => {
+      const grant = (): void => {
+        signal?.removeEventListener('abort', onAbort);
+        // The slot was handed over by `release`, so `active` is already counted.
+        resolve(this.releaser());
+      };
+      const onAbort = (): void => {
+        const i = this.waiters.indexOf(grant);
+        if (i >= 0) this.waiters.splice(i, 1);
+        reject(
+          signal?.reason instanceof Error
+            ? signal.reason
+            : new DOMException('The operation was aborted.', 'AbortError'),
+        );
+      };
+      this.waiters.push(grant);
+      signal?.addEventListener('abort', onAbort, { once: true });
+    });
+  }
+
+  private releaser(): () => void {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next = this.waiters.shift();
+      if (next)
+        next(); // hand the slot straight to the next waiter
+      else this.active -= 1;
+    };
+  }
+}
+
+/** Sliding-window counter: at most `max` admissions in any `windowMs`. */
+export class RateCeiling {
+  private readonly stamps: number[] = [];
+
+  constructor(
+    readonly max: number,
+    private readonly now: () => number = Date.now,
+    private readonly windowMs: number = MINUTE_MS,
+  ) {}
+
+  /** Records one call, or throws `RATE_LIMITED` saying how long to wait. */
+  admit(): void {
+    const t = this.now();
+    while (this.stamps.length > 0 && t - (this.stamps[0] ?? t) >= this.windowMs)
+      this.stamps.shift();
+    if (this.stamps.length >= this.max) {
+      const oldest = this.stamps[0] ?? t;
+      const waitSeconds = Math.max(
+        1,
+        Math.ceil((oldest + this.windowMs - t) / 1000),
+      );
+      throw new AppError(
+        'RATE_LIMITED',
+        `LLM call ceiling of ${String(this.max)} per minute reached.`,
+        {
+          userMessage: `Too many requests in the last minute (limit ${String(this.max)}). Please wait ${String(waitSeconds)} seconds and try again.`,
+          details: { retryAfterSeconds: waitSeconds },
+        },
+      );
+    }
+    this.stamps.push(t);
+  }
+}
+
+export type WorkKind = 'ingest' | 'ask';
+
+export interface LimitsConfig {
+  maxConcurrentIngest: number;
+  maxConcurrentAsk: number;
+  maxCallsPerMinute: number;
+}
+
+export class Limits {
+  private readonly pools: Record<WorkKind, Semaphore>;
+  private readonly ceiling: RateCeiling;
+
+  constructor(config: LimitsConfig, now: () => number = Date.now) {
+    this.pools = {
+      ingest: new Semaphore(config.maxConcurrentIngest),
+      ask: new Semaphore(config.maxConcurrentAsk),
+    };
+    this.ceiling = new RateCeiling(config.maxCallsPerMinute, now);
+  }
+
+  pool(kind: WorkKind): Semaphore {
+    return this.pools[kind];
+  }
+
+  /**
+   * Admit against the per-minute ceiling (fails fast), then wait for a concurrency slot
+   * (queues). The ceiling is checked first so a rejected call never occupies the queue.
+   */
+  async run<T>(
+    kind: WorkKind,
+    task: () => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    this.ceiling.admit();
+    const release = await this.pools[kind].acquire(signal);
+    try {
+      return await task();
+    } finally {
+      release();
+    }
+  }
+}
+
+/** A positive integer from the environment; anything else (unset, 0, "abc") keeps the default. */
+function envInt(
+  env: NodeJS.ProcessEnv,
+  suffix: string,
+  fallback: number,
+): number {
+  const raw = env[envVar(suffix)]?.trim();
+  if (!raw || !/^\d+$/.test(raw)) return fallback;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) && n >= 1 ? n : fallback;
+}
+
+export function limitsConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): LimitsConfig {
+  return {
+    maxConcurrentIngest: envInt(
+      env,
+      'MAX_CONCURRENT_INGEST',
+      DEFAULT_MAX_CONCURRENT_INGEST,
+    ),
+    maxConcurrentAsk: envInt(
+      env,
+      'MAX_CONCURRENT_ASK',
+      DEFAULT_MAX_CONCURRENT_ASK,
+    ),
+    maxCallsPerMinute: envInt(
+      env,
+      'MAX_CALLS_PER_MINUTE',
+      DEFAULT_MAX_CALLS_PER_MINUTE,
+    ),
+  };
+}
+
+let shared: Limits | undefined;
+/** Process-wide limits, built from the environment on first use. */
+export function sharedLimits(): Limits {
+  shared ??= new Limits(limitsConfigFromEnv());
+  return shared;
+}
+/** Test seam: forget the shared instance so the next call re-reads the environment. */
+export function resetSharedLimits(): void {
+  shared = undefined;
+}
+
+let cliPool: Semaphore | undefined;
+/** At most N concurrent `claude` subprocesses per process (default 2). */
+export function claudeCliPool(): Semaphore {
+  cliPool ??= new Semaphore(
+    envInt(
+      process.env,
+      'MAX_CONCURRENT_CLAUDE_CLI',
+      DEFAULT_MAX_CONCURRENT_CLAUDE_CLI,
+    ),
+  );
+  return cliPool;
+}
+export function resetClaudeCliPool(): void {
+  cliPool = undefined;
+}

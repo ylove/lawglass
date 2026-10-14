@@ -218,6 +218,37 @@ function partialSummaryHit(
   });
 }
 
+/**
+ * Run parallel calls under a child abort signal. On the first failure the siblings are aborted
+ * (they would otherwise keep spending tokens on a result nobody will use), and every one is
+ * awaited to settlement before the first error is rethrown, so no call outlives the failure.
+ */
+export async function allOrAbort<T>(
+  parent: AbortSignal | undefined,
+  start: (signal: AbortSignal) => Promise<T>[],
+): Promise<T[]> {
+  const child = new AbortController();
+  const onParentAbort = (): void => {
+    child.abort(parent?.reason);
+  };
+  if (parent?.aborted) onParentAbort();
+  else parent?.addEventListener('abort', onParentAbort, { once: true });
+  try {
+    const tasks = start(child.signal).map((task) =>
+      task.catch((error: unknown) => {
+        child.abort(error);
+        throw error;
+      }),
+    );
+    const settled = await Promise.allSettled(tasks);
+    const failed = settled.find((r) => r.status === 'rejected');
+    if (failed) throw failed.reason;
+    return settled.map((r) => (r as PromiseFulfilledResult<T>).value);
+  } finally {
+    parent?.removeEventListener('abort', onParentAbort);
+  }
+}
+
 export async function runOutlineChip(
   chip: ChipDefinition,
   docId: string,
@@ -274,10 +305,11 @@ export async function runOutlineChip(
     });
   } else {
     // Map: summarize each batch of units. The cap on units bounds the number of calls.
-    const partials = await Promise.all(
+    const partials = await allOrAbort(options.signal, (signal) =>
       chunkArray(unitHits, MAP_UNITS_PER_CALL).map((batch) =>
         answer({
           ...common,
+          signal,
           question: chip.label,
           context: context(batch.flat()),
           chipInstruction: MAP_INSTRUCTION,

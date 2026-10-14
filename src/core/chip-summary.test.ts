@@ -11,11 +11,13 @@ import {
   OUTLINE_CHAR_BUDGET,
   REDUCE_INSTRUCTION,
   SUMMARY_PROMPT_VERSION,
+  allOrAbort,
   buildOutline,
   chooseMapUnits,
 } from './chip-summary.js';
 import type { ChipDeps } from './chip-types.js';
 import {
+  AppError,
   EMPTY_METADATA,
   makeChunkId,
   walkSections,
@@ -496,3 +498,100 @@ describe('summary chip', () => {
 function userOfLast(p: ScriptedProvider): string {
   return userOf(p.calls.at(-1) as TextRequest);
 }
+
+describe('map-step abort (a failed call stops its siblings)', () => {
+  /** Streams slowly until aborted; counts calls still in flight. */
+  function slowProvider(failOn: (call: number) => boolean) {
+    const state = { started: 0, inFlight: 0, abortedSeen: 0 };
+    const provider: LlmProvider = {
+      id: 'mock',
+      model: 'slow',
+      generateObject: () => Promise.reject(new Error('unused')),
+      async *streamText(req: TextRequest): AsyncIterable<LlmStreamEvent> {
+        const n = state.started++;
+        state.inFlight += 1;
+        try {
+          if (failOn(n)) {
+            await new Promise((r) => setTimeout(r, 5));
+            throw new AppError('PROVIDER_ERROR');
+          }
+          await new Promise<void>((resolve, reject) => {
+            const timer = setTimeout(resolve, 2000);
+            req.signal?.addEventListener('abort', () => {
+              clearTimeout(timer);
+              state.abortedSeen += 1;
+              reject(new DOMException('aborted', 'AbortError'));
+            });
+          });
+          yield { type: 'text', text: 'late' };
+        } finally {
+          state.inFlight -= 1;
+        }
+      },
+    };
+    return { provider, state };
+  }
+
+  it('aborts siblings on the first failure and rethrows only after all have settled', async () => {
+    const tree = ndaaShaped(7, 3, 4); // 3 map calls
+    const { provider, state } = slowProvider((n) => n === 0);
+    await setup(tree, provider);
+    await expect(runChip(getChip('summary'), DOC, deps)).rejects.toMatchObject({
+      code: 'PROVIDER_ERROR',
+    });
+    // No call is still running at the moment the error reaches the caller.
+    expect(state.inFlight).toBe(0);
+    expect(state.started).toBe(3);
+    expect(state.abortedSeen).toBe(2);
+  });
+
+  it('an outer abort also stops the map calls', async () => {
+    const { provider, state } = slowProvider(() => false);
+    await setup(ndaaShaped(7, 3, 4), provider);
+    const ctl = new AbortController();
+    const run = runChip(getChip('summary'), DOC, deps, { signal: ctl.signal });
+    await new Promise((r) => setTimeout(r, 20));
+    ctl.abort();
+    await expect(run).rejects.toBeDefined();
+    expect(state.inFlight).toBe(0);
+  });
+});
+
+describe('allOrAbort', () => {
+  it('returns results in order when all succeed and detaches its listener', async () => {
+    const parent = new AbortController();
+    const out = await allOrAbort(parent.signal, () => [
+      Promise.resolve(1),
+      Promise.resolve(2),
+    ]);
+    expect(out).toEqual([1, 2]);
+  });
+
+  it('starts already aborted when the parent is', async () => {
+    const parent = new AbortController();
+    parent.abort();
+    let seen: boolean | undefined;
+    await allOrAbort(parent.signal, (s) => {
+      seen = s.aborted;
+      return [Promise.resolve(1)];
+    });
+    expect(seen).toBe(true);
+  });
+
+  it('rethrows the first error, not a later one', async () => {
+    await expect(
+      allOrAbort(undefined, () => [
+        new Promise((_, rej) =>
+          setTimeout(() => {
+            rej(new Error('first'));
+          }, 1),
+        ),
+        new Promise((_, rej) =>
+          setTimeout(() => {
+            rej(new Error('second'));
+          }, 20),
+        ),
+      ]),
+    ).rejects.toThrow('first');
+  });
+});

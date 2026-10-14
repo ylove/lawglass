@@ -16,12 +16,14 @@ import {
 import {
   AppError,
   DECLINE_TEXT,
+  type AnswerResult,
   type Section,
   type SearchHit,
 } from '../model/index.js';
 import { ask, type AskDeps, type ChipRunner } from './ask.js';
 import { writeHistory } from '../history/history-store.js';
 import { ingest } from './ingest.js';
+import { Limits } from './limits.js';
 
 let env: PipelineEnv;
 beforeEach(async () => {
@@ -688,5 +690,119 @@ describe('chip attachment', () => {
     const deps = scenarioDeps({ chips, scenario: { enabled: false } });
     await ask(docId, { chipId: 'who-affected' }, deps);
     expect(deps.provider.scenarioCalls).toBe(0);
+  });
+});
+
+describe('budgets and question hygiene (LLM10)', () => {
+  const stubAnswer: AnswerResult = {
+    text: 't',
+    citations: [],
+    invalidCitations: [],
+    warnings: [],
+    declined: false,
+    readingGrade: null,
+    provider: 'mock',
+    model: 'mock',
+    usage: { inputTokens: 0, outputTokens: 0 },
+  };
+  const noUsage = {
+    embedTokens: 0,
+    rerankUnits: 0,
+    readUnits: 0,
+    writeUnits: 0,
+  };
+
+  test('enforces the 500-character cap in core, before any retrieval or model call', async () => {
+    const docId = await load(
+      'https://example.gov/s9001.xml',
+      makeCongressionalBillXml(),
+    );
+    const search = vi.spyOn(env.backend, 'search');
+    const provider = vi.spyOn(env.provider, 'streamText');
+    await expect(
+      ask(docId, { question: 'x'.repeat(501) }, askDeps()),
+    ).rejects.toMatchObject({
+      code: 'INVALID_INPUT',
+      userMessage: 'Keep the question to 500 characters or fewer.',
+    });
+    expect(search).not.toHaveBeenCalled();
+    expect(provider).not.toHaveBeenCalled();
+  });
+
+  test('strips invisible characters before retrieval and the prompt', async () => {
+    const docId = await load(
+      'https://example.gov/s9001.xml',
+      makeCongressionalBillXml(),
+    );
+    const search = vi.spyOn(env.backend, 'search');
+    const stream = vi.spyOn(env.provider, 'streamText');
+    await ask(docId, { question: 'garden​ grants ‮drowssap' }, askDeps());
+    const queries = search.mock.calls.map((c) => JSON.stringify(c[0]));
+    expect(queries.length).toBeGreaterThan(0);
+    for (const q of queries) expect(q).not.toMatch(/[​‮]/);
+    for (const call of stream.mock.calls)
+      expect(JSON.stringify(call[0])).not.toMatch(/\\u200b|\\u202e|[​‮]/);
+  });
+
+  test('a rejected question does not use up the per-minute ceiling', async () => {
+    const docId = await load(
+      'https://example.gov/s9001.xml',
+      makeCongressionalBillXml(),
+    );
+    const limits = new Limits(
+      { maxConcurrentIngest: 2, maxConcurrentAsk: 4, maxCallsPerMinute: 1 },
+      () => 0,
+    );
+    await expect(
+      ask(docId, { question: '  ' }, askDeps({ limits })),
+    ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+    await expect(
+      ask(docId, { question: 'garden grants' }, askDeps({ limits })),
+    ).resolves.toBeDefined();
+  });
+
+  test('queues asks beyond the concurrency limit and fails past the per-minute ceiling', async () => {
+    const docId = await load(
+      'https://example.gov/s9001.xml',
+      makeCongressionalBillXml(),
+    );
+    let running = 0;
+    let peak = 0;
+    const releases: (() => void)[] = [];
+    const runner = vi.fn<ChipRunner>(async () => {
+      running += 1;
+      peak = Math.max(peak, running);
+      await new Promise<void>((r) => releases.push(r));
+      running -= 1;
+      return {
+        answer: stubAnswer,
+        hits: [],
+        backendUsage: noUsage,
+      };
+    });
+    const limits = new Limits(
+      { maxConcurrentIngest: 2, maxConcurrentAsk: 2, maxCallsPerMinute: 4 },
+      () => 0,
+    );
+    const deps = askDeps({ chips: runner, limits });
+    const runs = Array.from({ length: 4 }, () =>
+      ask(docId, { chipId: 'sponsors' }, deps),
+    );
+    await vi.waitFor(() => {
+      expect(runner).toHaveBeenCalledTimes(2);
+    });
+    expect(running).toBe(2); // the other two are queued, not failed
+
+    // A fifth call in the same minute is refused outright with a clear message.
+    await expect(
+      ask(docId, { chipId: 'sponsors' }, deps),
+    ).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+
+    while (runs.length > 0 && (running > 0 || runner.mock.calls.length < 4)) {
+      releases.shift()?.();
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    await Promise.all(runs);
+    expect(peak).toBe(2);
   });
 });
