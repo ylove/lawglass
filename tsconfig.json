@@ -3,6 +3,12 @@
   "compilerOptions": {
     "types": ["node"]
   },
-  "include": ["src/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts", "*.config.ts"],
+  "include": [
+    "src/**/*.ts",
+    "scripts/**/*.ts",
+    "tests/**/*.ts",
+    "*.config.ts",
+    "e2e/**/*.ts"
+  ],
   "exclude": ["src/web", "node_modules", "dist"]
 }

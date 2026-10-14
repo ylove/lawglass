@@ -36,6 +36,28 @@ only `127.0.0.1` and `localhost` may connect. Web tests use happy-dom.
 Run a subset with `npm test -- <pattern>`. Use `npm run format` to apply Prettier
 and `npm run format:check` to verify formatting.
 
+The `package-smoke` and `e2e` CI jobs exercise a freshly installed npm tarball
+with the built-in local backend and mock LLM provider. They generate their PDF
+from `tests/synth`, isolate configuration under a temporary HOME, and reuse the
+model cache keyed on `models.lock.json`. No real legislation or API keys are needed.
+For local runs, download models once with `npm run models:fetch`, then run:
+
+```sh
+npm run smoke:package
+PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/ms-playwright" npx playwright install chromium
+PLAYWRIGHT_BROWSERS_PATH="$PWD/.cache/ms-playwright" npm run test:e2e
+```
+
+Both commands build and pack automatically. Chromium runs with zero retries and
+retains a trace on failure in `test-results/`; CI uploads those traces. Browser
+tests live in `e2e/` and are excluded from the fast Vitest `check` suite. CI
+installs Chromium with `--with-deps` on Linux.
+
+For unattended setup, `init --non-interactive --backend local` saves validated
+environment settings in the private config file without terminal prompts. It
+preserves existing settings and follows the same `--force` permission checks as
+interactive `init`.
+
 The CLI accepts a local PDF, XML, HTML, or text file as well as an HTTP(S) URL:
 
 ```sh
