@@ -33,6 +33,15 @@ export interface CliDependencies {
   serve?: Launcher;
 }
 
+/** Commander turns `--no-open` into `open: false`; it is `true` when the flag is absent. */
+interface OpenOptions {
+  open?: boolean;
+}
+
+function noOpenRequest(options: OpenOptions): { noOpen?: true } {
+  return options.open === false ? { noOpen: true } : {};
+}
+
 interface PortOptions {
   port?: string;
   host?: string;
@@ -143,11 +152,13 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
       'ingest a URL or local file, then open its document',
     )
     .option('--backend <backend>', 'retrieval backend (pinecone or local)')
-    .action(async (url: string, options: BackendOption) => {
+    .option('--no-open', 'do not open the browser')
+    .action(async (url: string, options: BackendOption & OpenOptions) => {
       const { runtime } = await ingestSource(url, options);
       // The UI lists the most recently used document first, which is the one just ingested.
       await (dependencies.serve ?? createLauncher({ write }))(runtime, {
         publicMode: false,
+        ...noOpenRequest(options),
       });
     });
 
@@ -276,13 +287,19 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
     .option('--port <port>', 'local server port (default 4317)')
     .option('--host <host>', 'address to bind (default 127.0.0.1)')
     .option('--public', 'allow only question chips in the web UI')
+    .option('--no-open', 'do not open the browser')
     .action(
-      async (options: BackendOption & PortOptions & { public?: boolean }) => {
+      async (
+        options: BackendOption &
+          PortOptions &
+          OpenOptions & { public?: boolean },
+      ) => {
         const runtime = await open(options, true);
         await (dependencies.serve ?? createLauncher({ write }))(runtime, {
           publicMode: options.public ?? false,
           port: parsePort(options.port),
           host: options.host,
+          ...noOpenRequest(options),
         });
       },
     );
