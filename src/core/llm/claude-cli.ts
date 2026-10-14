@@ -124,13 +124,15 @@ export class ClaudeCliProvider implements LlmProvider {
     let kill: (() => void) | undefined;
     let releaseSlot: (() => void) | undefined;
     try {
+      // Each `claude` process is heavy; cap how many run at once. Wait for the slot with only
+      // the caller's signal: the provider timeout bounds a running process, so it must start
+      // after the wait, or queued calls would time out before they begin.
+      releaseSlot = await claudeCliPool().acquire(req.signal);
       signal = requestSignal(
         req.signal,
         this.config.timeoutMs,
         this.timeoutSignal,
       );
-      // Each `claude` process is heavy; cap how many run at once (queues, honours abort/timeout).
-      releaseSlot = await claudeCliPool().acquire(signal);
       cwd = await mkdtemp(join(tmpdir(), 'llm-cli-'));
       const systemPromptFile = join(cwd, 'system-prompt.txt');
       await writeFile(systemPromptFile, req.system, {

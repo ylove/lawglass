@@ -6,6 +6,9 @@
  *  - `createEchoGuard`: a streaming guard that stops emitting tokens once a shorter run
  *    (`GUARD_RUN_WORDS`) matches, so the full run never reaches `onToken` (CLI output, SSE).
  *
+ * This is an n-gram filter, not a complete defense: a recital with filler words interleaved
+ * passes. The prompt's own rule against disclosure is the primary defense.
+ *
  * Both compare normalized words (NFKC, invisible and bidi characters removed, case folded,
  * punctuation dropped), so zero-width characters or commas between words do not evade them.
  */
@@ -18,7 +21,10 @@ export const GUARD_RUN_WORDS = 8;
 
 /** Normalize to comparable words. Citation markers are dropped so they cannot split a run. */
 export function normalizeWords(text: string): string[] {
+  // Default_Ignorable covers variation selectors, U+034F, tag characters, U+3164 and the like;
+  // stripInvisibles adds the bidi/zero-width set. Both go before tokenizing so none can split a word.
   return stripInvisibles(text.normalize('NFKC'))
+    .replace(/\p{Default_Ignorable_Code_Point}/gu, '')
     .replace(/\[S:[^\]]*\]/g, ' ')
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
@@ -67,8 +73,11 @@ export interface EchoGuard {
   withheld(): string;
 }
 
-/** Only the tail of the reply can hold a newly completed run, so rescanning stays cheap. */
-const TAIL_CHARS = 600;
+/**
+ * Overlap rescanned before the unemitted text, so a run that straddles two events is seen.
+ * Everything not yet emitted is always rescanned: one huge event must not slip through.
+ */
+const OVERLAP_CHARS = 600;
 
 export function createEchoGuard(systemPrompt: string): EchoGuard {
   const runs = runsOf(promptWords(systemPrompt), GUARD_RUN_WORDS);
@@ -80,7 +89,7 @@ export function createEchoGuard(systemPrompt: string): EchoGuard {
       raw += text;
       if (!tripped)
         tripped = hasRun(
-          normalizeWords(raw.slice(-TAIL_CHARS)),
+          normalizeWords(raw.slice(Math.max(0, emitted - OVERLAP_CHARS))),
           GUARD_RUN_WORDS,
           runs,
         );

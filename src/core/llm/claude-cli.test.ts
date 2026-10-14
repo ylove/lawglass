@@ -477,6 +477,55 @@ describe('claude subprocess budget', () => {
     await first;
   });
 
+  it('starts the provider timeout only after the pool slot is granted', async () => {
+    vi.stubEnv(envVar('MAX_CONCURRENT_CLAUDE_CLI'), '1');
+    resetClaudeCliPool();
+    const timeoutSignal = vi.fn((ms: number) => AbortSignal.timeout(ms));
+    const fake = fakeCli({ stall: true });
+    const provider = new ClaudeCliProvider(config, { ...fake, timeoutSignal });
+    const first = new AbortController();
+    const second = new AbortController();
+    const run1 = drain(provider, {
+      ...textRequest,
+      signal: first.signal,
+    }).catch(() => 'aborted');
+    await settle();
+    const run2 = drain(provider, {
+      ...textRequest,
+      signal: second.signal,
+    }).catch(() => 'aborted');
+    await settle();
+    // The second call is queued: its clock must not be running yet.
+    expect(timeoutSignal).toHaveBeenCalledTimes(1);
+    expect(fake.calls).toHaveLength(1);
+    first.abort();
+    await settle();
+    expect(timeoutSignal).toHaveBeenCalledTimes(2);
+    expect(fake.calls).toHaveLength(2);
+    second.abort();
+    await Promise.all([run1, run2]);
+  });
+
+  it('a queued call that would finish in time is not timed out by waiting', async () => {
+    vi.stubEnv(envVar('MAX_CONCURRENT_CLAUDE_CLI'), '1');
+    resetClaudeCliPool();
+    // Real timers: the first call holds the slot for longer than the provider timeout.
+    const fake = fakeCli({ stall: true });
+    const quick = fakeCli();
+    const holder = new ClaudeCliProvider({ ...config, timeoutMs: 5000 }, fake);
+    const waiter = new ClaudeCliProvider({ ...config, timeoutMs: 150 }, quick);
+    const hold = new AbortController();
+    const held = drain(holder, { ...textRequest, signal: hold.signal }).catch(
+      () => 'aborted',
+    );
+    await settle();
+    const queued = drain(waiter);
+    await new Promise((r) => setTimeout(r, 300)); // > the waiter's 150 ms timeout
+    hold.abort();
+    await held;
+    await expect(queued).resolves.toBeDefined();
+  });
+
   it('releases the permit even when temp-directory cleanup throws', async () => {
     vi.stubEnv(envVar('MAX_CONCURRENT_CLAUDE_CLI'), '1');
     resetClaudeCliPool();

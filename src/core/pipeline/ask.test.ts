@@ -962,6 +962,39 @@ describe('budgets and question hygiene (LLM10)', () => {
     expect(limits.pool('ask').inFlight).toBe(0);
   });
 
+  test('a deferred scenario keeps the permit even when the ask fails after starting it', async () => {
+    const docId = await load(BILL_URL, makeCongressionalBillXml());
+    const limits = new Limits(
+      { maxConcurrentIngest: 2, maxConcurrentAsk: 1, maxCallsPerMinute: 100 },
+      () => 0,
+    );
+    const deps = scenarioDeps({ limits });
+    let open: () => void = () => undefined;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const real = deps.provider.generateObject.bind(deps.provider);
+    deps.provider.behavior = async (req) => {
+      await gate;
+      deps.provider.behavior = undefined;
+      return (await real(req)) as never;
+    };
+    vi.spyOn(env.registry, 'touch').mockRejectedValueOnce(
+      new AppError('DOC_NOT_FOUND'),
+    );
+    await expect(
+      ask(docId, { question: 'How will garden grants affect me?' }, deps, {
+        deferScenario: true,
+      }),
+    ).rejects.toMatchObject({ code: 'DOC_NOT_FOUND' });
+    // The scenario's model call is still running, so the permit is still held.
+    expect(limits.pool('ask').inFlight).toBe(1);
+    open();
+    await vi.waitFor(() => {
+      expect(limits.pool('ask').inFlight).toBe(0);
+    });
+  });
+
   test('a failed ask releases its permit', async () => {
     const docId = await load(
       'https://example.gov/s9001.xml',
