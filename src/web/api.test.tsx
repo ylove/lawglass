@@ -114,6 +114,7 @@ describe('HTTP client', () => {
     provider: 'mock',
     model: 'm',
     chips: [{ id: 'summary', label: 'Summary' }],
+    scenariosEnabled: true,
   };
 
   test('getConfig validates the body', async () => {

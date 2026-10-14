@@ -125,6 +125,25 @@ export const SponsorProfile = z.object({
 });
 export type SponsorProfile = z.infer<typeof SponsorProfile>;
 
+/** What kind of document this is: a bill, or a local measure such as a charter amendment. */
+export const DocKind = z.enum([
+  'bill',
+  'resolution',
+  'charter_amendment',
+  'ballot_issue',
+  'ordinance',
+  'other',
+]);
+export type DocKind = z.infer<typeof DocKind>;
+
+/** The law a document amends, e.g. {name: "Revised Code", sections: ["5747.01"]}. */
+export const AmendsTarget = z.object({
+  name: z.string().min(1),
+  jurisdiction: z.string().optional(),
+  sections: z.array(z.string()),
+});
+export type AmendsTarget = z.infer<typeof AmendsTarget>;
+
 /**
  * Metadata about the bill. Every field is nullable: a value is set only when it is stated in
  * the document (structured XML fields, or extracted by the model with "null unless stated").
@@ -139,6 +158,10 @@ export const BillMetadata = z.object({
   sponsors: z.array(z.string()).nullable(),
   /** Official-record profiles for the sponsors. Never produced by the model. */
   sponsorProfiles: z.array(SponsorProfile).optional(),
+  /** What kind of document this is, when the parser can tell. */
+  docKind: DocKind.optional(),
+  /** The existing law this document amends (a code, charter or ordinance), when stated. */
+  amends: AmendsTarget.optional(),
   /** How the metadata was obtained, for transparency in the UI and eval. */
   source: z.enum(['structured', 'extracted', 'none']),
 });
@@ -177,10 +200,26 @@ export const ExternalRef = z.object({
   /** Normalized citation, e.g. "R.C. 5747.01", "42 U.S.C. 1983". */
   citation: z.string().min(1),
   kind: z.enum(['us_code', 'public_law', 'state_code', 'cfr', 'other']),
+  /**
+   * Finer grouping for refs the `kind` enum cannot name (charter refs use kind `other`).
+   * Kept separate so `kind` never gains values an older binary would reject.
+   */
+  category: z.enum(['charter', 'local_code', 'general_law']).optional(),
   /** Sections of this document that cite it. */
   sectionIds: z.array(SectionId),
 });
 export type ExternalRef = z.infer<typeof ExternalRef>;
+
+/** How well each page of a scanned PDF was read. */
+export const ScanStatus = z.object({
+  pages: z.array(
+    z.object({
+      page: z.number().int().positive(),
+      marks: z.enum(['read', 'uncertain', 'not-read']),
+    }),
+  ),
+});
+export type ScanStatus = z.infer<typeof ScanStatus>;
 
 export const NormalizedDoc = z.object({
   /** sha256 of the raw fetched bytes (hex). Also the vector-store namespace. */
@@ -197,6 +236,8 @@ export const NormalizedDoc = z.object({
   warnings: z.array(z.string()),
   /** Number of pages for PDFs; absent otherwise. */
   pageCount: z.number().int().positive().optional(),
+  /** Per-page read quality for scanned PDFs; absent otherwise. */
+  scan: ScanStatus.optional(),
 });
 export type NormalizedDoc = z.infer<typeof NormalizedDoc>;
 

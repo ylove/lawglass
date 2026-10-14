@@ -186,6 +186,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       provider,
       model,
       chips: CHIP_LABELS,
+      scenariosEnabled: !publicMode,
     };
     return c.json(config);
   });
