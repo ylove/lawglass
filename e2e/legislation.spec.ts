@@ -25,7 +25,14 @@ test('packed UI: document, streamed chip, citation, blocked address, removal', a
   const response = await responsePromise;
   expect(response.status()).toBe(200);
   expect(response.headers()['content-type']).toContain('text/event-stream');
-  const events = (await response.text())
+  // Chrome does not reliably keep the body of a streamed, no-store response for DevTools, so
+  // replay the same request through the page's request context (it shares the session cookie).
+  const replay = await page.request.post(response.url(), {
+    data: response.request().postDataJSON() as unknown,
+    headers: { 'content-type': 'application/json' },
+  });
+  expect(replay.status()).toBe(200);
+  const events = (await replay.text())
     .split('\n')
     .filter((line) => line.startsWith('data:'))
     .map((line) => AskEvent.parse(JSON.parse(line.slice(5))));
