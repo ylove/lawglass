@@ -23,5 +23,5 @@ export {
   numLabel,
   sectionExcerpt,
 } from './excerpt.js';
-export { formatCitation, formatLocation } from './citations.js';
+export { formatCitation, formatLocation, pathLabel } from './citations.js';
 export { runScenario, type RunScenarioDeps } from './scenario.js';

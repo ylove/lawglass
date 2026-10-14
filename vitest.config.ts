@@ -78,6 +78,15 @@ export default defineConfig({
           branches: 85,
           statements: 90,
         },
+        // The agent-facing surface: untrusted-text wrapping, fixed error text, and the queries
+        // that decide what an agent sees.
+        'src/mcp/{untrusted,errors,queries}.ts': {
+          perFile: true,
+          lines: 90,
+          functions: 90,
+          branches: 85,
+          statements: 90,
+        },
         'src/core/answer/citations*.ts': {
           lines: 90,
           functions: 90,
