@@ -52,6 +52,35 @@ The reranker originally scored a chunk's text without its heading path, while th
 
 Average MRR went from 0.797 to 0.841; average recall@5 barely moved (0.924 to 0.926), because S. 202's fell from 0.95 to 0.85. S. 202 lost two borderline definition questions; in both, the reranker preferred a neighbouring section whose heading shares a word with the question ("program"), which is our best explanation rather than a tested one. The change was made after looking at eval results. It is not tuned to them (it gives the reranker context the first stage already had), but the "before" numbers are reported here so the effect can be judged.
 
+## Pinecone backend (2026-10-14)
+
+The same five golden sets, run against a live Pinecone Starter index (commit `3a0851a`; `llama-text-embed-v2` dense, `pinecone-sparse-english-v0` sparse, `bge-reranker-v2-m3` reranker). The full table is [`eval/results-pinecone.md`](../eval/results-pinecone.md). The run used 104 rerank calls; Starter includes 500 a month.
+
+### Pinecone against local, `hybrid_rerank`
+
+| Bill        | local recall@5 / MRR | Pinecone recall@5 / MRR |
+| ----------- | -------------------- | ----------------------- |
+| HB 62       | 0.95 / 0.87          | 1.00 / 0.975            |
+| SB 113      | 1.00 / 0.90          | 0.944 / 0.954           |
+| SB 203      | 0.952 / 0.74         | 0.881 / 0.913           |
+| S. 202      | 0.85 / 0.83          | 0.90 / 0.90             |
+| NDAA        | 0.88 / 0.86          | 0.96 / 0.94             |
+| **Average** | **0.926 / 0.841**    | **0.937 / 0.936**       |
+
+Pinecone ranks better on all five bills: MRR is higher on each, and the average rises from 0.841 to 0.936. Recall@5 is not uniformly better. It is higher on HB 62, S. 202 and the NDAA, and lower on SB 113 (0.944 against 1.00, one expected section out of 18) and SB 203 (0.881 against 0.952, three out of 42). One question moves recall@5 by about 0.05 on these sets, so the average recall difference (0.937 against 0.926) is within noise; the MRR gap is the clearer signal. The two backends also differ in more than the reranker (embedding model, sparse model, chunk scoring), so this does not isolate which part helps.
+
+### The flatware question is still missed
+
+hr5009-13, _"Does the military now have to buy American-made forks, spoons, and dishes?"_ (expected Sec. 842) is still not in the top 10 of `hybrid_rerank` with `bge-reranker-v2-m3`. The reranker puts Sec. 844(b)(4) and Sec. 845 first. On the same question Pinecone's dense search ranks Sec. 842 first, weighted hybrid second, and RRF hybrid fourth.
+
+This **disproves** the earlier hypothesis (above, and in the README) that a stronger reranker such as `bge-reranker-v2-m3` was the obvious next step for this miss. It is a much larger model than the local MiniLM cross-encoder and still pushes the right section out.
+
+What we can rule out: the candidate pool. The reranker is given the top 64 fused hits, and RRF hybrid had Sec. 842 at rank 4, so it was among the candidates and the reranker scored it below ten others. (The run file stores only the top 10 of each mode, not the pool, so this is inferred from the RRF ranking rather than read from the reranker's input.) What is still untested: that the NDAA's long heading paths in the reranker input (Division > Title > Subtitle > Sec.) crowd out the passage text. The next experiment is to rerank the same candidates with a shortened breadcrumb and compare.
+
+### Engineering lesson: a batch that could never succeed
+
+The first NDAA ingest stalled on 429 responses at the same batch, twice. Batches were 96 records, and that one batch alone was larger than Starter's per-minute embedding-token limit, so no amount of waiting would let it through. Retrying harder was the wrong fix. The fix (`3a0851a`) budgets each batch by estimated tokens (20,000 by default), halves a batch that keeps getting 429s, and uses jittered backoff that honors `Retry-After`. After that, the whole five-bill eval, NDAA included, finished in about five minutes.
+
 ## Answers
 
 All 119 golden questions, default mode, Claude Sonnet 5.5 through the `claude-cli` provider, commit `a651f35` ([`eval/results-answers.md`](../eval/results-answers.md)):
