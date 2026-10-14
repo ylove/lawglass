@@ -83,13 +83,18 @@ export class ClaudeCliProvider implements LlmProvider {
   readonly id = 'claude-cli' as const;
   readonly model: string;
   private readonly spawnChild: CliSpawn;
+  private readonly timeoutSignal: typeof AbortSignal.timeout | undefined;
 
   constructor(
     private readonly config: ProviderConfig,
-    deps: { spawn?: CliSpawn } = {},
+    deps: {
+      spawn?: CliSpawn;
+      timeoutSignal?: typeof AbortSignal.timeout;
+    } = {},
   ) {
     this.model = config.model;
     this.spawnChild = deps.spawn ?? defaultSpawn;
+    this.timeoutSignal = deps.timeoutSignal;
     // Injected subprocesses are allowed for offline CI tests; real CLI execution never is.
     if (process.env.CI && !deps.spawn) throw new AppError('PROVIDER_ERROR');
   }
@@ -102,7 +107,11 @@ export class ClaudeCliProvider implements LlmProvider {
     let signal: AbortSignal | undefined;
     let kill: (() => void) | undefined;
     try {
-      signal = requestSignal(req.signal, this.config.timeoutMs);
+      signal = requestSignal(
+        req.signal,
+        this.config.timeoutMs,
+        this.timeoutSignal,
+      );
       cwd = await mkdtemp(join(tmpdir(), 'llm-cli-'));
       const systemPromptFile = join(cwd, 'system-prompt.txt');
       await writeFile(systemPromptFile, req.system, {
