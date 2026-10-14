@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 import { estimateTokens } from '../chunk/index.js';
 import {
   Chunk,
@@ -23,10 +22,6 @@ export {
   extractDefinitions,
   segmentDefinitions,
 } from './definitions.js';
-=======
-// Definition, cross-reference, and document metadata enrichment belongs here.
-export {};
->>>>>>> 9c24311 (fix(enrich): token-based metadata guards, fenced prompt, source rule (#57))
 export * from './metadata.js';
 export {
   collectExternalRefs,
