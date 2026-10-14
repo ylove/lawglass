@@ -7,3 +7,5 @@ export type {
 } from './sections.js';
 export { parseText } from './text.js';
 export type { TextParseOptions } from './text.js';
+export { parseHtml } from './html.js';
+export type { HtmlParseOptions } from './html.js';

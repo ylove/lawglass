@@ -6,6 +6,7 @@ import {
   makeCongressionalBillXml,
   makeUslmXml,
   makeAmendmentHtml,
+  makeStyledAmendmentHtml,
   makeSectionedText,
   makeInjectionText,
   type SyntheticSample,
@@ -25,6 +26,7 @@ const generators: {
   { name: 'congressional XML', make: makeCongressionalBillXml },
   { name: 'USLM XML', make: makeUslmXml },
   { name: 'amendment HTML', make: makeAmendmentHtml },
+  { name: 'styled amendment HTML', make: makeStyledAmendmentHtml },
   { name: 'sectioned text', make: makeSectionedText },
   { name: 'injection text', make: makeInjectionText },
 ];
