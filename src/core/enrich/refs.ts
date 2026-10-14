@@ -22,8 +22,21 @@ export interface ExternalMatch {
   text: string;
   citation: string;
   kind: ExternalRef['kind'];
-  /** Set for a single Revised Code section, so a document that contains it can link inward. */
+  /** Set for a single Revised Code or charter section, so a document that contains it can link inward. */
   sectionNum?: string;
+  /** Finer grouping for `kind: other` refs (charter, city code, general law). */
+  category?: ExternalRef['category'];
+  /** For charter refs, the city the text names ("Charter of the City of Columbus"), if any. */
+  city?: string;
+}
+
+export interface ExternalOptions {
+  /** `metadata.jurisdiction`. The Ohio Revised Code mapping applies only when this says Ohio. */
+  jurisdiction?: string | null | undefined;
+}
+
+export function isOhio(jurisdiction: string | null | undefined): boolean {
+  return /\bOhio\b/i.test(jurisdiction ?? '');
 }
 
 const PAREN = String.raw`\([A-Za-z0-9]+\)`;
@@ -63,6 +76,57 @@ const BILL_SECTION =
   /\bsections?\s+(\d+[A-Za-z]?)(?:\([A-Za-z0-9]+\))*\s+of\s+(?:(?:Am\.|Sub\.|Substitute|Amended)\s+)*(H\.?\s?B\.?|S\.?\s?B\.?|House\s+Bill|Senate\s+Bill)\s*(?:No\.\s*)?(\d+)(?:\s+of\s+the\s+(\d+)(?:st|nd|rd|th)\s+General\s+Assembly)?/gi;
 const CFR =
   /\b(\d{1,2})\s+C\.?\s?F\.?\s?R\.?\s*(?:(?:parts?|§§?|sections?)\s*)?(\d+(?:\.\d+)?(?:-\d+)?)/gi;
+
+// Charter and local-code references. All "Charter"/"Code" words are matched case-sensitively
+// where a lowercase use ("the charter school", "building code") would be a false positive.
+const CITY_NAME = String.raw`[A-Z][a-z]+(?:\s[A-Z][a-z]+)?`;
+const CHARTER_NUM = String.raw`\d+(?:[-.]\d+)*[A-Za-z]?`;
+const CHARTER_NUM_LIST = String.raw`${CHARTER_NUM}(?:\s*(?:,\s*(?:and\s+|or\s+)?|\s+(?:and|or)\s+)${CHARTER_NUM})*`;
+const CHARTER_OF_CITY = String.raw`Charter\s+of\s+the\s+City\s+of\s+([A-Z][a-z]+(?:\s[A-Z][a-z]+)*)`;
+const CHARTER_NAME = String.raw`(?:(${CITY_NAME})\s+)?[Cc]ity\s+[Cc]harter`;
+/** "Section 3 of the City Charter", "Sections 3 and 46-3 of the Charter of the City of Columbus". */
+const CHARTER_SECTIONS = new RegExp(
+  String.raw`\b[Ss]ections?\s+(${CHARTER_NUM_LIST})\s+of\s+the\s+(?:${CHARTER_OF_CITY}|${CHARTER_NAME}|[Cc]harter(?!\s+(?:school|township)))`,
+  'g',
+);
+const CHARTER_PLAIN = new RegExp(
+  String.raw`\b(?:the\s+)?(?:${CHARTER_OF_CITY}|${CHARTER_NAME})\b|\bthe\s+Charter\b`,
+  'g',
+);
+const LOCAL_CODE_NAME = String.raw`(?:(${CITY_NAME})\s+)?(?:City|Municipal)\s+Code`;
+// "Columbus City Code Section 1234.56" and "Section 1234.56 of the Columbus City Code".
+const LOCAL_CODE_AFTER = new RegExp(
+  String.raw`\b${LOCAL_CODE_NAME},?\s+(?:[Ss]ections?|[Ss]ec\.|§§?)\s*(\d+(?:\.\d+)*)`,
+  'g',
+);
+const LOCAL_CODE_BEFORE = new RegExp(
+  String.raw`\b[Ss]ections?\s+(\d+(?:\.\d+)*)\s+of\s+the\s+${LOCAL_CODE_NAME}`,
+  'g',
+);
+// Words that can start a sentence directly before "City Code" and are not a city name.
+const NOT_A_CITY = new Set(
+  'the this such a an of in and or see under per pursuant to for by with as at from if'.split(
+    ' ',
+  ),
+);
+const BARE_RC = new RegExp(
+  String.raw`\bR\.\s?C\.\s*(?:§§?\s*)?(\d+\.\d+(?:\.\d+)?)(?:${PAREN})*`,
+  'g',
+);
+const GENERAL_ELECTION_LAWS =
+  /\bthe\s+general\s+election\s+laws\s+of\s+(?:this\s+state|the\s+state(?:\s+of\s+Ohio)?)/gi;
+
+/** A captured city name, minus a sentence-initial "The"/"This" that the pattern swallowed. */
+function cleanCity(raw: string | undefined): string | undefined {
+  const words = (raw ?? '').split(/\s+/).filter(Boolean);
+  while (words.length > 0 && NOT_A_CITY.has((words[0] ?? '').toLowerCase()))
+    words.shift();
+  return words.length > 0 ? words.join(' ') : undefined;
+}
+
+export function charterName(city: string | undefined): string {
+  return city === undefined ? 'City Charter' : `${city} City Charter`;
+}
 
 function uscCitations(list: string, title: string): string[] {
   const items = [...list.matchAll(/(\d+[A-Za-z0-9]*)(?:\([A-Za-z0-9]+\))*/g)];
@@ -117,13 +181,17 @@ function rcCitations(
 }
 
 /** Every external citation in `text`, left to right, longest match winning on overlap. */
-export function findExternalMatches(text: string): ExternalMatch[] {
+export function findExternalMatches(
+  text: string,
+  options: ExternalOptions = {},
+): ExternalMatch[] {
   const found: ExternalMatch[] = [];
   const add = (
     m: RegExpMatchArray,
     citation: string,
     kind: ExternalRef['kind'],
     sectionNum?: string,
+    extra: Pick<ExternalMatch, 'category' | 'city'> = {},
   ): void =>
     void found.push({
       start: m.index ?? 0,
@@ -132,11 +200,15 @@ export function findExternalMatches(text: string): ExternalMatch[] {
       citation,
       kind,
       ...(sectionNum === undefined ? {} : { sectionNum }),
+      ...(extra.category === undefined ? {} : { category: extra.category }),
+      ...(extra.city === undefined ? {} : { city: extra.city }),
     });
 
   for (const m of text.matchAll(RC_SECTIONS))
     for (const { citation, sectionNum } of rcCitations(m[1] ?? ''))
       add(m, citation, 'state_code', sectionNum);
+  for (const m of text.matchAll(BARE_RC))
+    add(m, `R.C. ${m[1] ?? ''}`, 'state_code', m[1]);
   for (const m of text.matchAll(RC_CHAPTERS))
     add(m, `R.C. Chapter ${m[1] ?? ''}`, 'state_code');
   for (const m of text.matchAll(USC_TITLE_FIRST))
@@ -160,6 +232,46 @@ export function findExternalMatches(text: string): ExternalMatch[] {
     add(m, `Public Law ${m[1] ?? ''}-${m[2] ?? ''}`, 'public_law');
   for (const m of text.matchAll(CFR))
     add(m, `${m[1] ?? ''} CFR ${m[2] ?? ''}`, 'cfr');
+  for (const m of text.matchAll(CHARTER_SECTIONS)) {
+    const city = cleanCity(m[2] ?? m[3]);
+    for (const raw of (m[1] ?? '').match(new RegExp(CHARTER_NUM, 'g')) ?? []) {
+      const num = normalizeSectionNum(raw) ?? raw;
+      add(m, `${charterName(city)} § ${num}`, 'other', num, {
+        category: 'charter',
+        ...(city === undefined ? {} : { city }),
+      });
+    }
+  }
+  for (const m of text.matchAll(CHARTER_PLAIN)) {
+    const city = cleanCity(m[1] ?? m[2]);
+    add(m, charterName(city), 'other', undefined, {
+      category: 'charter',
+      ...(city === undefined ? {} : { city }),
+    });
+  }
+  for (const pattern of [LOCAL_CODE_AFTER, LOCAL_CODE_BEFORE])
+    for (const m of text.matchAll(pattern)) {
+      const afterForm = pattern === LOCAL_CODE_AFTER;
+      const num = (afterForm ? m[2] : m[1]) ?? '';
+      const city = cleanCity(afterForm ? m[1] : m[2]);
+      add(
+        m,
+        `${city === undefined ? '' : `${city} `}City Code § ${num}`,
+        'other',
+        undefined,
+        { category: 'local_code' },
+      );
+    }
+  for (const m of text.matchAll(GENERAL_ELECTION_LAWS))
+    add(
+      m,
+      isOhio(options.jurisdiction)
+        ? 'Ohio Revised Code, Title 35'
+        : 'State general election laws',
+      'other',
+      undefined,
+      { category: 'general_law' },
+    );
 
   // A span claimed by an earlier/longer pattern is not re-reported (e.g. "section 3 of the
   // Internal Revenue Code" would otherwise also look like a named Act). Multi-citation
@@ -186,6 +298,7 @@ export function collectExternalRefs(
   sections: readonly Section[],
   index: SectionIndex,
   existing: readonly ExternalRef[] = [],
+  options: ExternalOptions = {},
 ): ExternalRef[] {
   const byCitation = new Map<string, ExternalRef>();
   const addRef = (ref: ExternalRef): void => {
@@ -198,21 +311,34 @@ export function collectExternalRefs(
       if (!current.sectionIds.includes(id)) current.sectionIds.push(id);
   };
   existing.forEach(addRef);
+  const hits: { match: ExternalMatch; sectionId: string }[] = [];
   for (const section of walkSections(sections)) {
     const text = sectionText(section, { includeDeleted: false });
-    for (const match of findExternalMatches(text)) {
+    for (const match of findExternalMatches(text, options)) {
       if (
         match.sectionNum !== undefined &&
         index.bySectionNum.has(match.sectionNum)
       )
         continue;
-      addRef({
-        text: match.text,
-        citation: match.citation,
-        kind: match.kind,
-        sectionIds: [section.id],
-      });
+      hits.push({ match, sectionId: section.id });
     }
+  }
+  // One document has one charter: a bare "the City Charter" is the same charter as a named
+  // "Columbus City Charter" elsewhere in it, so both are listed under the named citation.
+  const city = hits.find((h) => h.match.city !== undefined)?.match.city;
+  for (const { match, sectionId } of hits) {
+    const unnamed = match.category === 'charter' && match.city === undefined;
+    const citation =
+      unnamed && city !== undefined
+        ? match.citation.replace(/^City Charter/, charterName(city))
+        : match.citation;
+    addRef({
+      text: match.text,
+      citation,
+      kind: match.kind,
+      ...(match.category === undefined ? {} : { category: match.category }),
+      sectionIds: [sectionId],
+    });
   }
   return [...byCitation.values()];
 }

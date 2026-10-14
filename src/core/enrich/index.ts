@@ -13,6 +13,7 @@ import {
   mergeDefinitions,
   segmentDefinitions,
 } from './definitions.js';
+import { detectAmends } from './amends.js';
 import { collectExternalRefs, findInternalRefs } from './refs.js';
 import { buildSectionIndex, type SectionIndex } from './section-index.js';
 
@@ -28,6 +29,7 @@ export {
   findExternalMatches,
   findInternalRefs,
 } from './refs.js';
+export { detectAmends } from './amends.js';
 export { buildSectionIndex } from './section-index.js';
 
 export interface EnrichedDocument {
@@ -179,7 +181,10 @@ export function enrichDocument(
     doc.sections,
     index,
     doc.externalRefs,
+    { jurisdiction: doc.metadata.jurisdiction },
   );
+  const amends =
+    doc.metadata.amends ?? detectAmends(doc.sections, doc.metadata);
   const termsUsed = createTermMatcher(definitions);
 
   const pieces = dedupeDefinitionPieces(chunks.flatMap(split));
@@ -213,5 +218,10 @@ export function enrichDocument(
       refs,
     });
   });
-  return { doc: { ...doc, definitions, externalRefs }, chunks: enriched };
+  const metadata =
+    amends === undefined ? doc.metadata : { ...doc.metadata, amends };
+  return {
+    doc: { ...doc, metadata, definitions, externalRefs },
+    chunks: enriched,
+  };
 }

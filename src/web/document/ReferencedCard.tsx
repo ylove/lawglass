@@ -8,6 +8,13 @@ const KIND_LABEL = {
   other: 'Other law',
 } as const;
 
+/** Category wins over kind: charter and city-code refs are all `kind: other`. */
+const CATEGORY_LABEL = {
+  charter: 'City charter',
+  local_code: 'City code',
+  general_law: 'State law',
+} as const;
+
 export function ReferencedCard({
   externalRefs,
 }: {
@@ -25,7 +32,9 @@ export function ReferencedCard({
         {externalRefs.map((r) => (
           <li key={r.citation}>
             <strong>{r.citation}</strong>{' '}
-            <span className="muted">({KIND_LABEL[r.kind]})</span>
+            <span className="muted">
+              ({r.category ? CATEGORY_LABEL[r.category] : KIND_LABEL[r.kind]})
+            </span>
             <br />
             <span>{r.text}</span>
             <span className="muted">
