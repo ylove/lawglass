@@ -15,6 +15,9 @@ permissions:
   contents: read
 
 env:
+  # Jobs that never load the native onnxruntime-node binding install with --ignore-scripts
+  # (lint-type, test, build, eval-smoke): a compromised dependency's install script cannot run
+  # there. package-smoke and e2e run the real models, so they keep the normal install.
   # onnxruntime-node's postinstall downloads optional CUDA binaries from api.nuget.org on Linux.
   # The local models run on CPU (those binaries ship in the package), and that download has
   # timed out on runners, failing npm ci. Skip it.
@@ -34,11 +37,65 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run format:check
       - run: npm audit --omit=dev --audit-level=high
+
+  # pdfjs-dist is a devDependency but is bundled into dist/cli.js, so the runtime-only audit in
+  # lint-type and the runtime-scope dependency review cannot see it. Audit the full tree.
+  audit-full:
+    name: audit-full
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm audit --audit-level=high
+
+  # Lockfile hygiene: registry-only sources with integrity hashes, and registry signatures /
+  # provenance attestations that verify for every installed package.
+  lockfile-integrity:
+    name: lockfile-integrity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run lockfile:check
+      - run: npm audit signatures
+
+  # Static analysis of the workflows themselves (injection, over-broad permissions, unpinned
+  # actions). Annotations only: no security-events permission needed.
+  zizmor:
+    name: zizmor
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: zizmorcore/zizmor-action@cc914d7f3750a2d13d75c7f184a1060aa0e9d482 # v0.6.4
+        with:
+          inputs: .github/workflows
+          version: 1.30.1
+          advanced-security: false
+          annotations: true
 
   test:
     name: test (${{ matrix.os }}, node ${{ matrix.node }})
@@ -62,7 +119,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run test:coverage
       - name: Upload coverage summary
         if: ${{ !cancelled() && matrix.os == 'ubuntu-latest' && matrix.node == 22 }}
@@ -85,7 +142,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run build
       - name: CLI help smoke check
         run: node dist/cli.js --help
@@ -161,7 +218,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run eval:smoke
       - run: npm run eval:injection
 

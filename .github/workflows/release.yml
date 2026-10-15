@@ -1,0 +1,108 @@
+name: Release
+
+# Pushing a tag like v0.1.0-rc.3 builds the package and attaches the tarball, checksums and an
+# SBOM to a GitHub pre-release. Nothing is published to npm yet: trusted publishing is set up
+# after the first manual publish (#7).
+on:
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Read-only: the artifact is built without any write token in the job.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history so the on-main check can see ancestry.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          # No dependency cache in a tag-triggered release job (cache poisoning). package.json's
+          # packageManager field would otherwise turn caching on implicitly.
+          package-manager-cache: false
+      - run: npm ci --ignore-scripts
+      # Only releases from main: the tagged commit must already have passed review and CI there.
+      - name: Require the tagged commit to be on main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - run: npm run check
+      - run: npm run build
+      - name: Pack the tarball
+        run: npm pack --ignore-scripts --pack-destination release-assets
+      # Dev dependencies stay in on purpose: pdfjs-dist (a devDependency) and its WASM are
+      # bundled into dist/cli.js, so an SBOM that omitted dev dependencies would hide them.
+      - name: Generate the CycloneDX SBOM
+        run: npm sbom --sbom-format cyclonedx > release-assets/sbom.cdx.json
+      - name: Check the SBOM lists the bundled pdfjs-dist
+        run: |
+          jq -e '[.components[] | select(.name == "pdfjs-dist")] | length > 0' \
+            release-assets/sbom.cdx.json
+      - name: Write SHA256SUMS
+        working-directory: release-assets
+        run: sha256sum -- *.tgz sbom.cdx.json > SHA256SUMS
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets
+          path: release-assets/
+          if-no-files-found: error
+          retention-days: 14
+
+  github-release:
+    name: github-release
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # The only job with write access: it creates the release.
+      contents: write
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-assets
+          path: release-assets
+      - name: Create the GitHub pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG" release-assets/* \
+            --verify-tag --prerelease --title "$TAG" \
+            --notes "Pre-release build of $TAG. Verify downloads with SHA256SUMS. sbom.cdx.json is the CycloneDX SBOM (dev dependencies included, because pdfjs-dist is bundled)."
+
+  # Disabled until the first manual publish (#7) so npm trusted publishing can be configured.
+  # publish:
+  #   name: publish
+  #   needs: build
+  #   runs-on: ubuntu-latest
+  #   timeout-minutes: 10
+  #   environment: npm
+  #   permissions:
+  #     contents: read
+  #     id-token: write # npm trusted publishing (OIDC); no long-lived token
+  #   steps:
+  #     - uses: actions/checkout@<sha> # pin before enabling
+  #       with:
+  #         persist-credentials: false
+  #     - uses: actions/setup-node@<sha> # pin before enabling
+  #       with:
+  #         node-version: 22
+  #         registry-url: https://registry.npmjs.org
+  #     - run: npm ci --ignore-scripts
+  #     - run: npm run build
+  #     - run: npm publish --provenance --access public

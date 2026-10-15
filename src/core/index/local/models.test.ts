@@ -9,6 +9,8 @@ import {
   defaultConfigDir,
 } from './models.js';
 import { BRAND } from '../../brand.js';
+import { AppError } from '../../model/index.js';
+import { ensureVerifiedModelFiles } from './model-files.js';
 
 const mocks = vi.hoisted(() => {
   const env = {
@@ -67,6 +69,12 @@ vi.mock('@huggingface/transformers', () => ({
   AutoModelForSequenceClassification: { from_pretrained: mocks.loadModel },
 }));
 
+// Hash verification has its own offline suite (model-files.test.ts); here it is a spy.
+vi.mock('./model-files.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./model-files.js')>()),
+  ensureVerifiedModelFiles: vi.fn(() => Promise.resolve()),
+}));
+
 describe('lazy Transformers adapters', () => {
   let configDir: string;
   beforeEach(async () => {
@@ -93,18 +101,29 @@ describe('lazy Transformers adapters', () => {
     ]);
     await models.reranker.ensureReady();
     expect(mocks.pipeline).toHaveBeenCalledTimes(1);
+    // Even online, loading reads only the verified revision directory.
     expect(mocks.loadEmbeddingModel).toHaveBeenCalledWith(
-      MODEL_LOCK.embedding.id,
+      join(
+        configDir,
+        'models',
+        MODEL_LOCK.embedding.id,
+        MODEL_LOCK.embedding.revision,
+      ),
       expect.objectContaining({
         revision: MODEL_LOCK.embedding.revision,
         dtype: 'q8',
         device: 'cpu',
         cache_dir: join(configDir, 'models'),
-        local_files_only: false,
+        local_files_only: true,
       }),
     );
     expect(mocks.loadModel).toHaveBeenCalledWith(
-      MODEL_LOCK.reranker.id,
+      join(
+        configDir,
+        'models',
+        MODEL_LOCK.reranker.id,
+        MODEL_LOCK.reranker.revision,
+      ),
       expect.objectContaining({
         revision: MODEL_LOCK.reranker.revision,
         dtype: 'q8',
@@ -115,8 +134,8 @@ describe('lazy Transformers adapters', () => {
     );
     expect(mocks.env).toMatchObject({
       cacheDir: join(configDir, 'models'),
-      allowRemoteModels: true,
-      allowLocalModels: false,
+      allowRemoteModels: false,
+      allowLocalModels: true,
       useFSCache: true,
     });
     await models.dispose();
@@ -301,7 +320,7 @@ describe('lazy Transformers adapters', () => {
       markStarted();
       await release;
       expect(mocks.env.cacheDir).toBe(join(configDir, 'models'));
-      expect(mocks.env.allowRemoteModels).toBe(true);
+      expect(mocks.env.allowRemoteModels).toBe(false);
       return mocks.model;
     });
     const first = online.embedder.ensureReady();
@@ -313,5 +332,31 @@ describe('lazy Transformers adapters', () => {
     expect(mocks.env.allowRemoteModels).toBe(false);
     await online.dispose();
     await offline.dispose();
+  });
+
+  it('verifies the locked file hashes before transformers loads anything', async () => {
+    const models = createLocalModels({ configDir, logger: vi.fn() });
+    await models.reranker.ensureReady();
+    expect(ensureVerifiedModelFiles).toHaveBeenCalledExactlyOnceWith(
+      MODEL_LOCK.reranker,
+      expect.objectContaining({
+        cacheDir: join(configDir, 'models'),
+        allowRemote: true,
+      }),
+    );
+    await models.dispose();
+  });
+
+  it('surfaces a hash mismatch as-is and never loads the model', async () => {
+    const mismatch = new AppError(
+      'BACKEND_UNAVAILABLE',
+      'failed its SHA-256 check',
+    );
+    vi.mocked(ensureVerifiedModelFiles).mockRejectedValueOnce(mismatch);
+    const models = createLocalModels({ configDir, logger: vi.fn() });
+    await expect(models.embedder.ensureReady()).rejects.toBe(mismatch);
+    expect(mocks.loadTokenizer).not.toHaveBeenCalled();
+    expect(mocks.loadEmbeddingModel).not.toHaveBeenCalled();
+    await models.dispose();
   });
 });
