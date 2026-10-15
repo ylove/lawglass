@@ -113,18 +113,29 @@ describe('lazy Transformers adapters', () => {
     ]);
     await models.reranker.ensureReady();
     expect(mocks.pipeline).toHaveBeenCalledTimes(1);
+    // Even online, loading reads only the verified revision directory.
     expect(mocks.loadEmbeddingModel).toHaveBeenCalledWith(
-      MODEL_LOCK.embedding.id,
+      join(
+        configDir,
+        'models',
+        MODEL_LOCK.embedding.id,
+        MODEL_LOCK.embedding.revision,
+      ),
       expect.objectContaining({
         revision: MODEL_LOCK.embedding.revision,
         dtype: 'q8',
         device: 'cpu',
         cache_dir: join(configDir, 'models'),
-        local_files_only: false,
+        local_files_only: true,
       }),
     );
     expect(mocks.loadModel).toHaveBeenCalledWith(
-      MODEL_LOCK.reranker.id,
+      join(
+        configDir,
+        'models',
+        MODEL_LOCK.reranker.id,
+        MODEL_LOCK.reranker.revision,
+      ),
       expect.objectContaining({
         revision: MODEL_LOCK.reranker.revision,
         dtype: 'q8',
@@ -135,8 +146,8 @@ describe('lazy Transformers adapters', () => {
     );
     expect(mocks.env).toMatchObject({
       cacheDir: join(configDir, 'models'),
-      allowRemoteModels: true,
-      allowLocalModels: false,
+      allowRemoteModels: false,
+      allowLocalModels: true,
       useFSCache: true,
     });
     await models.dispose();
@@ -321,7 +332,7 @@ describe('lazy Transformers adapters', () => {
       markStarted();
       await release;
       expect(mocks.env.cacheDir).toBe(join(configDir, 'models'));
-      expect(mocks.env.allowRemoteModels).toBe(true);
+      expect(mocks.env.allowRemoteModels).toBe(false);
       return mocks.model;
     });
     const first = online.embedder.ensureReady();

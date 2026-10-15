@@ -16,3 +16,11 @@ revisit it. The full audit matrix (#189) will fold these in.
   combination. Install scripts are skipped in CI jobs that do not need them (`--ignore-scripts`).
 - **Revisit:** when `@huggingface/transformers` moves to a stable `onnxruntime-web`, or when
   OSV/`npm audit` reports an advisory against it. Dependabot's 7-day cooldown applies to the bump.
+
+## pdfjs-dist WASM is not shipped yet
+
+- **What:** pdfjs-dist is a devDependency that tsup bundles into `dist/cli.js`. Only its JavaScript
+  is inlined; its `.wasm` files are not in the package `files`, so they do not ship.
+- **Effect on the SBOM:** the release SBOM lists `pdfjs-dist` as a component (dev dependencies are
+  kept in on purpose), which is complete for what ships today.
+- **Revisit:** if a later change ships any pdfjs WASM files, list them in the SBOM explicitly.
