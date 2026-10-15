@@ -80,10 +80,17 @@ describe('ScenarioPicker', () => {
     );
     setup(getScenario);
     fireEvent.click(screen.getByRole('button', { name: 'a renter' }));
-    expect(getScenario).toHaveBeenCalledWith('d', { subject: 'a renter' });
-    expect(screen.getAllByText(/Making an example for a renter…/).length).toBe(
-      2, // the visible line and the live region
+    expect(getScenario).toHaveBeenCalledWith(
+      'd',
+      { subject: 'a renter' },
+      expect.any(AbortSignal),
     );
+    // The visible line at once; the live region follows after its short clearing gap.
+    await waitFor(() => {
+      expect(
+        screen.getAllByText(/Making an example for a renter…/).length,
+      ).toBe(2);
+    });
     expect(screen.queryAllByRole('status')).toHaveLength(0);
     await act(async () => {
       release({ status: 'ok', scenario: scenarioFor('Sam') });
@@ -96,7 +103,7 @@ describe('ScenarioPicker', () => {
     expect(screen.getByText('Example · invented person')).toBeTruthy();
     expect(screen.queryByText(/Making an example for/)).toBeNull();
     expect(
-      screen.getByText('An example for a renter was added below.'),
+      await screen.findByText('An example for a renter was added below.'),
     ).toBeTruthy();
   });
 
@@ -119,7 +126,11 @@ describe('ScenarioPicker', () => {
     await screen.findByRole('heading', {
       name: 'What it could mean for a student',
     });
-    expect(getScenario).toHaveBeenCalledWith('d', { subject: 'a student' });
+    expect(getScenario).toHaveBeenCalledWith(
+      'd',
+      { subject: 'a student' },
+      expect.any(AbortSignal),
+    );
   });
 
   test('an empty or blank custom subject sends nothing', () => {
@@ -214,9 +225,10 @@ describe('ScenarioPicker', () => {
       for (const release of releases) release({ status: 'none' });
       await Promise.resolve();
     });
-    // Once finished, the same subject can be asked again.
+    // Once finished, asking again does not spend another call (see the next tests).
+    await screen.findByText(/Couldn't ground an example for a renter/);
     fireEvent.click(button);
-    expect(getScenario).toHaveBeenCalledTimes(3);
+    expect(getScenario).toHaveBeenCalledTimes(2);
   });
 
   test(`keeps at most ${String(MAX_SCENARIOS)} strips, dropping the oldest`, async () => {
@@ -241,6 +253,143 @@ describe('ScenarioPicker', () => {
     expect(
       screen.getByRole('heading', { name: 'What it could mean for person 2' }),
     ).toBeTruthy();
+  });
+
+  test('a late reply does not take focus from the field the reader moved to', async () => {
+    let release: (r: ScenarioResponse) => void = () => undefined;
+    setup(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const button = screen.getByRole('button', { name: 'a renter' });
+    button.focus();
+    fireEvent.click(button);
+    const input = screen.getByLabelText('Someone else…');
+    input.focus();
+    await act(async () => {
+      release({ status: 'ok', scenario: scenarioFor('Sam') });
+      await Promise.resolve();
+    });
+    await screen.findByRole('heading', {
+      name: 'What it could mean for a renter',
+    });
+    expect(document.activeElement).toBe(input);
+  });
+
+  test('focus still moves when it was left on the control that asked', async () => {
+    setup(() => ok('Sam'));
+    const button = screen.getByRole('button', { name: 'a renter' });
+    button.focus();
+    fireEvent.click(button);
+    const heading = await screen.findByRole('heading', {
+      name: 'What it could mean for a renter',
+    });
+    await waitFor(() => {
+      expect(document.activeElement).toBe(heading);
+    });
+  });
+
+  test('unmounting aborts requests still in flight, and an abort is silent', async () => {
+    let signal: AbortSignal | undefined;
+    const getScenario = vi.fn<Getter>(
+      (_d, _r, s) =>
+        new Promise((_resolve, reject) => {
+          signal = s;
+          s?.addEventListener('abort', () => {
+            reject(new DOMException('aborted', 'AbortError'));
+          });
+        }),
+    );
+    setup(getScenario);
+    fireEvent.click(screen.getByRole('button', { name: 'a renter' }));
+    expect(signal?.aborted).toBe(false);
+    cleanup();
+    expect(signal?.aborted).toBe(true);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  test('a failed persona click is not reported on the custom field', async () => {
+    setup(() => Promise.reject(new ApiError('NETWORK', 'Could not reach it.')));
+    fireEvent.click(screen.getByRole('button', { name: 'a renter' }));
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe('Could not reach it.');
+    const input = screen.getByLabelText('Someone else…');
+    expect(input.getAttribute('aria-invalid')).toBeNull();
+    expect(input.getAttribute('aria-describedby')).toBeNull();
+    // It sits with the buttons, not inside the form.
+    expect(alert.closest('form')).toBeNull();
+  });
+
+  test('asking again for a finished subject shows the existing strip instead of a new call', async () => {
+    const scroll = vi.fn();
+    Element.prototype.scrollIntoView = scroll;
+    const getScenario = vi.fn<Getter>(() => ok('Sam'));
+    setup(getScenario);
+    const button = screen.getByRole('button', { name: 'a renter' });
+    fireEvent.click(button);
+    const heading = await screen.findByRole('heading', {
+      name: 'What it could mean for a renter',
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'a voter' }));
+    await screen.findByRole('heading', {
+      name: 'What it could mean for a voter',
+    });
+    expect(document.activeElement).not.toBe(heading);
+    // Same subject typed differently counts as the same.
+    fireEvent.change(screen.getByLabelText('Someone else…'), {
+      target: { value: 'A  Renter' },
+    });
+    fireEvent.submit(screen.getByLabelText('Someone else…'));
+    expect(getScenario).toHaveBeenCalledTimes(2);
+    expect(document.activeElement).toBe(heading);
+    expect(scroll).toHaveBeenCalled();
+    expect(screen.getAllByText('Example · invented person')).toHaveLength(2);
+    await screen.findByText('An example for a renter is already shown below.');
+  });
+
+  test('asking again for a subject with no example focuses that note', async () => {
+    const getScenario = vi.fn<Getter>(() =>
+      Promise.resolve({ status: 'none' }),
+    );
+    setup(getScenario);
+    fireEvent.click(screen.getByRole('button', { name: 'a voter' }));
+    const note = (
+      await screen.findByText(/Couldn't ground an example for a voter/)
+    ).parentElement;
+    fireEvent.click(screen.getByRole('button', { name: 'a voter' }));
+    expect(getScenario).toHaveBeenCalledTimes(1);
+    expect(document.activeElement).toBe(note);
+  });
+
+  test('a repeated announcement is cleared first so it is read again', async () => {
+    setup(() => ok('Sam'));
+    fireEvent.click(screen.getByRole('button', { name: 'a renter' }));
+    const live = () => document.querySelector('p[aria-live="polite"]')!;
+    await waitFor(() => {
+      expect(live().textContent).toBe(
+        'An example for a renter was added below.',
+      );
+    });
+    // Same sentence again (the strip is already there, so the "already shown" message differs).
+    fireEvent.click(screen.getByRole('button', { name: 'a renter' }));
+    expect(live().textContent).toBe('');
+    await waitFor(() => {
+      expect(live().textContent).toBe(
+        'An example for a renter is already shown below.',
+      );
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'a renter' }));
+    expect(live().textContent).toBe('');
+    await waitFor(() => {
+      expect(live().textContent).toBe(
+        'An example for a renter is already shown below.',
+      );
+    });
   });
 
   test('a reply that arrives after unmount is ignored', async () => {
