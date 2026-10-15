@@ -22,6 +22,7 @@ import {
   subdivisionHeading,
 } from './sections.js';
 import type { TextParseOptions } from './text.js';
+import { trimEndWhile } from '../trim.js';
 
 export type HtmlParseOptions = TextParseOptions & {
   /** HTTP `Content-Type` header value, when the fetch layer has one. Its charset wins over `<meta>`. */
@@ -354,7 +355,7 @@ function applyStatuses(
 }
 
 function charsetOf(value: string | undefined): string | undefined {
-  return /charset\s*=\s*["']?\s*([\w:.-]+)/i.exec(value ?? '')?.[1];
+  return /charset\s*=\s*(?:["']\s*)?([\w:.-]+)/i.exec(value ?? '')?.[1];
 }
 
 /** WHATWG "extract a character encoding from a meta element" for an `http-equiv` content value. */
@@ -613,8 +614,8 @@ function refineHeading(
   if (prefix.some((c) => c.deleted)) {
     const text = visible(prefix);
     const found = section.num?.startsWith('(')
-      ? /\(([^)\s]+)\)/.exec(text)?.[1]
-      : /^\s*(?:(?:section|sec|article|art|chapter|ch)\b\.?|§)?\s*([a-z0-9]+(?:[.-][a-z0-9]+)*)[.:\s]*$/i.exec(
+      ? /(?<!\()\(([^)\s]+)\)/.exec(text)?.[1]
+      : /^\s*(?:(?:(?:section|sec|article|art|chapter|ch)\b\.?|§)\s*)?([a-z0-9]+(?:[.-][a-z0-9]+)*)[.:\s]*$/i.exec(
           text,
         )?.[1];
     if (found)
@@ -703,7 +704,9 @@ function collapseGaps(section: Section): void {
   // that follows, so the full text with deleted spans is unchanged.
   for (const [index, span] of spans.entries()) {
     if (span.status === 'deleted') continue;
-    const trailing = /[ \t]+$/.exec(span.text)?.[0];
+    const trailing = span.text.slice(
+      trimEndWhile(span.text, (c) => c === ' ' || c === '\t').length,
+    );
     if (!trailing || trailing === span.text) continue;
     let next = index + 1;
     while (spans[next]?.status === 'deleted') next++;

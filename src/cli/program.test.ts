@@ -29,6 +29,7 @@ test('--help lists every command and the default URL or path argument', () => {
     'ask',
     'list',
     'remove',
+    'cache',
     'serve',
     'eval',
   ]) {

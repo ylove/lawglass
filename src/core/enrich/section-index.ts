@@ -1,4 +1,5 @@
 import { walkSections, type Section } from '../model/index.js';
+import { trimEndWhile } from '../trim.js';
 
 /** Lookup tables over the section tree, shared by definition scoping and reference resolution. */
 export interface SectionIndex {
@@ -10,11 +11,10 @@ export interface SectionIndex {
 
 /** "Sec. 3." / "§ 3" / "Section 3" all become "3". Subdivision labels like "(b)" return undefined. */
 export function normalizeSectionNum(num: string): string | undefined {
-  const cleaned = num
-    .trim()
-    .replace(/^(?:sec(?:tion)?\.?|§+)\s*/i, '')
-    .replace(/[.\s]+$/, '')
-    .toLowerCase();
+  const cleaned = trimEndWhile(
+    num.trim().replace(/^(?:sec(?:tion)?\.?|§+)\s*/i, ''),
+    (c) => c === '.' || /\s/.test(c),
+  ).toLowerCase();
   return cleaned && !cleaned.startsWith('(') ? cleaned : undefined;
 }
 

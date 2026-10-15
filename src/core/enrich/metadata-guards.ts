@@ -6,6 +6,8 @@
  * Each guard returns the value to keep (possibly canonicalised) or null to discard it.
  */
 
+import { trimEdgesWhile } from '../trim.js';
+
 /** Lowercased letter/digit runs. "2025-2026" gives ["2025", "2026"]; "136th" stays whole. */
 export function words(s: string): string[] {
   return s.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
@@ -411,7 +413,7 @@ export interface ParsedSponsor {
 
 /** Handles "Rep. John Smith Jr. (D-OH)", "Smith, John" and a bare "Shaheen". */
 export function parseSponsor(raw: string): ParsedSponsor | null {
-  let s = raw.replace(/\([^)]*\)/g, ' ').replace(/’/g, "'");
+  let s = raw.replace(/(?<!\()\([^)]*\)/g, ' ').replace(/’/g, "'");
   let chamber: ParsedSponsor['chamber'];
   for (;;) {
     const m = HONORIFIC.exec(s.trimStart());
@@ -423,7 +425,7 @@ export function parseSponsor(raw: string): ParsedSponsor | null {
   const clean = (part: string): string =>
     part
       .split(/[\s,]+/)
-      .map((t) => t.replace(/^\.+|\.+$/g, ''))
+      .map((t) => trimEdgesWhile(t, (c) => c === '.'))
       .filter((t) => t.length > 0 && !NAME_SUFFIXES.has(t.toLowerCase()))
       .join(' ');
   let surname: string;

@@ -41,7 +41,8 @@ function countSentences(text: string): number {
   let count = 0;
   for (const line of text.split('\n')) {
     if (!/[A-Za-z0-9]/.test(line)) continue;
-    const re = /[.!?]+(?=\s|$)/g;
+    // Starting only at the beginning of a run keeps this linear on "!!!!!!!x".
+    const re = /(?<![.!?])[.!?]+(?=\s|$)/g;
     let last = 0;
     let m: RegExpExecArray | null;
     let ends = 0;

@@ -1,16 +1,28 @@
 import {
+  mkdir,
   mkdtemp,
   readFile,
   readdir,
   rm,
   stat,
+  utimes,
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir, homedir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { BRAND } from '../brand.js';
-import { defaultCacheDir, documentId, readCache, writeCache } from './cache.js';
+import { BRAND, envVar } from '../brand.js';
+import {
+  cacheBudgetBytes,
+  clearCache,
+  DEFAULT_CACHE_BUDGET_BYTES,
+  defaultCacheDir,
+  documentId,
+  evictToBudget,
+  readCache,
+  removeCached,
+  writeCache,
+} from './cache.js';
 
 let dir: string;
 const metadata = {
@@ -129,4 +141,156 @@ it('treats corrupt or unsafe indexes as misses and repairs them on write', async
     await writeCache(bytes, metadata, dir);
     expect(await readCache(metadata.url, dir)).toMatchObject({ docId });
   }
+});
+
+// G13: cached bytes are removed with the document, and only the bytes nothing else needs.
+const bytesOf = (text: string): Uint8Array => new TextEncoder().encode(text);
+const meta = (url: string, finalUrl = url) => ({
+  url,
+  finalUrl,
+  contentType: 'text/plain',
+  fetchedAt: '2026-10-13T00:00:00.000Z',
+});
+const indexOf = async (cacheDir: string): Promise<Record<string, string>> =>
+  JSON.parse(await readFile(join(cacheDir, 'index.json'), 'utf8')) as Record<
+    string,
+    string
+  >;
+
+it('removes a snapshot, its sidecar and every URL that pointed at it', async () => {
+  const one = await writeCache(bytesOf('one'), meta('https://a.gov/1'), dir);
+  // Two URLs for identical bytes share one snapshot (for example an alias or a mirror).
+  await writeCache(bytesOf('one'), meta('https://b.gov/1'), dir);
+  const two = await writeCache(bytesOf('two'), meta('https://a.gov/2'), dir);
+  await removeCached([one], dir);
+  const files = await readdir(dir);
+  expect(files).not.toContain(one);
+  expect(files).not.toContain(`${one}.json`);
+  expect(files).toContain(two);
+  expect(await indexOf(dir)).toEqual({ 'https://a.gov/2': two });
+  expect(await readCache('https://a.gov/1', dir)).toBeUndefined();
+  expect((await readCache('https://a.gov/2', dir))?.docId).toBe(two);
+});
+
+it('leaves a URL alone when it has since been fetched again and points at a newer snapshot', async () => {
+  // The same URL ingested twice as the page changed: two documents, one shared URL.
+  const url = 'https://a.gov/bill';
+  const older = await writeCache(bytesOf('v1'), meta(url), dir);
+  const newer = await writeCache(bytesOf('v2'), meta(url), dir);
+  expect(await indexOf(dir)).toEqual({ [url]: newer });
+  await removeCached([older], dir);
+  expect(await readdir(dir)).not.toContain(older);
+  expect(await indexOf(dir)).toEqual({ [url]: newer });
+  expect((await readCache(url, dir))?.docId).toBe(newer);
+  await removeCached([newer], dir);
+  expect(await indexOf(dir)).toEqual({});
+  expect(await readdir(dir)).toEqual(['index.json']);
+});
+
+it('ignores ids that are not content hashes, so a path can never escape the cache', async () => {
+  const outside = join(dir, '..', 'victim');
+  await writeFile(outside, 'keep');
+  const docId = await writeCache(bytesOf('x'), meta('https://a.gov/x'), dir);
+  await removeCached(['../victim', 'index', `${docId}.json`, ''], dir);
+  expect(await readFile(outside, 'utf8')).toBe('keep');
+  expect(await readdir(dir)).toContain(docId);
+  await rm(outside);
+});
+
+it('tolerates removal from a missing directory or of an unknown snapshot', async () => {
+  await removeCached(['a'.repeat(64)], join(dir, 'missing'));
+  await removeCached([], dir);
+  expect(await readdir(dir)).toEqual([]);
+  await writeCache(bytesOf('x'), meta('https://a.gov/x'), dir);
+  await removeCached(['b'.repeat(64)], dir);
+  expect(Object.keys(await indexOf(dir))).toEqual(['https://a.gov/x']);
+});
+
+it('evicts least recently used snapshots first and drops their URLs', async () => {
+  const ids: string[] = [];
+  for (const [i, name] of ['a', 'b', 'c'].entries()) {
+    ids.push(
+      await writeCache(
+        bytesOf(name.repeat(100)),
+        meta(`https://x.gov/${name}`),
+        dir,
+      ),
+    );
+    const when = new Date(Date.UTC(2026, 0, 1 + i));
+    await utimes(join(dir, ids[i] ?? ''), when, when);
+  }
+  const [a = '', b = '', c = ''] = ids;
+  // A cache hit refreshes recency: reading "a" makes "b" the oldest.
+  await readCache('https://x.gov/a', dir);
+  const size = async (id: string) =>
+    (await stat(join(dir, id))).size +
+    (await stat(join(dir, `${id}.json`))).size;
+  const budget = (await size(a)) + (await size(c)) + 1;
+  expect(await evictToBudget(dir, budget)).toEqual([b]);
+  const files = await readdir(dir);
+  expect(files).toContain(a);
+  expect(files).toContain(c);
+  expect(files).not.toContain(b);
+  expect(Object.keys(await indexOf(dir)).sort()).toEqual([
+    'https://x.gov/a',
+    'https://x.gov/c',
+  ]);
+});
+
+it('does nothing within the budget, and never evicts the snapshot to keep', async () => {
+  const a = await writeCache(
+    bytesOf('a'.repeat(50)),
+    meta('https://x.gov/a'),
+    dir,
+  );
+  expect(await evictToBudget(dir, 1_000_000)).toEqual([]);
+  expect(await evictToBudget(dir, 1, a)).toEqual([]);
+  expect(await readdir(dir)).toContain(a);
+  expect(await evictToBudget(join(dir, 'missing'), 1)).toEqual([]);
+});
+
+it('ignores stray files when measuring the cache', async () => {
+  const a = await writeCache(bytesOf('a'), meta('https://x.gov/a'), dir);
+  await writeFile(join(dir, 'notes.txt'), 'z'.repeat(10_000));
+  await mkdir(join(dir, 'answers'));
+  await writeFile(join(dir, 'answers', 'q.json'), 'z'.repeat(10_000));
+  expect(await evictToBudget(dir, 10_000)).toEqual([]);
+  expect(await readdir(dir)).toContain(a);
+});
+
+it('clears snapshots, sidecars and the index but nothing else', async () => {
+  await writeCache(bytesOf('a'), meta('https://x.gov/a'), dir);
+  await writeCache(bytesOf('b'), meta('https://x.gov/b'), dir);
+  await mkdir(join(dir, 'answers'));
+  await writeFile(join(dir, 'answers', 'keep.json'), '{}');
+  const result = await clearCache(dir);
+  expect(result.snapshots).toBe(2);
+  expect(result.bytes).toBeGreaterThan(0);
+  expect((await readdir(dir)).sort()).toEqual(['answers']);
+  expect(await readFile(join(dir, 'answers', 'keep.json'), 'utf8')).toBe('{}');
+  expect(await clearCache(dir)).toEqual({ snapshots: 0, bytes: 0 });
+  expect(await clearCache(join(dir, 'missing'))).toEqual({
+    snapshots: 0,
+    bytes: 0,
+  });
+});
+
+it('reads the cache budget from the environment, defaulting to 500 MB', () => {
+  const name = envVar('CACHE_MAX_MB');
+  expect(DEFAULT_CACHE_BUDGET_BYTES).toBe(500 * 1024 * 1024);
+  expect(cacheBudgetBytes({})).toBe(DEFAULT_CACHE_BUDGET_BYTES);
+  expect(cacheBudgetBytes({ [name]: '  ' })).toBe(DEFAULT_CACHE_BUDGET_BYTES);
+  expect(cacheBudgetBytes({ [name]: '2' })).toBe(2 * 1024 * 1024);
+  for (const bad of ['0', '-5', '1.5', 'lots', '1e3', '9'.repeat(30)])
+    expect(() => cacheBudgetBytes({ [name]: bad })).toThrow(
+      expect.objectContaining({ code: 'INVALID_INPUT' }),
+    );
+});
+
+it('reports a cache directory it cannot read instead of treating it as empty', async () => {
+  const notADirectory = join(dir, 'file');
+  await writeFile(notADirectory, 'x');
+  await expect(evictToBudget(notADirectory, 1)).rejects.toMatchObject({
+    code: 'ENOTDIR',
+  });
 });

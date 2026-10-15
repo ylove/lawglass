@@ -1,7 +1,9 @@
+import { randomUUID } from 'node:crypto';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { AnswerCache } from './answer-cache.js';
+import { defaultCacheDir, removeCached } from './fetch/cache.js';
 import { deleteHistory } from './history/history-store.js';
 import {
   AppError,
@@ -57,6 +59,8 @@ export interface RegistryOptions {
   fs?: ConfigFileSystem;
   now?: () => Date;
   answerCache?: Pick<AnswerCache, 'evictDocument'>;
+  /** Where fetched bytes live; defaults to `<configDir>/cache`. Tests point it at a temp dir. */
+  fetchCacheDir?: string;
 }
 export interface AddDocumentOptions {
   label: string;
@@ -83,6 +87,7 @@ export class Registry {
   private readonly path: string;
   private readonly lockPath: string;
   private readonly answerCache: Pick<AnswerCache, 'evictDocument'>;
+  private readonly fetchCacheDir: string;
 
   constructor(
     readonly configDir: string,
@@ -92,6 +97,7 @@ export class Registry {
     this.now = options.now ?? (() => new Date());
     this.path = join(configDir, 'registry.json');
     this.lockPath = `${this.path}.lock`;
+    this.fetchCacheDir = options.fetchCacheDir ?? defaultCacheDir(configDir);
     this.answerCache =
       options.answerCache ??
       new AnswerCache({
@@ -99,26 +105,77 @@ export class Registry {
       });
   }
 
+  /** The owner id stored in the lock file, or undefined when there is no readable lock. */
+  private async lockOwner(path: string): Promise<string | undefined> {
+    try {
+      const handle = await this.fs.open(path, 'r');
+      try {
+        return await handle.readFile('utf8');
+      } finally {
+        await handle.close();
+      }
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Remove a lock that looked stale, without ever destroying a lock another process took in the
+   * meantime. A plain `unlink` after the staleness check could delete the fresh lock of a
+   * process that broke the same stale lock first, leaving two processes in the critical section.
+   * Instead the lock is renamed aside atomically (so exactly the file at that instant is held),
+   * its owner is compared with the one judged stale, and a lock that turns out to be someone
+   * else's fresh one is put back.
+   */
+  private async breakStaleLock(
+    staleOwner: string | undefined,
+    mine: string,
+  ): Promise<void> {
+    const parked = `${this.lockPath}.stale-${mine}`;
+    try {
+      await this.fs.rename(this.lockPath, parked);
+    } catch {
+      return; // Released or broken by someone else first.
+    }
+    if ((await this.lockOwner(parked)) !== staleOwner) {
+      // Not the lock we judged stale: a new holder acquired it after our check. Give it back;
+      // `link` fails if yet another process has taken the lock, in which case it is theirs.
+      await this.fs.link(parked, this.lockPath).catch(() => undefined);
+    }
+    await this.fs.unlink(parked).catch(() => undefined);
+  }
+
   private async withFileLock<T>(operation: () => Promise<T>): Promise<T> {
     await this.fs.mkdir(this.configDir, { recursive: true, mode: 0o700 });
     const deadline = Date.now() + LOCK_TIMEOUT_MS;
+    // Unique per acquisition: it identifies this holder's lock file, so release (and stale
+    // breaking) can tell it apart from another process's lock at the same path.
+    const owner = `${String(process.pid)}-${randomUUID()}`;
     let delay = 5;
     for (;;) {
       try {
         const handle = await this.fs.open(this.lockPath, 'wx', 0o600);
-        await handle.close();
+        try {
+          await handle.writeFile(owner);
+        } finally {
+          await handle.close();
+        }
         break;
       } catch (error) {
         if (errorCode(error) !== 'EEXIST')
           throw storageError('The registry lock could not be acquired.');
       }
       // A crashed process leaves its lock behind; break locks older than the stale threshold.
+      // The owner is read before the age is checked: if the lock is replaced in between, the
+      // new lock's fresh timestamp makes it not stale, and if it is replaced after, the owner
+      // no longer matches what `breakStaleLock` finds and the new lock is put back.
       try {
+        const staleOwner = await this.lockOwner(this.lockPath);
         if (
           Date.now() - (await this.fs.stat(this.lockPath)).mtimeMs >
           LOCK_STALE_MS
         ) {
-          await this.fs.unlink(this.lockPath);
+          await this.breakStaleLock(staleOwner, owner);
           continue;
         }
       } catch {
@@ -132,7 +189,10 @@ export class Registry {
     try {
       return await operation();
     } finally {
-      await this.fs.unlink(this.lockPath).catch(() => undefined);
+      // If our lock was broken as stale (a very slow operation) and another process now holds
+      // the path, that lock is theirs. Only remove the file if it still carries our owner id.
+      if ((await this.lockOwner(this.lockPath)) === owner)
+        await this.fs.unlink(this.lockPath).catch(() => undefined);
     }
   }
 
@@ -252,7 +312,10 @@ export class Registry {
     });
   }
 
-  /** Remove document and answers; callers also delete the matching backend namespace. */
+  /**
+   * Remove the document, its answers, history and downloaded bytes; callers also delete the
+   * matching backend namespace.
+   */
   remove(docId: string): Promise<void> {
     return this.exclusive(async () => {
       const path = this.documentPath(docId);
@@ -260,6 +323,14 @@ export class Registry {
       // Both explicit removal and LRU eviction pass here. Do not publish a removal when
       // private answers could not be deleted; callers can retry the operation.
       await this.answerCache.evictDocument(docId);
+      // Downloaded bytes are keyed by the document id, which no other entry shares. URL index
+      // entries that now point at a newer snapshot are left alone by `removeCached`. Like the
+      // answers, this must succeed before the removal is published so a retry can finish it.
+      try {
+        await removeCached([docId], this.fetchCacheDir);
+      } catch {
+        throw storageError('The downloaded copy could not be removed.');
+      }
       await writePrivateJson(
         this.path,
         entries.filter((entry) => entry.docId !== docId),

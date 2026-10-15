@@ -21,6 +21,8 @@ const Key = z.object({
   chipId: ChipId,
   provider: component,
   model: component,
+  /** Canonical non-secret endpoint identity; see `endpointIdentity`. Never a key or a path. */
+  endpoint: component,
   promptVersion: component,
 });
 export type AnswerCacheKey = z.infer<typeof Key>;
@@ -31,11 +33,12 @@ function validatedKey(key: AnswerCacheKey): AnswerCacheKey {
   return parsed.data;
 }
 
-/** sha256(docId|chipId|provider|model|promptVersion), per ADR 0008. */
+/** sha256(docId|chipId|provider|model|endpoint|promptVersion), per ADR 0008. */
 export function answerCacheKey(key: AnswerCacheKey): string {
-  const { docId, chipId, provider, model, promptVersion } = validatedKey(key);
+  const { docId, chipId, provider, model, endpoint, promptVersion } =
+    validatedKey(key);
   return createHash('sha256')
-    .update([docId, chipId, provider, model, promptVersion].join('|'))
+    .update([docId, chipId, provider, model, endpoint, promptVersion].join('|'))
     .digest('hex');
 }
 

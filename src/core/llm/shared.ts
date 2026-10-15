@@ -44,12 +44,24 @@ export function validateObject<T>(schema: z.ZodType<T>, object: unknown): T {
   return parsed.data;
 }
 
+/**
+ * The body of a ```json fenced block, or undefined. Done by hand: the equivalent regex
+ * (`\s*([\s\S]*?)\s*` between the fences) backtracks quadratically on whitespace runs.
+ */
+function unfence(text: string): string | undefined {
+  if (text.length < 6 || !text.startsWith('```') || !text.endsWith('```'))
+    return undefined;
+  let inner = text.slice(3, -3);
+  if (inner.slice(0, 4).toLowerCase() === 'json') inner = inner.slice(4);
+  return inner.trim();
+}
+
 /** Plain-prompt compatibility also accepts fenced JSON or one JSON value surrounded by prose. */
 export function parseJson(text: string): unknown {
   const trimmed = text.trim();
-  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
+  const fenced = unfence(trimmed);
   try {
-    return JSON.parse(fenced?.[1] ?? trimmed) as unknown;
+    return JSON.parse(fenced ?? trimmed) as unknown;
   } catch {
     // Scan balanced delimiters rather than using a greedy regex: braces inside JSON
     // strings and nested arrays/objects must not truncate the extracted value.

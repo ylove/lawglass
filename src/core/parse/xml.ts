@@ -13,6 +13,7 @@ import {
   type Span,
   type SpanStatus,
 } from '../model/index.js';
+import { trimEdgesWhile, trimEndWhile } from '../trim.js';
 
 export interface XmlParseOptions extends ParseControl {
   sourceUrl: string;
@@ -269,7 +270,8 @@ class RunBuffer {
     const first = out[0];
     if (first) first.text = first.text.replace(/^[ \n]+/, '');
     const last = out.at(-1);
-    if (last) last.text = last.text.replace(/[ \n]+$/, '');
+    if (last)
+      last.text = trimEndWhile(last.text, (c) => c === ' ' || c === '\n');
     return out.filter((span) => span.text);
   }
 }
@@ -651,12 +653,14 @@ function walkLevel(
   const heading = headingEl ? plainText(headingEl) || undefined : undefined;
   // Headings-only levels (appropriations accounts) get a readable id from the heading
   // rather than their sibling position; uniqueId() separates repeats.
-  const headingSlug = (heading ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40)
-    .replace(/-+$/, '');
+  const isDash = (c: string): boolean => c === '-';
+  const headingSlug = trimEndWhile(
+    trimEdgesWhile(
+      (heading ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      isDash,
+    ).slice(0, 40),
+    isDash,
+  );
   const piece = idPiece(num, headingSlug || `n${String(siblingIndex)}`);
 
   const path = parent ? `${parent.section.id}/${piece}` : piece;

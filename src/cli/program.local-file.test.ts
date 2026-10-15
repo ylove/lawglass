@@ -34,12 +34,14 @@ beforeEach(async () => {
   runtime = {
     backend,
     registry: new Registry(join(dir, 'config')),
+    clearFetchCache: () => Promise.resolve({ snapshots: 0, bytes: 0 }),
     fetcher: network,
     now: () => new Date('2026-10-14T00:00:00.000Z'),
     maxDocs: 5,
     retrievalMode: 'hybrid_rerank',
     port: 4317,
     answerProvider: provider,
+    answerEndpoint: 'mock:local',
     extractProvider: provider,
   };
 });

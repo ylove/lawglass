@@ -18,6 +18,54 @@ export interface FetchSummary {
   message?: string;
 }
 
+/**
+ * Room above the manifest size for a fixture that was re-rendered slightly larger. Such a file
+ * still downloads in full, fails verification and is saved as `.mismatch` for review; anything
+ * beyond this is abandoned mid-stream rather than buffered.
+ */
+export const BYTE_SLACK = 64 * 1024;
+
+/** Read a body but stop, and cancel the download, the moment it passes `limit` bytes. */
+export async function readWithBudget(
+  response: Response,
+  limit: number,
+): Promise<Uint8Array> {
+  const announced = Number(response.headers.get('content-length') ?? NaN);
+  if (Number.isFinite(announced) && announced > limit) {
+    await response.body?.cancel();
+    throw new Error(
+      `Content-Length ${String(announced)} is far larger than the ${String(limit)}-byte budget`,
+    );
+  }
+  if (!response.body) return new Uint8Array();
+  const reader = (response.body as ReadableStream<Uint8Array>).getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) {
+        await reader.cancel();
+        throw new Error(
+          `Body is larger than the ${String(limit)}-byte budget; stopped after ${String(total)} bytes`,
+        );
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const data = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    data.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return data;
+}
+
 export function parseArguments(args: string[]): string[] | undefined {
   if (args.length === 0) return undefined;
   const [option, value] = args;
@@ -76,15 +124,10 @@ export async function fetchFixtures(options: {
         throw new Error(
           `HTTP ${String(response.status)} ${response.statusText}`,
         );
-      // Fixture sizes are known: refuse a body that announces itself as far larger, rather
-      // than buffering it. (Size and hash are verified again after download.)
-      const announced = Number(response.headers.get('content-length') ?? NaN);
-      if (Number.isFinite(announced) && announced > fixture.bytes * 2 + 1024) {
-        throw new Error(
-          `Content-Length ${String(announced)} is far larger than the expected ${String(fixture.bytes)} bytes`,
-        );
-      }
-      const data = new Uint8Array(await response.arrayBuffer());
+      // Fixture sizes are known, so the manifest sets the download budget: a server that sends
+      // more (or never stops) cannot make this script buffer it. Size and hash are still
+      // verified after the download.
+      const data = await readWithBudget(response, fixture.bytes + BYTE_SLACK);
       const verification = verifyFixture(data, fixture);
       if (!verification.matches) {
         await writeFile(`${path}.mismatch`, data);

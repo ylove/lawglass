@@ -425,9 +425,9 @@ describe('safeFetch', () => {
     agent
       .get(origin)
       .intercept({ path: '/start' })
-      .reply(302, '', { headers: { location: 'http://other.gov/bill.xml' } });
+      .reply(302, '', { headers: { location: 'https://other.gov/bill.xml' } });
     agent
-      .get('http://other.gov')
+      .get('https://other.gov')
       .intercept({ path: '/bill.xml' })
       .reply(200, '<bill/>');
     const factory = vi.fn(() => agent);
@@ -438,7 +438,7 @@ describe('safeFetch', () => {
           dispatcherFactory: factory,
         })
       ).finalUrl,
-    ).toBe('http://other.gov/bill.xml');
+    ).toBe('https://other.gov/bill.xml');
     expect(factory.mock.calls).toHaveLength(2);
   });
   it.each([
@@ -591,7 +591,7 @@ describe('safeFetch', () => {
   it('revalidates cached final URLs, caps cached bytes, and detects cached wrappers', async () => {
     const metadata = {
       url: `${origin}/`,
-      finalUrl: 'http://127.0.0.1/',
+      finalUrl: 'https://127.0.0.1/',
       contentType: 'text/plain',
       fetchedAt: fixedNow().toISOString(),
     };
@@ -635,6 +635,147 @@ describe('safeFetch', () => {
     await expect(
       safeFetch(origin, { ...opts, cacheDir: file }),
     ).rejects.toMatchObject({ code: 'FETCH_FAILED' });
+  });
+
+  // N10: https is never downgraded; plain http only when the user typed http.
+  describe('scheme downgrade', () => {
+    it('refuses an https address that redirects to http, before any request to the http host', async () => {
+      const factory = vi.fn(() => agent);
+      agent
+        .get(origin)
+        .intercept({ path: '/start' })
+        .reply(302, '', { headers: { location: 'http://other.gov/bill.xml' } });
+      await expect(
+        safeFetch(`${origin}/start`, { ...opts, dispatcherFactory: factory }),
+      ).rejects.toMatchObject({ code: 'SSRF_BLOCKED' });
+      expect(factory).toHaveBeenCalledTimes(1);
+      expect(await readdir(cacheDir)).toEqual([]);
+    });
+    it('refuses a downgrade at any later hop of a chain that began on https', async () => {
+      agent
+        .get(origin)
+        .intercept({ path: '/a' })
+        .reply(302, '', { headers: { location: '/b' } });
+      agent
+        .get(origin)
+        .intercept({ path: '/b' })
+        .reply(302, '', { headers: { location: 'http://example.gov/c' } });
+      await expect(safeFetch(`${origin}/a`, opts)).rejects.toMatchObject({
+        code: 'SSRF_BLOCKED',
+      });
+    });
+    it('keeps the current scheme for a protocol-relative redirect', async () => {
+      // `//host/path` inherits the current scheme (https), so it is not a downgrade.
+      agent
+        .get(origin)
+        .intercept({ path: '/start' })
+        .reply(302, '', { headers: { location: '//other.gov/bill' } });
+      agent
+        .get('https://other.gov')
+        .intercept({ path: '/bill' })
+        .reply(200, '<bill/>');
+      expect((await safeFetch(`${origin}/start`, opts)).finalUrl).toBe(
+        'https://other.gov/bill',
+      );
+    });
+    it('still allows http when the user typed an http address', async () => {
+      agent
+        .get('http://plain.gov')
+        .intercept({ path: '/start' })
+        .reply(302, '', { headers: { location: 'http://other.gov/bill' } });
+      agent
+        .get('http://other.gov')
+        .intercept({ path: '/bill' })
+        .reply(302, '', { headers: { location: 'https://secure.gov/bill' } });
+      agent
+        .get('https://secure.gov')
+        .intercept({ path: '/bill' })
+        .reply(200, '<bill/>');
+      expect((await safeFetch('http://plain.gov/start', opts)).finalUrl).toBe(
+        'https://secure.gov/bill',
+      );
+    });
+    it('does not let a snapshot cached before the rule bypass it', async () => {
+      await writeCache(
+        new TextEncoder().encode('<bill/>'),
+        {
+          url: `${origin}/old`,
+          finalUrl: 'http://other.gov/old',
+          contentType: 'application/xml',
+          fetchedAt: fixedNow().toISOString(),
+        },
+        cacheDir,
+      );
+      await expect(safeFetch(`${origin}/old`, opts)).rejects.toMatchObject({
+        code: 'SSRF_BLOCKED',
+      });
+    });
+  });
+
+  // N5: with deferCacheWrite the bytes are cached only when the caller commits them.
+  describe('deferred cache write', () => {
+    it('writes nothing until commitCache is called, then caches and reuses the snapshot', async () => {
+      agent.get(origin).intercept({ path: '/bill' }).reply(200, '<bill/>');
+      const result = await safeFetch(`${origin}/bill`, {
+        ...opts,
+        deferCacheWrite: true,
+      });
+      expect(result.fromCache).toBe(false);
+      expect(await readdir(cacheDir)).toEqual([]);
+      await result.commitCache?.();
+      expect(await readdir(cacheDir)).toContain(result.docId);
+      const again = await safeFetch(`${origin}/bill`, opts);
+      expect(again.fromCache).toBe(true);
+      expect(again.commitCache).toBeUndefined();
+    });
+    it('caches no wrapper page, even when the write is deferred', async () => {
+      agent
+        .get(origin)
+        .intercept({ path: '/wrap' })
+        .reply(200, '<html><a href="bill.pdf">PDF</a></html>', {
+          headers: { 'content-type': 'text/html' },
+        });
+      await expect(
+        safeFetch(`${origin}/wrap`, { ...opts, deferCacheWrite: true }),
+      ).rejects.toMatchObject({ code: 'WRAPPER_PAGE' });
+      expect(await readdir(cacheDir)).toEqual([]);
+    });
+    it('trims the cache to its budget on commit, evicting least recently used first', async () => {
+      const body = (c: string) => c.repeat(1_000);
+      const fetchAndCommit = async (path: string, c: string) => {
+        agent.get(origin).intercept({ path }).reply(200, body(c));
+        const result = await safeFetch(`${origin}${path}`, {
+          ...opts,
+          deferCacheWrite: true,
+          cacheBudgetBytes: 2_600,
+        });
+        await result.commitCache?.();
+        return result.docId;
+      };
+      const a = await fetchAndCommit('/a', 'a');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const b = await fetchAndCommit('/b', 'b');
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const c = await fetchAndCommit('/c', 'c');
+      const files = await readdir(cacheDir);
+      expect(files).not.toContain(a);
+      expect(files).toContain(b);
+      expect(files).toContain(c);
+      const index = JSON.parse(
+        await readFile(join(cacheDir, 'index.json'), 'utf8'),
+      ) as Record<string, string>;
+      expect(Object.values(index)).not.toContain(a);
+    });
+    it('keeps the snapshot it just wrote even when it alone exceeds the budget', async () => {
+      agent.get(origin).intercept({ path: '/big' }).reply(200, 'x'.repeat(500));
+      const result = await safeFetch(`${origin}/big`, {
+        ...opts,
+        deferCacheWrite: true,
+        cacheBudgetBytes: 10,
+      });
+      await result.commitCache?.();
+      expect(await readdir(cacheDir)).toContain(result.docId);
+    });
   });
 });
 

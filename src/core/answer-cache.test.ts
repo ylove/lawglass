@@ -24,6 +24,7 @@ const key: AnswerCacheKey = {
   chipId: 'summary',
   provider: 'mock',
   model: 'scripted',
+  endpoint: 'mock:local',
   promptVersion: SUMMARY_PROMPT_VERSION,
 };
 const pathFor = (k: AnswerCacheKey = key): string =>
@@ -65,7 +66,9 @@ describe('AnswerCache', () => {
   it('uses the specified hash and invalidates every key component', async () => {
     expect(answerCacheKey(key)).toBe(
       createHash('sha256')
-        .update(`${DOC_A}|summary|mock|scripted|${SUMMARY_PROMPT_VERSION}`)
+        .update(
+          `${DOC_A}|summary|mock|scripted|mock:local|${SUMMARY_PROMPT_VERSION}`,
+        )
         .digest('hex'),
     );
     await cache.set(key, result);
@@ -74,11 +77,29 @@ describe('AnswerCache', () => {
       { ...key, chipId: 'money' },
       { ...key, provider: 'openai' },
       { ...key, model: 'other' },
+      { ...key, endpoint: 'https://api.openai.com:443' },
       { ...key, promptVersion: '2' },
     ];
-    expect(new Set([key, ...variants].map(answerCacheKey)).size).toBe(6);
+    expect(new Set([key, ...variants].map(answerCacheKey)).size).toBe(7);
     for (const variant of variants)
       expect(await cache.get(variant)).toBeUndefined();
+  });
+
+  // C6: the same model name behind another OpenAI-compatible endpoint is a different answer.
+  it('keeps answers from different endpoints apart, and refuses an endpoint that could collide', async () => {
+    const hosted = {
+      ...key,
+      provider: 'openai',
+      endpoint: 'https://api.openai.com:443',
+    };
+    const local = { ...hosted, endpoint: 'http://localhost:11434' };
+    await cache.set(hosted, { ...result, provider: 'openai' });
+    expect(await cache.get(local)).toBeUndefined();
+    expect(await cache.get(hosted)).toBeDefined();
+    expect(answerCacheKey(hosted)).not.toBe(answerCacheKey(local));
+    // The separator cannot be smuggled into the endpoint to forge another tuple.
+    expect(() => answerCacheKey({ ...key, endpoint: 'a|b' })).toThrow();
+    expect(() => answerCacheKey({ ...key, endpoint: '' })).toThrow();
   });
 
   it('misses without creating files, computes once, and hits after reopening', async () => {
