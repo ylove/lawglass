@@ -1,3 +1,4 @@
+import { useEffect, useId, useRef } from 'react';
 import type { Scenario } from '../../core/model/index.js';
 import { AVATAR_ICONS, TOPIC_ICONS } from './scenario-icons.js';
 
@@ -17,16 +18,28 @@ function footnoteNumbers(frames: Scenario['frames']): Map<string, number> {
 export function ScenarioStrip({
   scenario,
   onOpenSection,
+  heading,
+  focusHeading = false,
 }: {
   scenario: Scenario;
   onOpenSection: (sectionId: string, trigger: HTMLElement) => void;
+  /** Replaces the default heading, e.g. to name the subject the reader asked about. */
+  heading?: string;
+  /** Moves keyboard focus to the heading once, on mount (for a strip the reader just asked for). */
+  focusHeading?: boolean;
 }) {
+  // Several strips can be on the page at once, so the heading id must be unique per strip.
+  const titleId = useId();
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  useEffect(() => {
+    if (focusHeading) headingRef.current?.focus();
+  }, [focusHeading]);
   const numbers = footnoteNumbers(scenario.frames);
   return (
-    <section aria-labelledby="scenario-title" className="scenario">
+    <section aria-labelledby={titleId} className="scenario">
       <div className="scenario-head">
-        <h3 id="scenario-title">
-          What it could mean for {scenario.profile.name}
+        <h3 id={titleId} ref={headingRef} tabIndex={-1}>
+          {heading ?? `What it could mean for ${scenario.profile.name}`}
         </h3>
         <span className="scenario-badge">Example · invented person</span>
       </div>

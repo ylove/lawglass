@@ -53,6 +53,8 @@ const SAMPLE_PERSONAS = [
   'a homeowner',
   'a taxpayer',
   'a small business owner',
+  // The mock has no grounded example for this one, so it shows the "couldn't ground" state.
+  'a non-resident',
 ] as const;
 const MOCK_JUDGING = /\b(?:good|bad|unfair|fair|harmful|burden\w*)\b/i;
 
@@ -541,7 +543,8 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
           'INVALID_INPUT',
           'Describe who the example is about in neutral words, without judging the bill.',
         );
-      if (/\bnobody\b/i.test(subject)) return { status: 'none' };
+      if (/\bnobody\b|\bnon-resident\b/i.test(subject))
+        return { status: 'none' };
       const scenario = structuredClone(SAMPLE_SCENARIO);
       return { status: 'ok', scenario };
     },
