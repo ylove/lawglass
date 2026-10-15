@@ -12,3 +12,38 @@ test('removes OSC hyperlinks, CSI colors and stray controls but keeps newlines a
   expect(safeText('\u001bMx')).toBe('x');
   expect(safeText('plain § text – ok')).toBe('plain § text – ok');
 });
+
+test('removes bidi controls and zero-width characters that disguise text', () => {
+  const hidden = [
+    '\u061c',
+    '\u200b',
+    '\u200c',
+    '\u200d',
+    '\u200e',
+    '\u200f',
+    '\u202a',
+    '\u202b',
+    '\u202c',
+    '\u202d',
+    '\u202e',
+    '\u2060',
+    '\u2066',
+    '\u2067',
+    '\u2068',
+    '\u2069',
+    '\ufeff',
+    '\u00ad',
+    '\u180e',
+    '\u2061',
+    '\u2062',
+    '\u2063',
+    '\u2064',
+    '\u{e0000}',
+    '\u{e0041}',
+    '\u{e007f}',
+  ];
+  for (const char of hidden) expect(safeText(`a${char}b`)).toBe('ab');
+  expect(safeText('pay\u202egpj.exe')).toBe('paygpj.exe');
+  // Ordinary non-Latin text must survive.
+  expect(safeText('שלום 世界 ñ')).toBe('שלום 世界 ñ');
+});

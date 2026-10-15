@@ -29,9 +29,12 @@ and [Gemini model catalog](https://ai.google.dev/gemini-api/docs/models). Anthro
 names follow the spec. Explicit model overrides are supported for every provider.
 
 OpenAI accepts `config.baseURL`, then `OPENAI_BASE_URL`, for compatible endpoints.
-Keyless HTTP(S) endpoints are supported only on `localhost`, `127.0.0.1` or `[::1]`;
-the SDK receives a non-secret `local` placeholder. Remote endpoints require their
-own configured key. Keys are not inferred from another provider's environment.
+Provider keys travel only over `https:` or to `localhost`, `127.0.0.1` or `[::1]`.
+On loopback a missing key is replaced by a non-secret `local` placeholder. A plain
+`http:` endpoint elsewhere (Ollama or LM Studio on a LAN) also receives only that
+placeholder, even when a key is configured and even when none is, so a key never
+crosses the network in cleartext; set `<PREFIX>_ALLOW_INSECURE_KEY=1` to send the
+configured key anyway. `https:` endpoints require their own configured key. Keys are not inferred from another provider's environment.
 The JSON-format fallback runs only after a format-specific rejection, never after
 an authentication, rate-limit, network or validation failure. All successful
 structured results are validated with the caller's zod schema.
@@ -61,7 +64,10 @@ Every invocation uses a fresh temporary cwd containing only a private system
 prompt file. `--system-prompt-file` replaces Claude Code's default system prompt;
 the conversation messages stay on stdin. The child receives only basic process
 settings (`PATH`, `HOME`, `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, `LANG`, `LC_*`,
-`TERM`) and the user's `CLAUDE_*` / `ANTHROPIC_*` environment configuration.
+`TERM`) and the user's `CLAUDE_*` / `ANTHROPIC_*` environment configuration,
+except `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN`, which are withheld so the CLI
+bills the user's Claude login; `<PREFIX>_CLAUDE_CLI_USE_API_KEY=1` opts in. The model
+name must match `^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$` so it cannot be read as a flag.
 Other providers' keys and application settings are excluded. The adapter
 disables built-in tools (`--tools ""`) and all inherited MCP servers
 (`--strict-mcp-config --mcp-config '{"mcpServers":{}}'`). It also uses safe mode,

@@ -67,6 +67,8 @@ export interface PineconeBackendOptions {
   apiKey?: string;
   config?: Partial<PineconeSettings>;
   client?: PineconeClient;
+  /** Test seam: replaces the SDK's HTTP transport while keeping its real logging code. */
+  fetchApi?: typeof fetch;
   now?: () => number;
   random?: () => number;
   sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
@@ -253,7 +255,19 @@ async function boundedAttempt<T>(
     if (onAbort) signal?.removeEventListener('abort', onAbort);
   }
 }
+/**
+ * The SDK decides at client-construction time (and again when it lazily builds the data-plane
+ * client) whether to log requests. PINECONE_DEBUG_CURL prints the Api-Key header verbatim and
+ * PINECONE_DEBUG prints bodies, so the adapter switches both off wherever it uses the SDK
+ * rather than trusting each entry point to do it.
+ */
+export function disableSdkDiagnostics(): void {
+  delete process.env.PINECONE_DEBUG_CURL;
+  delete process.env.PINECONE_DEBUG;
+}
+
 async function safe<T>(run: () => Promise<T>): Promise<T> {
+  disableSdkDiagnostics();
   try {
     return await run();
   } catch (error) {
@@ -294,8 +308,14 @@ export class PineconeBackend implements RetrievalBackend {
     const apiKey = (options.apiKey ?? process.env.PINECONE_API_KEY)?.trim();
     if (!options.client && !apiKey) throw new AppError('MISSING_KEY');
     // The adapter owns the retry budget and cancellation; don't stack SDK retries.
+    disableSdkDiagnostics();
     this.client =
-      options.client ?? new Pinecone({ apiKey: apiKey ?? '', maxRetries: 0 });
+      options.client ??
+      new Pinecone({
+        apiKey: apiKey ?? '',
+        maxRetries: 0,
+        ...(options.fetchApi ? { fetchApi: options.fetchApi } : {}),
+      });
     this.now = options.now ?? Date.now;
     this.random = options.random ?? Math.random;
     this.sleep =

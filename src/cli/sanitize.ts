@@ -17,6 +17,14 @@ const ESCAPE_SEQUENCES = new RegExp(
 // C0 and C1 controls except tab and newline.
 const CONTROLS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g;
 
+// Bidi controls reorder displayed text (the "Trojan Source" trick) and zero-width characters
+// hide content; neither is visible in a terminal, so strip them.
+const INVISIBLE =
+  /[\u00ad\u061c\u180e\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff\u{e0000}-\u{e007f}]/gu;
+
 export function safeText(text: string): string {
-  return text.replace(ESCAPE_SEQUENCES, '').replace(CONTROLS, '');
+  return text
+    .replace(ESCAPE_SEQUENCES, '')
+    .replace(CONTROLS, '')
+    .replace(INVISIBLE, '');
 }
