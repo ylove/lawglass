@@ -22,7 +22,7 @@ import {
   IngestEvent,
   type LlmProvider,
 } from '../../src/core/model/index.js';
-import { createApp } from '../../src/server/app.js';
+import { createSessionTestApp as createApp } from '../support/session-app.js';
 import { makePipelineEnv, type PipelineEnv } from '../support/pipeline-env.js';
 import { makeSectionedText } from '../synth/index.js';
 
