@@ -42,6 +42,7 @@ const CHIPS: ClientConfig['chips'] = [
   { id: 'history', label: 'How did it get here?' },
   { id: 'penalties', label: 'Penalties and enforcement' },
   { id: 'effective-date', label: 'When does it take effect?' },
+  { id: 'delegations', label: 'Who decides later?' },
   { id: 'money', label: 'Taxes, fees, and spending' },
   { id: 'definitions', label: 'Key definitions' },
   { id: 'sponsors', label: 'Who sponsored it?' },
@@ -186,8 +187,8 @@ const ANSWERS: Record<ChipId, string> = {
     'Here is what the official record says about how this bill got here.\n\nKey actions:\n- 2026-02-03: Introduced in the House.\n- 2026-03-10: Reported by the House Water Committee.\n\nThe record lists no amendments to this bill.',
   sponsors:
     'Sponsored by Rep. A. Rivera, Rep. J. Chen. Cosponsors, if any, are not included.',
-  // Placeholder: the delegations chip is not in the served chip list until #202.
-  delegations: "This document doesn't address that question.",
+  delegations:
+    'The water department will write the detailed rules later, and the fine only works once the council sets the daily rate [S:sec-6].\n\n**Decided later by**\n- The water department: the rules for notifying households [S:sec-4/b]\n- The city council: the daily fine rate (not later than 90 days after enactment) [S:sec-6]\n\n**Depends on**\n- Funding set aside by the council in a later budget [S:sec-6]\n\n**Takes effect when**\n- July 1, 2027 [S:sec-7]',
 };
 
 /** Invented example for the `who-affected` demo. Every frame cites a section the answer cites. */
@@ -680,7 +681,11 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
           ? ANSWERS[req.chipId]
           : ANSWERS.penalties;
 
-      if (req.chipId !== 'sponsors' && req.chipId !== 'history') {
+      if (
+        req.chipId !== 'sponsors' &&
+        req.chipId !== 'history' &&
+        req.chipId !== 'delegations'
+      ) {
         await sleep(delay, signal);
         yield {
           type: 'retrieval',
