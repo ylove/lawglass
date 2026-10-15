@@ -1,8 +1,8 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, rename, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import { Readable } from 'node:stream';
+import { Readable, Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { AppError } from '../../model/index.js';
 
@@ -22,6 +22,8 @@ export interface LockedModel {
    * Each file's path (as laid out in the cache) and lowercase hex SHA-256. A list rather than a
    * path-keyed map: secret scanners read `"tokenizer.json": "<hex>"` as a leaked token.
    */
+  /** Total download size of the model; bounds how much any one file may stream. */
+  downloadBytes?: number;
   files: readonly { readonly path: string; readonly sha256: string }[];
 }
 
@@ -44,7 +46,15 @@ export interface VerifyOptions {
   /** Injected so tests never touch the network. */
   fetchFile?: FileFetcher;
   signal?: AbortSignal;
+  /** Per-file download time limit. Defaults to 10 minutes. */
+  timeoutMs?: number;
+  /** Per-file download size limit. Defaults to the model's downloadBytes plus slack. */
+  maxBytes?: number;
 }
+
+const DEFAULT_TIMEOUT_MS = 10 * 60_000;
+const SIZE_SLACK = 1.1;
+const FALLBACK_MAX_BYTES = 200_000_000;
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
@@ -85,7 +95,8 @@ async function download(
   file: string,
   target: string,
   fetchFile: FileFetcher,
-  signal: AbortSignal | undefined,
+  signal: AbortSignal,
+  maxBytes: number,
 ): Promise<void> {
   const response = await fetchFile(modelFileUrl(model, file), signal);
   if (!response.ok || !response.body) {
@@ -95,10 +106,31 @@ async function download(
     );
   }
   await mkdir(dirname(target), { recursive: true });
-  // Write to a temp name so a partial download is never mistaken for a cached file.
-  const partial = `${target}.partial`;
+  // Write to a unique temp name so a partial download is never mistaken for a cached file and
+  // two processes doing a first run at once cannot truncate each other's file.
+  const partial = `${target}.${String(process.pid)}.${randomUUID()}.partial`;
+  let received = 0;
+  // A stalled or hostile server must not fill the disk before the hash check can fail.
+  const limit = new Transform({
+    transform(chunk: Buffer, _encoding, callback) {
+      received += chunk.length;
+      if (received > maxBytes) {
+        callback(
+          new AppError(
+            'BACKEND_UNAVAILABLE',
+            `Model file ${model.id}/${file} is larger than the expected ${String(maxBytes)} bytes; download stopped.`,
+          ),
+        );
+      } else callback(null, chunk);
+    },
+  });
   try {
-    await pipeline(Readable.fromWeb(response.body), createWriteStream(partial));
+    await pipeline(
+      Readable.fromWeb(response.body),
+      limit,
+      createWriteStream(partial),
+      { signal },
+    );
     const actual = await sha256File(partial);
     // Throw before the rename: an unverified file must never appear at its final path.
     if (actual !== expectedHash(model, file)) throw mismatch(model, file);
@@ -125,6 +157,11 @@ export async function ensureVerifiedModelFiles(
   const fetchFile: FileFetcher =
     options.fetchFile ??
     ((url, signal) => fetch(url, signal ? { signal } : {}));
+  const maxBytes =
+    options.maxBytes ??
+    (model.downloadBytes === undefined
+      ? FALLBACK_MAX_BYTES
+      : Math.ceil(model.downloadBytes * SIZE_SLACK));
   for (const { path: file, sha256: expected } of model.files) {
     assertSafeRelativePath(file);
     if (!SHA256_HEX.test(expected)) {
@@ -144,7 +181,13 @@ export async function ensureVerifiedModelFiles(
     if (actual === undefined) {
       // Offline: leave it to the loader, which fails with its own clear error.
       if (options.allowRemote) {
-        await download(model, file, target, fetchFile, options.signal);
+        const timeout = AbortSignal.timeout(
+          options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        );
+        const signal = options.signal
+          ? AbortSignal.any([options.signal, timeout])
+          : timeout;
+        await download(model, file, target, fetchFile, signal, maxBytes);
       }
       continue;
     }

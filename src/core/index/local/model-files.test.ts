@@ -86,7 +86,7 @@ describe('model file hashes', () => {
     });
     expect(fetchFile).toHaveBeenCalledWith(
       'https://huggingface.co/Org/fake-model/resolve/rev123/onnx/model.onnx',
-      undefined,
+      expect.any(AbortSignal),
     );
     expect(await readFile(pathOf(model, 'onnx/model.onnx'), 'utf8')).toBe(
       'weights',
@@ -202,5 +202,63 @@ describe('model file hashes', () => {
         expect(hash).toMatch(/^[0-9a-f]{64}$/);
       }
     }
+  });
+
+  it('stops a download that exceeds the size cap and leaves nothing behind', async () => {
+    const model = fakeModel({ 'config.json': 'x' });
+    await expect(
+      ensureVerifiedModelFiles(model, {
+        cacheDir,
+        allowRemote: true,
+        maxBytes: 10,
+        fetchFile: () => Promise.resolve(new Response('y'.repeat(100))),
+      }),
+    ).rejects.toThrow(/larger than the expected 10 bytes/);
+    expect(await readdir(join(cacheDir, model.id, model.revision))).toEqual([]);
+  });
+
+  it('derives the size cap from downloadBytes when not overridden', async () => {
+    const model = { ...fakeModel({ 'config.json': 'x' }), downloadBytes: 1 };
+    // 1 byte * 1.1 slack rounds up to 2 bytes.
+    await expect(
+      ensureVerifiedModelFiles(model, {
+        cacheDir,
+        allowRemote: true,
+        fetchFile: () => Promise.resolve(new Response('abc')),
+      }),
+    ).rejects.toThrow(/larger than the expected 2 bytes/);
+  });
+
+  it('times out a stalled download', async () => {
+    const model = fakeModel({ 'config.json': 'x' });
+    const stalled = (_url: string, signal?: AbortSignal) =>
+      new Promise<Response>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => {
+          reject(signal.reason as Error);
+        });
+      });
+    await expect(
+      ensureVerifiedModelFiles(model, {
+        cacheDir,
+        allowRemote: true,
+        timeoutMs: 20,
+        fetchFile: stalled,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it('uses distinct temp files so concurrent first runs do not collide', async () => {
+    const model = fakeModel({ 'config.json': 'same' });
+    const run = () =>
+      ensureVerifiedModelFiles(model, {
+        cacheDir,
+        allowRemote: true,
+        fetchFile: () => Promise.resolve(new Response('same')),
+      });
+    await Promise.all([run(), run(), run()]);
+    expect(await readFile(pathOf(model, 'config.json'), 'utf8')).toBe('same');
+    expect(await readdir(join(cacheDir, model.id, model.revision))).toEqual([
+      'config.json',
+    ]);
   });
 });

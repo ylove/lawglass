@@ -1,4 +1,5 @@
 import { join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import lock from '../models.lock.json' with { type: 'json' };
 import { envVar } from '../src/core/brand.js';
@@ -29,7 +30,11 @@ export async function hashModels(
   return out;
 }
 
-if (import.meta.main) {
+// import.meta.main needs Node 22.18+; engines allows 22.13, where it would silently do nothing.
+if (
+  process.argv[1] &&
+  pathToFileURL(resolve(process.argv[1])).href === import.meta.url
+) {
   const { values } = parseArgs({
     options: { 'config-dir': { type: 'string' } },
   });

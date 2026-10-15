@@ -104,9 +104,11 @@ export function createLocalModels(options: LocalModelOptions = {}): {
   ): Promise<typeof import('@huggingface/transformers')> {
     const transformers = await loadRuntime();
     transformers.env.cacheDir = cacheDir;
-    transformers.env.allowRemoteModels = allowRemote;
-    // Offline loads use the exact revision directory, not an unversioned local model.
-    transformers.env.allowLocalModels = !allowRemote;
+    // transformers.js never downloads: our verifier fetched and hashed the locked files, and the
+    // load below reads only the verified revision directory. Anything outside the locked files
+    // fails loudly instead of being fetched unchecked.
+    transformers.env.allowRemoteModels = false;
+    transformers.env.allowLocalModels = true;
     transformers.env.useFSCache = true;
     const cached = await Promise.all(
       REQUIRED_MODEL_FILES.map(async (file) => {
@@ -145,15 +147,17 @@ export function createLocalModels(options: LocalModelOptions = {}): {
     (extractor ??= serializeModelLoad(async () => {
       const { AutoTokenizer, AutoModel, FeatureExtractionPipeline } =
         await prepare(lock.embedding);
-      const modelPath = allowRemote
-        ? lock.embedding.id
-        : join(cacheDir, lock.embedding.id, lock.embedding.revision);
+      const modelPath = join(
+        cacheDir,
+        lock.embedding.id,
+        lock.embedding.revision,
+      );
       const loadOptions = {
         revision: lock.embedding.revision,
         dtype: 'q8' as const,
         device: 'cpu' as const,
         cache_dir: cacheDir,
-        local_files_only: !allowRemote,
+        local_files_only: true,
       };
       // The v4 pipeline() preflight omits revision when fetching config. Build
       // the same pipeline from pinned components so no request falls back to main.
@@ -193,11 +197,13 @@ export function createLocalModels(options: LocalModelOptions = {}): {
         dtype: 'q8' as const,
         device: 'cpu' as const,
         cache_dir: cacheDir,
-        local_files_only: !allowRemote,
+        local_files_only: true,
       };
-      const modelPath = allowRemote
-        ? lock.reranker.id
-        : join(cacheDir, lock.reranker.id, lock.reranker.revision);
+      const modelPath = join(
+        cacheDir,
+        lock.reranker.id,
+        lock.reranker.revision,
+      );
       const tokenizer = await AutoTokenizer.from_pretrained(
         modelPath,
         loadOptions,

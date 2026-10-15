@@ -1,4 +1,6 @@
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 
 /**
@@ -46,7 +48,11 @@ export function findLockfileViolations(raw: string): string[] {
   return violations;
 }
 
-if (import.meta.main) {
+// import.meta.main needs Node 22.18+; engines allows 22.13, where it would silently do nothing.
+if (
+  process.argv[1] &&
+  pathToFileURL(resolve(process.argv[1])).href === import.meta.url
+) {
   const violations = findLockfileViolations(
     readFileSync(process.argv[2] ?? 'package-lock.json', 'utf8'),
   );
