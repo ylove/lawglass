@@ -815,3 +815,18 @@ describe('sidebar and shell', () => {
     });
   });
 });
+
+describe('local measure demo document', () => {
+  test('a charter address ingests as a scanned charter amendment', async () => {
+    const api = mock();
+    let docId = '';
+    for await (const e of api.ingest({
+      url: 'https://example.gov/charter.pdf',
+    }))
+      if (e.type === 'done') docId = e.doc.docId;
+    const detail = await api.getDoc(docId);
+    expect(detail.metadata.docKind).toBe('charter_amendment');
+    expect(detail.metadata.amends?.sections).toContain('41-5');
+    expect(detail.scan?.pages.some((p) => p.marks === 'not-read')).toBe(true);
+  });
+});
