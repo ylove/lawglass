@@ -29,6 +29,7 @@ import { ask, ingest, sectionExcerpt } from '../core/pipeline/index.js';
 import type { RegistryEntry } from '../core/registry.js';
 import { buildDocDetail } from './doc-detail.js';
 import { CHIP_LABELS } from './chips.js';
+import { getChip } from '../core/chips.js';
 import { lazyProvider } from '../core/llm/lazy-provider.js';
 import { SlidingWindowLimiter } from './rate-limit.js';
 import { registerScenarioRoute } from './scenario-route.js';
@@ -96,6 +97,9 @@ export function toErrorPayload(error: unknown): ErrorPayload {
 function invalid(userMessage: string): AppError {
   return new AppError('INVALID_INPUT', userMessage, { userMessage });
 }
+
+/** Chip strategies whose answer needs no model, or only an optional one. */
+const LAZY_STRATEGIES: ReadonlySet<string> = new Set(['metadata', 'extract']);
 
 export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   const publicMode = options.publicMode ?? false;
@@ -466,12 +470,13 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
             : { chipId: body.chipId },
           {
             backend: runtime.backend,
-            // A chip may not need the model (sponsors) or may do without it (delegations),
-            // so a missing key is only reported if the chip actually calls the provider.
+            // Chips that may not need the model (sponsors) or may do without it (delegations)
+            // read the key lazily. Every other request fails on a missing key before retrieval.
             provider:
-              body.chipId === undefined
-                ? runtime.answerProvider
-                : lazyProvider(() => runtime.answerProvider),
+              body.chipId !== undefined &&
+              LAZY_STRATEGIES.has(getChip(body.chipId).strategy)
+                ? lazyProvider(() => runtime.answerProvider)
+                : runtime.answerProvider,
             registry: runtime.registry,
             retrievalMode: runtime.retrievalMode,
             chips: runtime.chips,

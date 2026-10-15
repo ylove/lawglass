@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { describe, expect, it, vi } from 'vitest';
 import { ScriptedProvider } from '../../../tests/contracts/scripted-provider.js';
 import { AppError } from '../model/index.js';
@@ -18,6 +19,20 @@ describe('lazyProvider', () => {
     }))
       if (e.type === 'text') text += e.text;
     expect(text).toBe('Hi.');
+  });
+
+  it('forwards generateObject', async () => {
+    const lazy = lazyProvider(
+      () => new ScriptedProvider({ objects: { thing: { n: 1 } } }),
+    );
+    const { object } = await lazy.generateObject({
+      system: 's',
+      prompt: 'q',
+      schemaName: 'thing',
+      schema: z.object({ n: z.number() }),
+      maxTokens: 10,
+    });
+    expect(object).toEqual({ n: 1 });
   });
 
   it('surfaces MISSING_KEY on first use', () => {

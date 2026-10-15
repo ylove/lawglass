@@ -9,6 +9,7 @@ import { AppError, ChipId } from '../core/model/index.js';
 import { ask, ingest } from '../core/pipeline/index.js';
 import { runEvalCommand } from '../eval/command.js';
 import { runCompareCommand, type CompareOptions } from '../eval/compare.js';
+import { unescapeDelegationList } from '../core/chip-delegations.js';
 import { unescapeRecordText } from '../core/chip-history.js';
 import { safeText } from './sanitize.js';
 import { formatAskFooter, formatIngest, formatList } from './format.js';
@@ -232,10 +233,16 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
             ? lazyProvider(() => runtime.answerProvider)
             : runtime.answerProvider;
         const entry = await runtime.registry.findByLabelOrPrefix(doc);
-        // The history and delegations chips escape quoted record text for the web renderer.
-        const unescapes =
-          chip?.success === true &&
-          (chip.data === 'history' || chip.data === 'delegations');
+        // History and delegations escape quoted record text for the web renderer. For
+        // delegations only the list is ours; the model's lede prints unchanged.
+        const unescape =
+          chip?.success !== true
+            ? undefined
+            : chip.data === 'history'
+              ? unescapeRecordText
+              : chip.data === 'delegations'
+                ? unescapeDelegationList
+                : undefined;
         const result = await ask(
           entry.docId,
           chip?.success ? { chipId: chip.data } : { question: question ?? '' },
@@ -248,8 +255,7 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
           },
           {
             onToken: (text) => {
-              // Only text our code escaped is unescaped here; model text prints unchanged.
-              write(safeText(unescapes ? unescapeRecordText(text) : text));
+              write(safeText(unescape ? unescape(text) : text));
             },
           },
         );

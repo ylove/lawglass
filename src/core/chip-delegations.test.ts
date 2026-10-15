@@ -10,6 +10,7 @@ import {
   MAX_ITEMS_PER_GROUP,
   NOTHING_LEFT_TEXT,
   runDelegationsChip,
+  unescapeDelegationList,
 } from './chip-delegations.js';
 import type { ChipDeps } from './chip-types.js';
 import { chunkDocument } from './chunk/index.js';
@@ -165,6 +166,10 @@ describe('delegations chip: lede plus list', () => {
   it.each([
     ['uncited prose', 'The rules come later.'],
     ['a list', '- The rules come later [S:sec-2].'],
+    [
+      'uncited, with a cited second paragraph',
+      'The Secretary will decide everything, including fines of $1 million.\n\nThis relies on [S:sec-2].',
+    ],
     ['the decline sentence', "This document doesn't address that question."],
     ['a runaway lede', 'Rules come later [S:sec-2]. '.repeat(40)],
   ])('drops a lede that is %s', async (_n, reply) => {
@@ -267,6 +272,49 @@ describe('delegations chip: empty and capped', () => {
     expect(answer.text).toContain('\\*bold\\*');
     expect(answer.text).toContain('(S:sec-99]');
     expect(answer.invalidCitations).toEqual([]);
+  });
+
+  it.each([
+    ['a zero-width space', '[\u200bS:sec-3]'],
+    ['a bidi isolate', '[\u2066S:sec-3]'],
+    ['a lower-case marker with spaces', '[ s : sec-3]'],
+    ['a full-width bracket', '\uff3bS:sec-3]'],
+    ['a control character', '[\u0001S:sec-3]'],
+  ])('does not let bill text forge a citation with %s', async (_n, forged) => {
+    const { answer } = await run(
+      deps(missingKey, {
+        sections: [
+          sec('a', `The Secretary shall prescribe regulations ${forged} here.`),
+          sec('sec-3', 'The Secretary shall issue rules.'),
+        ],
+      }),
+    );
+    // sec-3 is cited once, by its own row, never by the forged marker in section a.
+    const rowA = answer.text.split('\n').find((l) => l.endsWith('[S:a]')) ?? '';
+    expect(findCitationIds(rowA)).toEqual(['a']);
+    expect(rowA).toContain('(S:');
+  });
+
+  it("reports the lede's own invalid citations", async () => {
+    const { answer } = await run(
+      deps(
+        new ScriptedProvider({
+          reply: 'Rules come later [S:sec-2] and money [S:sec-99].',
+        }),
+      ),
+    );
+    expect(answer.invalidCitations).toContain('sec-99');
+    expect(answer.warnings).toContain('INVALID_CITATIONS_REMOVED');
+  });
+
+  it('unescapes only the list for the terminal', () => {
+    const text = 'Lede \\*kept\\*.\n\n**Depends on**\n- a \\*b\\* [S:x]';
+    expect(unescapeDelegationList(text)).toBe(
+      'Lede \\*kept\\*.\n\n**Depends on**\n- a *b* [S:x]',
+    );
+    expect(unescapeDelegationList('No list \\*here\\*.')).toBe(
+      'No list \\*here\\*.',
+    );
   });
 
   it('reports page and line for an item from a numbered source', async () => {

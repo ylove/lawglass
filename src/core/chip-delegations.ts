@@ -21,7 +21,7 @@ import {
   validateCitations,
 } from './answer/index.js';
 import { coveredSectionIds } from './answer/citations.js';
-import { cleanRecordText } from './chip-history.js';
+import { cleanRecordText, unescapeRecordText } from './chip-history.js';
 import {
   syntheticHit,
   withoutSyntheticChunks,
@@ -35,6 +35,7 @@ import {
   type DelegationItem,
 } from './enrich/delegations.js';
 import {
+  findCitationIds,
   isAppError,
   ZERO_USAGE,
   type AnswerResult,
@@ -92,7 +93,19 @@ function pathsById(
  * backslash does not help: the validator still sees the marker behind it).
  */
 const plain = (text: string): string =>
-  cleanRecordText(text.replace(/\[(?=S:)/g, '('), 300);
+  cleanRecordText(
+    text
+      // Fold look-alikes (full-width brackets), then drop invisible characters BEFORE looking
+      // for a marker: "[\u200bS:x]" must not survive as one once cleanRecordText removes them.
+      .normalize('NFKC')
+      .replace(INVISIBLE, '')
+      .replace(/\[\s*S\s*:/gi, '(S:'),
+    300,
+  );
+
+/** Zero-width, bidi, soft-hyphen, BOM and control characters. */
+const INVISIBLE =
+  /[\u0000-\u001f\u007f-\u009f\u00ad\u200b-\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
 
 /** "15 U.S.C. 80b-2" and "15 U.S.C. 80b–2(a)" name the same thing; say it once. */
 const squash = (text: string): string =>
@@ -168,9 +181,14 @@ function excerpts(
 function cleanLede(result: AnswerResult): string | undefined {
   if (result.declined || result.warnings.includes('TRUNCATED'))
     return undefined;
-  if (!result.citations.some((c) => c.valid)) return undefined;
   const first = result.text.trim().split(/\n\s*\n/)[0] ?? '';
   const flat = first.replace(/\s+/g, ' ').trim();
+  // Grounding is judged on the text we keep, not on the whole reply: a cited second paragraph
+  // must not vouch for an uncited first one.
+  const valid = new Set(
+    result.citations.filter((c) => c.valid).map((c) => c.sectionId),
+  );
+  if (!findCitationIds(flat).some((id) => valid.has(id))) return undefined;
   // A list or heading in the lede would break the "lede, then list" shape.
   if (
     flat === '' ||
@@ -262,6 +280,8 @@ export async function runDelegationsChip(
     validateCitations(text, new Set(chunks.flatMap(coveredSectionIds)), chunks);
 
   let lede: string | undefined;
+  let replyInvalid: string[] = [];
+  let replyWarnings: AnswerResult['warnings'] = [];
   let model: ModelInfo = none;
   if (deps.publicMode !== true && hasKey(deps.provider)) {
     const reply = await answer({
@@ -282,6 +302,11 @@ export async function runDelegationsChip(
       usage: reply.usage,
     };
     lede = cleanLede(reply);
+    // Mis-citations the model made are worth reporting even though they were stripped.
+    replyInvalid = reply.invalidCitations;
+    replyWarnings = reply.warnings.filter(
+      (w) => w === 'INVALID_CITATIONS_REMOVED',
+    );
   }
 
   // Lede and list are validated as one text, so both get numbered together in the web.
@@ -293,10 +318,23 @@ export async function runDelegationsChip(
       citations: validated.citations.map((c) =>
         withoutSyntheticChunks(c, docId),
       ),
-      invalidCitations: validated.invalidCitations,
-      warnings: validated.warnings,
+      invalidCitations: [
+        ...new Set([...replyInvalid, ...validated.invalidCitations]),
+      ],
+      warnings: [...new Set([...replyWarnings, ...validated.warnings])],
     },
     model,
     options.onToken,
   );
+}
+
+/**
+ * The CLI prints the web renderer's escapes as plain text. Only the list rows are escaped by our
+ * code, so unescape from the first group heading on and leave the model's lede untouched.
+ */
+export function unescapeDelegationList(text: string): string {
+  const at = text.search(
+    /(?:^|\n\n)\*\*(?:Decided later by|Depends on|Takes effect when)\*\*\n/,
+  );
+  return at < 0 ? text : text.slice(0, at) + unescapeRecordText(text.slice(at));
 }
