@@ -41,7 +41,7 @@ function lineRange(start: number, end: number | undefined): string {
  * "D > XLI > Sec. 4101"); a cited node with no section above it prints its own label
  * ("Division A").
  */
-function pathLabel(path: readonly Section[]): string {
+export function pathLabel(path: readonly Section[]): string {
   let start = path.length - 1;
   for (let i = path.length - 1; i >= 0; i--) {
     if ((path[i]?.id.split('/').at(-1) ?? '').startsWith('sec-')) {

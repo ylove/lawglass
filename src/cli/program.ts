@@ -20,6 +20,9 @@ import { promptChoice, promptSecret } from './secret-prompt.js';
 import { createLauncher, type Launcher } from '../server/launch.js';
 import { prepareIngestSource } from './ingest-source.js';
 import { validateBindHost } from '../server/bind.js';
+import { launchMcp, type McpLauncher } from '../mcp/launch.js';
+import { getSection, searchDocument } from '../mcp/queries.js';
+import { UntrustedText } from '../mcp/untrusted.js';
 
 export interface CliDependencies {
   init?: (options: {
@@ -32,6 +35,8 @@ export interface CliDependencies {
   write?: (text: string) => void;
   /** Starts the web server (and opens the browser unless public). Default: the real one. */
   serve?: Launcher;
+  /** Serves the MCP protocol on stdio. Default: the real server. */
+  mcp?: McpLauncher;
 }
 
 /** Commander turns `--no-open` into `open: false`; it is `true` when the flag is absent. */
@@ -77,6 +82,10 @@ function lazyProvider(get: () => LlmProvider): LlmProvider {
     streamText: (req) => get().streamText(req),
     generateObject: (req) => get().generateObject(req),
   };
+}
+
+function formatJson(value: unknown, compact: boolean | undefined): string {
+  return `${JSON.stringify(value, null, compact ? undefined : 2)}\n`;
 }
 
 export function createProgram(dependencies: CliDependencies = {}): Command {
@@ -270,6 +279,73 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
         write(`\n${formatAskFooter(result, normalized)}`);
       },
     );
+  program
+    .command('search <doc> <query>')
+    .description(
+      'search a document; prints the same JSON as the MCP search tool',
+    )
+    .option('--cursor <cursor>', 'cursor from a previous result, for more hits')
+    .option('--json', 'print compact JSON on one line')
+    .option('--backend <backend>', 'retrieval backend (pinecone or local)')
+    .action(
+      async (
+        doc: string,
+        query: string,
+        options: BackendOption & { cursor?: string; json?: boolean },
+      ) => {
+        const runtime = await open(options, false);
+        const entry = await runtime.registry.findByLabelOrPrefix(doc);
+        const result = await searchDocument(
+          runtime,
+          entry.docId,
+          { query, cursor: options.cursor },
+          new UntrustedText(),
+        );
+        write(formatJson(result, options.json));
+      },
+    );
+  program
+    .command('get-section <doc> <section>')
+    .description('print one section; the same JSON as the MCP get_section tool')
+    .option('--view <view>', 'current (default) or redline', 'current')
+    .option(
+      '--cursor <cursor>',
+      'cursor from a previous result, for a long section',
+    )
+    .option('--json', 'print compact JSON on one line')
+    .option('--backend <backend>', 'retrieval backend (pinecone or local)')
+    .action(
+      async (
+        doc: string,
+        section: string,
+        options: BackendOption & {
+          view: string;
+          cursor?: string;
+          json?: boolean;
+        },
+      ) => {
+        const runtime = await open(options, false);
+        const entry = await runtime.registry.findByLabelOrPrefix(doc);
+        const result = await getSection(
+          runtime,
+          entry.docId,
+          { section, view: options.view, cursor: options.cursor },
+          new UntrustedText(),
+        );
+        write(formatJson(result, options.json));
+      },
+    );
+  program
+    .command('mcp')
+    .description(
+      'serve the Model Context Protocol on stdio, for AI agents (reads stdin, writes only protocol messages to stdout)',
+    )
+    .action(async () => {
+      // Local backend only: no key, and an agent never reaches a hosted index.
+      await (dependencies.mcp ?? launchMcp)(() =>
+        open({ backend: 'local' }, false),
+      );
+    });
   program
     .command('list')
     .description('list ingested documents')
