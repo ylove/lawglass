@@ -54,7 +54,7 @@
     "commander": "15.0.0",
     "hono": "4.13.13",
     "ipaddr.js": "2.5.0",
-    "lucide-react": "1.52.0",
+    "lucide-react": "1.56.0",
     "openai": "7.32.0",
     "react": "19.3.0",
     "react-dom": "19.3.0",
