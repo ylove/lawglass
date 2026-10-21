@@ -32,6 +32,8 @@ export function App({ api: provided }: { api?: ApiClient }) {
   const [problem, setProblem] = useState<string | null>(null);
   // True when the first requests could not reach the server at all (not a server-side error).
   const [serverDown, setServerDown] = useState(false);
+  // A slow (not unreachable) start: offer Retry instead of leaving a bare message.
+  const [slowStart, setSlowStart] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   // Where the bill view puts its title and byline: inside the masthead band.
@@ -49,7 +51,13 @@ export function App({ api: provided }: { api?: ApiClient }) {
       .catch((e: unknown) => {
         if (!live) return;
         if (e instanceof ApiError && e.code === 'NETWORK') setServerDown(true);
-        else setProblem(errorMessage(e));
+        else {
+          setProblem(errorMessage(e));
+          setSlowStart(
+            e instanceof ApiError &&
+              (e.code === 'TIMEOUT' || e.code === 'STREAM_LOST'),
+          );
+        }
       })
       .finally(() => {
         if (live) setLoading(false);
@@ -156,6 +164,20 @@ export function App({ api: provided }: { api?: ApiClient }) {
             <p role="alert" className="error">
               {problem}
             </p>
+          )}
+          {problem && slowStart && (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                setLoading(true);
+                setSlowStart(false);
+                setProblem(null);
+                setAttempt((n) => n + 1);
+              }}
+            >
+              Retry
+            </button>
           )}
           {loading && <p role="status">Loading...</p>}
           {config && selected === null && (

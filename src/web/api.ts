@@ -105,7 +105,6 @@ export function createHttpApi(options: HttpApiOptions = {}): ApiClient {
     init: RequestInit | undefined,
     timeoutMs: number,
     work: (res: Response) => Promise<T>,
-    keepOpen = false,
   ): Promise<T> {
     const timer = new AbortController();
     const deadline = { passed: false };
@@ -119,7 +118,6 @@ export function createHttpApi(options: HttpApiOptions = {}): ApiClient {
         ...init,
         signal: anySignal(callerSignal, timer.signal),
       });
-      if (keepOpen) clearTimeout(handle);
       return await work(res);
     } catch (cause: unknown) {
       if (deadline.passed) throw new ApiError('TIMEOUT', TIMED_OUT);
@@ -158,7 +156,7 @@ export function createHttpApi(options: HttpApiOptions = {}): ApiClient {
     schema: z.ZodType<T>,
     signal?: AbortSignal,
   ): AsyncGenerator<T> {
-    // The deadline covers only the wait for the first response; after that the watchdog in
+    // The deadline covers only the wait for the first response (and any error body); after that the watchdog in
     // readSseEvents takes over, so a long answer is never cut short while bytes keep arriving.
     const res = await withDeadline(
       url,
@@ -172,10 +170,12 @@ export function createHttpApi(options: HttpApiOptions = {}): ApiClient {
         ...(signal ? { signal } : {}),
       },
       sseOptions.idleMs ?? DEFAULT_IDLE_MS,
-      (r) => Promise.resolve(r),
-      true,
+      // Reading an error body is still under the deadline, so a stalled 503 cannot hang.
+      async (r) => {
+        if (!r.ok) throw await errorFrom(r);
+        return r;
+      },
     );
-    if (!res.ok) throw await errorFrom(res);
     yield* readSseEvents(res, schema, sseOptions);
   }
 

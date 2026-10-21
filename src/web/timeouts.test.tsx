@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { z } from 'zod';
 import { anySignal, createHttpApi } from './api.js';
 import { CitationDrawer } from './CitationDrawer.js';
+import { App } from './App.js';
 import { DocumentView } from './DocumentView.js';
 import { SummaryPanel } from './document/SummaryPanel.js';
 import { readSseEvents } from './sse.js';
@@ -184,6 +185,54 @@ describe('stream watchdog', () => {
 function failing(overrides: Partial<ApiClient>): ApiClient {
   return { ...createMockApi({ delayMs: 0 }), ...overrides };
 }
+
+describe('error bodies and startup', () => {
+  test('a failing stream whose error body stalls still times out', async () => {
+    const stalled = ((_u: string, init?: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          init?.signal?.addEventListener('abort', () => {
+            c.error(new DOMException('aborted', 'AbortError'));
+          });
+        },
+      });
+      return Promise.resolve(new Response(body, { status: 503 }));
+    }) as unknown as typeof fetch;
+    const api = createHttpApi({ fetchImpl: stalled });
+    const next = api
+      .ask('d1', { question: 'q' })
+      [Symbol.asyncIterator]()
+      .next()
+      .catch((e: unknown) => e);
+    await vi.advanceTimersByTimeAsync(45_000);
+    expect(((await next) as ApiError).code).toBe('TIMEOUT');
+  });
+
+  test('a startup timeout shows Retry, and Retry recovers', async () => {
+    const base = createMockApi({ delayMs: 0 });
+    let calls = 0;
+    const api = failing({
+      getConfig: () => {
+        calls++;
+        return calls === 1
+          ? Promise.reject(new ApiError('TIMEOUT', TOO_SLOW))
+          : base.getConfig();
+      },
+    });
+    render(<App api={api} />);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(screen.getByText(TOO_SLOW)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    expect(screen.queryByText(TOO_SLOW)).toBeNull();
+    expect(calls).toBe(2);
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+});
 
 describe('retry buttons', () => {
   test('the drawer shows the error with Retry, and Retry loads the section', async () => {
