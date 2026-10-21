@@ -310,7 +310,7 @@ describe('history card', () => {
   });
 });
 
-describe('server-not-running state', () => {
+describe('server-unreachable state', () => {
   test('replaces the error cascade with one friendly card and a working Retry', async () => {
     const api = mock();
     let up = false;
@@ -323,14 +323,14 @@ describe('server-not-running state', () => {
           );
     render(<App api={api} />);
     const card = await screen.findByRole('region', {
-      name: /local server isn't running/,
+      name: /can't reach its server/,
     });
     expect(card.textContent).toContain(`npx ${BRAND.name} serve`);
     expect(screen.queryByRole('alert')).toBeNull();
     up = true;
     fireEvent.click(within(card).getByRole('button', { name: 'Retry' }));
     await ready();
-    expect(screen.queryByText(/isn't running/)).toBeNull();
+    expect(screen.queryByText(/reach its server/)).toBeNull();
   });
 
   test('also covers a failed document list', async () => {

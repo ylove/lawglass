@@ -18,6 +18,11 @@ h4 {
   line-height: 1.25;
   margin: 0 0 0.5rem;
 }
+/* Only 400/500/600 are loaded; the default bold (700) would be synthesized by the browser. */
+strong,
+b {
+  font-weight: 600;
+}
 h1 {
   font-size: 1.4rem;
   font-weight: 600;

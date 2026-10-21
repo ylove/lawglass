@@ -1,0 +1,22 @@
+/**
+ * Footer data note: who receives bill text and questions. Returns null for the mock provider
+ * (nothing leaves the machine) so no claim is shown.
+ */
+export function dataNote(provider: string): string | null {
+  switch (provider) {
+    case 'anthropic':
+      return sentTo('Anthropic');
+    case 'openai':
+      return sentTo('OpenAI');
+    case 'google':
+      return sentTo('Google');
+    case 'claude-cli':
+      return sentTo('Claude through your local Claude Code');
+    default:
+      return null;
+  }
+}
+
+function sentTo(who: string): string {
+  return `Bill text and your questions are sent to ${who} to write answers.`;
+}
