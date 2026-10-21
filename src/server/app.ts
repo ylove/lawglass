@@ -32,6 +32,7 @@ import { CHIP_LABELS } from './chips.js';
 import { SlidingWindowLimiter } from './rate-limit.js';
 import { registerScenarioRoute } from './scenario-route.js';
 import { createSummaryService } from './summary.js';
+import { securityHeaders } from './security-headers.js';
 import { staticAssets } from './static.js';
 import { noopTurnstile, type TurnstileVerifier } from './turnstile.js';
 import { isLoopbackHost } from './bind.js';
@@ -132,6 +133,9 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     });
 
   const app = new Hono();
+
+  // First, so its headers also land on responses that later middleware returns early.
+  app.use('*', securityHeaders({ publicMode }));
 
   app.use('*', async (c, next) => {
     const host = c.req.header('host') ?? new URL(c.req.url).host;
