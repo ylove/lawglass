@@ -2,9 +2,8 @@
  * Text sanitizing shared by the history adapters. Everything here is linear in the input
  * length: no backtracking regexes over untrusted text, and callers cap length first.
  *
- * Output is plain text. By default bare `<` and `>` are dropped so markup can never survive;
- * `keepOperators` removes only genuine tags and keeps comparison operators. Consumers must
- * still render it as text, never as HTML.
+ * Output is plain text: genuine tags are removed, comparison operators are kept. Consumers
+ * must still render it as text, never as HTML.
  */
 
 // Zero-width (U+200B-200F), bidi embedding/override (U+202A-202E), bidi isolate
@@ -21,30 +20,20 @@ export function stripInvisible(value: string): string {
   return value.replace(INVISIBLE, '');
 }
 
-/** One pass: `<...>` becomes a space. An unterminated tag drops the rest; a bare `>` is dropped. */
-function stripAllAngles(value: string): string {
-  let out = '';
-  let inTag = false;
-  for (const char of value) {
-    if (inTag) {
-      if (char === '>') inTag = false;
-    } else if (char === '<') {
-      inTag = true;
-      out += ' ';
-    } else if (char !== '>') out += char;
-  }
-  return out;
-}
-
 const isLetter = (c: string | undefined): boolean =>
   c !== undefined && /^[A-Za-z]$/.test(c);
 
 /**
- * One linear pass: a genuine tag (`<b>`, `</b>`, `<a href="x">`, `<!--c-->`, `<?x?>`) becomes a
- * space. A `<` or `>` that is not part of a tag stays, because bill text really says
- * "income < $50,000 and age > 65"; an unmatched `<` never swallows what follows it.
+ * One linear pass over the angle brackets. A genuine tag (`<b>`, `</b>`, `<a href="x">`,
+ * `<!--c-->`, `<?x?>`) is replaced by `onTag(tag)`; a `<` that does not start a closed tag is
+ * replaced by `stray`. Bill text really says "income < $50,000 and age > 65", so a stray `<` or
+ * `>` is real text, and an unmatched `<` never swallows what follows it.
  */
-function stripTags(value: string): string {
+function mapAngles(
+  value: string,
+  onTag: (tag: string) => string,
+  stray: string,
+): string {
   let out = '';
   let at = 0;
   // Index of the next `<` or `>` at or after `at`, cached so the scan never repeats work.
@@ -74,14 +63,24 @@ function stripTags(value: string): string {
       (first === '/' && isLetter(value[lt + 2]));
     const close = startsTag ? nextAngle(lt + 1) : -1;
     if (close >= 0 && value[close] === '>') {
-      out += ' ';
+      out += onTag(value.slice(lt, close + 1));
       at = close + 1;
     } else {
-      out += '<';
+      out += stray;
       at = lt + 1;
     }
   }
   return out;
+}
+
+const stripTags = (value: string): string => mapAngles(value, () => ' ', '<');
+
+/**
+ * Escape every `<` that is not part of a genuine tag, so an HTML parser keeps it as text
+ * instead of reading `x<y and ...` as an unterminated tag and discarding the rest.
+ */
+export function escapeStrayAngles(value: string): string {
+  return mapAngles(value, (tag) => tag, '&lt;');
 }
 
 const ENTITIES: Readonly<Record<string, string>> = {
@@ -112,15 +111,10 @@ function decodeEntities(value: string): string {
  * the length (with an ellipsis). Entities are decoded between two tag passes so an
  * encoded tag cannot survive.
  */
-export function sanitizeText(
-  value: string,
-  max: number = MAX_TEXT,
-  options: { keepOperators?: boolean } = {},
-): string {
-  const strip = options.keepOperators ? stripTags : stripAllAngles;
+export function sanitizeText(value: string, max: number = MAX_TEXT): string {
   // Bound the work before any pass; a 1 MB field costs the same as a 40 KB one.
   const bounded = value.slice(0, max * 20);
-  const stripped = strip(decodeEntities(strip(stripInvisible(bounded))))
+  const stripped = stripTags(decodeEntities(stripTags(stripInvisible(bounded))))
     .replace(CONTROL, ' ')
     .replace(/\s+/g, ' ')
     .trim();

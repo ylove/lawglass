@@ -415,3 +415,13 @@ test('comparison operators in BILLSTATUS text are kept; only tags are removed', 
     'Applies if income < $50,000 and age > 65, or if x < 5 bold then more text follows.',
   );
 });
+
+test('XML text with a literal "<" is not cut off by HTML parsing', () => {
+  const xml = BILLSTATUS_XML.replace(
+    'Referred to the Example Committee.',
+    'Applies if x&lt;y and the applicant is over 65.',
+  );
+  expect(parse(xml).history.actions[1]?.text).toBe(
+    'Applies if x<y and the applicant is over 65.',
+  );
+});

@@ -1,6 +1,12 @@
 import { SaxesParser } from 'saxes';
 import { load } from 'cheerio';
-import { MAX_NAME, MAX_TEXT, sanitizeText, stripInvisible } from './text.js';
+import {
+  escapeStrayAngles,
+  MAX_NAME,
+  MAX_TEXT,
+  sanitizeText,
+  stripInvisible,
+} from './text.js';
 import { AppError, BillHistory, SponsorProfile } from '../model/index.js';
 import {
   govinfoTextUrl,
@@ -91,15 +97,15 @@ function plainText(
   if (!value) return undefined;
   // CDATA can retain an extra HTML-escape layer that ordinary XML text has already decoded.
   if (/^&lt;[a-z][\s\S]*?&gt;/i.test(value)) {
-    value = load(value, null, false).root().text();
+    value = load(escapeStrayAngles(value), null, false).root().text();
   }
-  const $ = load(value, null, false);
+  // The XML parser already decoded entities, so a literal `x<y and ...` can reach here. An HTML
+  // parser would read it as an unterminated tag and drop the rest; escaping every `<` that is
+  // not part of a real tag first keeps it as text.
+  const $ = load(escapeStrayAngles(value), null, false);
   $('script,style').remove();
   $('p,li,br,div,ul,ol,h1,h2,h3,h4,h5,h6,tr,td,th').before(' ');
-  // Bill text really contains "income < $50,000"; only genuine tags are removed.
-  return (
-    sanitizeText($.root().text(), max, { keepOperators: true }) || undefined
-  );
+  return sanitizeText($.root().text(), max) || undefined;
 }
 
 const textField = (

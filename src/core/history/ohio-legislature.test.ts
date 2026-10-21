@@ -230,7 +230,11 @@ test('hostile text is stripped to plain text and never becomes a URL', () => {
   );
 });
 test.each([
-  ['an unterminated tag', 'a <b', 'a'],
+  [
+    'an unterminated tag (kept as text, nothing after it is lost)',
+    'a <b c',
+    'a <b c',
+  ],
   [
     'entity-encoded markup',
     '&lt;i&gt;x&lt;/i&gt; &amp; &#60;b&#62;y&#x3c;/b&#x3e;',
@@ -242,7 +246,7 @@ test.each([
     '&bogus; &#9999999;',
   ],
   ['style blocks (content is plain text)', 'k<style>p{}</style>l', 'k p{} l'],
-  ['bare angle brackets', '1 < 2 > 0', '1 0'],
+  ['bare angle brackets (comparison operators)', '1 < 2 > 0', '1 < 2 > 0'],
 ])('plainText handles %s', (_name, input, expected) => {
   expect(plainText(input)).toBe(expected);
 });
@@ -350,8 +354,9 @@ test('a 1 MB hostile string is sanitized in linear time and capped', () => {
     const out = plainText(hostile);
     expect(performance.now() - started).toBeLessThan(100);
     expect(out.length).toBeLessThanOrEqual(2_001);
-    expect(out).not.toMatch(/[<>]/);
   }
+  // Closed tags are all removed; an unclosed `<script ` run is just text and stays harmless.
+  expect(plainText('<script>'.repeat(130_000))).toBe('');
   const long = plainText('word '.repeat(10_000));
   expect(long.length).toBeLessThanOrEqual(2_001);
   expect(long.endsWith('…')).toBe(true);
@@ -407,4 +412,23 @@ test.each([
       userMessage: expect.stringContaining('legislation/135/hb9001') as unknown,
     }) as unknown,
   );
+});
+
+test('history text keeps comparison operators and unmatched brackets, but strips tags', () => {
+  const actions = [
+    ...makeOhioActionsJson(),
+    {
+      occurred: '2024-07-02',
+      action: 'Applies if income < 50000 and age > 65 <b>now</b>\u0000',
+    },
+    {
+      occurred: '2024-07-03',
+      action: 'Amended so that x < y and more follows',
+    },
+  ];
+  const texts = parse({ actions: JSON.stringify(actions) }).history.actions.map(
+    (a) => a.text,
+  );
+  expect(texts).toContain('Applies if income < 50000 and age > 65 now');
+  expect(texts).toContain('Amended so that x < y and more follows');
 });
