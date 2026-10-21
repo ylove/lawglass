@@ -42,51 +42,47 @@ export function coveredSectionIds(c: StoredChunk): string[] {
 }
 
 /**
- * Rewrite `[S:a, b]` and `[S:a; S:b]` as `[S:a] [S:b]` so each id is validated.
- *
- * Scanned with `indexOf` rather than a regex: a bracket pattern such as `\[S:([^\]]*)\]`
- * rescans to the end of the text from every `[S:` when there is no closing bracket, which is
- * quadratic on `[S:a[S:a[S:a...`. Here the first missing `]` ends the search for good.
+ * Rewrite `[S:a, b]` and `[S:a; S:b]` as `[S:a] [S:b]` so each id is validated. A marker body
+ * never contains a bracket (as in CITATION_PATTERN), so each body is matched at most once and
+ * an unclosed `[S:` costs a single scan.
  */
 function splitMultiMarkers(text: string, allowed: ReadonlySet<string>): string {
-  let out = '';
-  let position = 0;
-  for (;;) {
-    const open = text.indexOf('[S:', position);
-    if (open < 0) break;
-    const close = text.indexOf(']', open + 3);
-    if (close < 0) break; // no `]` anywhere after this point, so no later marker can close
-    const whole = text.slice(open, close + 1);
-    const inner = text.slice(open + 3, close);
-    out += text.slice(position, open) + splitMarker(whole, inner, allowed);
-    position = close + 1;
-  }
-  return out + text.slice(position);
-}
-
-function splitMarker(
-  whole: string,
-  inner: string,
-  allowed: ReadonlySet<string>,
-): string {
-  if (!/[,;]/.test(inner)) return whole;
-  // A section id that itself contains a comma or semicolon is one id, not several.
-  if (allowed.has(inner)) return whole;
-  const ids = inner.split(/[,;]/).map((s) => s.trim().replace(/^S:/, ''));
-  if (ids.some((id) => !id || /\s/.test(id))) return whole;
-  return ids.map((id) => `[S:${id}]`).join(' ');
-}
-
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // Scan each bracket-free body once; overlapping repeats around a separator backtrack quadratically.
+  return text.replace(/\[S:([^[\]]*)\]/g, (whole, inner: string) => {
+    if (!/[,;]/.test(inner)) return whole;
+    // A section id that itself contains a comma or semicolon is one id, not several.
+    if (allowed.has(inner)) return whole;
+    const ids = inner.split(/[,;]/).map((s, i, parts) => {
+      // Trim only beside separators: whitespace at the body's outer edges stays malformed.
+      let trimmed = s;
+      if (i > 0) trimmed = trimmed.trimStart();
+      if (i < parts.length - 1) trimmed = trimmed.trimEnd();
+      return trimmed.replace(/^S:/, '');
+    });
+    if (ids.some((id) => !id || /\s/.test(id))) return whole;
+    return ids.map((id) => `[S:${id}]`).join(' ');
+  });
 }
 
 /** Remove every marker for `id`, plus the space before it so "x [S:a]." becomes "x.". */
 function stripMarker(text: string, id: string): string {
-  return text.replace(
-    new RegExp(`[ \\t]*\\[S:${escapeRegExp(id)}\\]`, 'g'),
-    '',
-  );
+  const marker = `[S:${id}]`;
+  const parts: string[] = [];
+  let start = 0;
+  for (
+    let index = text.indexOf(marker);
+    index !== -1;
+    index = text.indexOf(marker, start)
+  ) {
+    // Search for the literal marker first so unrelated whitespace is never rescanned.
+    let end = index;
+    while (end > start && (text[end - 1] === ' ' || text[end - 1] === '\t'))
+      end--;
+    parts.push(text.slice(start, end));
+    start = index + marker.length;
+  }
+  parts.push(text.slice(start));
+  return parts.join('');
 }
 
 function buildCitation(sectionId: string, chunks: StoredChunk[]): Citation {

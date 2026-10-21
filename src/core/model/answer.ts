@@ -10,8 +10,9 @@ import { SectionId, SourceLocation } from './doc.js';
 /**
  * Matches one citation marker in answer text, e.g. `[S:sec-4/b/2]`. It is global, so prefer
  * `findCitationIds`, which never shares `lastIndex` state between calls.
+ * Section ids exclude brackets; stopping at `[` prevents rescanning later unclosed markers.
  */
-export const CITATION_PATTERN = /\[S:([^\]\s]+)\]/g;
+export const CITATION_PATTERN = /\[S:([^\s[\]]+)\]/g;
 
 /** Section ids cited in `text`, in order of appearance (duplicates kept). */
 export function findCitationIds(text: string): string[] {

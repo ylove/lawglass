@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { Citation } from '../core/model/index.js';
 import { ScriptedProvider } from '../../tests/contracts/scripted-provider.js';
 import { AnswerText, stripMarkers } from './AnswerText.js';
+import { CITATION_PATTERN } from '../core/model/index.js';
 
 afterEach(cleanup);
 
@@ -319,4 +320,68 @@ describe('stripMarkers on hostile input', () => {
     stripMarkers(`${'['.repeat(200_000)}x y`);
     expect(performance.now() - started).toBeLessThan(2_000);
   });
+});
+
+test('stripMarkers drops a half-typed marker exactly as the old tail pattern did', () => {
+  const oldTail = /\s?\[S?:?[^\]\s]*$/;
+  const marker = new RegExp(CITATION_PATTERN.source, 'g');
+  const markerBeforePunctuation = new RegExp(
+    `\\s+(?:${CITATION_PATTERN.source})(?=[.,;:!?)])`,
+    'g',
+  );
+  const alphabet = ['[', ']', 'S', ':', 'a', ' ', '\n', '.', '-'];
+  let seed = 7;
+  const next = (): number => (seed = (seed * 1103515245 + 12345) % 2 ** 31);
+  for (let i = 0; i < 5000; i++) {
+    let text = '';
+    const length = next() % 14;
+    for (let j = 0; j < length; j++)
+      text += alphabet[next() % alphabet.length] ?? '';
+    // Remove complete markers until none are left, so stripMarkers only does the tail step.
+    let base = text;
+    for (let previous = ''; previous !== base;) {
+      previous = base;
+      base = base.replace(markerBeforePunctuation, '').replace(marker, '');
+    }
+    expect(stripMarkers(base), JSON.stringify(text)).toBe(
+      base.replace(oldTail, ''),
+    );
+  }
+  expect(stripMarkers('see [S:sec-1] and [S:se')).toBe('see  and');
+  expect(stripMarkers('see [S:a[S:b')).toBe('see');
+});
+
+test('stripMarkers stays fast on a long run of unclosed markers', () => {
+  const hostile = '[S:a'.repeat(50_000) + ' ';
+  const started = performance.now();
+  stripMarkers(hostile);
+  expect(performance.now() - started).toBeLessThan(200);
+});
+
+test('stripMarkers stays fast on a long whitespace run before a marker', () => {
+  const hostile = ' '.repeat(60_000) + 'x';
+  const started = performance.now();
+  expect(stripMarkers(hostile)).toBe(hostile);
+  expect(stripMarkers('the deadline   [S:sec-4].')).toBe('the deadline.');
+  expect(performance.now() - started).toBeLessThan(200);
+});
+
+test('anchoring the whitespace run does not change which markers are removed', () => {
+  const unanchored = new RegExp(
+    `\\s+(?:${CITATION_PATTERN.source})(?=[.,;:!?)])`,
+    'g',
+  );
+  const anchored = new RegExp(`(?<!\\s)${unanchored.source}`, 'g');
+  const alphabet = ['[S:a]', '[S:', ']', ' ', '\n', '\t', '.', ')', 'x'];
+  let seed = 11;
+  const next = (): number => (seed = (seed * 1103515245 + 12345) % 2 ** 31);
+  for (let i = 0; i < 20_000; i++) {
+    let text = '';
+    const length = next() % 12;
+    for (let j = 0; j < length; j++)
+      text += alphabet[next() % alphabet.length] ?? '';
+    expect(text.replace(anchored, ''), JSON.stringify(text)).toBe(
+      text.replace(unanchored, ''),
+    );
+  }
 });
