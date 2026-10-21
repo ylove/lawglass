@@ -249,6 +249,36 @@ describe('committee-reported bill markup', () => {
     }
   }
 
+  it.each([
+    [
+      'skips a section-scoped short title for the Act-level one',
+      'This Act may be cited as the <quote><short-title>Shared Gardens Act</short-title></quote>.',
+      'Shared Gardens Act',
+    ],
+    [
+      'falls back to the official title when only a section is named',
+      '',
+      'To support gardens.',
+    ],
+  ])('reported bill title: %s', (_name, actText, expected) => {
+    const substitute =
+      '<section changed="added"><enum>1.</enum><header>Seed grants</header>' +
+      '<subsection><enum>(a)</enum><header>Short title</header><text>This section may be cited as the <quote><short-title>Seed Library Grants Act</short-title></quote>.</text></subsection></section>' +
+      (actText
+        ? `<section changed="added"><enum>2.</enum><header>Short title</header><text>${actText}</text></section>`
+        : '');
+    const original =
+      '<section changed="deleted"><enum>1.</enum><header>Abandoned grants</header><text>Fund obsolete orchards.</text></section>';
+    const doc = parse(
+      bill(original + substitute).replace(
+        '<bill >',
+        '<bill><metadata><dublinCore><title>119 S1 RS: Seed Library Grants Act</title></dublinCore></metadata>' +
+          '<form><official-title>To support gardens.</official-title></form>',
+      ),
+    );
+    expect(doc.metadata.title).toBe(expected);
+  });
+
   it.each([false, true])(
     'keeps only the substitute, with stable ids (separate bodies: %s)',
     async (separateBodies) => {
@@ -691,6 +721,50 @@ describe('metadata', () => {
       version: 'Enrolled-Bill',
       sponsors: null,
       source: 'structured',
+    });
+  });
+
+  describe('Dublin Core title naming a short title', () => {
+    const enrolled = (dcTitle: string, body: string): string =>
+      '<bill bill-stage="Enrolled-Bill"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dublinCore>' +
+      `<dc:title>HR 1 ENR: ${dcTitle}</dc:title></dublinCore></metadata>` +
+      '<form><official-title>To provide for reconciliation.</official-title></form>' +
+      `<legis-body>${body}</legis-body></bill>`;
+    const cited = (scope: string, title: string): string =>
+      `<section><enum>1.</enum><text>${scope} may be cited as the <quote><short-title>${title}</short-title></quote>.</text></section>`;
+
+    it('falls back to the official title when the only matching short title is section-scoped', () => {
+      const doc = parse(
+        enrolled(
+          'FEHB Protection Act of 2025',
+          cited('This section', 'FEHB Protection Act of 2025'),
+        ),
+      );
+      expect(doc.metadata.title).toBe('To provide for reconciliation.');
+    });
+
+    it('keeps it when an Act-level short title matches', () => {
+      const doc = parse(enrolled('Big Act', cited('This Act', 'Big Act')));
+      expect(doc.metadata.title).toBe('Big Act');
+    });
+
+    it('keeps it when the matching short title appears only in quoted law', () => {
+      const doc = parse(
+        enrolled(
+          'Old Law Act',
+          '<section><enum>1.</enum><quoted-block>' +
+            cited('This Act', 'Old Law Act') +
+            '</quoted-block></section>',
+        ),
+      );
+      expect(doc.metadata.title).toBe('Old Law Act');
+    });
+
+    it('keeps it when it matches no short title in the body', () => {
+      const doc = parse(
+        enrolled('Disapproval of a rule', cited('This section', 'Other Act')),
+      );
+      expect(doc.metadata.title).toBe('Disapproval of a rule');
     });
   });
 

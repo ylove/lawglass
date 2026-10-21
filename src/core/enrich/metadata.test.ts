@@ -261,7 +261,7 @@ BE IT ENACTED BY THE GENERAL ASSEMBLY OF THE STATE OF OHIO:`;
       { provider: new ScriptedProvider({}), text: TEXT },
     );
     expect(r.metadata).toEqual(EMPTY_METADATA);
-    expect(r.warnings[0]).toMatch(/PROVIDER_BAD_OUTPUT/);
+    expect(r.warnings[0]).toMatch(/could not be read automatically/);
   });
 
   it('turns provider errors and unexpected throws into warnings', async () => {
