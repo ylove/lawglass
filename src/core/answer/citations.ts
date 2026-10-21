@@ -43,7 +43,8 @@ export function coveredSectionIds(c: StoredChunk): string[] {
 
 /** Rewrite `[S:a, b]` and `[S:a; S:b]` as `[S:a] [S:b]` so each id is validated. */
 function splitMultiMarkers(text: string, allowed: ReadonlySet<string>): string {
-  return text.replace(/\[S:([^\]]*[,;][^\]]*)\]/g, (whole, inner: string) => {
+  // Stop at another opener so unclosed markers cannot repeatedly scan the remaining answer.
+  return text.replace(/\[S:([^[\]]*[,;][^[\]]*)\]/g, (whole, inner: string) => {
     // A section id that itself contains a comma or semicolon is one id, not several.
     if (allowed.has(inner)) return whole;
     const ids = inner.split(/\s*[,;]\s*/).map((s) => s.replace(/^S:/, ''));

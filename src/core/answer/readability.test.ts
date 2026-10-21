@@ -96,4 +96,8 @@ describe('stripCitations', () => {
   it('removes markers and collapses space', () => {
     expect(stripCitations('Hi [S:a] there [S:b/c]')).toBe('Hi there');
   });
+
+  it('keeps malformed openers while removing the complete marker that follows', () => {
+    expect(stripCitations('Hi [S:broken[S:sec-2].')).toBe('Hi [S:broken .');
+  });
 });

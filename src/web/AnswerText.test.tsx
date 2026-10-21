@@ -252,6 +252,18 @@ describe('answer markdown', () => {
     expect(container.textContent).not.toContain('[S:');
   });
 
+  test('renders complete citations after malformed openers with stable numbering and click targets', () => {
+    const { container, open } = answer(
+      '[S:broken[S:sec-2]. Then [S:sec-2307.601/a/1] [S:sec-2].',
+    );
+    expect(container.textContent).toBe('[S:broken1. Then 21.');
+    const sources = screen.getAllByRole('button', { name: 'Source 1' });
+    expect(sources).toHaveLength(2);
+    expect(screen.getByRole('button', { name: 'Source 2' })).toBeTruthy();
+    fireEvent.click(sources[0]!);
+    expect(open).toHaveBeenCalledWith('sec-2', sources[0]);
+  });
+
   test('does not parse emphasis inside citation ids', () => {
     const { container } = answer('**Source [S:sec-*id*]**', [
       { sectionId: 'sec-*id*', valid: true, chunkIds: [] },

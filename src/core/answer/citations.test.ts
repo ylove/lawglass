@@ -124,6 +124,36 @@ describe('validateCitations', () => {
     expect(r.text).toBe('x [S:] [S: a] [s:sec-1]');
   });
 
+  it('validates complete markers after unclosed openers, including multi-id markers', () => {
+    const r = validateCitations(
+      '[S:broken[S:sec-1, sec-2]. [S:broken[S:fake].',
+      ids,
+      chunks,
+    );
+    expect(r.text).toBe('[S:broken[S:sec-1] [S:sec-2]. [S:broken.');
+    expect(r.citations.map((c) => [c.sectionId, c.valid])).toEqual([
+      ['sec-1', true],
+      ['sec-2', true],
+      ['fake', false],
+    ]);
+    expect(r.invalidCitations).toEqual(['fake']);
+    expect(r.warnings).toEqual(['INVALID_CITATIONS_REMOVED']);
+  });
+
+  it('validates 200,000 characters of unclosed markers in under 50 ms', () => {
+    const text = '[S:a'.repeat(50_000);
+    const start = performance.now();
+    const r = validateCitations(text, ids, chunks);
+    const elapsed = performance.now() - start;
+
+    expect(r.text).toBe(text);
+    expect(r.citations).toEqual([]);
+    expect(r.invalidCitations).toEqual([]);
+    expect(r.warnings).toEqual(['NO_VALID_CITATIONS']);
+    expect(r.declined).toBe(false);
+    expect(elapsed).toBeLessThan(50);
+  });
+
   describe('merged chunks', () => {
     const merged = hit({
       id: 'm',
