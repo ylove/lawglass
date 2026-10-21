@@ -6,8 +6,9 @@
  *   npx tsx scripts/record-demo.ts --url http://127.0.0.1:4317 --doc "s202" \
  *     --chip "Who does it affect?" --out docs/demo.gif --width 720 --max-seconds 240
  *
- * Dry run (no server or model needed): serves the built `dist/web` with the scripted mock UI
- * (`?mock=1`), so run `npm run build` first. Write somewhere other than docs/demo.gif:
+ * Dry run (no server or model needed): serves a development-mode build of the web UI
+ * (built into a temp dir on the fly) with the scripted mock UI (`?mock=1`). Production builds
+ * deliberately exclude the mock. Write somewhere other than docs/demo.gif:
  *
  *   npx tsx scripts/record-demo.ts --dry-run --out /tmp/demo-dry/demo.gif
  *
@@ -16,7 +17,7 @@
  * strip and history card are skipped when a bill has none. Needs Chromium from Playwright
  * (`npx playwright install chromium`) and ffmpeg on PATH.
  */
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import { mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -55,9 +56,22 @@ const MIME: Record<string, string> = {
   '.woff2': 'font/woff2',
 };
 
-/** Static server for the built web UI, so a dry run needs no API server. */
+/** Static server for a dev-mode web build (the mock only exists when DEV is true). */
 async function serveBuiltUi(): Promise<{ server: Server; url: string }> {
-  const root = resolve('dist/web');
+  const root = await mkdtemp(join(tmpdir(), 'demo-ui-'));
+  execFileSync(
+    'npx',
+    [
+      'vite',
+      'build',
+      '--mode',
+      'development',
+      '--outDir',
+      root,
+      '--emptyOutDir',
+    ],
+    { stdio: 'ignore' },
+  );
   const server = createServer((req, res) => {
     const path = new URL(req.url ?? '/', 'http://x').pathname;
     const file = resolve(root, `.${path === '/' ? '/index.html' : path}`);

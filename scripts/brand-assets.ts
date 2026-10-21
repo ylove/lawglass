@@ -48,7 +48,7 @@ body{margin:0;width:1200px;height:630px;background:#0f3b6e;color:#fff;font-famil
 .mark svg{width:100%;height:100%}
 .name{font-size:120px;font-weight:600;letter-spacing:-0.02em;line-height:1}
 .tag{font-size:46px;font-weight:500;margin-top:26px;letter-spacing:-0.01em}
-.detail{font-size:26px;font-weight:400;margin-top:18px;color:#c9d8ec;max-width:760px;line-height:1.35}
+.detail{font-size:26px;font-weight:400;margin-top:18px;color:#c9d8ec;max-width:760px;line-height:1.35;text-wrap:balance}
 .foot{position:absolute;left:90px;bottom:50px;font-size:24px;color:#a9c1e0;font-weight:500}
 </style></head><body>
 <div class="mark">${markSvg}</div>
