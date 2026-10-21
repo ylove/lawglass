@@ -846,6 +846,48 @@ function bodyShortTitle(el: El): string | null {
   return null;
 }
 
+/** "This section may be cited as ..." names a part of the bill, not the bill itself. */
+const SCOPED_CITATION =
+  /^(?:\(\w+\)\s*)?(?:this|the)\s+(?:section|subsection|paragraph|title|subtitle|part|division|chapter)\s+may\s+be\s+cited\s+as\b/i;
+
+/**
+ * Every short title in the bill's own body (not quoted law), each paired with the plain
+ * text of its nearest enclosing `text` element, which holds the "may be cited as" sentence.
+ */
+function bodyShortTitles(
+  el: El,
+  sentence: string | null = null,
+  out: { title: string; sentence: string }[] = [],
+): { title: string; sentence: string }[] {
+  if (SKIP.has(el.name) || QUOTED.has(el.name)) return out;
+  if (el.name === 'short-title') {
+    const title = plainText(el);
+    if (title) out.push({ title, sentence: sentence ?? '' });
+    return out;
+  }
+  const own = el.name === 'text' ? plainText(el) : sentence;
+  for (const kid of el.kids)
+    if (typeof kid !== 'string') bodyShortTitles(kid, own, out);
+  return out;
+}
+
+/**
+ * GovInfo's Dublin Core title takes the first short title in the file, even one that
+ * belongs to a single section ("This section may be cited as ..."). Reject it only when
+ * every matching short title in the body is scoped below the Act.
+ */
+function isOnlySectionScoped(root: El, dcShortTitle: string): boolean {
+  const norm = (t: string): string =>
+    t.replace(/\s+/g, ' ').trim().toLowerCase();
+  const matches = findBodies(root)
+    .flatMap((body) => bodyShortTitles(body))
+    .filter((found) => norm(found.title) === norm(dcShortTitle));
+  return (
+    matches.length > 0 &&
+    matches.every((found) => SCOPED_CITATION.test(found.sentence))
+  );
+}
+
 function billMetadata(root: El, committeePruned: boolean): BillMetadata {
   const form = findAll(root, 'form')[0];
   // The frozen metadata contract has no cosponsors field; keep sponsorship roles distinct.
@@ -855,7 +897,10 @@ function billMetadata(root: El, committeePruned: boolean): BillMetadata {
     DC_PREFIX,
     '',
   );
-  const shortTitle = stripped === '' ? undefined : stripped;
+  const shortTitle =
+    stripped === '' || (stripped && isOnlySectionScoped(root, stripped))
+      ? undefined
+      : stripped;
   // Front matter may still name the struck version. Only override its usual precedence
   // after committee pruning, using the surviving bill rather than quoted existing law.
   let reportedShortTitle: string | null = null;
