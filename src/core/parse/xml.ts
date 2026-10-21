@@ -119,6 +119,28 @@ function buildTree(text: string, budget: ParseBudget): El {
   return root;
 }
 
+/**
+ * Committee strikes describe edits to a bill, not removals from current law. Prune them
+ * before any text, metadata or ids are collected. Count each omitted subtree once, even
+ * when it contains more committee marks, so repeated definition walks cannot inflate it.
+ */
+function omitCommitteeDeletions(
+  root: El,
+  budget: ParseBudget,
+): { root: El | undefined; omittedPassages: number } {
+  let omittedPassages = 0;
+  const keep = (el: El): boolean => {
+    budget.check();
+    if (el.attrs.changed === 'deleted' || el.name === 'deleted-phrase') {
+      omittedPassages++;
+      return false;
+    }
+    el.kids = el.kids.filter((kid) => typeof kid === 'string' || keep(kid));
+    return true;
+  };
+  return { root: keep(root) ? root : undefined, omittedPassages };
+}
+
 // ---------------------------------------------------------------------------
 // Step 2: text and span helpers.
 // ---------------------------------------------------------------------------
@@ -142,6 +164,7 @@ const INLINE = new Set([
   'header-in-text',
   'enum-in-header',
   'inline-comment',
+  'added-phrase',
   'target',
   'bold',
   'italic',
@@ -362,8 +385,12 @@ const BODY_NAMES = ['legis-body', 'resolution-body', 'amendment-body'];
 
 function findBody(root: El): El | undefined {
   for (const name of BODY_NAMES) {
-    const found = findAll(root, name)[0];
-    if (found) return found;
+    const bodies = findAll(root, name);
+    // Committee substitutes can put the original and replacement in separate bodies.
+    // Treat them as one scope so an empty, pruned original cannot hide the reported text.
+    if (bodies.length > 1)
+      return { name, attrs: {}, kids: bodies.flatMap((body) => body.kids) };
+    if (bodies[0]) return bodies[0];
   }
   return undefined;
 }
@@ -866,10 +893,19 @@ export function parseXml(
   const budget = new ParseBudget(options);
   const bytes = typeof input === 'string' ? Buffer.from(input, 'utf8') : input;
   const text = typeof input === 'string' ? input : decodeBytes(bytes);
-  const root = buildTree(text, budget);
+  const { root, omittedPassages } = omitCommitteeDeletions(
+    buildTree(text, budget),
+    budget,
+  );
+  if (!root)
+    throw new AppError('PARSE_FAILED', 'The XML document contains no text.');
 
   const detected = detectDialect(root);
   const warnings: string[] = [];
+  if (omittedPassages > 0)
+    warnings.push(
+      `This is the version reported by committee. ${String(omittedPassages)} ${omittedPassages === 1 ? 'passage the committee struck is' : 'passages the committee struck are'} left out; the text shown is the bill as reported.`,
+    );
   let dialect: Dialect;
   if (detected === 'bill-no-body') {
     dialect = genericDialect('generic');
