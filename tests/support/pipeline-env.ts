@@ -69,12 +69,14 @@ export async function makePipelineEnv(
   const runtime: CliRuntime = {
     backend,
     registry,
+    clearFetchCache: () => Promise.resolve({ snapshots: 0, bytes: 0 }),
     fetcher,
     now,
     maxDocs: 5,
     retrievalMode: 'hybrid_rerank',
     port: 4317,
     answerProvider: provider,
+    answerEndpoint: 'mock:local',
     extractProvider: provider,
     parsePdf: options.parsePdf,
   };

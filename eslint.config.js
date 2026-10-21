@@ -1,6 +1,7 @@
 import { defineConfig } from 'eslint/config';
 import tseslint from 'typescript-eslint';
 import reactHooks from 'eslint-plugin-react-hooks';
+import regexpPlugin from 'eslint-plugin-regexp';
 
 const BRAND_MESSAGE = 'Use BRAND from src/core/brand.ts for the product name.';
 
@@ -32,6 +33,21 @@ export const brandGuard = {
         message: BRAND_MESSAGE,
       },
     ],
+  },
+};
+
+/**
+ * ReDoS: super-linear backtracking is the hazard that matters for untrusted legislation text.
+ * Only these two rules are on; the plugin's stylistic recommended rules are not. Exported so
+ * the redos-guard test can run this exact block.
+ */
+export const redosGuard = {
+  files: ['src/**/*.{ts,tsx}', 'scripts/**/*.ts'],
+  ignores: ['**/*.test.{ts,tsx}'],
+  plugins: { regexp: regexpPlugin },
+  rules: {
+    'regexp/no-super-linear-backtracking': 'error',
+    'regexp/no-super-linear-move': 'error',
   },
 };
 
@@ -80,6 +96,7 @@ export default defineConfig(
     files: ['tests/**/*.{ts,tsx}', '**/*.test.{ts,tsx}'],
     rules: { '@typescript-eslint/no-non-null-assertion': 'off' },
   },
+  redosGuard,
   {
     files: ['src/web/**/*.{ts,tsx}'],
     extends: [reactHooks.configs.flat.recommended],

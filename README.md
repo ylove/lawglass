@@ -44,6 +44,7 @@ npx lawglass ask hb62 "When does this take effect?"
 npx lawglass ask hb62 --chip what-changes
 npx lawglass list
 npx lawglass remove hb62
+npx lawglass cache clear               # delete cached downloads (documents and answers stay)
 npx lawglass serve --port 4317          # local web UI; --public allows chips only; --no-open skips the browser
 ```
 
@@ -185,11 +186,12 @@ Caveats: 21 to 28 questions per bill means one question moves recall@5 by about 
 ### Security notes
 
 - **SSRF guard** ([`src/core/fetch/`](src/core/fetch/)).
-  - Resolved addresses are checked against private, loopback, link-local, CGNAT, multicast, documentation, unique-local and other special-use IPv4 and IPv6 ranges. Cloud metadata `169.254.169.254` falls inside link-local.
+  - IPv4 addresses are checked against private, loopback, link-local, CGNAT, multicast, documentation and other special-use ranges. Cloud metadata `169.254.169.254` falls inside link-local. IPv6 is an allowlist: only global unicast (`2000::/3`) is fetched, minus the IANA special-purpose ranges inside it (Teredo and the rest of `2001::/23`, documentation `2001:db8::/32` and `3fff::/20`, and so on).
   - IPv6 forms that embed an IPv4 address (IPv4-mapped, NAT64, 6to4, Teredo) are unwrapped and checked. Scoped and unparsable addresses fail closed.
   - The connection goes to the validated address itself, pinned, so a DNS answer cannot change between check and connect (rebinding).
-  - Each redirect is re-resolved and re-validated, up to 5. Credentials in URLs are refused, as are ports outside 80, 443, 8080 and 8443.
+  - Each redirect is re-resolved and re-validated, up to 5. An `https` address that redirects to `http` is refused; plain `http` is followed only when you typed an `http` address. Credentials in URLs are refused, as are ports outside 80, 443, 8080 and 8443.
   - Bodies are capped at 50 MB, with a 30 s timeout.
+  - Downloaded bytes are cached under `~/.lawglass/cache` only after they parse, removed with their document, and trimmed to 500 MB (least recently used first; set `LAWGLASS_CACHE_MAX_MB` to change). `lawglass cache clear` deletes them all.
 - **Prompt injection** ([`src/core/answer/`](src/core/answer/)). Bill text is hostile data. Excerpt text and the user's question are XML-escaped, so neither can close an excerpt tag or forge a new source. The system prompt states that excerpts are data, not instructions. Citations are validated: every `[S:id]` must be a section that was in the prompt; invalid markers are stripped and reported, and an answer with no valid citation (other than the exact decline sentence) carries a warning. Synthetic injection samples live in [`tests/synth/injection.ts`](tests/synth/injection.ts). Citation validation is held to 90% line coverage along with the fetch layer.
 - **Local server** (`serve`). Binds to `127.0.0.1` by default. Outside public mode, a request whose `Host` is not a loopback name is refused, which blocks DNS-rebinding attacks from web pages you visit; in every mode, an API request whose `Origin` does not match its `Host` is refused. Cancelling a question or an ingest in the UI aborts the work, including the download.
 - **Public mode** (`serve --public`). Chips only (no free-form questions), per-IP limits of 20 questions and 3 ingests per hour, a 200-page ingest cap, a global document cap that refuses new documents instead of evicting someone else's, and a Cloudflare Turnstile stub.

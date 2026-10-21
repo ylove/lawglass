@@ -8,6 +8,7 @@ import {
   type TextRequest,
 } from '../model/index.js';
 import { jsonSchema, validateObject } from './shared.js';
+import { trimEndWhile } from '../trim.js';
 
 const STOP_WORDS = new Set(
   'a an and are as at be bill by can do does for from how in is it may of on or shall that the their this to what when which who will with would'.split(
@@ -87,7 +88,7 @@ function answer(req: TextRequest): string {
     .map((excerpt) => {
       const sentence =
         /^.*?[.!?](?:\s|$)/.exec(excerpt.text)?.[0]?.trim() ?? excerpt.text;
-      return `${sentence.slice(0, 220).replace(/[.!?]+$/, '')} [S:${excerpt.section}].`;
+      return `${trimEndWhile(sentence.slice(0, 220), (c) => '.!?'.includes(c))} [S:${excerpt.section}].`;
     })
     .join(' ');
 }

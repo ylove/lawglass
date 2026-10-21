@@ -8,9 +8,11 @@ import {
 } from '../parse/limits.js';
 import { BRAND } from '../brand.js';
 import {
+  DEFAULT_CACHE_BUDGET_BYTES,
   defaultCacheDir,
   DEFAULT_MAX_BYTES,
   documentId,
+  evictToBudget,
   readCache,
   writeCache,
 } from './cache.js';
@@ -45,6 +47,14 @@ export interface SafeFetchOptions {
   maxRedirects?: number;
   /** The cache directory itself, rather than its configuration-directory parent. */
   cacheDir?: string;
+  /**
+   * Hand the caller a `commitCache` function instead of writing the bytes now, so a document
+   * is cached only after the caller has parsed it. Nothing about the network path changes:
+   * validation, pinning and size caps all run before the bytes are returned.
+   */
+  deferCacheWrite?: boolean | undefined;
+  /** Total bytes of fetched snapshots to keep; least recently used are evicted past this. */
+  cacheBudgetBytes?: number | undefined;
   now?: () => Date;
 }
 export interface SafeFetchResult {
@@ -55,6 +65,11 @@ export interface SafeFetchResult {
   contentType: string;
   format: SniffedFormat;
   fromCache: boolean;
+  /**
+   * Present when `deferCacheWrite` was set and the bytes came from the network. Call it once
+   * the document has parsed; it stores the snapshot and trims the cache to its budget.
+   */
+  commitCache?: (() => Promise<void>) | undefined;
 }
 
 function validateUrl(
@@ -83,6 +98,15 @@ function validateUrl(
     );
   url.hash = '';
   return url;
+}
+
+/** TLS is the only thing that authenticates the host, so a hop never falls back to http. */
+function refuseDowngrade(from: URL, to: URL): void {
+  if (from.protocol === 'https:' && to.protocol === 'http:')
+    throw new AppError('SSRF_BLOCKED', 'An https address redirected to http.', {
+      userMessage:
+        'That address redirected from https to plain http, which is refused.',
+    });
 }
 
 function makeResult(
@@ -204,6 +228,8 @@ export async function safeFetch(
       : await readCache(original.href, cacheDir, maxBytes);
     if (cached) {
       const final = validateUrl(cached.finalUrl, allowedPorts);
+      // Snapshots cached before the downgrade rule existed must not bypass it.
+      refuseDowngrade(original, final);
       opts.validateUrl?.(final);
       if (final.href !== original.href)
         await resolvePublicAddress(final, resolver, signal);
@@ -238,7 +264,9 @@ export async function safeFetch(
             throw new AppError('FETCH_FAILED', 'Redirect has no destination.');
           if (redirects >= maxRedirects)
             throw new AppError('TOO_MANY_REDIRECTS');
-          url = validateUrl(location, allowedPorts, url);
+          const next = validateUrl(location, allowedPorts, url);
+          refuseDowngrade(url, next);
+          url = next;
           opts.validateUrl?.(url);
           address = await resolvePublicAddress(url, resolver, signal);
           continue;
@@ -254,16 +282,24 @@ export async function safeFetch(
         const contentType = response.headers.get('content-type') ?? '';
         signal.throwIfAborted();
         const result = makeResult(bytes, url.href, contentType, false, opts);
-        await writeCache(
-          bytes,
-          {
-            url: original.href,
-            finalUrl: url.href,
-            contentType,
-            fetchedAt: (opts.now ?? (() => new Date()))().toISOString(),
-          },
-          cacheDir,
-        );
+        const finalUrl = url.href;
+        const budgetBytes = opts.cacheBudgetBytes ?? DEFAULT_CACHE_BUDGET_BYTES;
+        const commit = async (): Promise<void> => {
+          await writeCache(
+            bytes,
+            {
+              url: original.href,
+              finalUrl,
+              contentType,
+              fetchedAt: (opts.now ?? (() => new Date()))().toISOString(),
+            },
+            cacheDir,
+            { budgetBytes },
+          );
+          await evictToBudget(cacheDir, budgetBytes, result.docId);
+        };
+        if (opts.deferCacheWrite) return { ...result, commitCache: commit };
+        await commit();
         return result;
       } finally {
         // Never retain sockets capable of connecting with an obsolete DNS validation.

@@ -3,7 +3,9 @@ import { readParseLimits } from '../parse/limits.js';
 import { MemoryBackend } from '../../../tests/contracts/memory-backend.js';
 import { ScriptedProvider } from '../../../tests/contracts/scripted-provider.js';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { writeCache } from '../fetch/cache.js';
 import { AnswerCache, type AnswerCacheKey } from '../answer-cache.js';
 import {
   makeAmendmentHtml,
@@ -235,6 +237,7 @@ test('evicts the least recently used documents beyond the cap, from index, regis
     chipId: 'summary',
     provider: 'mock',
     model: 'test',
+    endpoint: 'mock:local',
     promptVersion: '1',
   });
   const answer: AnswerResult = {
@@ -639,4 +642,98 @@ test('rejects non-PDF bytes from injected fetchers under the public resource pol
       }),
     ),
   ).rejects.toMatchObject({ code: 'TOO_LARGE' });
+});
+
+// N5/G13: raw bytes are cached only after a successful parse, and leave with their document.
+function committing(
+  commit: () => Promise<void>,
+  order?: string[],
+): IngestDeps['fetcher'] {
+  return async (url, options) => ({
+    ...(await env.runtime.fetcher(url, options)),
+    commitCache: () => {
+      order?.push('commit');
+      return commit();
+    },
+  });
+}
+
+test('commits the download after parsing and before indexing', async () => {
+  env.serve('https://example.gov/a.txt', textSample('One.'), 'text/plain');
+  const order: string[] = [];
+  const commit = vi.fn(() => Promise.resolve());
+  await ingest(
+    'https://example.gov/a.txt',
+    deps({ fetcher: committing(commit, order) }),
+    { onProgress: (p) => order.push(p.stage) },
+  );
+  expect(commit).toHaveBeenCalledOnce();
+  expect(order.indexOf('commit')).toBeGreaterThan(order.indexOf('parsing'));
+  expect(order.indexOf('commit')).toBeLessThan(order.indexOf('embedding'));
+});
+
+test('never commits a download that fails to parse', async () => {
+  env.serve(
+    'https://example.gov/bad.xml',
+    { bytes: new TextEncoder().encode('<bill><unclosed>') },
+    'application/xml',
+  );
+  const commit = vi.fn(() => Promise.resolve());
+  await expect(
+    ingest(
+      'https://example.gov/bad.xml',
+      deps({ fetcher: committing(commit) }),
+    ),
+  ).rejects.toBeInstanceOf(AppError);
+  expect(commit).not.toHaveBeenCalled();
+});
+
+test('a failing cache write does not fail an ingest that already has its document', async () => {
+  env.serve('https://example.gov/a.txt', textSample('One.'), 'text/plain');
+  const result = await ingest(
+    'https://example.gov/a.txt',
+    deps({ fetcher: committing(() => Promise.reject(new Error('disk full'))) }),
+  );
+  expect(await env.backend.hasDocument(result.doc.docId)).toBe(true);
+});
+
+test('does not commit again when the document is already indexed', async () => {
+  env.serve('https://example.gov/a.txt', textSample('One.'), 'text/plain');
+  const commit = vi.fn(() => Promise.resolve());
+  const fetcher = committing(commit);
+  await ingest('https://example.gov/a.txt', deps({ fetcher }));
+  const again = await ingest('https://example.gov/a.txt', deps({ fetcher }));
+  expect(again.stats.reused).toBe(true);
+  expect(commit).toHaveBeenCalledOnce();
+});
+
+test('evicting the oldest document at the cap deletes its download and keeps the newest', async () => {
+  const cacheDir = join(env.registry.configDir, 'cache');
+  const store = (url: string): IngestDeps['fetcher'] =>
+    committing(async () => {
+      const page = await env.runtime.fetcher(url);
+      await writeCache(
+        page.bytes,
+        {
+          url,
+          finalUrl: url,
+          contentType: page.contentType,
+          fetchedAt: '2026-10-13T00:00:00.000Z',
+        },
+        cacheDir,
+      );
+    });
+  const urlA = 'https://example.gov/a.txt';
+  const urlB = 'https://example.gov/b.txt';
+  env.serve(urlA, textSample('One.'), 'text/plain');
+  env.serve(urlB, textSample('Two.'), 'text/plain');
+  const a = await ingest(urlA, deps({ maxDocs: 1, fetcher: store(urlA) }));
+  expect(await readdir(cacheDir)).toContain(a.doc.docId);
+  const b = await ingest(urlB, deps({ maxDocs: 1, fetcher: store(urlB) }));
+  const files = await readdir(cacheDir);
+  expect(files).not.toContain(a.doc.docId);
+  expect(files).toContain(b.doc.docId);
+  expect(
+    JSON.parse(await readFile(join(cacheDir, 'index.json'), 'utf8')),
+  ).toEqual({ [urlB]: b.doc.docId });
 });

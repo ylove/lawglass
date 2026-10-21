@@ -13,12 +13,30 @@ const MARKER_BEFORE_PUNCTUATION = new RegExp(
   'g',
 );
 
+/**
+ * Drops a half-typed marker at the end: a `[` followed by no `]` and no whitespace through the
+ * end, plus the one whitespace character before it. Found by scanning back from the end because
+ * the regex form (`/\s?\[S?:?[^\]\s]*$/`) is quadratic on a long run of `[`.
+ */
+function stripPartialMarker(text: string): string {
+  let boundary = text.length - 1;
+  while (
+    boundary >= 0 &&
+    text[boundary] !== ']' &&
+    !/\s/.test(text[boundary] ?? '')
+  )
+    boundary--;
+  const open = text.indexOf('[', boundary + 1);
+  if (open === -1) return text;
+  const start = open > 0 && /\s/.test(text[open - 1] ?? '') ? open - 1 : open;
+  return text.slice(0, start);
+}
+
 /** Removes complete markers and a trailing half-typed one, for display mid-stream. */
 export function stripMarkers(text: string): string {
-  return text
-    .replace(MARKER_BEFORE_PUNCTUATION, '')
-    .replace(MARKER, '')
-    .replace(/\s?\[S?:?[^\]\s]*$/, '');
+  return stripPartialMarker(
+    text.replace(MARKER_BEFORE_PUNCTUATION, '').replace(MARKER, ''),
+  );
 }
 
 /** Numbers each distinct valid cited section by order of first appearance. */

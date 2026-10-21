@@ -518,6 +518,10 @@ async function ingestLocked(
     progress({ stage: 'parsing' });
     const parsed = await parseFetched(fetched, deps, signal);
     signal?.throwIfAborted();
+    // Raw bytes reach the disk cache only once they have parsed, so a page that fails to parse
+    // (or is not a bill at all) never lands there. The cache is an optimization: a write failure
+    // must not fail an ingest whose document is already in hand.
+    await fetched.commitCache?.().catch(() => undefined);
     let withMetadata = parsed;
     if (alreadyIndexed) {
       // A previous ingest was interrupted after indexing: don't pay for extraction again.

@@ -23,7 +23,7 @@ const QUOTED = new RegExp(
 );
 // the term X means (no quotes). Quote characters are excluded so QUOTED owns those.
 const UNQUOTED = new RegExp(
-  `\\bthe\\s+term\\s+([^,.;:"“”()\\n]{1,60}?)\\s+${VERBS}\\b`,
+  `\\bthe\\s+term\\s+([^\\s,.;:"“”()][^,.;:"“”()\\n]{0,59}?)\\s+${VERBS}\\b`,
   'giu',
 );
 
@@ -33,7 +33,21 @@ const LEAD_IN =
 // Before the lead-in/match: "(A) ", "(1) In general.—", "Administrator.—".
 const LABEL =
   /(?:(?:\([A-Za-z0-9]{1,6}\)\s*)+)?(?:[^.\n()—–]{1,60}\.\s*[—–-]{1,2}\s*)?$/;
-const SENTENCE_BREAK = /(?:^|\n|[.;:!?]["”’)]*|—)\s*$/;
+const SENTENCE_END = /(?:[.;:!?]["”’)]*|—)$/;
+
+/**
+ * Whether `before` ends at a sentence or label break: it is blank, ends in sentence
+ * punctuation (or an em dash), or its trailing whitespace holds a newline. Spelled out rather
+ * than `/(?:^|\n|[.;:!?]["”’)]*|—)\s*$/`, which is quadratic on a run of newlines.
+ */
+function atSentenceBreak(before: string): boolean {
+  const trimmed = before.trimEnd();
+  return (
+    trimmed === '' ||
+    SENTENCE_END.test(trimmed) ||
+    before.slice(trimmed.length).includes('\n')
+  );
+}
 
 // How far back from a match the lead-in and label can reach. Bounded so the cost of finding
 // a definition's start depends on the definition, not on the size of the section.
@@ -55,7 +69,7 @@ function segmentStart(text: string, matchIndex: number): number | undefined {
   const label = LABEL.exec(tail);
   if (label && label[0].length > 0)
     rest = rest.slice(0, rest.length - tail.length + label.index);
-  return SENTENCE_BREAK.test(rest) ? from + rest.trimEnd().length : undefined;
+  return atSentenceBreak(rest) ? from + rest.trimEnd().length : undefined;
 }
 
 export function normalizeTerm(raw: string): string {
@@ -72,7 +86,32 @@ function labelClass(label: string): LabelClass | undefined {
 }
 
 const OWN_LABEL = /^\s*\(([A-Za-z0-9]{1,6})\)/;
-const ANY_LABEL = /(?:^|\n|[.;:!?]["”’)]*)\s*\(([A-Za-z0-9]{1,6})\)\s/g;
+const LABEL_TOKEN = /\(([A-Za-z0-9]{1,6})\)\s/g;
+const CLOSERS = '"”’)';
+const SENTENCE_PUNCTUATION = '.;:!?';
+
+/**
+ * Labels like "(C) " that start a clause, at or after `from`: preceded (ignoring whitespace) by
+ * a newline or by sentence punctuation plus any closing quotes or parentheses. A token regex
+ * plus a look back replaces `/(?:\n|[.;:!?]["”’)]*)\s*\(label\)\s/g`, whose leading `\s*`
+ * is quadratic on a run of blank lines. Yields the label and where its "(" is.
+ */
+function* clauseLabels(
+  body: string,
+  from: number,
+): Generator<{ label: string; paren: number }> {
+  LABEL_TOKEN.lastIndex = from;
+  for (const m of body.matchAll(LABEL_TOKEN)) {
+    let gap = m.index;
+    while (gap > from && /\s/.test(body.charAt(gap - 1))) gap--;
+    let punct = gap;
+    while (punct > from && CLOSERS.includes(body.charAt(punct - 1))) punct--;
+    const afterBreak =
+      body.slice(gap, m.index).includes('\n') ||
+      (punct > from && SENTENCE_PUNCTUATION.includes(body.charAt(punct - 1)));
+    if (afterBreak) yield { label: m[1] ?? '', paren: m.index };
+  }
+}
 
 /**
  * Where a definition stops short of the next definition: at the next sibling label ("(C)"
@@ -84,13 +123,8 @@ function definitionEnd(text: string, start: number, limit: number): number {
   const own = OWN_LABEL.exec(body);
   const cls = own ? labelClass(own[1] ?? '') : undefined;
   if (own && cls) {
-    ANY_LABEL.lastIndex = own[0].length;
-    for (const m of body.matchAll(ANY_LABEL)) {
-      if (m.index + m[0].length <= own[0].length) continue;
-      if (labelClass(m[1] ?? '') === cls) {
-        const at = body.indexOf('(', m.index);
-        return start + at;
-      }
+    for (const next of clauseLabels(body, own[0].length)) {
+      if (labelClass(next.label) === cls) return start + next.paren;
     }
     return limit;
   }
@@ -127,8 +161,10 @@ export function segmentDefinitions(text: string): DefinitionSegment[] {
 // "As used in this section", "In this Act:", "For purposes of this chapter". The bare "in this"
 // form is anchored to a sentence/label start so incidental "... in this section ..." mentions
 // don't set the scope; the "as used in" / "for purposes of" forms are specific enough anywhere.
+// After a newline only same-line blanks are skipped: a later newline starts its own attempt, and
+// `\n\s*` would rescan every blank line of a long run.
 const SCOPE_PHRASE =
-  /(?:(?:as\s+used\s+in|for\s+(?:the\s+)?purposes?\s+of)|(?:^|[.;:!?—–)]\s*|\n\s*)in)\s+this\s+([a-z]+)\b/gi;
+  /(?:(?:as\s+used\s+in|for\s+(?:the\s+)?purposes?\s+of)|(?:^|[.;:!?—–)]\s*|\n[^\S\n]*)in)\s+this\s+([a-z]+)\b/gi;
 const DOCUMENT_UNITS = new Set(['act', 'chapter', 'title', 'bill']);
 const SECTION_UNITS = new Set(['section']);
 const SUBDIVISION_UNITS = new Set([

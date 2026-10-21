@@ -41,15 +41,40 @@ export function coveredSectionIds(c: StoredChunk): string[] {
   return c.coveredSectionIds ?? [c.sectionId];
 }
 
-/** Rewrite `[S:a, b]` and `[S:a; S:b]` as `[S:a] [S:b]` so each id is validated. */
+/**
+ * Rewrite `[S:a, b]` and `[S:a; S:b]` as `[S:a] [S:b]` so each id is validated.
+ *
+ * Scanned with `indexOf` rather than a regex: a bracket pattern such as `\[S:([^\]]*)\]`
+ * rescans to the end of the text from every `[S:` when there is no closing bracket, which is
+ * quadratic on `[S:a[S:a[S:a...`. Here the first missing `]` ends the search for good.
+ */
 function splitMultiMarkers(text: string, allowed: ReadonlySet<string>): string {
-  return text.replace(/\[S:([^\]]*[,;][^\]]*)\]/g, (whole, inner: string) => {
-    // A section id that itself contains a comma or semicolon is one id, not several.
-    if (allowed.has(inner)) return whole;
-    const ids = inner.split(/\s*[,;]\s*/).map((s) => s.replace(/^S:/, ''));
-    if (ids.some((id) => !id || /\s/.test(id))) return whole;
-    return ids.map((id) => `[S:${id}]`).join(' ');
-  });
+  let out = '';
+  let position = 0;
+  for (;;) {
+    const open = text.indexOf('[S:', position);
+    if (open < 0) break;
+    const close = text.indexOf(']', open + 3);
+    if (close < 0) break; // no `]` anywhere after this point, so no later marker can close
+    const whole = text.slice(open, close + 1);
+    const inner = text.slice(open + 3, close);
+    out += text.slice(position, open) + splitMarker(whole, inner, allowed);
+    position = close + 1;
+  }
+  return out + text.slice(position);
+}
+
+function splitMarker(
+  whole: string,
+  inner: string,
+  allowed: ReadonlySet<string>,
+): string {
+  if (!/[,;]/.test(inner)) return whole;
+  // A section id that itself contains a comma or semicolon is one id, not several.
+  if (allowed.has(inner)) return whole;
+  const ids = inner.split(/[,;]/).map((s) => s.trim().replace(/^S:/, ''));
+  if (ids.some((id) => !id || /\s/.test(id))) return whole;
+  return ids.map((id) => `[S:${id}]`).join(' ');
 }
 
 function escapeRegExp(s: string): string {

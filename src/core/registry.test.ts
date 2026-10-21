@@ -1,4 +1,6 @@
+import * as nodeFs from 'node:fs/promises';
 import {
+  mkdir,
   mkdtemp,
   readFile,
   rm,
@@ -16,6 +18,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AnswerCache, type AnswerCacheKey } from './answer-cache.js';
 import { BRAND } from './brand.js';
+import type { ConfigFileSystem } from './config-files.js';
+import { writeCache } from './fetch/cache.js';
 import { Registry } from './registry.js';
 import {
   EMPTY_METADATA,
@@ -185,6 +189,7 @@ describe('Registry', () => {
       chipId: 'summary',
       provider: 'mock',
       model: 'test',
+      endpoint: 'mock:local',
       promptVersion: '1',
     };
     const answer: AnswerResult = {
@@ -390,5 +395,204 @@ describe('Registry', () => {
     await expect(r.getDocument(id('a'))).rejects.toMatchObject({
       code: 'DOC_NOT_FOUND',
     });
+  });
+});
+
+describe('Registry and the download cache', () => {
+  const meta = (url: string) => ({
+    url,
+    finalUrl: url,
+    contentType: 'text/plain',
+    fetchedAt: '2026-10-13T00:00:00.000Z',
+  });
+  const bytes = (text: string) => new TextEncoder().encode(text);
+  const cached = async (text: string, url: string) =>
+    writeCache(bytes(text), meta(url), join(dir, 'cache'));
+  const cacheFiles = async () =>
+    (await readdir(join(dir, 'cache'))).filter((name) => name !== 'answers');
+  const indexed = async () =>
+    JSON.parse(
+      await readFile(join(dir, 'cache', 'index.json'), 'utf8'),
+    ) as Record<string, string>;
+
+  it('remove deletes the downloaded bytes and URL entry, and no other download', async () => {
+    const registry = new Registry(dir);
+    const a = await cached('bill a', 'https://example.com/a');
+    const b = await cached('bill b', 'https://example.com/b');
+    await registry.add(doc(a), { label: 'a', backend: 'local' });
+    await registry.add(doc(b), { label: 'b', backend: 'local' });
+    await registry.remove(a);
+    expect((await cacheFiles()).sort()).toEqual(
+      [b, `${b}.json`, 'index.json'].sort(),
+    );
+    expect(await indexed()).toEqual({ 'https://example.com/b': b });
+    expect((await registry.list()).map((entry) => entry.docId)).toEqual([b]);
+  });
+
+  it('a URL two documents share keeps the newer document download until that is removed too', async () => {
+    const registry = new Registry(dir);
+    const url = 'https://example.com/bill';
+    const older = await cached('version one', url);
+    const newer = await cached('version two', url);
+    await registry.add(doc(older), { label: 'older', backend: 'local' });
+    await registry.add(doc(newer), { label: 'newer', backend: 'local' });
+    await registry.remove(older);
+    expect(await cacheFiles()).toContain(newer);
+    expect(await cacheFiles()).not.toContain(older);
+    expect(await indexed()).toEqual({ [url]: newer });
+    await registry.remove(newer);
+    expect(await cacheFiles()).toEqual(['index.json']);
+    expect(await indexed()).toEqual({});
+  });
+
+  it('removing a document with no download is a no-op for the cache', async () => {
+    const registry = new Registry(dir);
+    await registry.add(doc(id('a')), { label: 'a', backend: 'local' });
+    await registry.remove(id('a'));
+    expect(await registry.list()).toEqual([]);
+  });
+
+  it('does not touch the answer cache directory inside the download cache', async () => {
+    const registry = new Registry(dir);
+    const a = await cached('bill a', 'https://example.com/a');
+    await registry.add(doc(a), { label: 'a', backend: 'local' });
+    await mkdir(join(dir, 'cache', 'answers'), { recursive: true });
+    await writeFile(join(dir, 'cache', 'answers', 'keep.json'), '{}');
+    await registry.remove(a);
+    expect(await readdir(join(dir, 'cache', 'answers'))).toEqual(['keep.json']);
+  });
+
+  it('keeps the document registered when its download cannot be removed, so removal can retry', async () => {
+    const blocked = join(dir, 'blocked');
+    await mkdir(dir, { recursive: true });
+    await writeFile(blocked, 'a file where the cache directory should be');
+    const registry = new Registry(dir, {
+      fetchCacheDir: join(blocked, 'cache'),
+    });
+    await registry.add(doc(id('a')), { label: 'a', backend: 'local' });
+    await expect(registry.remove(id('a'))).rejects.toMatchObject({
+      code: 'INVALID_INPUT',
+      message: 'The downloaded copy could not be removed.',
+    });
+    expect(await registry.list()).toHaveLength(1);
+  });
+});
+
+// N11: the registry lock carries an owner id, and is only ever removed by its owner.
+describe('Registry lock ownership', () => {
+  const lockPath = (): string => join(dir, 'registry.json.lock');
+
+  it('writes a pid-and-random owner id into the lock while held, and removes it after', async () => {
+    let seen = '';
+    const registry = new Registry(dir, {
+      answerCache: {
+        evictDocument: async () => {
+          seen = await readFile(lockPath(), 'utf8');
+        },
+      },
+    });
+    await registry.add(doc(id('a')), { label: 'a', backend: 'local' });
+    await registry.remove(id('a'));
+    expect(seen).toMatch(new RegExp(`^${String(process.pid)}-[0-9a-f-]{36}$`));
+    expect(await readdir(dir)).not.toContain('registry.json.lock');
+  });
+
+  it('gives every acquisition its own owner id', async () => {
+    const owners: string[] = [];
+    const registry = new Registry(dir, {
+      answerCache: {
+        evictDocument: async () => {
+          owners.push(await readFile(lockPath(), 'utf8'));
+        },
+      },
+    });
+    for (const c of ['a', 'b']) {
+      await registry.add(doc(id(c)), { label: c, backend: 'local' });
+      await registry.remove(id(c));
+    }
+    expect(new Set(owners).size).toBe(2);
+  });
+
+  it('does not delete a lock another process holds after breaking ours as stale', async () => {
+    // A slow operation outlives the stale threshold; a second process breaks the lock and
+    // takes it. Releasing ours must leave the second process's lock alone.
+    const registry = new Registry(dir, {
+      answerCache: {
+        evictDocument: async () => {
+          await rm(lockPath());
+          await writeFile(lockPath(), 'other-process-owner', { mode: 0o600 });
+        },
+      },
+    });
+    await registry.add(doc(id('a')), { label: 'a', backend: 'local' });
+    await registry.remove(id('a'));
+    expect(await readFile(lockPath(), 'utf8')).toBe('other-process-owner');
+  });
+
+  it('does not take the critical section by destroying a fresh lock during a stale break', async () => {
+    const registry0 = new Registry(dir);
+    await registry0.add(doc(id('a')), { label: 'a', backend: 'local' });
+    const stale = lockPath();
+    await writeFile(stale, 'crashed-process-owner', { mode: 0o600 });
+    const old = new Date(Date.now() - 60_000);
+    await utimes(stale, old, old);
+
+    const events: string[] = [];
+    let raced = false;
+    const fs = {
+      ...nodeFs,
+      // Race: right after this process sees the stale lock, the lock is released and a live
+      // process acquires a fresh one at the same path.
+      stat: async (path: string, ...rest: unknown[]) => {
+        const result = await (
+          nodeFs.stat as (...a: unknown[]) => Promise<unknown>
+        )(path, ...rest);
+        if (path === stale && !raced) {
+          raced = true;
+          await rm(stale);
+          await writeFile(stale, 'live-process-owner', { mode: 0o600 });
+          setTimeout(() => {
+            void (async () => {
+              events.push(
+                `live holder releases, lock reads ${await readFile(stale, 'utf8').catch(() => 'MISSING')}`,
+              );
+              await rm(stale, { force: true });
+            })();
+          }, 150);
+        }
+        return result;
+      },
+    } as unknown as ConfigFileSystem;
+    const registry = new Registry(dir, {
+      fs,
+      answerCache: {
+        evictDocument: () => {
+          events.push('stale-breaker enters critical section');
+          return Promise.resolve();
+        },
+      },
+    });
+    await registry.remove(id('a'));
+    expect(raced).toBe(true);
+    // The fresh lock survived the break attempt, and we waited for its holder.
+    expect(events).toEqual([
+      'live holder releases, lock reads live-process-owner',
+      'stale-breaker enters critical section',
+    ]);
+    expect(await readdir(dir)).not.toContain('registry.json.lock');
+    expect(
+      (await readdir(dir)).filter((name) => name.includes('stale-')),
+    ).toEqual([]);
+  });
+
+  it('still breaks a genuinely stale lock and records who broke it', async () => {
+    const registry = new Registry(dir);
+    await registry.list();
+    await writeFile(lockPath(), 'crashed-process-owner', { mode: 0o600 });
+    const old = new Date(Date.now() - 60_000);
+    await utimes(lockPath(), old, old);
+    await registry.add(doc(id('a')), { label: 'a', backend: 'local' });
+    expect(await registry.list()).toHaveLength(1);
+    expect(await readdir(dir)).not.toContain('registry.json.lock');
   });
 });
