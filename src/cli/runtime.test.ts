@@ -5,11 +5,16 @@ import { Pinecone } from '@pinecone-database/pinecone';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { describeBackendContract } from '../../tests/contracts/backend.contract.js';
 import { fakePineconeClient } from '../../tests/contracts/fake-pinecone-client.js';
+import { MemoryBackend } from '../../tests/contracts/memory-backend.js';
+import { ScriptedProvider } from '../../tests/contracts/scripted-provider.js';
 import { makeCongressionalBillXml } from '../../tests/synth/index.js';
-import { envVar } from '../core/brand.js';
+import { BRAND, envVar } from '../core/brand.js';
 import { initConfig, pineconeConfig } from '../core/config.js';
+import * as fetchCore from '../core/fetch/index.js';
 import { PineconeBackend } from '../core/index/index.js';
 import { AppError } from '../core/model/index.js';
+import { readParseLimits } from '../core/parse/limits.js';
+import { ingest } from '../core/pipeline/index.js';
 import { createSessionTestApp as createApp } from '../../tests/support/session-app.js';
 import { createProgram } from './program.js';
 import { createPineconeClient, createRuntimeFrom } from './runtime.js';
@@ -52,6 +57,90 @@ test('builds the local backend and the configured providers', async () => {
   expect(runtime.retrievalMode).toBe('hybrid_rerank');
   expect(runtime.answerProvider.id).toBe('mock');
   expect(runtime.extractProvider.id).toBe('mock');
+});
+
+test.each([false, true])(
+  'forwards all ingest fetch options to safeFetch (publicMode=%s)',
+  async (publicMode) => {
+    const url = 'https://example.com/bill.xml';
+    const bytes = makeCongressionalBillXml().bytes;
+    const fetched = {
+      bytes,
+      docId: fetchCore.documentId(bytes),
+      finalUrl: url,
+      contentType: 'application/xml',
+      format: 'xml' as const,
+      fromCache: false,
+    };
+    const safeFetch = vi
+      .spyOn(fetchCore, 'safeFetch')
+      .mockResolvedValue(fetched);
+    const runtime = await createRuntimeFrom(sources(mockEnv))({
+      needsLlm: false,
+    });
+    const options = {
+      signal: new AbortController().signal,
+      validateUrl: vi.fn<(url: URL) => void>(),
+      refresh: publicMode,
+      parseLimits: readParseLimits(publicMode, {}),
+    };
+
+    await expect(runtime.fetcher(url, options)).resolves.toBe(fetched);
+    expect(safeFetch).toHaveBeenCalledExactlyOnceWith(url, {
+      cacheDir: join(home, BRAND.configDirName, 'cache'),
+      ...options,
+    });
+    expect(safeFetch.mock.calls[0]?.[1]?.parseLimits).toBe(options.parseLimits);
+  },
+);
+
+test('allows omitted fetch options so safeFetch uses its defaults', async () => {
+  const safeFetch = vi
+    .spyOn(fetchCore, 'safeFetch')
+    .mockRejectedValue(new AppError('FETCH_FAILED'));
+  const runtime = await createRuntimeFrom(sources(mockEnv))({
+    needsLlm: false,
+  });
+  const url = 'https://example.com/bill.xml';
+
+  await expect(runtime.fetcher(url)).rejects.toMatchObject({
+    code: 'FETCH_FAILED',
+  });
+  expect(safeFetch).toHaveBeenCalledExactlyOnceWith(url, {
+    cacheDir: join(home, BRAND.configDirName, 'cache'),
+    signal: undefined,
+    validateUrl: undefined,
+    refresh: undefined,
+    parseLimits: undefined,
+  });
+});
+
+test('passes ingest parse limits through and preserves safeFetch failures before indexing', async () => {
+  const failure = new AppError('TOO_LARGE');
+  const safeFetch = vi.spyOn(fetchCore, 'safeFetch').mockRejectedValue(failure);
+  const runtime = await createRuntimeFrom(sources(mockEnv))({
+    needsLlm: false,
+  });
+  const backend = new MemoryBackend();
+  const upsert = vi.spyOn(backend, 'upsertChunks');
+  const provider = new ScriptedProvider();
+  const parseLimits = { ...readParseLimits(true, {}), maxHtmlBytes: 1_024 };
+
+  await expect(
+    ingest('https://example.com/bill.html', {
+      fetcher: runtime.fetcher,
+      registry: runtime.registry,
+      now: runtime.now,
+      backend,
+      provider,
+      parseLimits,
+    }),
+  ).rejects.toBe(failure);
+  expect(safeFetch).toHaveBeenCalledOnce();
+  expect(safeFetch.mock.calls[0]?.[1]?.parseLimits).toBe(parseLimits);
+  expect(upsert).not.toHaveBeenCalled();
+  expect(provider.calls).toEqual([]);
+  expect(await runtime.registry.list()).toEqual([]);
 });
 
 test('commands without an LLM work before any key is configured', async () => {

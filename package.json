@@ -17,6 +17,7 @@
     "LICENSE"
   ],
   "license": "MIT",
+  "homepage": "https://lawglass.xyz",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ylove/lawglass.git"
@@ -33,6 +34,7 @@
     "build": "tsup && vite build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "brand:assets": "tsx scripts/brand-assets.ts",
     "history:canary": "tsx scripts/history-canary.ts",
     "fixtures:fetch": "tsx scripts/fetch-fixtures.ts",
     "eval:smoke": "tsx scripts/eval-smoke.ts",

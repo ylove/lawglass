@@ -1,0 +1,3 @@
+# The hosted preview is private for now. Remove this block at public launch.
+User-agent: *
+Disallow: /

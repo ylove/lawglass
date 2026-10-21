@@ -12,6 +12,8 @@ import { BILL_TITLE_ID } from './document/MetadataHeader.js';
 import { DocumentView } from './DocumentView.js';
 import { errorMessage } from './errors.js';
 import { Ingest } from './Ingest.js';
+import { LogoMark } from './LogoMark.js';
+import { dataNote } from './provider-label.js';
 import { Sidebar } from './Sidebar.js';
 import { ApiError } from './sse.js';
 
@@ -32,6 +34,8 @@ export function App({ api: provided }: { api?: ApiClient }) {
   const [problem, setProblem] = useState<string | null>(null);
   // True when the first requests could not reach the server at all (not a server-side error).
   const [serverDown, setServerDown] = useState(false);
+  // A slow (not unreachable) start: offer Retry instead of leaving a bare message.
+  const [slowStart, setSlowStart] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   // Where the bill view puts its title and byline: inside the masthead band.
@@ -49,7 +53,13 @@ export function App({ api: provided }: { api?: ApiClient }) {
       .catch((e: unknown) => {
         if (!live) return;
         if (e instanceof ApiError && e.code === 'NETWORK') setServerDown(true);
-        else setProblem(errorMessage(e));
+        else {
+          setProblem(errorMessage(e));
+          setSlowStart(
+            e instanceof ApiError &&
+              (e.code === 'TIMEOUT' || e.code === 'STREAM_LOST'),
+          );
+        }
       })
       .finally(() => {
         if (live) setLoading(false);
@@ -59,6 +69,7 @@ export function App({ api: provided }: { api?: ApiClient }) {
     };
   }, [api, attempt]);
 
+  const note = config ? dataNote(config.provider) : null;
   const productName = config?.productName ?? BRAND.displayName;
   useEffect(() => {
     document.title = productName;
@@ -94,19 +105,7 @@ export function App({ api: provided }: { api?: ApiClient }) {
       </a>
       <header className="masthead">
         <div className="brand">
-          <svg
-            aria-hidden="true"
-            width="32"
-            height="32"
-            viewBox="0 0 32 32"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="2"
-            strokeLinecap="round"
-          >
-            <rect x="3" y="3" width="26" height="26" rx="8" />
-            <path d="M10 12h12M10 17h12M10 22h7" />
-          </svg>
+          <LogoMark />
           <h1>{productName}</h1>
         </div>
         {selected === null && (
@@ -157,6 +156,20 @@ export function App({ api: provided }: { api?: ApiClient }) {
               {problem}
             </p>
           )}
+          {problem && slowStart && (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                setLoading(true);
+                setSlowStart(false);
+                setProblem(null);
+                setAttempt((n) => n + 1);
+              }}
+            >
+              Retry
+            </button>
+          )}
           {loading && <p role="status">Loading...</p>}
           {config && selected === null && (
             <Ingest api={api} onIngested={onIngested} />
@@ -174,8 +187,16 @@ export function App({ api: provided }: { api?: ApiClient }) {
         </main>
       </div>
       <footer className="site-footer">
-        Not legal advice. Answers are generated only from the text of this
-        document.
+        <p>
+          Not legal advice. Answers are generated only from the text of this
+          document.
+        </p>
+        {note && <p>{note}</p>}
+        <p>
+          <a href={BRAND.repositoryUrl} rel="noopener noreferrer">
+            Source code
+          </a>
+        </p>
       </footer>
     </div>
   );
