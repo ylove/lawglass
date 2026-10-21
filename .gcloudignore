@@ -1,3 +1,4 @@
-# gcloud builds submit uploads this directory to Cloud Build. Reuse the Docker ignore rules.
+# Used whenever gcloud uploads this directory (for example `gcloud run deploy --source`).
+# deploy/cloud-run/deploy.sh builds locally instead; reuse the Docker ignore rules either way.
 #!include:.dockerignore
 .gcloudignore

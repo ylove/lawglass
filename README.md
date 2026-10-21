@@ -32,7 +32,7 @@ Lawglass is built so you do not have to take its word for anything.
 
 Requires Node.js 22.13 or newer.
 
-> Not on npm yet (publishing waits on [#7](https://github.com/ylove/lawglass/issues/7)). Until then, download the tarball attached to the [`v0.1.0-rc.2` release](https://github.com/ylove/lawglass/releases) (or build your own with `npm pack`) and replace `npx lawglass` below with `npx --package ./lawglass-0.1.0-rc.2.tgz lawglass`.
+> Not on npm yet (publishing waits on [#7](https://github.com/ylove/lawglass/issues/7)). Until then, download the tarball attached to the [`v1.0.0` release](https://github.com/ylove/lawglass/releases/tag/v1.0.0) (or build your own with `npm pack`) and replace `npx lawglass` below with `npx --package ./lawglass-1.0.0.tgz lawglass`.
 
 ```sh
 npx lawglass init                       # save provider keys (file mode 0600)
