@@ -1,0 +1,3 @@
+# gcloud builds submit uploads this directory to Cloud Build. Reuse the Docker ignore rules.
+#!include:.dockerignore
+.gcloudignore

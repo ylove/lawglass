@@ -30,6 +30,8 @@ Lawglass is a localhost-first legislation question-and-answer tool. You give the
 
 The primary deployment is one person on one machine. Public mode (`serve --public`) is a demonstration of a hosted design. It is not deployed.
 
+A hosted private preview runs `serve --private` on one Cloud Run instance at lawglass.xyz. Only people with an invite link can use it. Section 2.9 and ADR 0014 cover it.
+
 ### Assets
 
 | Asset                                | Why it matters                                                                                                                                       |
@@ -39,6 +41,7 @@ The primary deployment is one person on one machine. Public mode (`serve --publi
 | **Integrity of explanations**        | The product exists so that struck text is never read as current law, and so that every claim points to a real section. A wrong answer is the harm.   |
 | **Availability of the local server** | A hostile document or page should not freeze or crash the user's server, or fill their disk.                                                         |
 | **The operator's budget**            | In public mode, the host pays for model calls, embeddings and storage. Anonymous visitors must not be able to run that up.                           |
+| **The access key**                   | In the hosted preview, the invite key is the only thing between the internet and the full app, and the operator's model budget behind it.            |
 
 ### Actors
 
@@ -46,6 +49,7 @@ The primary deployment is one person on one machine. Public mode (`serve --publi
 - **Other web pages in the user's browser are not trusted.** They can try to call the local server.
 - **Other local users and processes are partly trusted.** They share the machine and possibly `~/.lawglass`.
 - **Public visitors are anonymous and not trusted.**
+- **Invited visitors to the hosted preview are partly trusted.** They hold the access key, but their documents and questions are treated like any other untrusted input, and their use is capped.
 - **Model output is untrusted.** It is never used as markup, a URL to fetch or a command.
 - **The supply chain is partly trusted.** We pin and verify what we can.
 
@@ -196,6 +200,23 @@ The directory holds config (with provider keys), the registry, documents, caches
 | S      | Another local process impersonates the client            | A local process starts the stdio server and calls tools.             | The same-user trust boundary applies (section 2.5).                                                                                        | Planned | #87 (N6)              |
 | R      | Tool calls leave no trace                                | The user cannot see what the agent did.                              | Progress notifications and a minimal log.                                                                                                  | Planned | #206                  |
 
+### 2.9 Hosted private preview (Cloud Run)
+
+`serve --private` runs the full app (free-form questions, scenarios and live summaries) for people who hold the access key. Everyone else gets a static page. It runs as one Cloud Run instance with state saved to a private Cloud Storage bucket. See ADR 0014 and `deploy/cloud-run/README.md`.
+
+| STRIDE | Threat                                         | Example                                                                   | Mitigation                                                                                                                                                                                                                                               | Status      | Evidence                                                           |
+| ------ | ---------------------------------------------- | ------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- | ------------------------------------------------------------------ |
+| S      | An uninvited visitor uses the app              | Someone finds the domain and calls `/api/ingest`.                         | Every route except the gate page and a fixed list of brand assets needs a session. The key is at least 32 characters and compared in constant time. The cookie holds an HMAC of the key, not the key, and is `Secure`, `HttpOnly` and `SameSite=Strict`. | In progress | #247                                                               |
+| I      | The invite link leaks                          | The link is forwarded, or the key sits in browser history or a referrer.  | The key is exchanged for a cookie on the first request and the browser is redirected to a URL without it. `Referrer-Policy: no-referrer`. Rotating the key (a new secret version and a redeploy) invalidates every cookie.                               | In progress | #247; rotation in `deploy/cloud-run/README.md`                     |
+| I      | The key appears in platform logs               | Cloud Run's request log records the `?k=` URL.                            | Accepted: the log stays inside the operator's own project. The app's own log never records query strings.                                                                                                                                                | Accepted    | ADR 0014                                                           |
+| I      | The provider key leaks                         | The Anthropic key ends up in the image, the repo, CI or a log.            | The key lives in Secret Manager and reaches the container only as an environment variable at runtime. It is never in the image, the repository or CI. The service account can read only its two secrets. The canary-key tests cover the log output.      | In progress | `Dockerfile`, `deploy/cloud-run/service.yaml`, #247 (log canaries) |
+| D      | Invited use runs up the model bill (LLM10)     | A tester ingests dozens of omnibus bills.                                 | A spend limit on the provider workspace, budgets in core, at most one instance, ingest limited to federal and Ohio hosts, and a 15-minute ingest deadline.                                                                                               | In progress | #181, #247; spend limit set in the provider console                |
+| D      | Hosting cost from idle or hostile traffic      | Scanners keep hitting the domain.                                         | Request-based billing (CPU only while a request is open) and `maxScale: 1`. Requests without a session are answered in milliseconds.                                                                                                                     | Mitigated   | `deploy/cloud-run/service.yaml`                                    |
+| E      | A compromised container reaches other services | A parser bug gives code execution.                                        | Runs as a non-root user. The service account has object access to one bucket and read access to two secrets, nothing else.                                                                                                                               | Mitigated   | `Dockerfile`, `deploy/cloud-run/README.md`                         |
+| E      | SSRF to the metadata server                    | A document URL points at `169.254.169.254` or `metadata.google.internal`. | The safe fetcher refuses link-local and private addresses after DNS resolution, and hosted modes accept only federal and Ohio hosts.                                                                                                                     | Mitigated   | `src/core/fetch/ip.ts`, `src/core/fetch/safe-fetch.ts`, #247       |
+| T      | Saved state is altered or lost                 | A bad tarball, or an instance stops between saves.                        | The bucket is private, with uniform access and public-access prevention. A save is verified before it replaces the last one, and a save torn by a concurrent write is discarded. A failed restore starts empty. Work since the last save can be lost.    | Accepted    | `deploy/cloud-run/entrypoint.sh`                                   |
+| I      | Traffic in cleartext                           | A network observer reads questions.                                       | Google's front end terminates TLS. The app sends HSTS in private mode.                                                                                                                                                                                   | In progress | #247 (HSTS)                                                        |
+
 ## 3. Residual risk we accept
 
 - **Citation existence is checked. Claim support is not** (N14). A hostile document can steer wording. The citation drawer lets the reader check the source text. The README should say "validated citations", not "verified claims".
@@ -204,7 +225,7 @@ The directory holds config (with provider keys), the registry, documents, caches
 
 ## 4. Out of scope for this round
 
-- **Cloud deployment and hosting:** TLS termination, WAF, network policy, secrets management, identity and managed storage. Public mode is a design demonstration. A deployment round comes later.
+- **Opening the hosted site to anonymous visitors.** The hosted preview is invite-only (section 2.9). Serving anonymous visitors needs the public-mode work in section 2.7 (#180) first, plus a WAF or rate limits at the edge.
 - **Third-party services' own security:** the providers, Pinecone, GovInfo and Cloudflare.
 - **Physical access and a compromised operating system.**
 

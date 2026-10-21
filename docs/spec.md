@@ -117,7 +117,14 @@ These override the original text below, and the earlier amendments, where they c
     - **Headers.** Every response carries a strict Content-Security-Policy, `nosniff`, `Referrer-Policy: no-referrer`, same-origin opener and resource policies and a restrictive `Permissions-Policy`. Every `/api/*` response, including streams, carries `Cache-Control: no-store`. HSTS is off on localhost. Public mode adds Turnstile's origin to the policy.
     - **Public mode fails closed.** The §7 "stub hook" is replaced by a real Turnstile check (hostname, action and token age), run through an injected fetcher. Public mode without a verifier refuses to start, unless the operator passes `--no-bot-check`. `--trust-proxy <hops>` replaces the boolean and counts from the right of `X-Forwarded-For`. The rate limiter is bounded and groups IPv6 by /64. Public mode serves the summary from cache only, strips query strings and fragments from listed source URLs, and caps concurrent streams.
     - **Budgets live in core.** Concurrency limits (2 ingest, 4 ask and scenario), a soft per-minute ceiling for model-backed calls and the 500-character question cap are enforced in `core/pipeline`, so the CLI and any MCP or other non-HTTP caller are covered. The public per-IP daily budget stays in the server.
-    - **Scope.** Localhost stays the primary use. Deploying to the cloud is out of scope for now.
+    - **Scope.** Localhost stays the primary use. Deploying to the cloud is out of scope for now. (Amendment 20 adds an invite-only hosted preview.)
+
+20. **Hosted private preview (§7).** Issues #247 and #250. See decision 0014.
+    - **`serve --private`** serves the full app to people who hold `LAWGLASS_ACCESS_KEY`. Visiting `/?k=<key>` sets a 30-day `Secure` session cookie and redirects to a URL without the key. Without a session, `/api/*` answers 401, and other pages show a static page with an invite note. A short list of brand assets stays public so link previews work.
+    - **Federal and Ohio only when hosted.** Public and private modes accept ingest only from federal and Ohio legislature hosts (`LAWGLASS_INGEST_HOSTS` overrides the list). Other hosts get a plain message that other states are on the roadmap.
+    - **Network modes refuse personal and test providers.** `--private` and `--public` refuse `claude-cli`, and `mock` unless `LAWGLASS_ALLOW_MOCK=1` is set for tests.
+    - **Operations.** `--trust-proxy <hops>` reads the client address from the right of `X-Forwarded-For`. Errors and refusals are logged as JSON lines without query strings, bodies or keys. A hosted ingest stops after 15 minutes. The summary endpoint waits up to 20 seconds for a summary that is being written.
+    - **Deployment.** One Cloud Run instance, with state saved to a private Cloud Storage bucket as a tarball and secrets in Secret Manager (`deploy/cloud-run/`). Opening the site to anonymous visitors still needs amendment 19's public-mode work.
 
 ## 1. Purpose
 
