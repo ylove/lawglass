@@ -19,6 +19,7 @@ import {
 import { promptChoice, promptSecret } from './secret-prompt.js';
 import { createLauncher, type Launcher } from '../server/launch.js';
 import { prepareIngestSource } from './ingest-source.js';
+import { readAccessKey } from '../server/session.js';
 import { validateBindHost } from '../server/bind.js';
 
 export interface CliDependencies {
@@ -46,6 +47,14 @@ function noOpenRequest(options: OpenOptions): { noOpen?: true } {
 interface PortOptions {
   port?: string;
   host?: string;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${String(bytes)} B`;
+  const megabytes = bytes / (1024 * 1024);
+  return megabytes < 0.1
+    ? `${(bytes / 1024).toFixed(1)} KB`
+    : `${megabytes.toFixed(1)} MB`;
 }
 
 function parsePort(value: string | undefined): number | undefined {
@@ -88,10 +97,12 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
   const open = (
     options: BackendOption,
     needsLlm: boolean,
+    hostedMode?: boolean,
   ): Promise<CliRuntime> =>
     (dependencies.runtime ?? createRuntime)({
       backend: options.backend,
       needsLlm,
+      ...(hostedMode ? { hostedMode: true } : {}),
     });
 
   async function ingestSource(
@@ -295,6 +306,22 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
       await runtime.registry.remove(entry.docId);
       write(`Removed ${safeText(entry.label)}\n`);
     });
+  const cache = program
+    .command('cache')
+    .description('manage the local download cache');
+  cache
+    .command('clear')
+    .description(
+      'delete cached downloads (documents, indexes and answers are kept)',
+    )
+    .option('--backend <backend>', 'retrieval backend (pinecone or local)')
+    .action(async (options: BackendOption) => {
+      const runtime = await open(options, false);
+      const { snapshots, bytes } = await runtime.clearFetchCache();
+      write(
+        `Cleared ${String(snapshots)} cached ${snapshots === 1 ? 'download' : 'downloads'} (${formatBytes(bytes)}).\n`,
+      );
+    });
   program
     .command('serve')
     .description('serve the local web UI')
@@ -302,18 +329,52 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
     .option('--port <port>', 'local server port (default 4317)')
     .option('--host <host>', 'address to bind (default 127.0.0.1)')
     .option('--public', 'allow only question chips in the web UI')
+    .option('--private', 'invite-only preview with the full app')
+    .option(
+      '--trust-proxy <hops>',
+      'trusted proxy hops, counted from the right',
+      '0',
+    )
     .option('--no-open', 'do not open the browser')
     .action(
       async (
         options: BackendOption &
           PortOptions &
-          OpenOptions & { public?: boolean },
+          OpenOptions & {
+            public?: boolean;
+            private?: boolean;
+            trustProxy?: string;
+          },
       ) => {
-        validateBindHost(options.host, options.public);
+        if (options.private && options.public) {
+          const message = '--private and --public cannot be used together.';
+          throw new AppError('INVALID_INPUT', message, {
+            userMessage: message,
+          });
+        }
+        const trustProxyHops = Number(options.trustProxy);
+        if (
+          !/^\d+$/.test(options.trustProxy ?? '') ||
+          !Number.isSafeInteger(trustProxyHops)
+        ) {
+          const message =
+            '--trust-proxy must be a whole number of hops, 0 or greater.';
+          throw new AppError('INVALID_INPUT', message, {
+            userMessage: message,
+          });
+        }
+        if (options.private) readAccessKey();
+        validateBindHost(options.host, options.public, options.private);
         const port = parsePort(options.port);
-        const runtime = await open(options, true);
+        const runtime = await open(
+          options,
+          true,
+          (options.public ?? false) || (options.private ?? false),
+        );
         await (dependencies.serve ?? createLauncher({ write }))(runtime, {
           publicMode: options.public ?? false,
+          ...(options.private ? { privateMode: true } : {}),
+          ...(trustProxyHops > 0 ? { trustProxyHops } : {}),
           port,
           host: options.host,
           ...noOpenRequest(options),

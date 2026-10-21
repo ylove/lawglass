@@ -54,6 +54,7 @@ export function registerScenarioRoute(
           chipId: 'summary',
           provider: provider.id,
           model: provider.model,
+          endpoint: runtime.answerEndpoint,
           promptVersion: SUMMARY_CACHE_VERSION,
         });
         return (summary?.citations ?? [])

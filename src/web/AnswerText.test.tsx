@@ -305,3 +305,18 @@ describe('whitespace before removed citation markers', () => {
     expect(container.querySelector('p')?.textContent).toBe('the deadline.');
   });
 });
+
+describe('stripMarkers on hostile input', () => {
+  test('drops only a trailing half-typed marker', () => {
+    expect(stripMarkers('the deadline [S:sec')).toBe('the deadline');
+    expect(stripMarkers('a [S:x] b [')).toBe('a  b');
+    expect(stripMarkers('keep [this] text')).toBe('keep [this] text');
+    expect(stripMarkers('[')).toBe('');
+  });
+
+  test('is linear on a long run of brackets', () => {
+    const started = performance.now();
+    stripMarkers(`${'['.repeat(200_000)}x y`);
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
+});

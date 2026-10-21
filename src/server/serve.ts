@@ -49,12 +49,20 @@ export async function startServer(
   runtime: CliRuntime,
   options: StartServerOptions = {},
 ): Promise<RunningServer> {
-  const host = validateBindHost(options.host, options.publicMode);
-  const sessionToken = options.publicMode ? undefined : createSessionToken();
+  const host = validateBindHost(
+    options.host,
+    options.publicMode,
+    options.privateMode,
+  );
+  const sessionToken =
+    options.publicMode || options.privateMode
+      ? undefined
+      : createSessionToken();
   const app = createApp(runtime, {
     webRoot: defaultWebRoot(),
     ...options,
-    localOnly: !options.publicMode && isLoopbackAddress(host),
+    localOnly:
+      !options.publicMode && !options.privateMode && isLoopbackAddress(host),
     sessionToken,
   });
   const server = await new Promise<Server>((resolve, reject) => {

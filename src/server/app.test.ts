@@ -585,6 +585,7 @@ describe('abort and heartbeat', () => {
       const fetcher = vi.spyOn(env.runtime, 'fetcher');
       const a = app({
         publicMode: true,
+        ingestHosts: new Set([new URL(GARDENS).hostname]),
         limits: { maxDocs: 1 },
         turnstile: () => {
           if (phase === 'public checks') controller.abort();

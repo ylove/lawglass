@@ -189,6 +189,7 @@ beforeEach(async () => {
   );
 });
 afterEach(async () => {
+  expectNoCanary('stderr and structured logs', captured.join('\n'));
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
   await env.cleanup();
@@ -488,4 +489,30 @@ describe('configuration', () => {
     for (const key of CANARIES) expect(text).not.toContain(key);
     expect(text).not.toMatch(/CANARY/);
   });
+});
+
+it('private invite exchange and refusal/error logs never expose invite or provider canaries', async () => {
+  const { createApp: rawApp } = await import('../../src/server/app.js');
+  const accessKey = KEYS.anthropic;
+  const app = rawApp(env.runtime, { privateMode: true, accessKey });
+  const exchange = await app.request(`http://preview.example/?k=${accessKey}`);
+  expect(exchange.status).toBe(302);
+  expectNoCanary('private cookie', exchange.headers.get('set-cookie') ?? '');
+  const cookie = exchange.headers.get('set-cookie')?.split(';')[0] ?? '';
+  const denied = await app.request(`/api/docs?k=${KEYS.openai}`);
+  expect(denied.status).toBe(401);
+  vi.spyOn(env.registry, 'list').mockImplementation(() => {
+    const failure = new Error(CANARIES.join(' '));
+    failure.name = KEYS.google;
+    throw failure;
+  });
+  const failure = await app.request('/api/docs', { headers: { cookie } });
+  expect(failure.status).toBe(500);
+  expectNoCanary('private API failure', await failure.text());
+  const stderr = captured
+    .filter((line) => line.startsWith('stderr:'))
+    .join('\n');
+  expect(stderr).toContain('internal_error');
+  expect(stderr).toContain('UNAUTHORIZED');
+  expectNoCanary('private stderr', stderr);
 });

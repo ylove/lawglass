@@ -9,7 +9,11 @@ import {
 import type { ExternalRef, Section } from '../model/index.js';
 import { parsePdf, parseXml } from '../parse/index.js';
 import { chunkDocument } from '../chunk/index.js';
-import { GROUP_CAP, extractDelegations } from './delegations.js';
+import {
+  GROUP_CAP,
+  afterLastConjunction,
+  extractDelegations,
+} from './delegations.js';
 import { sec } from './fixtures.js';
 import { enrichDocument } from './index.js';
 
@@ -814,3 +818,28 @@ describe.skipIf(!existsSync(issue8))(
     });
   },
 );
+
+describe('afterLastConjunction', () => {
+  it.each([
+    [
+      'The Secretary shall act after the Director approves',
+      'the Director approves',
+    ],
+    [
+      'x, if the Board asks, when the Secretary determines',
+      'the Secretary determines',
+    ],
+    ['no conjunction here', 'no conjunction here'],
+    ['if a; the Secretary', 'if a; the Secretary'],
+    // The original regex's `.*` stopped at a line break: only a first-line conjunction counted.
+    ['when a\nif b', 'a\nif b'],
+    ['a\nif b', 'a\nif b'],
+  ])('%j -> %j', (input, expected) => {
+    expect(afterLastConjunction(input)).toBe(expected);
+  });
+  it('is linear on a long run with no comma or semicolon', () => {
+    const started = performance.now();
+    afterLastConjunction('if '.repeat(60_000));
+    expect(performance.now() - started).toBeLessThan(100);
+  });
+});

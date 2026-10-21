@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { AppError, BillHistory, SponsorProfile } from '../model/index.js';
 import { MAX_NAME, MAX_TEXT, sanitizeText } from './text.js';
 import type { HistoryPlan, HistoryRecord, HistorySource } from './resolve.js';
+import { trimEndWhile } from '../trim.js';
 
 /**
  * Ohio history comes from the legislature's own LIS JSON API on search-prod.lis.state.oh.us
@@ -57,7 +58,7 @@ export function ohioTextUrl(plan: OhioPlan, version: string): string {
 
 /** The landing host, with or without `www` or a trailing dot. Never fetched. */
 export function isOhioLandingHost(url: URL): boolean {
-  const host = url.hostname.replace(/\.+$/, '');
+  const host = trimEndWhile(url.hostname, (c) => c === '.');
   return host === LANDING_HOST || host === 'legislature.ohio.gov';
 }
 export function ohioPageError(): AppError {

@@ -88,6 +88,8 @@ test.each([false, true])(
     await expect(runtime.fetcher(url, options)).resolves.toBe(fetched);
     expect(safeFetch).toHaveBeenCalledExactlyOnceWith(url, {
       cacheDir: join(home, BRAND.configDirName, 'cache'),
+      cacheBudgetBytes: expect.any(Number) as number,
+      deferCacheWrite: true,
       ...options,
     });
     expect(safeFetch.mock.calls[0]?.[1]?.parseLimits).toBe(options.parseLimits);
@@ -108,6 +110,8 @@ test('allows omitted fetch options so safeFetch uses its defaults', async () => 
   });
   expect(safeFetch).toHaveBeenCalledExactlyOnceWith(url, {
     cacheDir: join(home, BRAND.configDirName, 'cache'),
+    cacheBudgetBytes: expect.any(Number) as number,
+    deferCacheWrite: true,
     signal: undefined,
     validateUrl: undefined,
     refresh: undefined,
@@ -484,4 +488,53 @@ describeBackendContract('Pinecone through CLI runtime (fake SDK)', async () => {
     backend: runtime.backend,
     cleanup: () => rm(contractHome, { recursive: true, force: true }),
   };
+});
+
+test.each(['claude-cli', 'mock'])(
+  'hosted mode refuses %s without prompting',
+  async (provider) => {
+    const prompt = vi.spyOn(prompts, 'promptSecret');
+    const choose = vi.spyOn(prompts, 'promptChoice');
+    await expect(
+      createRuntimeFrom({
+        ...sources({ [envVar('LLM_PROVIDER')]: provider }),
+        isTTY: true,
+      })({ needsLlm: true, hostedMode: true }),
+    ).rejects.toMatchObject({
+      code: 'INVALID_INPUT',
+      userMessage: expect.stringContaining(provider) as string,
+    });
+    expect(prompt).not.toHaveBeenCalled();
+    expect(choose).not.toHaveBeenCalled();
+  },
+);
+test('the hosted provider guard reads saved configuration, with an explicit e2e mock escape hatch', async () => {
+  await initConfig({ homeDir: home, env: mockEnv, nonInteractive: true });
+  await expect(
+    createRuntimeFrom(sources({}))({ needsLlm: true, hostedMode: true }),
+  ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  const runtime = await createRuntimeFrom(
+    sources({ [envVar('ALLOW_MOCK')]: '1' }),
+  )({ needsLlm: true, hostedMode: true });
+  expect(runtime.answerProvider.id).toBe('mock');
+  await expect(
+    createRuntimeFrom(
+      sources({
+        [envVar('LLM_PROVIDER')]: 'claude-cli',
+        [envVar('ALLOW_MOCK')]: '1',
+      }),
+    )({ needsLlm: true, hostedMode: true }),
+  ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+});
+test('hosted configuration with missing credentials does not prompt', async () => {
+  const prompt = vi.spyOn(prompts, 'promptSecret');
+  const choose = vi.spyOn(prompts, 'promptChoice');
+  await expect(
+    createRuntimeFrom({ ...sources({}), isTTY: true })({
+      needsLlm: true,
+      hostedMode: true,
+    }),
+  ).rejects.toMatchObject({ code: 'MISSING_KEY' });
+  expect(prompt).not.toHaveBeenCalled();
+  expect(choose).not.toHaveBeenCalled();
 });

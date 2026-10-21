@@ -11,6 +11,7 @@ import {
 } from './ohio-legislature.js';
 import { parseGovinfoBillStatus } from './govinfo-billstatus.js';
 import type { SafeFetchResult } from '../fetch/index.js';
+import { trimEndWhile } from '../trim.js';
 
 /** Internal adapter seam, deliberately separate from the frozen document contracts. */
 export interface HistoryPlan {
@@ -73,7 +74,7 @@ function billPageError(): AppError {
 }
 
 function isCongressHost(url: URL): boolean {
-  const host = url.hostname.replace(/\.+$/, '');
+  const host = trimEndWhile(url.hostname, (c) => c === '.');
   return host === 'congress.gov' || host.endsWith('.congress.gov');
 }
 
