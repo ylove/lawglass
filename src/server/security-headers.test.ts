@@ -145,11 +145,7 @@ describe('CSP differences between modes', () => {
     const csp = contentSecurityPolicy(true);
     expect(csp).toContain(`script-src 'self' ${TURNSTILE_ORIGIN};`);
     expect(csp).toContain(`frame-src ${TURNSTILE_ORIGIN};`);
-    expect(
-      csp
-        .replace(` ${TURNSTILE_ORIGIN}`, '')
-        .replace(`; frame-src`, '; frame-src'),
-    ).not.toContain('unsafe-');
+    expect(csp).not.toContain('unsafe-');
     expect(contentSecurityPolicy(false)).not.toContain(TURNSTILE_ORIGIN);
   });
 
