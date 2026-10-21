@@ -148,6 +148,7 @@ export function createSummaryService(
         chipId: 'summary',
         provider: provider.id,
         model: provider.model,
+        endpoint: runtime.answerEndpoint,
         promptVersion: SUMMARY_CACHE_VERSION,
       };
       const hit = await cache.get(key);

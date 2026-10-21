@@ -49,6 +49,14 @@ interface PortOptions {
   host?: string;
 }
 
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${String(bytes)} B`;
+  const megabytes = bytes / (1024 * 1024);
+  return megabytes < 0.1
+    ? `${(bytes / 1024).toFixed(1)} KB`
+    : `${megabytes.toFixed(1)} MB`;
+}
+
 function parsePort(value: string | undefined): number | undefined {
   if (value === undefined) return undefined;
   const port = Number(value);
@@ -297,6 +305,22 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
       await runtime.backend.deleteDocument(entry.docId);
       await runtime.registry.remove(entry.docId);
       write(`Removed ${safeText(entry.label)}\n`);
+    });
+  const cache = program
+    .command('cache')
+    .description('manage the local download cache');
+  cache
+    .command('clear')
+    .description(
+      'delete cached downloads (documents, indexes and answers are kept)',
+    )
+    .option('--backend <backend>', 'retrieval backend (pinecone or local)')
+    .action(async (options: BackendOption) => {
+      const runtime = await open(options, false);
+      const { snapshots, bytes } = await runtime.clearFetchCache();
+      write(
+        `Cleared ${String(snapshots)} cached ${snapshots === 1 ? 'download' : 'downloads'} (${formatBytes(bytes)}).\n`,
+      );
     });
   program
     .command('serve')

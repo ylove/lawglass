@@ -48,7 +48,7 @@ test('latest summary uses actionDate first and updateDate to break ties, regardl
   });
 });
 
-test('all human-readable fields strip upstream HTML, while literal text remains untrusted', () => {
+test('all human-readable fields strip upstream HTML, and literal markup is dropped', () => {
   const xml = BILLSTATUS_XML.replace(
     'Rep. Example, Alex [I-OH-3]',
     '&lt;b&gt;Rep. Example, Alex [I-OH-3]&lt;/b&gt;',
@@ -85,7 +85,8 @@ test('all human-readable fields strip upstream HTML, while literal text remains 
   expect(result.sponsorProfiles[0]?.name).toBe('Rep. Example, Alex [I-OH-3]');
   expect(result.history.versions.at(-1)?.label).toBe('Enrolled Bill');
   expect(result.history.actions[1]).toMatchObject({
-    text: 'Referred to Example. 2 < 3 & <untrusted>.',
+    // The tag-shaped "<untrusted>" is removed; the literal "<" comparison is real text and stays.
+    text: 'Referred to Example. 2 < 3 & .',
     committee: 'Example Committee',
   });
   expect(result.history.amendments[0]).toMatchObject({
@@ -330,4 +331,97 @@ test('the official title is read from titles, preferring the introduced wording 
       ),
     ),
   ).not.toHaveProperty('officialTitle');
+});
+
+// G12: BILLSTATUS text goes through the shared history sanitizer, like the Ohio adapter's.
+test('control, zero-width and bidi characters are removed from every text field', () => {
+  // Zero-width and bidi characters vanish between letters; DEL and C1 controls (the only C0-like
+  // characters XML 1.0 lets through) become word breaks, so they are put at the edges.
+  const hostile = (text: string) =>
+    `\u009b${text
+      .split('')
+      .map((char) => `${char}\u202e\u200b\u2066\ufeff`)
+      .join('')}\u007f`;
+  const xml = BILLSTATUS_XML.replace(
+    'Rep. Example, Alex [I-OH-3]',
+    hostile('Rep. Example'),
+  )
+    .replace('Referred to the Example Committee.', hostile('Referred to X.'))
+    .replace('To clarify the example grant limit.', hostile('To clarify.'))
+    .replace(
+      '<name>Example Committee</name>',
+      `<name>${hostile('Committee')}</name>`,
+    );
+  const result = parse(xml);
+  expect(result.sponsorProfiles[0]?.name).toBe('Rep. Example');
+  expect(result.history.actions[1]).toMatchObject({
+    text: 'Referred to X.',
+    committee: 'Committee',
+  });
+  expect(result.history.amendments[0]?.purpose).toBe('To clarify.');
+  const everything = JSON.stringify(result);
+  expect(everything).not.toMatch(
+    /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/,
+  );
+});
+
+test('names are capped at 200 characters and action text at 2000', () => {
+  const xml = BILLSTATUS_XML.replace(
+    'Rep. Example, Alex [I-OH-3]',
+    `Rep. ${'N'.repeat(5_000)}`,
+  )
+    .replace('Referred to the Example Committee.', 'A'.repeat(50_000))
+    .replace(
+      '<name>Example Committee</name>',
+      `<name>${'C'.repeat(5_000)}</name>`,
+    );
+  const result = parse(xml);
+  expect(result.sponsorProfiles[0]?.name.length).toBeLessThanOrEqual(201);
+  expect(result.sponsorProfiles[0]?.name.endsWith('…')).toBe(true);
+  expect(result.history.actions[1]?.text.length).toBeLessThanOrEqual(2_001);
+  expect(result.history.actions[1]?.committee?.length).toBeLessThanOrEqual(201);
+});
+
+test('the official summary keeps CRS length but is still bounded', () => {
+  const long = (n: number) => `<p>${'word '.repeat(n)}</p>`;
+  const summary = (text: string) =>
+    parse(
+      withSummaries(
+        `<summary><actionDate>2024-06-10</actionDate><cdata><text><![CDATA[${text}]]></text></cdata></summary>`,
+      ),
+    ).history.officialSummary?.text;
+  expect(summary(long(800))?.length).toBeGreaterThan(2_000);
+  expect(summary(long(100_000))?.length).toBeLessThanOrEqual(10_001);
+});
+
+test('a hostile amendment identifier cannot carry markup or control characters into its id', () => {
+  const xml = BILLSTATUS_XML.replace(
+    '<amendments>',
+    '<amendments><amendment><number>7&lt;b&gt;\u202e</number><congress>118</congress><type>SAMDT</type></amendment>',
+  );
+  const added = parse(xml).history.amendments.find((item) =>
+    item.id.startsWith('118samdt7'),
+  );
+  expect(added?.id).toBe('118samdt7');
+});
+
+test('comparison operators in BILLSTATUS text are kept; only tags are removed', () => {
+  const xml = BILLSTATUS_XML.replace(
+    'Referred to the Example Committee.',
+    'Applies if income &lt; $50,000 and age &gt; 65, or if x &lt; 5 &amp;lt;b&amp;gt;bold&amp;lt;/b&amp;gt; then more text follows.',
+  );
+  const text = parse(xml).history.actions[1]?.text;
+  expect(text).toBe(
+    'Applies if income < $50,000 and age > 65, or if x < 5 bold then more text follows.',
+  );
+});
+
+test('XML text with a literal "<" is not cut off by HTML parsing', () => {
+  const xml = BILLSTATUS_XML.replace(
+    'Referred to the Example Committee.',
+    'Applies if x&lt;y and the applicant is over 65.',
+  );
+  expect(parse(xml).history.actions[1]?.text).toBe(
+    'Applies if x<y and the applicant is over 65.',
+  );
 });

@@ -3,6 +3,7 @@ import {
   type ExternalRef,
   type Section,
 } from '../model/index.js';
+import { trimEndWhile } from '../trim.js';
 import { segmentDefinitions } from './definitions.js';
 import { findExternalMatches } from './refs.js';
 
@@ -213,7 +214,9 @@ function clean(text: string): string {
 
 function shorten(text: string, max: number): string {
   // Bounded first: the trailing-punctuation regex is quadratic on a long run of commas.
-  const t = clean(text.slice(0, max * 4)).replace(/[.;,]+$/, '');
+  const t = trimEndWhile(clean(text.slice(0, max * 4)), (c) =>
+    '.;,'.includes(c),
+  );
   return t.length <= max ? t : `${t.slice(0, max - 1).trimEnd()}…`;
 }
 
@@ -225,12 +228,39 @@ function fromVerb(sentence: string, from: number): string {
   );
 }
 
+/**
+ * The text after the last "after/if/when..." in the final comma- or semicolon-free stretch of
+ * `before`, or all of it when there is none. A scan over that stretch replaces a greedy
+ * `^.*\b(?:after|...)\s+(?=[^,;]*$)` regex, which backtracks polynomially.
+ */
+export function afterLastConjunction(before: string): string {
+  const stretchStart =
+    Math.max(before.lastIndexOf(','), before.lastIndexOf(';')) + 1;
+  // The regex's `.*` stops at a line terminator, so only a conjunction on the first line counts.
+  const firstLineEnd = before.search(/[\n\r\u2028\u2029]/);
+  const limit = firstLineEnd < 0 ? before.length : firstLineEnd;
+  let last: RegExpExecArray | undefined;
+  for (const m of before
+    .slice(stretchStart)
+    .matchAll(
+      /\b(?:after|before|once|until|if|when|unless|whenever|while)\s+/gi,
+    )) {
+    if (stretchStart + m.index >= limit) break;
+    last = m;
+  }
+  return last
+    ? before.slice(stretchStart + last.index + last[0].length)
+    : before;
+}
+
 /** The words before a trailing phrase: what the approval or determination applies to. */
 function beforeMatch(sentence: string, at: number): string {
-  const head = sentence
-    .slice(Math.max(0, at - WHAT_MAX * 3), at)
-    .replace(/^[\s,;—–:-]+|[\s,]+$/g, '')
-    .replace(/^\([A-Za-z0-9]{1,6}\)\s*/, '');
+  const head = trimEndWhile(
+    sentence
+      .slice(Math.max(0, at - WHAT_MAX * 3), at)
+      .replace(/^[\s,;—–:-]+/, ''),
+    (c) => c === ',' || /\s/.test(c),
+  ).replace(/^\([A-Za-z0-9]{1,6}\)\s*/, '');
   return shorten(
     head.length > WHAT_MAX ? head.slice(-WHAT_MAX) : head,
     WHAT_MAX,
@@ -485,15 +515,15 @@ const RULES: Rule[] = [
       const before = s.slice(Math.max(0, m.index - 150), m.index);
       // "as the Secretary determines appropriate" is the rule above.
       if (/\bas\s+(?:\S+\s+){0,6}$/i.test(before)) return undefined;
-      const subject = before.replace(
-        /^.*\b(?:after|before|once|until|if|when|unless|whenever|while)\s+(?=[^,;]*$)/i,
-        '',
-      );
+      const subject = afterLastConjunction(before);
       const actor = actorBefore(
-        subject.replace(
-          /\s+(?:otherwise|also|then|further|jointly|ultimately)\s*$/i,
-          '',
-        ),
+        subject
+          .trimEnd()
+          .replace(
+            /(?<=\s)(?:otherwise|also|then|further|jointly|ultimately)$/i,
+            '',
+          )
+          .trimEnd(),
       );
       if (
         !actor ||

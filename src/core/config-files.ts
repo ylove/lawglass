@@ -124,7 +124,15 @@ async function syncDirectory(
 
 export type ConfigFileSystem = Pick<
   typeof nodeFs,
-  'open' | 'mkdir' | 'chmod' | 'rename' | 'unlink' | 'access' | 'stat' | 'lstat'
+  | 'open'
+  | 'mkdir'
+  | 'chmod'
+  | 'rename'
+  | 'unlink'
+  | 'access'
+  | 'stat'
+  | 'lstat'
+  | 'link'
 >;
 export const configFileSystem: ConfigFileSystem = nodeFs;
 

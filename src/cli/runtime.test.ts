@@ -88,6 +88,8 @@ test.each([false, true])(
     await expect(runtime.fetcher(url, options)).resolves.toBe(fetched);
     expect(safeFetch).toHaveBeenCalledExactlyOnceWith(url, {
       cacheDir: join(home, BRAND.configDirName, 'cache'),
+      cacheBudgetBytes: expect.any(Number) as number,
+      deferCacheWrite: true,
       ...options,
     });
     expect(safeFetch.mock.calls[0]?.[1]?.parseLimits).toBe(options.parseLimits);
@@ -108,6 +110,8 @@ test('allows omitted fetch options so safeFetch uses its defaults', async () => 
   });
   expect(safeFetch).toHaveBeenCalledExactlyOnceWith(url, {
     cacheDir: join(home, BRAND.configDirName, 'cache'),
+    cacheBudgetBytes: expect.any(Number) as number,
+    deferCacheWrite: true,
     signal: undefined,
     validateUrl: undefined,
     refresh: undefined,

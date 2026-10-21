@@ -42,7 +42,7 @@ export interface ScenarioValidation {
 
 /** Captions are plain text. The UI must render them as text nodes, never HTML/Markdown. */
 const MARKUP =
-  /[<>`]|&(?:[a-z][a-z\d]*|#\d+|#x[\da-f]+);|!\[|\]\(|\*\*|__|^\s*#|:\/\/|javascript:|data:|www\./im;
+  /[<>`]|&(?:[a-z][a-z\d]*|#\d+|#x[\da-f]+);|!\[|\]\(|\*\*|__|^[^\S\n\r\u2028\u2029]*#|:\/\/|javascript:|data:|www\./im;
 const EVALUATIVE =
   /\b(?:good|bad|unfair|fair|harm(?:s|ed|ful|fully|less|lessly|ing)?|helpful|great|terrible|awful|wonderful|benefit(?:s|ed|ing)?|beneficial|disastrous|relief|relieve[sd]?|relieving|burden(?:s|ed|some|somely|ing)?|giveaway|unjust(?:ly|ice|ified|ifiable|ifiably)?|punish(?:es|ed|ing|ment|ments|able)?|windfalls?|loopholes?|handouts?|crushing|fairness)\b/i;
 const LEGAL_PHRASES =

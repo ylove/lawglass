@@ -2,8 +2,8 @@
  * Text sanitizing shared by the history adapters. Everything here is linear in the input
  * length: no backtracking regexes over untrusted text, and callers cap length first.
  *
- * Output is plain text. Bare `<` and `>` are dropped, so markup can never survive, and
- * consumers must still render it as text, never as HTML.
+ * Output is plain text: genuine tags are removed, comparison operators are kept. Consumers
+ * must still render it as text, never as HTML.
  */
 
 // Zero-width (U+200B-200F), bidi embedding/override (U+202A-202E), bidi isolate
@@ -20,19 +20,67 @@ export function stripInvisible(value: string): string {
   return value.replace(INVISIBLE, '');
 }
 
-/** One pass: `<...>` becomes a space. An unterminated tag drops the rest; a bare `>` is dropped. */
-function stripTags(value: string): string {
+const isLetter = (c: string | undefined): boolean =>
+  c !== undefined && /^[A-Za-z]$/.test(c);
+
+/**
+ * One linear pass over the angle brackets. A genuine tag (`<b>`, `</b>`, `<a href="x">`,
+ * `<!--c-->`, `<?x?>`) is replaced by `onTag(tag)`; a `<` that does not start a closed tag is
+ * replaced by `stray`. Bill text really says "income < $50,000 and age > 65", so a stray `<` or
+ * `>` is real text, and an unmatched `<` never swallows what follows it.
+ */
+function mapAngles(
+  value: string,
+  onTag: (tag: string) => string,
+  stray: string,
+): string {
   let out = '';
-  let inTag = false;
-  for (const char of value) {
-    if (inTag) {
-      if (char === '>') inTag = false;
-    } else if (char === '<') {
-      inTag = true;
-      out += ' ';
-    } else if (char !== '>') out += char;
+  let at = 0;
+  // Index of the next `<` or `>` at or after `at`, cached so the scan never repeats work.
+  let angle = -2;
+  const nextAngle = (from: number): number => {
+    if (angle !== -1 && angle < from) {
+      angle = from;
+      while (
+        angle < value.length &&
+        value[angle] !== '<' &&
+        value[angle] !== '>'
+      )
+        angle++;
+      if (angle >= value.length) angle = -1;
+    }
+    return angle;
+  };
+  while (at < value.length) {
+    const lt = value.indexOf('<', at);
+    if (lt < 0) return out + value.slice(at);
+    out += value.slice(at, lt);
+    const first = value[lt + 1];
+    const startsTag =
+      isLetter(first) ||
+      first === '!' ||
+      first === '?' ||
+      (first === '/' && isLetter(value[lt + 2]));
+    const close = startsTag ? nextAngle(lt + 1) : -1;
+    if (close >= 0 && value[close] === '>') {
+      out += onTag(value.slice(lt, close + 1));
+      at = close + 1;
+    } else {
+      out += stray;
+      at = lt + 1;
+    }
   }
   return out;
+}
+
+const stripTags = (value: string): string => mapAngles(value, () => ' ', '<');
+
+/**
+ * Escape every `<` that is not part of a genuine tag, so an HTML parser keeps it as text
+ * instead of reading `x<y and ...` as an unterminated tag and discarding the rest.
+ */
+export function escapeStrayAngles(value: string): string {
+  return mapAngles(value, (tag) => tag, '&lt;');
 }
 
 const ENTITIES: Readonly<Record<string, string>> = {

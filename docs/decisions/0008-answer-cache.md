@@ -8,7 +8,7 @@ rc.2 runs the plain-language summary automatically when a document opens. Withou
 
 ## Decision
 
-- **Key.** `docId`, chip, provider, model and prompt version. `docId` is the hash of the document's bytes, so changed text is a different document. Provider and model are in the key because a different model gives a different answer. The prompt version is in the key so that editing a prompt cannot serve stale output.
+- **Key.** `docId`, chip, provider, model, endpoint and prompt version. `docId` is the hash of the document's bytes, so changed text is a different document. Provider and model are in the key because a different model gives a different answer. The endpoint is in the key because the same model name behind a different OpenAI-compatible base URL (a local server, a proxy, another vendor) gives a different answer; it is the scheme, host and port only, with the default endpoint of each provider named explicitly (`https://api.openai.com:443`, `claude-cli:local`, and so on), and never a key, credential, path or query. The prompt version is in the key so that editing a prompt cannot serve stale output. Adding the endpoint changed every key once, so answers cached before it are never read again and are swept with their document.
 - **Storage.** Files under the config directory, mode 0600, like the raw-bytes cache. Answers come from a document and may be sensitive to the user.
 - **Eviction.** An entry is removed with its document (`remove`, and LRU eviction under the document cap). Nothing outlives the document it describes.
 - **Invalidation.** Bumping the prompt version changes every key, so old entries are never read again. They are swept when their document is evicted or on the next cache cleanup.

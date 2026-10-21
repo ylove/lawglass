@@ -1,6 +1,12 @@
 import { SaxesParser } from 'saxes';
 import { load } from 'cheerio';
-import { stripInvisible } from './text.js';
+import {
+  escapeStrayAngles,
+  MAX_NAME,
+  MAX_TEXT,
+  sanitizeText,
+  stripInvisible,
+} from './text.js';
 import { AppError, BillHistory, SponsorProfile } from '../model/index.js';
 import {
   govinfoTextUrl,
@@ -64,33 +70,54 @@ function content(element: Element | undefined): string | undefined {
     .map((part) =>
       typeof part === 'string' ? part : ` ${content(part) ?? ''} `,
     )
-    .join('')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return text || undefined;
+    .join('');
+  // The byte order mark counts as `\s`: remove invisibles before collapsing whitespace, or it
+  // would turn into a word break.
+  const collapsed = stripInvisible(text).replace(/\s+/g, ' ').trim();
+  return collapsed || undefined;
 }
 const field = (
   element: Element | undefined,
   name: string,
 ): string | undefined => content(child(element, name));
 
-function plainText(value: string | undefined): string | undefined {
+/** CRS summaries run longer than an action line; still bounded so one record cannot bloat history. */
+const MAX_SUMMARY = 10_000;
+
+/**
+ * BILLSTATUS text is untrusted: it ends up in prompts and in the UI. HTML is reduced to text
+ * (dropping script and style bodies, which `sanitizeText` alone would keep as words), then the
+ * shared history sanitizer removes control, zero-width and bidi characters, markup that survived
+ * entity decoding, and caps the length, exactly as for the Ohio adapter.
+ */
+function plainText(
+  value: string | undefined,
+  max: number = MAX_TEXT,
+): string | undefined {
   if (!value) return undefined;
-  value = stripInvisible(value);
   // CDATA can retain an extra HTML-escape layer that ordinary XML text has already decoded.
   if (/^&lt;[a-z][\s\S]*?&gt;/i.test(value)) {
-    value = load(value, null, false).root().text();
+    value = load(escapeStrayAngles(value), null, false).root().text();
   }
-  const $ = load(value, null, false);
+  // The XML parser already decoded entities, so a literal `x<y and ...` can reach here. An HTML
+  // parser would read it as an unterminated tag and drop the rest; escaping every `<` that is
+  // not part of a real tag first keeps it as text.
+  const $ = load(escapeStrayAngles(value), null, false);
   $('script,style').remove();
   $('p,li,br,div,ul,ol,h1,h2,h3,h4,h5,h6,tr,td,th').before(' ');
-  return $.root().text().replace(/\s+/g, ' ').trim() || undefined;
+  return sanitizeText($.root().text(), max) || undefined;
 }
 
 const textField = (
   element: Element | undefined,
   name: string,
-): string | undefined => plainText(field(element, name));
+  max: number = MAX_TEXT,
+): string | undefined => plainText(field(element, name), max);
+/** Short identifying text: names, parties, labels, committee names. */
+const nameField = (
+  element: Element | undefined,
+  name: string,
+): string | undefined => textField(element, name, MAX_NAME);
 
 const items = (element: Element | undefined): Element[] =>
   element?.children.filter(
@@ -99,8 +126,8 @@ const items = (element: Element | undefined): Element[] =>
 
 function committeeName(element: Element): string | undefined {
   return (
-    textField(child(element, 'committee'), 'name') ??
-    textField(items(child(element, 'committees'))[0], 'name')
+    nameField(child(element, 'committee'), 'name') ??
+    nameField(items(child(element, 'committees'))[0], 'name')
   );
 }
 
@@ -123,11 +150,11 @@ function member(
   role: SponsorProfile['role'],
 ): SponsorProfile | undefined {
   const name =
-    textField(element, 'fullName') ??
+    nameField(element, 'fullName') ??
     [
-      textField(element, 'firstName'),
-      textField(element, 'middleName'),
-      textField(element, 'lastName'),
+      nameField(element, 'firstName'),
+      nameField(element, 'middleName'),
+      nameField(element, 'lastName'),
     ]
       .filter(Boolean)
       .join(' ');
@@ -136,11 +163,11 @@ function member(
     name,
     role,
     links: [],
-    party: textField(element, 'party'),
-    state: textField(element, 'state'),
-    district: textField(element, 'district'),
+    party: nameField(element, 'party'),
+    state: nameField(element, 'state'),
+    district: nameField(element, 'district'),
     chamber:
-      chamber(textField(element, 'chamber')) ??
+      chamber(nameField(element, 'chamber')) ??
       (name.startsWith('Rep.')
         ? 'house'
         : name.startsWith('Sen.')
@@ -158,7 +185,7 @@ function member(
  */
 function isPublicLaw(element: Element): boolean {
   return (
-    textField(element, 'type')?.toLowerCase() === 'public law' ||
+    nameField(element, 'type')?.toLowerCase() === 'public law' ||
     items(child(element, 'formats')).some((format) =>
       /\/PLAW-[^/]*\/|\/PLAW-[^/]*$/.test(field(format, 'url') ?? ''),
     )
@@ -188,7 +215,7 @@ function version(
       continue;
     return {
       code: linked.version,
-      label: textField(element, 'type') ?? linked.version,
+      label: nameField(element, 'type') ?? linked.version,
       date: date(field(element, 'date')),
       url: govinfoTextUrl(plan, linked.version),
     };
@@ -197,7 +224,7 @@ function version(
   // instead of silently choosing an older text.
   return {
     code: '',
-    label: textField(element, 'type') ?? 'Version unavailable',
+    label: nameField(element, 'type') ?? 'Version unavailable',
     date: date(field(element, 'date')),
   };
 }
@@ -230,9 +257,9 @@ function amendmentStatus(
 function amendment(
   element: Element,
 ): BillHistory['amendments'][number] | undefined {
-  const number = field(element, 'number');
-  const congress = field(element, 'congress');
-  const type = field(element, 'type');
+  const number = nameField(element, 'number');
+  const congress = nameField(element, 'congress');
+  const type = nameField(element, 'type');
   if (!number || !congress || !type) return undefined;
   const sponsorElement =
     child(element, 'sponsor') ?? items(child(element, 'sponsors'))[0];
@@ -259,7 +286,7 @@ function amendment(
  */
 function officialTitle(bill: Element): string | undefined {
   const titles = items(child(bill, 'titles')).map((item) => ({
-    type: textField(item, 'titleType') ?? '',
+    type: nameField(item, 'titleType') ?? '',
     text: textField(item, 'title'),
   }));
   const official = titles.filter(
@@ -300,7 +327,8 @@ export function parseGovinfoBillStatus(
     child(child(bill, 'summaries'), 'billSummaries') ??
     child(bill, 'summaries');
   const summaryText = (item: Element): string | undefined =>
-    textField(child(item, 'cdata'), 'text') ?? textField(item, 'text');
+    textField(child(item, 'cdata'), 'text', MAX_SUMMARY) ??
+    textField(item, 'text', MAX_SUMMARY);
   const summary = (
     summaries?.children.filter(
       (item) => item.name === 'summary' || item.name === 'item',
@@ -337,14 +365,14 @@ export function parseGovinfoBillStatus(
       const actionDate = date(field(item, 'actionDate'));
       const text = textField(item, 'text');
       if (!actionDate || !text) return [];
-      const systemName = textField(child(item, 'sourceSystem'), 'name');
+      const systemName = nameField(child(item, 'sourceSystem'), 'name');
       return [
         {
           date: actionDate,
           text,
           committee: committeeName(item),
           chamber:
-            textField(item, 'chamber') ??
+            nameField(item, 'chamber') ??
             (systemName === 'House' || systemName === 'Senate'
               ? systemName
               : undefined),

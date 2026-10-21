@@ -16,8 +16,14 @@ import {
   resolveConfig,
   type RuntimeConfig,
 } from '../core/config.js';
-import { defaultCacheDir, safeFetch } from '../core/fetch/index.js';
+import {
+  cacheBudgetBytes,
+  clearCache,
+  defaultCacheDir,
+  safeFetch,
+} from '../core/fetch/index.js';
 import { createProvider } from '../core/llm/index.js';
+import { endpointIdentity } from '../core/llm/endpoint.js';
 import {
   AppError,
   type LlmProvider,
@@ -31,6 +37,8 @@ import { promptChoice, promptSecret } from './secret-prompt.js';
 export interface CliRuntime {
   backend: RetrievalBackend;
   registry: Registry;
+  /** Delete every cached download (not documents, indexes or answers). */
+  clearFetchCache: () => Promise<{ snapshots: number; bytes: number }>;
   fetcher: Fetcher;
   now: () => Date;
   maxDocs: number;
@@ -38,6 +46,8 @@ export interface CliRuntime {
   port: number;
   /** Throws MISSING_KEY when no provider is configured (commands that need no LLM never touch it). */
   readonly answerProvider: LlmProvider;
+  /** Canonical, non-secret identity of the answer endpoint; part of the answer cache key. */
+  readonly answerEndpoint: string;
   readonly extractProvider: LlmProvider;
   chips?: ChipRunner | undefined;
   parsePdf?: PdfParser | undefined;
@@ -122,12 +132,16 @@ export const createRuntimeFrom =
     }
     const configDir = config.configDir;
     const cacheDir = defaultCacheDir(configDir);
+    const cacheBudget = cacheBudgetBytes(sources.env ?? process.env);
     return {
       backend: buildBackend(config, sources),
       registry: new Registry(configDir),
+      clearFetchCache: () => clearCache(cacheDir),
       fetcher: (url, options) =>
         safeFetch(url, {
           cacheDir,
+          cacheBudgetBytes: cacheBudget,
+          deferCacheWrite: true,
           signal: options?.signal,
           validateUrl: options?.validateUrl,
           refresh: options?.refresh,
@@ -137,6 +151,11 @@ export const createRuntimeFrom =
       maxDocs: config.maxDocs,
       retrievalMode: config.retrievalMode,
       port: config.port,
+      // Mirrors createProvider: an unset config falls back to the OPENAI_BASE_URL environment.
+      answerEndpoint: endpointIdentity(
+        config.llmProvider,
+        config.openaiBaseUrl ?? process.env.OPENAI_BASE_URL,
+      ),
       get answerProvider() {
         return createProvider(providerConfig(config, 'answer'));
       },
