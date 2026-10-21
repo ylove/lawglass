@@ -1,0 +1,17 @@
+# Keep the build context to what the image needs. Secrets and local data must never reach it.
+.env
+.env.*
+!.env.example
+.git
+.github
+.worktrees
+.cache
+node_modules
+dist
+coverage
+fixtures/downloads
+playwright-report
+test-results
+handoff
+HANDOFF*.md
+*.log
