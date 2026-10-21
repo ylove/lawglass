@@ -1,5 +1,8 @@
 import { envVar } from '../core/brand.js';
 import type { CliRuntime } from '../cli/runtime.js';
+import { publicOrigin } from './gate.js';
+import { readAccessKey } from './session.js';
+import { AppError } from '../core/model/index.js';
 import { validateBindHost } from './bind.js';
 import {
   openBrowser,
@@ -13,6 +16,8 @@ export interface LaunchRequest {
   port?: number | undefined;
   host?: string | undefined;
   publicMode: boolean;
+  privateMode?: boolean;
+  trustProxyHops?: number;
   /** Set by `--no-open`. */
   noOpen?: boolean | undefined;
 }
@@ -68,15 +73,39 @@ export function createLauncher(deps: LauncherDeps = {}): Launcher {
   const env = deps.env ?? process.env;
   const untilStopped = deps.untilStopped ?? untilSignal;
   return async (runtime, request) => {
-    validateBindHost(request.host, request.publicMode);
+    if (request.publicMode && request.privateMode) {
+      const message = '--private and --public cannot be used together.';
+      throw new AppError('INVALID_INPUT', message, { userMessage: message });
+    }
+    validateBindHost(request.host, request.publicMode, request.privateMode);
+    const accessKey = request.privateMode ? readAccessKey(env) : undefined;
     const server = await start(runtime, {
       publicMode: request.publicMode,
+      ...(request.privateMode ? { privateMode: true, accessKey } : {}),
+      ...(env[envVar('PUBLIC_ORIGIN')]
+        ? { publicOrigin: env[envVar('PUBLIC_ORIGIN')] }
+        : {}),
+      ...(request.trustProxyHops === undefined
+        ? {}
+        : { trustProxyHops: request.trustProxyHops }),
       ...(request.port === undefined ? {} : { port: request.port }),
       ...(request.host === undefined ? {} : { host: request.host }),
     });
-    write(`\nServing at ${server.url} (press Ctrl+C to stop)\n`);
+    if (request.privateMode) {
+      const address = new URL(server.url).origin;
+      // Only a placeholder is printed; the shared secret belongs in the secret manager.
+      const origin = publicOrigin(env[envVar('PUBLIC_ORIGIN')]) ?? address;
+      write(
+        `\nPrivate mode on ${address}. Share ${origin}/?k=<access key> with invited people.\n`,
+      );
+    } else write(`\nServing at ${server.url} (press Ctrl+C to stop)\n`);
     try {
-      if (!request.publicMode && !request.noOpen && !browserDisabled(env)) {
+      if (
+        !request.publicMode &&
+        !request.privateMode &&
+        !request.noOpen &&
+        !browserDisabled(env)
+      ) {
         try {
           await open(server.url);
         } catch {

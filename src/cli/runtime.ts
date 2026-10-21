@@ -2,6 +2,7 @@
  * Wires real dependencies for the CLI: config, registry, backend, providers and the SSRF-safe
  * fetcher. Commands receive a `CliRuntime`, so tests inject fakes instead of touching any of this.
  */
+import { envVar } from '../core/brand.js';
 import { Pinecone } from '@pinecone-database/pinecone';
 import {
   LocalBackend,
@@ -46,6 +47,7 @@ export interface RuntimeOptions {
   backend?: string | undefined;
   /** False for list/remove and retrieval-only eval: only the backend key is required. */
   needsLlm: boolean;
+  hostedMode?: boolean;
 }
 
 export type RuntimeFactory = (options: RuntimeOptions) => Promise<CliRuntime>;
@@ -102,10 +104,22 @@ export const createRuntimeFrom =
     const config = await resolveConfig({
       ...sources,
       needsLlm: options.needsLlm,
+      ...(options.hostedMode ? { isTTY: false } : {}),
       ...(options.backend === undefined ? {} : { backend: options.backend }),
       prompt: promptSecret,
       choose: promptChoice,
     });
+    if (options.hostedMode) {
+      const allowedMock =
+        (sources.env ?? process.env)[envVar('ALLOW_MOCK')] === '1';
+      if (
+        config.llmProvider === 'claude-cli' ||
+        (config.llmProvider === 'mock' && !allowedMock)
+      ) {
+        const message = `The ${config.llmProvider} provider is not available for --public or --private. Configure anthropic, openai, or google.`;
+        throw new AppError('INVALID_INPUT', message, { userMessage: message });
+      }
+    }
     const configDir = config.configDir;
     const cacheDir = defaultCacheDir(configDir);
     return {

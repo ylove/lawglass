@@ -23,7 +23,7 @@ let env: PipelineEnv;
 let root: string;
 beforeEach(async () => {
   env = await makePipelineEnv();
-  env.serve('https://example.gov/a.txt', makeSectionedText(), 'text/plain');
+  env.serve('https://govinfo.gov/a.txt', makeSectionedText(), 'text/plain');
   root = await mkdtemp(join(tmpdir(), 'sec-web-'));
   await mkdir(join(root, 'assets'));
   await writeFile(join(root, 'index.html'), '<!doctype html><title>x</title>');
@@ -91,7 +91,7 @@ describe.each(modes)('security headers ($name mode)', ({ publicMode }) => {
     const res = await post(
       app(),
       '/api/ingest',
-      JSON.stringify({ url: 'https://example.gov/a.txt' }),
+      JSON.stringify({ url: 'https://govinfo.gov/a.txt' }),
     );
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('text/event-stream');
@@ -169,4 +169,16 @@ describe('CSP differences between modes', () => {
     ])
       expect(PERMISSIONS_POLICY).toContain(`${feature}=()`);
   });
+});
+
+test('private mode sets HSTS and keeps the strict local CSP on gates, redirects and refusals', async () => {
+  const accessKey = 'x'.repeat(32);
+  const app = createApp(env.runtime, { privateMode: true, accessKey });
+  for (const path of ['/', '/api/docs', `/?k=${accessKey}`]) {
+    const response = await app.request(path);
+    expect(response.headers.get('strict-transport-security')).toBe(
+      'max-age=31536000',
+    );
+    expect(response.headers.get('content-security-policy')).toBe(LOCAL_CSP);
+  }
 });

@@ -12,6 +12,7 @@ export const TURNSTILE_ORIGIN = 'https://challenges.cloudflare.com';
 export interface SecurityHeadersOptions {
   /** Public servers also allow Cloudflare Turnstile's script and iframe. */
   publicMode: boolean;
+  privateMode?: boolean;
 }
 
 export function contentSecurityPolicy(publicMode: boolean): string {
@@ -58,8 +59,7 @@ export const PERMISSIONS_POLICY = [
 
 /**
  * Sets the headers after the rest of the chain has run, so they also cover error responses and
- * early returns (401, 403, 413, 415, 404). HSTS is deliberately absent: the local server speaks
- * plain http on loopback, and a public deployment sets it at its TLS terminator.
+ * early returns (401, 403, 413, 415, 404). Private previews run behind a TLS terminator.
  */
 export function securityHeaders(
   options: SecurityHeadersOptions,
@@ -68,6 +68,8 @@ export function securityHeaders(
   return async (c, next) => {
     await next();
     c.header('Content-Security-Policy', csp);
+    if (options.privateMode)
+      c.header('Strict-Transport-Security', 'max-age=31536000');
     c.header('X-Content-Type-Options', 'nosniff');
     c.header('Referrer-Policy', 'no-referrer');
     c.header('Cross-Origin-Opener-Policy', 'same-origin');

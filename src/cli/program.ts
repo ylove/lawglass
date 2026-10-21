@@ -19,6 +19,7 @@ import {
 import { promptChoice, promptSecret } from './secret-prompt.js';
 import { createLauncher, type Launcher } from '../server/launch.js';
 import { prepareIngestSource } from './ingest-source.js';
+import { readAccessKey } from '../server/session.js';
 import { validateBindHost } from '../server/bind.js';
 
 export interface CliDependencies {
@@ -88,10 +89,12 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
   const open = (
     options: BackendOption,
     needsLlm: boolean,
+    hostedMode?: boolean,
   ): Promise<CliRuntime> =>
     (dependencies.runtime ?? createRuntime)({
       backend: options.backend,
       needsLlm,
+      ...(hostedMode ? { hostedMode: true } : {}),
     });
 
   async function ingestSource(
@@ -302,18 +305,52 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
     .option('--port <port>', 'local server port (default 4317)')
     .option('--host <host>', 'address to bind (default 127.0.0.1)')
     .option('--public', 'allow only question chips in the web UI')
+    .option('--private', 'invite-only preview with the full app')
+    .option(
+      '--trust-proxy <hops>',
+      'trusted proxy hops, counted from the right',
+      '0',
+    )
     .option('--no-open', 'do not open the browser')
     .action(
       async (
         options: BackendOption &
           PortOptions &
-          OpenOptions & { public?: boolean },
+          OpenOptions & {
+            public?: boolean;
+            private?: boolean;
+            trustProxy?: string;
+          },
       ) => {
-        validateBindHost(options.host, options.public);
+        if (options.private && options.public) {
+          const message = '--private and --public cannot be used together.';
+          throw new AppError('INVALID_INPUT', message, {
+            userMessage: message,
+          });
+        }
+        const trustProxyHops = Number(options.trustProxy);
+        if (
+          !/^\d+$/.test(options.trustProxy ?? '') ||
+          !Number.isSafeInteger(trustProxyHops)
+        ) {
+          const message =
+            '--trust-proxy must be a whole number of hops, 0 or greater.';
+          throw new AppError('INVALID_INPUT', message, {
+            userMessage: message,
+          });
+        }
+        if (options.private) readAccessKey();
+        validateBindHost(options.host, options.public, options.private);
         const port = parsePort(options.port);
-        const runtime = await open(options, true);
+        const runtime = await open(
+          options,
+          true,
+          (options.public ?? false) || (options.private ?? false),
+        );
         await (dependencies.serve ?? createLauncher({ write }))(runtime, {
           publicMode: options.public ?? false,
+          ...(options.private ? { privateMode: true } : {}),
+          ...(trustProxyHops > 0 ? { trustProxyHops } : {}),
           port,
           host: options.host,
           ...noOpenRequest(options),

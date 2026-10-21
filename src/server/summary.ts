@@ -28,14 +28,47 @@ export const SUMMARY_CACHE_VERSION = `${SUMMARY_PROMPT_VERSION}.${SCENARIO_PROMP
  */
 export const FAILED_RETRY_MS = 60_000;
 
+export interface SummaryRequestOptions {
+  wait?: boolean;
+  signal?: AbortSignal;
+  onError?: (error: unknown, ms: number) => void;
+}
+
 export interface SummaryService {
-  /** Cache hit, a run in progress or just started, or `disabled`. Never waits for the model. */
-  get(docId: string): Promise<SummaryResponse>;
+  /** Cache hit, a run in progress or just started, or `disabled`. Existing runs may be awaited. */
+  get(docId: string, options?: SummaryRequestOptions): Promise<SummaryResponse>;
+}
+
+/** Polls subscribe to completion without attaching reactions to a possibly stuck generation. */
+export function waitForSummary(
+  waiters: Set<() => void>,
+  waitMs: number,
+  signal?: AbortSignal,
+): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal?.aborted) {
+      resolve();
+      return;
+    }
+    const finish = (): void => {
+      clearTimeout(timer);
+      waiters.delete(finish);
+      signal?.removeEventListener('abort', finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, waitMs);
+    waiters.add(finish);
+    signal?.addEventListener('abort', finish, { once: true });
+  });
 }
 
 export function createSummaryService(
   runtime: CliRuntime,
-  options: { publicMode: boolean; now?: () => number },
+  options: {
+    publicMode: boolean;
+    now?: () => number;
+    waitMs?: number | undefined;
+  },
 ): SummaryService {
   const now = options.now ?? Date.now;
   const { registry } = runtime;
@@ -45,7 +78,7 @@ export function createSummaryService(
     isStillRegistered: (docId) =>
       registry.isRegistered(docId).catch(() => false),
   });
-  const running = new Set<string>();
+  const running = new Map<string, Set<() => void>>();
   const failedAt = new Map<string, number>();
 
   // Accepted trade-offs:
@@ -55,11 +88,18 @@ export function createSummaryService(
   //   summary text is still correct, and retrying would pay for the whole answer again.
   // - `disabled` doubles as "failed recently": during the cool-down (per process, in memory)
   //   a miss answers `disabled`, and the web client stops polling on it.
-  function start(docId: string, key: AnswerCacheKey, name: string): void {
-    running.add(name);
+  function start(
+    docId: string,
+    key: AnswerCacheKey,
+    name: string,
+    onError?: SummaryRequestOptions['onError'],
+  ): void {
+    const started = now();
     const provider = runtime.answerProvider;
+    const waiters = new Set<() => void>();
+    running.set(name, waiters);
     // `getOrCompute` also de-duplicates across app instances in this process.
-    cache
+    void cache
       .getOrCompute(key, async () => {
         const result = await ask(
           docId,
@@ -81,18 +121,20 @@ export function createSummaryService(
           // A decline or truncated answer is returned but never stored; remember that.
           if (!(await cache.get(key))) failedAt.set(name, now());
         },
-        () => {
+        (error: unknown) => {
           failedAt.set(name, now());
+          onError?.(error, now() - started);
         },
       )
       .finally(() => {
         running.delete(name);
+        for (const finish of waiters) finish();
       })
       .catch(() => undefined);
   }
 
   return {
-    async get(docId) {
+    async get(docId, request = {}) {
       let provider;
       try {
         provider = runtime.answerProvider;
@@ -113,13 +155,27 @@ export function createSummaryService(
       // Public mode serves cache hits only: an anonymous visitor never spends the host's money.
       if (options.publicMode) return { status: 'disabled' };
       const name = answerCacheKey(key);
-      if (running.has(name)) return { status: 'pending' };
+      const inFlight = running.get(name);
+      if (inFlight) {
+        if (request.wait !== false) {
+          await waitForSummary(
+            inFlight,
+            options.waitMs ?? 20_000,
+            request.signal,
+          );
+          if (!request.signal?.aborted) {
+            const answer = await cache.get(key);
+            if (answer) return { status: 'cached', answer };
+          }
+        }
+        return { status: 'pending' };
+      }
       const failed = failedAt.get(name);
       if (failed !== undefined) {
         if (now() - failed < FAILED_RETRY_MS) return { status: 'disabled' };
         failedAt.delete(name);
       }
-      start(docId, key, name);
+      start(docId, key, name, request.onError);
       return { status: 'pending' };
     },
   };
