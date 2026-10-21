@@ -66,6 +66,21 @@ const STATUS = new RegExp(
   `^/bulkdata/BILLSTATUS/([1-9][0-9]{0,2})/(${TYPES})/BILLSTATUS-([1-9][0-9]{0,2})(${TYPES})([1-9][0-9]{0,5})\\.xml$`,
 );
 
+/**
+ * The tabs of a congress.gov bill page other than Text. People copy the URL from whichever tab
+ * they are on, and each names the same bill, so they resolve to its latest text version. The
+ * list is fixed so unknown suffixes are still refused.
+ */
+const BILL_TABS =
+  'all-info|actions|amendments|committees|cosponsors|related-bills|subjects|summary(?:/[0-9]{2})?|titles';
+const CONGRESS_BILL = new RegExp(
+  `^/bill/([1-9][0-9]{0,2})(?:st|nd|rd|th)-congress/([a-z-]+)/([1-9][0-9]{0,5})(?:/text(?:/([a-z]{1,8}[0-9]?))?|/(?:${BILL_TABS}))?/?$`,
+);
+/** A text file served by congress.gov itself: the PDF, TXT and XML links on the Text tab. */
+const CONGRESS_FILE = new RegExp(
+  `^/([1-9][0-9]{0,2})/bills/((?:${TYPES})[1-9][0-9]{0,5})/(BILLS-[0-9a-z]+)\\.(?:pdf|htm|xml)$`,
+);
+
 function billPageError(): AppError {
   return new AppError('INVALID_INPUT', undefined, {
     userMessage:
@@ -131,10 +146,15 @@ export function resolveGovinfo(url: URL): GovinfoPlan | undefined {
     return undefined;
   }
   if (congressHost) {
-    const match =
-      /^\/bill\/([1-9][0-9]{0,2})(?:st|nd|rd|th)-congress\/([a-z-]+)\/([1-9][0-9]{0,5})(?:\/text(?:\/([a-z]{1,8}[0-9]?))?)?\/?$/.exec(
-        url.pathname,
-      );
+    const file = CONGRESS_FILE.exec(url.pathname);
+    const pkg = file?.[3] ? PACKAGE.exec(file[3]) : null;
+    if (file && pkg?.[1] && pkg[2] && pkg[3] && pkg[4]) {
+      // The folder and the package name must agree, as for GovInfo content links.
+      if (file[1] !== pkg[1] || file[2] !== `${pkg[2]}${pkg[3]}`)
+        throw billPageError();
+      return planFor(pkg[1], pkg[2], pkg[3], pkg[4]);
+    }
+    const match = CONGRESS_BILL.exec(url.pathname);
     const type = match?.[2] ? BILL_TYPES[match[2]] : undefined;
     const congress = match?.[1];
     const number = match?.[3];
