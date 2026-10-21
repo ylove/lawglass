@@ -1,4 +1,5 @@
 // Mount the React UI into the Vite HTML shell.
+import './zod-csp.js';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BRAND } from '../core/brand.js';

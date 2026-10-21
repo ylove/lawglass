@@ -120,11 +120,17 @@ export async function stopChild(child: ChildProcess): Promise<void> {
   });
 }
 
+export interface PackedServeOptions {
+  privateMode?: boolean;
+  env?: NodeJS.ProcessEnv;
+}
+
 export async function startPackedServer(
   binary: string,
   cwd: string,
   env: NodeJS.ProcessEnv,
   port = 0,
+  options: PackedServeOptions = {},
 ): Promise<PackedServer> {
   // Port 0 is assigned by the OS, avoiding a free-port probe/bind race. A caller that restarts
   // a server (the server-down e2e) passes the old port back so the open page can reach it again.
@@ -138,10 +144,11 @@ export async function startPackedServer(
       '--port',
       String(port),
       '--no-open',
+      ...(options.privateMode ? ['--private', '--trust-proxy', '1'] : []),
     ],
     {
       cwd,
-      env,
+      env: { ...env, ...options.env },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   );
@@ -165,9 +172,17 @@ export async function startPackedServer(
           `Packed server exited during startup:\n${output.replace(/([?&]k=)[^&\s]+/g, '$1[redacted]')}`,
         );
       }
-      const url = /Serving at (http:\/\/\S+)/.exec(output)?.[1];
+      const url =
+        /Serving at (http:\/\/\S+)/.exec(output)?.[1] ??
+        /Private mode on (http:\/\/\S+)\. Share/.exec(output)?.[1];
       if (url) {
-        const exchange = await fetch(url, {
+        const invite = new URL(url);
+        if (options.privateMode)
+          invite.searchParams.set(
+            'k',
+            options.env?.[envVar('ACCESS_KEY')] ?? '',
+          );
+        const exchange = await fetch(invite, {
           redirect: 'manual',
           signal: AbortSignal.timeout(2_000),
         });
@@ -197,7 +212,7 @@ export async function startPackedServer(
 export interface PackedApp {
   home: string;
   cli(...args: string[]): Promise<string>;
-  serve(port?: number): Promise<PackedServer>;
+  serve(port?: number, options?: PackedServeOptions): Promise<PackedServer>;
   dispose(): Promise<void>;
 }
 
@@ -290,8 +305,14 @@ export async function createPackedApp(): Promise<PackedApp> {
     return {
       home,
       cli,
-      async serve(port) {
-        const server = await startPackedServer(binary, installDir, env, port);
+      async serve(port, options) {
+        const server = await startPackedServer(
+          binary,
+          installDir,
+          env,
+          port,
+          options,
+        );
         servers.push(server);
         return server;
       },

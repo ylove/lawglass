@@ -44,6 +44,7 @@ npx lawglass ask hb62 "When does this take effect?"
 npx lawglass ask hb62 --chip what-changes
 npx lawglass list
 npx lawglass remove hb62
+npx lawglass cache clear               # delete cached downloads (documents and answers stay)
 npx lawglass serve --port 4317          # local web UI; --public allows chips only; --no-open skips the browser
 ```
 
@@ -185,16 +186,41 @@ Caveats: 21 to 28 questions per bill means one question moves recall@5 by about 
 ### Security notes
 
 - **SSRF guard** ([`src/core/fetch/`](src/core/fetch/)).
-  - Resolved addresses are checked against private, loopback, link-local, CGNAT, multicast, documentation, unique-local and other special-use IPv4 and IPv6 ranges. Cloud metadata `169.254.169.254` falls inside link-local.
+  - IPv4 addresses are checked against private, loopback, link-local, CGNAT, multicast, documentation and other special-use ranges. Cloud metadata `169.254.169.254` falls inside link-local. IPv6 is an allowlist: only global unicast (`2000::/3`) is fetched, minus the IANA special-purpose ranges inside it (Teredo and the rest of `2001::/23`, documentation `2001:db8::/32` and `3fff::/20`, and so on).
   - IPv6 forms that embed an IPv4 address (IPv4-mapped, NAT64, 6to4, Teredo) are unwrapped and checked. Scoped and unparsable addresses fail closed.
   - The connection goes to the validated address itself, pinned, so a DNS answer cannot change between check and connect (rebinding).
-  - Each redirect is re-resolved and re-validated, up to 5. Credentials in URLs are refused, as are ports outside 80, 443, 8080 and 8443.
+  - Each redirect is re-resolved and re-validated, up to 5. An `https` address that redirects to `http` is refused; plain `http` is followed only when you typed an `http` address. Credentials in URLs are refused, as are ports outside 80, 443, 8080 and 8443.
   - Bodies are capped at 50 MB, with a 30 s timeout.
+  - Downloaded bytes are cached under `~/.lawglass/cache` only after they parse, removed with their document, and trimmed to 500 MB (least recently used first; set `LAWGLASS_CACHE_MAX_MB` to change). `lawglass cache clear` deletes them all.
 - **Prompt injection** ([`src/core/answer/`](src/core/answer/)). Bill text is hostile data. Excerpt text and the user's question are XML-escaped, so neither can close an excerpt tag or forge a new source. The system prompt states that excerpts are data, not instructions. Citations are validated: every `[S:id]` must be a section that was in the prompt; invalid markers are stripped and reported, and an answer with no valid citation (other than the exact decline sentence) carries a warning. Synthetic injection samples live in [`tests/synth/injection.ts`](tests/synth/injection.ts). Citation validation is held to 90% line coverage along with the fetch layer.
-- **Local server** (`serve`). Binds to `127.0.0.1` by default. Outside public mode, a request whose `Host` is not a loopback name is refused, which blocks DNS-rebinding attacks from web pages you visit; in every mode, an API request whose `Origin` does not match its `Host` is refused. Cancelling a question or an ingest in the UI aborts the work, including the download.
+- **Local server** (`serve`). Binds to `127.0.0.1` by default. In local mode, a request whose `Host` is not a loopback name is refused, which blocks DNS-rebinding attacks from web pages you visit; in every mode, an API request whose `Origin` does not match its `Host` is refused. Cancelling a question or an ingest in the UI aborts the work, including the download.
 - **Public mode** (`serve --public`). Chips only (no free-form questions), per-IP limits of 20 questions and 3 ingests per hour, a 200-page ingest cap, a global document cap that refuses new documents instead of evicting someone else's, and a Cloudflare Turnstile stub.
 - **Bring your own keys.** `init` writes the config file with mode 0600. A config file that other users can read is refused: commands skip it with a warning, and `init` stops unless `--force` replaces it. Keys are read from the environment first, then that file, then a masked prompt on a TTY. Keys go only to their own provider, are not inferred from another provider's variables, and are never logged or put in error messages; SDK diagnostic logging is off: before the Pinecone SDK is constructed, `PINECONE_DEBUG` (request and response bodies) and `PINECONE_DEBUG_CURL` (the `Api-Key` header) are cleared from the process environment, in both the CLI runtime and the adapter. `.env` and fixtures are ignored by git, and CI runs Gitleaks over the full history.
 - **`claude-cli` sandboxing.** Each call runs in a fresh temporary directory holding only the system prompt file, with built-in tools disabled (`--tools ""`), all MCP servers disabled, one turn, slash commands, hooks and settings sources off, no session persistence, and no permission-bypass flag. The child sees only basic process variables plus `CLAUDE_*` and `ANTHROPIC_*`, so other providers' keys and app settings are excluded. `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are withheld too, so the CLI bills your Claude login, unless you set `LAWGLASS_CLAUDE_CLI_USE_API_KEY=1`. The model name must match `^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$`, so it cannot be read as a flag. It refuses to run for real in CI.
+
+### Hosting a private preview
+
+Invite holders get the full app, including free-form questions, scenarios and live summaries.
+Run one instance behind HTTPS (for example, Cloud Run's TLS endpoint):
+
+```sh
+node dist/cli.js serve --private --host 0.0.0.0 --port 8080 --no-open --trust-proxy 1
+```
+
+Set `LAWGLASS_ACCESS_KEY` to a random secret of at least 32 characters and keep it in your
+hosting platform's secret manager. Set `LAWGLASS_PUBLIC_ORIGIN` to your HTTPS origin, then
+send invited people `https://your-host.example/?k=<access key>`. The link creates a secure
+30-day browser session. Rotating the key revokes existing sessions. People without an invite
+see a preview page.
+
+Use the local backend and a configured Anthropic, OpenAI or Google provider; hosted modes
+refuse `claude-cli` and the test-only `mock` provider. `--private` and `--public` are mutually
+exclusive. `--trust-proxy` defaults to `0`; set it to the number of proxies you trust, counted
+from the right of `X-Forwarded-For`.
+
+Both hosted modes read federal and Ohio bill hosts by default. `LAWGLASS_INGEST_HOSTS` can
+replace that list with comma-separated exact hostnames. Each hosted ingest has a 15-minute
+processing deadline.
 
 ### Providers, keys and backends
 

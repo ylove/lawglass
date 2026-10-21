@@ -8,6 +8,7 @@ export const BRAND = {
   configDirName: '.lawglass',
   indexPrefix: 'lawglass-',
   version: packageJson.version,
+  siteUrl: packageJson.homepage,
   repositoryUrl: packageJson.repository.url
     .replace(/^git\+/, '')
     .replace(/\.git$/, ''),

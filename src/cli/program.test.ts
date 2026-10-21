@@ -1,12 +1,13 @@
 import { afterEach, expect, test, vi } from 'vitest';
 import packageJson from '../../package.json' with { type: 'json' };
-import { BRAND } from '../core/brand.js';
+import { BRAND, envVar } from '../core/brand.js';
 import { createProgram } from './program.js';
 
 const previousExitCode = process.exitCode;
 afterEach(() => {
   process.exitCode = previousExitCode;
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 test('--help lists every command and the default URL or path argument', () => {
@@ -29,6 +30,7 @@ test('--help lists every command and the default URL or path argument', () => {
     'ask',
     'list',
     'remove',
+    'cache',
     'serve',
     'eval',
   ]) {
@@ -101,4 +103,66 @@ test('init passes non-interactive settings and backend through', async () => {
     nonInteractive: true,
     backend: 'local',
   });
+});
+
+test('serve passes private mode and trusted hops without exposing the key', async () => {
+  vi.stubEnv(envVar('ACCESS_KEY'), 'x'.repeat(32));
+  const runtime = vi.fn().mockResolvedValue({});
+  const serve = vi.fn().mockResolvedValue(undefined);
+  await createProgram({ runtime, serve }).parseAsync(
+    [
+      'serve',
+      '--private',
+      '--trust-proxy',
+      '1',
+      '--host',
+      '0.0.0.0',
+      '--port',
+      '8080',
+      '--no-open',
+    ],
+    { from: 'user' },
+  );
+  expect(runtime).toHaveBeenCalledWith({
+    backend: undefined,
+    needsLlm: true,
+    hostedMode: true,
+  });
+  expect(serve).toHaveBeenCalledWith(
+    {},
+    {
+      publicMode: false,
+      privateMode: true,
+      trustProxyHops: 1,
+      host: '0.0.0.0',
+      port: 8080,
+      noOpen: true,
+    },
+  );
+});
+test.each([
+  ['--private', '--public'],
+  ['--trust-proxy', '-1'],
+  ['--trust-proxy', '1.5'],
+  ['--trust-proxy', 'oops'],
+  ['--trust-proxy', ''],
+  ['--trust-proxy', '9007199254740992'],
+])('serve rejects invalid mode or proxy arguments: %s', async (...flags) => {
+  const runtime = vi.fn();
+  await expect(
+    createProgram({ runtime }).parseAsync(['serve', ...flags], {
+      from: 'user',
+    }),
+  ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  expect(runtime).not.toHaveBeenCalled();
+});
+test('serve refuses a missing private access key before opening the runtime', async () => {
+  vi.stubEnv(envVar('ACCESS_KEY'), '');
+  const runtime = vi.fn();
+  await expect(
+    createProgram({ runtime }).parseAsync(['serve', '--private'], {
+      from: 'user',
+    }),
+  ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  expect(runtime).not.toHaveBeenCalled();
 });

@@ -15,19 +15,22 @@ const MARKER_BEFORE_PUNCTUATION = new RegExp(
 );
 
 /**
- * Drops a half-typed marker at the end, plus one whitespace character before it. Same result as
- * `/\s?\[S?:?[^\]\s]*$/`, but that pattern restarts at every `[` and rescans to the end, which is
- * quadratic on hostile output; this looks only at the trailing run of non-`]`, non-space text.
+ * Drops a half-typed marker at the end: a `[` followed by no `]` and no whitespace through the
+ * end, plus the one whitespace character before it. Found by scanning back from the end because
+ * the regex form (`/\s?\[S?:?[^\]\s]*$/`) is quadratic on a long run of `[`.
  */
 function stripPartialMarker(text: string): string {
-  let runStart = text.length;
-  while (runStart > 0 && !/[\]\s]/.test(text.charAt(runStart - 1))) runStart--;
-  const open = text.indexOf('[', runStart);
-  if (open < 0) return text;
-  return text.slice(
-    0,
-    open > 0 && /\s/.test(text.charAt(open - 1)) ? open - 1 : open,
-  );
+  let boundary = text.length - 1;
+  while (
+    boundary >= 0 &&
+    text[boundary] !== ']' &&
+    !/\s/.test(text[boundary] ?? '')
+  )
+    boundary--;
+  const open = text.indexOf('[', boundary + 1);
+  if (open === -1) return text;
+  const start = open > 0 && /\s/.test(text[open - 1] ?? '') ? open - 1 : open;
+  return text.slice(0, start);
 }
 
 /** Removes complete markers and a trailing half-typed one, for display mid-stream. */

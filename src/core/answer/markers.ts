@@ -10,7 +10,7 @@
 import type { StoredChunk } from '../model/index.js';
 
 /** Any spelling of a marker tag: case and inner spaces are forgiven so near-misses are caught too. */
-const MARKER_LIKE = /\[(\s*\/?\s*(?:struck|inserted)\s*)\]/gi;
+const MARKER_LIKE = /\[(\s*(?:\/\s*)?(?:struck|inserted)\s*)\]/gi;
 
 /**
  * Make marker-like text in a document inert by swapping its opening bracket for a full-width

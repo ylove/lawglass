@@ -17,4 +17,14 @@ export {
   type SniffedFormat,
 } from './sniff.js';
 export { findCandidateLinks, isLikelyWrapper } from './wrapper.js';
-export { defaultCacheDir, documentId, readCache, writeCache } from './cache.js';
+export {
+  cacheBudgetBytes,
+  clearCache,
+  defaultCacheDir,
+  DEFAULT_CACHE_BUDGET_BYTES,
+  documentId,
+  evictToBudget,
+  readCache,
+  removeCached,
+  writeCache,
+} from './cache.js';

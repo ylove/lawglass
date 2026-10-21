@@ -19,6 +19,8 @@ import {
   makeCongressionalBillXml,
   makeUslmXml,
 } from '../../../tests/synth/xml.js';
+import { MemoryBackend } from '../../../tests/contracts/memory-backend.js';
+import { chunkDocument } from '../chunk/index.js';
 import { parseXml } from './xml.js';
 
 const options = {
@@ -94,6 +96,32 @@ describe('congressional bill XML (synthetic)', () => {
       '<!DOCTYPE bill PUBLIC "-//US Congress//DTDs/bill.dtd//EN" "http://127.0.0.1:9/bill.dtd"><bill',
     );
     expect(parse(xml).sections[0]!.id).toBe('sec-1');
+  });
+
+  it('keeps each ordinary amendment body instruction before its own provision', () => {
+    const doc = parse(
+      '<amendment-doc>' +
+        '<amendment-body><amendment-instruction>Insert the first provision.</amendment-instruction>' +
+        '<amendment-block><section><enum>1.</enum><text>First provision.</text></section></amendment-block></amendment-body>' +
+        '<amendment-body><amendment-instruction>Insert the second provision.</amendment-instruction>' +
+        '<amendment-block><section><enum>2.</enum><text>Second provision.</text></section></amendment-block></amendment-body>' +
+        '</amendment-doc>',
+    );
+    expect(
+      doc.sections.map((s) => s.spans.map((span) => span.text).join('')),
+    ).toEqual([
+      'Insert the first provision.',
+      'First provision.',
+      'Insert the second provision.',
+      'Second provision.',
+    ]);
+    expect(ids(doc.sections)).toEqual([
+      'preamble',
+      'sec-1',
+      'preamble~2',
+      'sec-2',
+    ]);
+    expect(doc.warnings).toEqual([]);
   });
 });
 
@@ -194,6 +222,271 @@ describe('amendment markup in congressional bills', () => {
         scopeSectionId: 'sec-1',
       },
     ]);
+  });
+});
+
+describe('committee-reported bill markup', () => {
+  function expectReportedText(
+    doc: NormalizedDoc,
+    omitted: string[],
+    retained: string[],
+  ): void {
+    const sections = [...walkSections(doc.sections)];
+    const chunks = chunkDocument(doc);
+    expect(chunks.length).toBeGreaterThan(0);
+    for (const text of omitted) {
+      expect(JSON.stringify(doc)).not.toContain(text);
+      expect(JSON.stringify(chunks)).not.toContain(text);
+    }
+    const sectionText = sections
+      .flatMap((s) => s.spans)
+      .map((s) => s.text)
+      .join(' ');
+    const chunkText = chunks.map((c) => c.text).join(' ');
+    for (const text of retained) {
+      expect(sectionText).toContain(text);
+      expect(chunkText).toContain(text);
+    }
+  }
+
+  it.each([false, true])(
+    'keeps only the substitute, with stable ids (separate bodies: %s)',
+    async (separateBodies) => {
+      const substitute =
+        '<section changed="added" reported-display-style="italic" committee-id="SYN00"><enum>1.</enum><header>Short title</header>' +
+        '<text>This Act may be cited as the <quote><short-title>Shared Gardens Act</short-title></quote>.</text></section>' +
+        '<section changed="added"><enum>2.</enum><header>Grants</header><text>Fund seed libraries.</text></section>';
+      const original =
+        '<section changed="deleted" reported-display-style="strikethrough" committee-id="SYN00"><enum>1.</enum><header>Abandoned title</header>' +
+        '<text>This Act may be cited as the <quote><short-title>Obsolete Orchards Act</short-title></quote>.</text><paragraph changed="deleted"><text>Nested obsolete rule.</text></paragraph></section>' +
+        '<section changed="deleted"><enum>2.</enum><header>Abandoned grants</header><text>Fund obsolete orchards.</text></section>';
+      const bodyXml = separateBodies
+        ? bill(original).replace(
+            '</bill>',
+            `<legis-body display-enacting-clause="no-display-enacting-clause">${substitute}</legis-body></bill>`,
+          )
+        : bill(original + substitute);
+      const doc = parse(
+        bodyXml.replace(
+          '<bill >',
+          '<bill><metadata><dublinCore><title>119 S1 RS: Obsolete Orchards Act</title></dublinCore></metadata>' +
+            '<form><official-title>To support gardens.</official-title></form>',
+        ),
+      );
+      expect(doc.metadata.title).toBe('Shared Gardens Act');
+      expectReportedText(
+        doc,
+        ['Abandoned', 'Obsolete', 'obsolete'],
+        ['Shared Gardens Act', 'Fund seed libraries.'],
+      );
+      expect(ids(doc.sections)).toEqual(['sec-1', 'sec-2']);
+      expect(ids(doc.sections)).toEqual(ids(parse(bill(substitute)).sections));
+      expect(doc.warnings).toEqual([
+        'This is the version reported by committee. 2 passages the committee struck are left out; the text shown is the bill as reported.',
+      ]);
+      expect(
+        [...walkSections(doc.sections)]
+          .flatMap((s) => s.spans)
+          .every((s) => s.status === 'unchanged'),
+      ).toBe(true);
+
+      const chunks = chunkDocument(doc);
+      expect(chunks.every((c) => c.amendmentStatus === 'unchanged')).toBe(true);
+      const backend = new MemoryBackend();
+      await backend.upsertChunks(doc.docId, chunks);
+      const { hits } = await backend.search({
+        docId: doc.docId,
+        index: 'sparse',
+        query: 'obsolete',
+        topK: 20,
+      });
+      expect(hits).toEqual([]);
+      expect(
+        (
+          await backend.search({
+            docId: doc.docId,
+            index: 'sparse',
+            query: 'libraries',
+            topK: 20,
+          })
+        ).hits,
+      ).toHaveLength(1);
+    },
+  );
+
+  it('omits a nested paragraph before numbering its surviving siblings', () => {
+    const doc = parse(
+      bill(
+        '<section><enum>1.</enum><header>Grants</header><text>Keep this introduction.</text>' +
+          '<paragraph changed="deleted"><enum>(1)</enum><text>Abandoned paragraph.</text></paragraph>' +
+          '<paragraph changed="added"><enum>(1)</enum><text>Replacement paragraph.</text></paragraph>' +
+          '<paragraph><text>Unnumbered surviving paragraph.</text></paragraph></section>',
+      ),
+    );
+    expectReportedText(
+      doc,
+      ['Abandoned'],
+      [
+        'Keep this introduction.',
+        'Replacement paragraph.',
+        'Unnumbered surviving paragraph.',
+      ],
+    );
+    expect(ids(doc.sections)).toEqual(['sec-1', 'sec-1/1', 'sec-1/n2']);
+    expect(doc.warnings).toEqual([
+      'This is the version reported by committee. 1 passage the committee struck is left out; the text shown is the bill as reported.',
+    ]);
+  });
+
+  it('treats added phrases as inline text, including word fragments and punctuation', () => {
+    const doc = parse(
+      bill(
+        '<section><enum>1.</enum><header><deleted-phrase>Abandoned heading</deleted-phrase><added-phrase>Gardens</added-phrase></header>' +
+          '<text>Support <deleted-phrase>obsolete plots</deleted-phrase><added-phrase>garden</added-phrase>s<added-phrase>,</added-phrase> today. ' +
+          '<span changed="deleted">Abandoned phrase.</span><span changed="added">Keep this phrase.</span></text></section>',
+      ),
+    );
+    expectReportedText(
+      doc,
+      ['Abandoned', 'obsolete'],
+      ['Support gardens, today. Keep this phrase.'],
+    );
+    expect(doc.sections[0]!.heading).toBe('Gardens');
+    expect(doc.sections[0]!.spans).toEqual([
+      {
+        text: 'Support gardens, today. Keep this phrase.',
+        status: 'unchanged',
+      },
+    ]);
+    expect(doc.warnings).toHaveLength(1);
+    expect(doc.warnings[0]).toContain('3 passages');
+  });
+
+  it('omits definitions and references before extraction, without counting repeated text walks', () => {
+    const doc = parse(
+      bill(
+        '<section><enum>1.</enum><text>In this section, the term ' +
+          '<deleted-phrase><term>obsolete group</term></deleted-phrase><term>garden group</term> means ' +
+          '<deleted-phrase>an abandoned club</deleted-phrase><added-phrase>a shared garden</added-phrase>.</text>' +
+          '<text>Use <external-xref changed="deleted" legal-doc="usc" parsable-cite="usc/5/999">5 U.S.C. 999</external-xref>' +
+          '<external-xref changed="added" legal-doc="usc" parsable-cite="usc/5/101">5 U.S.C. 101</external-xref>.</text>' +
+          '<paragraph changed="deleted"><text>The term <term>obsolete term</term> means abandoned material.</text></paragraph></section>',
+      ),
+    );
+    expectReportedText(
+      doc,
+      ['obsolete', 'abandoned', '5 U.S.C. 999'],
+      ['a shared garden', '5 U.S.C. 101'],
+    );
+    expect(doc.definitions).toEqual([
+      {
+        term: 'garden group',
+        text: 'In this section, the term garden group means a shared garden.',
+        sectionId: 'sec-1',
+        scope: 'section',
+        scopeSectionId: 'sec-1',
+      },
+    ]);
+    expect(doc.externalRefs.map((r) => r.citation)).toEqual(['5 U.S.C. 101']);
+    expect(doc.warnings).toHaveLength(1);
+    expect(doc.warnings[0]).toContain('4 passages');
+  });
+
+  it('counts an omitted subtree only once even with nested additions and deletions', () => {
+    const doc = parse(
+      bill(
+        '<section><enum>1.</enum><text>Keep this.</text><wrapper changed="deleted">Abandoned wrapper' +
+          '<deleted-phrase>Abandoned phrase</deleted-phrase><span changed="added">Abandoned addition</span>' +
+          '<paragraph changed="deleted"><text>Abandoned paragraph</text></paragraph></wrapper></section>',
+      ),
+    );
+    expectReportedText(doc, ['Abandoned'], ['Keep this.']);
+    expect(doc.warnings).toHaveLength(1);
+    expect(doc.warnings[0]).toContain('1 passage');
+  });
+
+  it('preserves law-editing ins/del inside committee additions and quoted law', () => {
+    const doc = parse(
+      bill(
+        '<section changed="added"><enum>1.</enum><quoted-block><section><enum>9.</enum>' +
+          '<text>Use <deleted-phrase>abandoned</deleted-phrase><added-phrase>the <del>old rule</del><ins>new rule</ins></added-phrase>.</text>' +
+          '<paragraph changed="deleted"><text>Abandoned quoted paragraph.</text></paragraph></section></quoted-block></section>',
+      ),
+    );
+    expectReportedText(
+      doc,
+      ['abandoned', 'Abandoned'],
+      ['old rule', 'new rule'],
+    );
+    expect(doc.sections[0]!.children).toEqual([]);
+    expect(
+      doc.sections[0]!.spans.filter((s) => s.status !== 'unchanged'),
+    ).toEqual([
+      { text: 'old rule', status: 'deleted' },
+      { text: 'new rule', status: 'inserted' },
+    ]);
+    expect(
+      chunkDocument(doc).some(
+        (c) => c.amendmentStatus === 'deleted' && c.text === 'old rule',
+      ),
+    ).toBe(true);
+    expect(doc.warnings[0]).toContain('2 passages');
+  });
+
+  it('does not warn or create amendment spans for a bill with only additions', () => {
+    const doc = parse(
+      bill(
+        '<section changed="added"><enum>1.</enum><text changed="added">Fund <added-phrase>seed</added-phrase> libraries.</text>' +
+          '<paragraph changed="added"><enum>(1)</enum><text>Keep records.</text></paragraph></section>',
+      ),
+    );
+    expectReportedText(doc, [], ['Fund seed libraries.', 'Keep records.']);
+    expect(doc.warnings).toEqual([]);
+    expect(
+      [...walkSections(doc.sections)]
+        .flatMap((s) => s.spans)
+        .every((s) => s.status === 'unchanged'),
+    ).toBe(true);
+    expect(
+      chunkDocument(doc).every((c) => c.amendmentStatus === 'unchanged'),
+    ).toBe(true);
+  });
+
+  it('prunes before preamble and unstructured fallback text is collected', () => {
+    const doc = parse(
+      bill(
+        '<text changed="deleted">Abandoned preamble.</text><text>Keep the preamble.</text>',
+      ),
+    );
+    expectReportedText(doc, ['Abandoned'], ['Keep the preamble.']);
+    expect(doc.sections[0]!.id).toBe('preamble');
+    const fallback = parse(
+      '<root><p changed="deleted">Abandoned fallback.</p><p>Keep the fallback.</p></root>',
+    );
+    expectReportedText(fallback, ['Abandoned'], ['Keep the fallback.']);
+    expect(fallback.sections[0]!.id).toBe('doc');
+    expect(
+      fallback.warnings.filter((w) => w.includes('reported by committee')),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    '<root changed="deleted">Abandoned root.</root>',
+    '<deleted-phrase>Abandoned root.</deleted-phrase>',
+    bill('<wrapper changed="deleted"><text>Abandoned body.</text></wrapper>'),
+  ])('fails clearly when committee deletions leave no text: %s', (xml) => {
+    const error = failure(() => parse(xml));
+    expect(error.code).toBe('PARSE_FAILED');
+    expect(error.message).toContain('contains no text');
+    expect(error.message).not.toContain('Abandoned');
+  });
+
+  it('still validates XML inside an omitted subtree', () => {
+    expect(
+      failure(() =>
+        parse(bill('<section changed="deleted"><text>Broken</section>')),
+      ).code,
+    ).toBe('PARSE_FAILED');
   });
 });
 
@@ -353,6 +646,38 @@ describe('definitions and references', () => {
 });
 
 describe('metadata', () => {
+  it.each([false, true])(
+    'keeps normal title precedence unless committee text was pruned: %s',
+    (pruned) => {
+      const doc = parse(
+        '<bill><metadata><title>119 S1 RS: Front matter title</title></metadata>' +
+          '<form><official-title>To support gardens.</official-title></form><legis-body>' +
+          (pruned
+            ? '<section changed="deleted"><header>Abandoned heading</header><text>Abandoned text.</text></section>'
+            : '') +
+          '<section><enum>1.</enum><header>Short title</header><text>This Act may be cited as the ' +
+          '<quote><short-title>Shared Gardens Act</short-title></quote>.</text></section></legis-body></bill>',
+      );
+      expect(doc.metadata.title).toBe(
+        pruned ? 'Shared Gardens Act' : 'Front matter title',
+      );
+      expect(JSON.stringify(doc)).not.toContain('Abandoned');
+    },
+  );
+
+  it('prunes official title text and ignores short titles inside quoted law', () => {
+    const doc = parse(
+      '<bill><form><official-title>To fund <deleted-phrase>obsolete orchards</deleted-phrase>' +
+        '<added-phrase>shared gardens</added-phrase>.</official-title></form><legis-body>' +
+        '<section><enum>1.</enum><header><deleted-phrase>Abandoned heading</deleted-phrase><added-phrase>Grants</added-phrase></header>' +
+        '<quoted-block><section><enum>9.</enum><text>This Act may be cited as the ' +
+        '<quote><short-title>Existing Law Act</short-title></quote>.</text></section></quoted-block></section></legis-body></bill>',
+    );
+    expect(doc.metadata.title).toBe('To fund shared gardens.');
+    expect(doc.sections[0]!.heading).toBe('Grants');
+    expect(JSON.stringify(doc)).not.toMatch(/obsolete|Abandoned/);
+  });
+
   it('takes the Dublin Core short title, minus its file prefix, and reports missing fields as null', () => {
     const doc = parse(
       '<bill bill-stage="Enrolled-Bill"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dublinCore><dc:title>HR 1 ENR: Short</dc:title></dublinCore></metadata>' +
@@ -703,6 +1028,41 @@ describeWithFixture('us-s202-119-is', () => {
     expect(doc.definitions.every((d) => d.scope === 'document')).toBe(true);
     expect(doc.externalRefs.map((r) => r.citation)).toContain('7 U.S.C. 1a');
     expect(doc.warnings).toEqual([]);
+  });
+});
+
+describeWithFixture('us-s3235-118-rs', () => {
+  it('reads the reported substitute without the struck original or duplicate section ids', () => {
+    const bytes = readFileSync(fixturePath('us-s3235-118-rs')!);
+    const doc = parseXml(bytes, options);
+    const sections = [...walkSections(doc.sections)];
+    const chunks = chunkDocument(doc);
+    expect(NormalizedDoc.safeParse(doc).success).toBe(true);
+    expect(doc.metadata.title).toBe('End Iranian Terrorism Act of 2024');
+    expect(doc.sections.map((s) => s.id)).toEqual(
+      Array.from({ length: 7 }, (_, i) => `sec-${String(i + 1)}`),
+    );
+    expect(new Set(ids(doc.sections)).size).toBe(sections.length);
+    expect(ids(parseXml(bytes, options).sections)).toEqual(ids(doc.sections));
+    expect(doc.sections[0]!.spans.map((s) => s.text).join('')).toContain(
+      'End Iranian Terrorism Act of 2024',
+    );
+    expect(JSON.stringify(doc)).not.toContain(
+      'End Iranian Terrorism Act of 2023',
+    );
+    expect(JSON.stringify(chunks)).not.toContain(
+      'End Iranian Terrorism Act of 2023',
+    );
+    expect(
+      chunks.some((c) => c.text.includes('End Iranian Terrorism Act of 2024')),
+    ).toBe(true);
+    expect(
+      sections.flatMap((s) => s.spans).every((s) => s.status === 'unchanged'),
+    ).toBe(true);
+    expect(chunks.every((c) => c.amendmentStatus === 'unchanged')).toBe(true);
+    expect(doc.warnings).toEqual([
+      'This is the version reported by committee. 5 passages the committee struck are left out; the text shown is the bill as reported.',
+    ]);
   });
 });
 

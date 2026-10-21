@@ -78,6 +78,13 @@ export default defineConfig({
           branches: 85,
           statements: 90,
         },
+        'src/server/{session,gate,ingest-hosts,log}.ts': {
+          perFile: true,
+          lines: 90,
+          functions: 90,
+          branches: 85,
+          statements: 90,
+        },
         'src/core/answer/citations*.ts': {
           lines: 90,
           functions: 90,

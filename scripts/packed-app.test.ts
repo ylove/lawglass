@@ -194,3 +194,28 @@ it('redacts the launch token from startup diagnostics', async () => {
   expect((error as Error).message).toContain('k=[redacted]');
   expect((error as Error).message).not.toContain('secret-launch-token');
 });
+
+it('starts a private packed server and exchanges the configured invite without expecting a printed token', async () => {
+  const accessKey = 'p'.repeat(40);
+  const { dir, script, env } = await temporaryScript(`
+    import { createServer } from 'node:http';
+    const key = process.env[${JSON.stringify(envVar('ACCESS_KEY'))}];
+    if (!process.argv.includes('--private') || !process.argv.includes('--trust-proxy')) process.exit(1);
+    const server = createServer((req, res) => {
+      if (req.url === '/?k=' + key) {
+        res.writeHead(302, { 'set-cookie': 'private_session=derived; HttpOnly; Secure; Path=/', location: '/' });
+        res.end();
+      } else if (req.url === '/api/health' && req.headers.cookie === 'private_session=derived') {
+        res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ ok: true, version: 'test' }));
+      } else { res.writeHead(401); res.end(); }
+    });
+    server.listen(0, '127.0.0.1', () => console.log('Private mode on http://127.0.0.1:' + server.address().port + '. Share https://preview.example/?k=<access key> with invited people.'));
+    process.on('SIGTERM', () => { server.close(); });
+  `);
+  const server = await startPackedServer(script, dir, env, 0, {
+    privateMode: true,
+    env: { [envVar('ACCESS_KEY')]: accessKey },
+  });
+  expect(new URL(server.url).search).toBe('');
+  await server.stop();
+});

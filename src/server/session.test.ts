@@ -137,3 +137,85 @@ describe('local session gate', () => {
     ).toBe(401);
   });
 });
+
+describe('private session', () => {
+  const privateApp = () => {
+    const a = new Hono();
+    a.use('*', localSession(token, { privateMode: true }));
+    a.get('/api/health', (c) => c.json({ ok: true }));
+    a.get('*', (c) => c.html('<title>Application</title>'));
+    return a;
+  };
+  test('derives a stable HMAC cookie, keeps HTTPS through relative redirects, rotates with the key', async () => {
+    const { privateCookieValue } = await import('./session.js');
+    const { createHmac } = await import('node:crypto');
+    const { BRAND } = await import('../core/brand.js');
+    const expected = createHmac('sha256', token)
+      .update(`${BRAND.name}-session-v1`)
+      .digest('base64url');
+    expect(privateCookieValue(token)).toBe(expected);
+    expect(privateCookieValue('other')).not.toBe(expected);
+    const a = privateApp();
+    const response = await a.request(
+      `http://preview.example/doc?x=1&k=${token}&q=a%26b`,
+    );
+    expect(response.headers.get('location')).toBe('/doc?x=1&q=a%26b');
+    const cookie = response.headers.get('set-cookie')!;
+    expect(cookie).toContain(`${SESSION_COOKIE}=${expected}`);
+    for (const attribute of [
+      'HttpOnly',
+      'SameSite=Strict',
+      'Path=/',
+      'Secure',
+      'Max-Age=2592000',
+    ])
+      expect(cookie).toContain(attribute);
+    expect(cookie).not.toContain(token);
+    expect(
+      (await a.request('/api/health', { headers: { cookie } })).status,
+    ).toBe(200);
+    expect(
+      (
+        await a.request('/api/health', {
+          headers: { cookie: `${SESSION_COOKIE}=${token}` },
+        })
+      ).status,
+    ).toBe(401);
+    const slashes = await a.request(
+      `http://preview.example//evil.example/?k=${token}`,
+    );
+    expect(slashes.headers.get('location')).toBe('/evil.example/');
+  });
+  test('unauthenticated APIs get the invite message; pages get the branded gate', async () => {
+    const a = privateApp();
+    const denied = await a.request('/api/health?k=wrong');
+    expect(denied.status).toBe(401);
+    expect(await denied.json()).toEqual({
+      error: {
+        code: 'UNAUTHORIZED',
+        message: 'This is a private preview. Open your invite link.',
+      },
+    });
+    const page = await a.request('/');
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain('This is a private preview.');
+    expect((await a.request('/', { method: 'POST' })).status).toBe(401);
+  });
+  test('requires a key of at least 32 characters without echoing its value', async () => {
+    const { readAccessKey } = await import('./session.js');
+    const { envVar } = await import('../core/brand.js');
+    for (const key of [undefined, '', 'too-short-secret']) {
+      expect(() => readAccessKey({ [envVar('ACCESS_KEY')]: key })).toThrow(
+        expect.objectContaining({
+          code: 'INVALID_INPUT',
+          userMessage: expect.stringContaining(
+            'at least 32 characters',
+          ) as string,
+        }),
+      );
+    }
+    expect(readAccessKey({ [envVar('ACCESS_KEY')]: 'x'.repeat(32) })).toBe(
+      'x'.repeat(32),
+    );
+  });
+});

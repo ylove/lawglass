@@ -41,7 +41,11 @@ export function coveredSectionIds(c: StoredChunk): string[] {
   return c.coveredSectionIds ?? [c.sectionId];
 }
 
-/** Rewrite `[S:a, b]` and `[S:a; S:b]` as `[S:a] [S:b]` so each id is validated. */
+/**
+ * Rewrite `[S:a, b]` and `[S:a; S:b]` as `[S:a] [S:b]` so each id is validated. A marker body
+ * never contains a bracket (as in CITATION_PATTERN), so each body is matched at most once and
+ * an unclosed `[S:` costs a single scan.
+ */
 function splitMultiMarkers(text: string, allowed: ReadonlySet<string>): string {
   // Scan each bracket-free body once; overlapping repeats around a separator backtrack quadratically.
   return text.replace(/\[S:([^[\]]*)\]/g, (whole, inner: string) => {

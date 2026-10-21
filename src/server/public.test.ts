@@ -25,8 +25,8 @@ import type { AppOptions } from './app.js';
 let env: PipelineEnv;
 beforeEach(async () => {
   env = await makePipelineEnv();
-  env.serve('https://example.gov/a.txt', makeSectionedText(), 'text/plain');
-  env.serve('https://example.gov/b.xml', makeCongressionalBillXml());
+  env.serve('https://govinfo.gov/a.txt', makeSectionedText(), 'text/plain');
+  env.serve('https://govinfo.gov/b.xml', makeCongressionalBillXml());
 });
 afterEach(async () => {
   await env.cleanup();
@@ -64,7 +64,7 @@ async function ingestOk(a: Hono, url: string, ip?: string): Promise<string> {
 /** A real, schema-valid answer produced by the mock provider, for chip runners to return. */
 async function realAnswer(): Promise<AnswerResult> {
   const open = createApp(env.runtime, { localOnly: false });
-  const docId = await ingestOk(open, 'https://example.gov/a.txt');
+  const docId = await ingestOk(open, 'https://govinfo.gov/a.txt');
   const res = await post(open, `/api/docs/${docId}/ask`, {
     question: 'What is this?',
   });
@@ -94,7 +94,7 @@ beforeEach(async () => {
 describe('freeform questions', () => {
   test('are rejected with PUBLIC_MODE_FORBIDDEN, chips are allowed', async () => {
     const a = publicApp();
-    const docId = await ingestOk(a, 'https://example.gov/a.txt');
+    const docId = await ingestOk(a, 'https://govinfo.gov/a.txt');
     const free = await post(a, `/api/docs/${docId}/ask`, { question: 'hi' });
     expect(free.status).toBe(403);
     expect(await free.json()).toMatchObject({
@@ -110,7 +110,7 @@ describe('freeform questions', () => {
 
   test('never generate a scenario, even for who-affected', async () => {
     const a = publicApp();
-    const docId = await ingestOk(a, 'https://example.gov/a.txt');
+    const docId = await ingestOk(a, 'https://govinfo.gov/a.txt');
     const provider = scenarioProvider(env.provider);
     Object.assign(env.runtime, { answerProvider: provider });
     const inner = chipRunner;
@@ -128,7 +128,7 @@ describe('freeform questions', () => {
 
   test('a rejected freeform question does not use up the allowance', async () => {
     const a = publicApp({ limits: { questionsPerHour: 1 } });
-    const docId = await ingestOk(a, 'https://example.gov/a.txt');
+    const docId = await ingestOk(a, 'https://govinfo.gov/a.txt');
     env.runtime.chips = chipRunner;
     for (let i = 0; i < 3; i++)
       await post(a, `/api/docs/${docId}/ask`, { question: 'hi' });
@@ -142,7 +142,7 @@ describe('rate limits', () => {
   test('20 questions per hour per IP, then 429; other IPs and later hours are fine', async () => {
     let t = 0;
     const a = publicApp({ now: () => t });
-    const docId = await ingestOk(a, 'https://example.gov/a.txt');
+    const docId = await ingestOk(a, 'https://govinfo.gov/a.txt');
     env.runtime.chips = chipRunner;
     const ask = async (ip: string) => {
       const res = await post(
@@ -170,18 +170,18 @@ describe('rate limits', () => {
     const a = publicApp({ limits: { maxDocs: 50 } });
     for (let i = 0; i < 3; i++) {
       const res = await post(a, '/api/ingest', {
-        url: 'https://example.gov/a.txt',
+        url: 'https://govinfo.gov/a.txt',
       });
       await events(res, IngestEvent);
     }
     const limited = await post(a, '/api/ingest', {
-      url: 'https://example.gov/a.txt',
+      url: 'https://govinfo.gov/a.txt',
     });
     expect(limited.status).toBe(429);
     const other = await post(
       a,
       '/api/ingest',
-      { url: 'https://example.gov/a.txt' },
+      { url: 'https://govinfo.gov/a.txt' },
       '2.2.2.2',
     );
     expect(other.status).toBe(200);
@@ -196,15 +196,15 @@ describe('rate limits', () => {
           'content-type': 'application/json',
           'x-forwarded-for': forwarded,
         },
-        body: JSON.stringify({ url: 'https://example.gov/a.txt' }),
+        body: JSON.stringify({ url: 'https://govinfo.gov/a.txt' }),
       });
     const trusting = createApp(env.runtime, {
       publicMode: true,
-      trustProxy: true,
+      trustProxyHops: 1,
       limits: { ingestsPerHour: 1 },
     });
-    await (await send(trusting, '5.5.5.5, 10.0.0.1')).text();
-    expect((await send(trusting, '5.5.5.5')).status).toBe(429);
+    await (await send(trusting, 'spoofed, 5.5.5.5')).text();
+    expect((await send(trusting, 'different-spoof, 5.5.5.5')).status).toBe(429);
     expect((await send(trusting, '6.6.6.6')).status).toBe(200);
     // Untrusted: the header is ignored, so every caller shares one 'unknown' bucket.
     const plain = createApp(env.runtime, {
@@ -221,10 +221,10 @@ describe('caps', () => {
     env.runtime.maxDocs = 1;
     const a = publicApp();
     const eviction = vi.spyOn(env.registry, 'evictionCandidates');
-    const first = await ingestOk(a, 'https://example.gov/a.txt');
+    const first = await ingestOk(a, 'https://govinfo.gov/a.txt');
     env.fetches.length = 0;
     const res = await post(a, '/api/ingest', {
-      url: 'https://example.gov/b.xml',
+      url: 'https://govinfo.gov/b.xml',
     });
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({
@@ -239,14 +239,14 @@ describe('caps', () => {
     env.runtime.maxDocs = 1;
     const a = publicApp({ limits: { maxDocs: 2 } });
     const eviction = vi.spyOn(env.registry, 'evictionCandidates');
-    const first = await ingestOk(a, 'https://example.gov/a.txt');
-    const second = await ingestOk(a, 'https://example.gov/b.xml');
+    const first = await ingestOk(a, 'https://govinfo.gov/a.txt');
+    const second = await ingestOk(a, 'https://govinfo.gov/b.xml');
     expect(eviction).toHaveBeenLastCalledWith(2);
     expect((await env.registry.list()).map((e) => e.docId).sort()).toEqual(
       [first, second].sort(),
     );
     const res = await post(a, '/api/ingest', {
-      url: 'https://example.gov/a.txt',
+      url: 'https://govinfo.gov/a.txt',
     });
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({
@@ -256,9 +256,9 @@ describe('caps', () => {
 
   test('the global document cap refuses further ingests without evicting', async () => {
     const a = publicApp({ limits: { maxDocs: 1 } });
-    const first = await ingestOk(a, 'https://example.gov/a.txt');
+    const first = await ingestOk(a, 'https://govinfo.gov/a.txt');
     const res = await post(a, '/api/ingest', {
-      url: 'https://example.gov/b.xml',
+      url: 'https://govinfo.gov/b.xml',
     });
     expect(res.status).toBe(403);
     expect(await res.json()).toMatchObject({
@@ -278,10 +278,10 @@ describe('caps', () => {
       return real(url, opts);
     };
     const running = await post(a, '/api/ingest', {
-      url: 'https://example.gov/a.txt',
+      url: 'https://govinfo.gov/a.txt',
     });
     const second = await post(a, '/api/ingest', {
-      url: 'https://example.gov/b.xml',
+      url: 'https://govinfo.gov/b.xml',
     });
     expect(second.status).toBe(403);
     await vi.waitFor(() => {
@@ -290,7 +290,7 @@ describe('caps', () => {
     await events(running, IngestEvent);
     // Once the first finished, its slot is a real document, so the cap still holds.
     const third = await post(a, '/api/ingest', {
-      url: 'https://example.gov/b.xml',
+      url: 'https://govinfo.gov/b.xml',
     });
     expect(third.status).toBe(403);
   });
@@ -299,7 +299,7 @@ describe('caps', () => {
     const doc = (pageCount: number) =>
       Promise.resolve({
         docId: '',
-        sourceUrl: 'https://example.gov/x.pdf',
+        sourceUrl: 'https://govinfo.gov/x.pdf',
         format: 'pdf',
         fetchedAt: new Date(0).toISOString(),
         metadata: {
@@ -319,13 +319,13 @@ describe('caps', () => {
       } as NormalizedDoc);
     env.runtime.parsePdf = () => doc(201);
     env.serve(
-      'https://example.gov/big.pdf',
+      'https://govinfo.gov/big.pdf',
       { bytes: new Uint8Array([1, 2, 3]) },
       'application/pdf',
     );
     const a = publicApp();
     const evs = await events(
-      await post(a, '/api/ingest', { url: 'https://example.gov/big.pdf' }),
+      await post(a, '/api/ingest', { url: 'https://govinfo.gov/big.pdf' }),
       IngestEvent,
     );
     expect(evs.at(-1)).toEqual({
@@ -350,13 +350,13 @@ describe('caps', () => {
         );
       });
     env.serve(
-      'https://example.gov/ok.pdf',
+      'https://govinfo.gov/ok.pdf',
       { bytes: new Uint8Array([1, 2, 3]) },
       'application/pdf',
     );
     const evs = await events(
       await post(publicApp(), '/api/ingest', {
-        url: 'https://example.gov/ok.pdf',
+        url: 'https://govinfo.gov/ok.pdf',
       }),
       IngestEvent,
     );
@@ -368,7 +368,7 @@ describe('caps', () => {
 describe('other public-mode rules', () => {
   test('visitors cannot delete documents', async () => {
     const a = publicApp();
-    const docId = await ingestOk(a, 'https://example.gov/a.txt');
+    const docId = await ingestOk(a, 'https://govinfo.gov/a.txt');
     const res = await a.request(`/api/docs/${docId}`, { method: 'DELETE' });
     expect(res.status).toBe(403);
     expect(await env.registry.list()).toHaveLength(1);
@@ -380,7 +380,7 @@ describe('other public-mode rules', () => {
     );
     const a = publicApp({ turnstile: verifier });
     const denied = await post(a, '/api/ingest', {
-      url: 'https://example.gov/a.txt',
+      url: 'https://govinfo.gov/a.txt',
     });
     expect(denied.status).toBe(403);
     expect(await denied.json()).toMatchObject({
@@ -392,7 +392,7 @@ describe('other public-mode rules', () => {
       a,
       '/api/ingest',
       {
-        url: 'https://example.gov/a.txt',
+        url: 'https://govinfo.gov/a.txt',
         turnstileToken: 'good',
       },
       '3.3.3.3',
@@ -412,9 +412,9 @@ describe('other public-mode rules', () => {
       turnstile: (token) => Promise.resolve(token === 'good'),
       limits: { ingestsPerHour: 1 },
     });
-    await post(a, '/api/ingest', { url: 'https://example.gov/a.txt' });
+    await post(a, '/api/ingest', { url: 'https://govinfo.gov/a.txt' });
     const ok = await post(a, '/api/ingest', {
-      url: 'https://example.gov/a.txt',
+      url: 'https://govinfo.gov/a.txt',
       turnstileToken: 'good',
     });
     expect(ok.status).toBe(200);
@@ -428,10 +428,36 @@ describe('other public-mode rules', () => {
     });
     for (let i = 0; i < 3; i++) {
       const res = await post(a, '/api/ingest', {
-        url: 'https://example.gov/a.txt',
+        url: 'https://govinfo.gov/a.txt',
       });
       await events(res, IngestEvent);
     }
     expect((await env.registry.list()).length).toBe(1);
   });
+});
+
+test('trusted proxy hops count from the right and fall back for absent or short chains', async () => {
+  const turnstile = vi.fn(() => Promise.resolve(false));
+  const a = createApp(env.runtime, {
+    publicMode: true,
+    trustProxyHops: 2,
+    turnstile,
+  });
+  for (const [forwarded, expected] of [
+    ['spoofed, 1.2.3.4, 10.0.0.1', '1.2.3.4'],
+    ['different-spoof, 1.2.3.4, 10.0.0.1', '1.2.3.4'],
+    ['9.9.9.9', 'unknown'],
+    ['', 'unknown'],
+    [undefined, 'unknown'],
+  ]) {
+    await a.request('/api/ingest', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(forwarded === undefined ? {} : { 'x-forwarded-for': forwarded }),
+      },
+      body: JSON.stringify({ url: 'https://govinfo.gov/a.txt' }),
+    });
+    expect(turnstile).toHaveBeenLastCalledWith(undefined, expected);
+  }
 });

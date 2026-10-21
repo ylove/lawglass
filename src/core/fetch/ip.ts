@@ -37,21 +37,27 @@ const IPV4_BLOCKS = [
   '240.0.0.0/4',
   '255.255.255.255/32',
 ].map((cidr) => ipaddr.IPv4.parseCIDR(cidr));
-const IPV6_BLOCKS = [
-  '::/128',
-  '::1/128',
-  '100::/64',
-  // Block Teredo outright, including its XOR-obfuscated client IPv4.
-  '2001::/32',
-  'fc00::/7',
-  'fe80::/10',
-  'fec0::/10',
-  'ff00::/8',
-  '2001:db8::/32',
+// IPv6 is an allowlist: only global unicast (2000::/3) is a fetch target, and the IANA
+// special-purpose ranges that sit inside it are carved back out. A blocklist alone kept missing
+// newly registered ranges (3fff::/20 documentation, ORCHID, benchmarking); with the allowlist
+// anything outside 2000::/3 (::1, fc00::/7, fe80::/10, ff00::/8, 100::/64, 5f00::/16 SRv6 SIDs,
+// unassigned space) is refused without being named.
+const IPV6_GLOBAL_UNICAST = ipaddr.IPv6.parseCIDR('2000::/3');
+const IPV6_SPECIAL_PURPOSE = [
+  // IETF protocol assignments, whole /23: Teredo 2001::/32 (XOR-obfuscated client IPv4), PCP and
+  // TURN anycast 2001:1::/32, benchmarking 2001:2::/48, AMT 2001:3::/32, AS112 2001:4:112::/48,
+  // ORCHID 2001:10::/28, ORCHIDv2 2001:20::/28 and drone remote ID 2001:30::/28.
+  '2001::/23',
+  '2001:db8::/32', // documentation
+  '2620:4f:8000::/48', // direct delegation AS112
+  '3fff::/20', // documentation (RFC 9637)
 ].map((cidr) => ipaddr.IPv6.parseCIDR(cidr));
+// Forms that carry an IPv4 address; the embedded address decides, so NAT64 or 6to4 to a public
+// IPv4 stays reachable while the same forms pointing at 127.0.0.1 or 169.254.169.254 do not.
 const EMBEDDED_IPV4 = [
-  '::ffff:0:0/96',
-  '::/96',
+  '::ffff:0:0/96', // IPv4-mapped
+  '::ffff:0:0:0/96', // IPv4-translated (SIIT, RFC 2765): ::ffff:0:a.b.c.d
+  '::/96', // deprecated IPv4-compatible
   '64:ff9b::/96',
   '64:ff9b:1::/48',
   '2002::/16',
@@ -64,8 +70,6 @@ export function isBlockedAddress(ip: string): boolean {
   if (address instanceof ipaddr.IPv4) {
     return IPV4_BLOCKS.some(([network, bits]) => address.match(network, bits));
   }
-  if (IPV6_BLOCKS.some(([network, bits]) => address.match(network, bits)))
-    return true;
   const embedding = EMBEDDED_IPV4.find(([network, bits]) =>
     address.match(network, bits),
   );
@@ -80,5 +84,9 @@ export function isBlockedAddress(ip: string): boolean {
           : octets.slice(12);
     return isBlockedAddress(embedded.join('.'));
   }
-  return false;
+  const [globalNetwork, globalBits] = IPV6_GLOBAL_UNICAST;
+  if (!address.match(globalNetwork, globalBits)) return true;
+  return IPV6_SPECIAL_PURPOSE.some(([network, bits]) =>
+    address.match(network, bits),
+  );
 }

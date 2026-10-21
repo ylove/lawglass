@@ -5,7 +5,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { BRAND } from '../src/core/brand.js';
-import { fetchFixtures, parseArguments } from './fetch-fixtures.js';
+import {
+  BYTE_SLACK,
+  fetchFixtures,
+  parseArguments,
+  readWithBudget,
+} from './fetch-fixtures.js';
 import type { FixtureManifest } from './fixture-manifest.js';
 
 const data = 'synthetic legislation';
@@ -152,11 +157,12 @@ test.each(['http', 'timeout', 'body'])(
         new DOMException('Request timed out', 'TimeoutError'),
       );
     if (failure === 'body') {
-      const response = new Response(data);
-      vi.spyOn(response, 'arrayBuffer').mockRejectedValueOnce(
-        new Error('Body interrupted'),
-      );
-      fetcher.mockResolvedValueOnce(response);
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.error(new Error('Body interrupted'));
+        },
+      });
+      fetcher.mockResolvedValueOnce(new Response(body));
     }
     expect(await download({ manifest: twoFixtures })).toMatchObject([
       {
@@ -217,11 +223,79 @@ test('writes atomically: no .part file remains after a download', async () => {
 test('refuses a body whose Content-Length is far larger than expected', async () => {
   fetcher.mockResolvedValue(
     new Response(data, {
-      headers: { 'content-length': String(fixture.bytes * 10 + 5000) },
+      headers: { 'content-length': String(fixture.bytes + BYTE_SLACK + 1) },
     }),
   );
   const [result] = await download();
   expect(result?.status).toBe('error');
   expect(result?.message).toContain('far larger');
   expect(await readdir(directory)).toEqual([]);
+});
+
+// C7: the manifest's byte count is the download budget, enforced while streaming.
+function endlessBody(chunk: Uint8Array): {
+  response: Response;
+  pulled: () => number;
+  cancelled: () => boolean;
+} {
+  let pulls = 0;
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      pulls++;
+      controller.enqueue(chunk);
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  return {
+    response: new Response(body),
+    pulled: () => pulls,
+    cancelled: () => cancelled,
+  };
+}
+
+test('stops reading an unbounded body at the manifest budget, without a Content-Length', async () => {
+  const chunk = new Uint8Array(16 * 1024);
+  const { response, pulled, cancelled } = endlessBody(chunk);
+  fetcher.mockResolvedValueOnce(response);
+  const [result] = await download();
+  expect(result).toMatchObject({ name: fixture.name, status: 'error' });
+  expect(result?.message).toContain('budget');
+  expect(cancelled()).toBe(true);
+  // The budget is the manifest size plus slack; the stream must not have been drained far past it.
+  expect(pulled() * chunk.byteLength).toBeLessThan(
+    fixture.bytes + BYTE_SLACK + 4 * chunk.byteLength,
+  );
+  expect(await readdir(directory)).toEqual([]);
+});
+
+test('a slightly larger re-render within the slack still downloads and is reported as a mismatch', async () => {
+  const grown = `${data} and a few more bytes`;
+  fetcher.mockResolvedValueOnce(new Response(grown));
+  const [result] = await download();
+  expect(result?.status).toBe('mismatch');
+  expect(await readdir(directory)).toEqual(['sample-bill.txt.mismatch']);
+});
+
+test('a body exactly at the budget is read in full and an empty body reads as empty', async () => {
+  const exact = new Uint8Array(100).fill(7);
+  expect(await readWithBudget(new Response(exact), 100)).toEqual(exact);
+  await expect(readWithBudget(new Response(exact), 99)).rejects.toThrow(
+    /budget/,
+  );
+  expect(await readWithBudget(new Response(null), 10)).toEqual(
+    new Uint8Array(),
+  );
+});
+
+test('the announced length is checked against the budget before any byte is read', async () => {
+  const { response, pulled, cancelled } = endlessBody(new Uint8Array(1024));
+  Object.defineProperty(response, 'headers', {
+    value: new Headers({ 'content-length': '999999999' }),
+  });
+  await expect(readWithBudget(response, 1000)).rejects.toThrow(/budget/);
+  expect(cancelled()).toBe(true);
+  expect(pulled()).toBeLessThanOrEqual(1);
 });

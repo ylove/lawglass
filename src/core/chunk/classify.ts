@@ -7,7 +7,7 @@ export function classifyChunk(text: string, heading = ''): ChunkType {
   const context = `${heading}\n${text}`;
   if (
     /\bdefinitions?\b/i.test(heading) ||
-    /\bas used in this (?:section|act)\b|["“][^"”]+["”]\s+(?:means|includes)\b|\bthe term\s+.+?\s+means\b/i.test(
+    /\bas used in this (?:section|act)\b|["“][^"“”]+["”]\s+(?:means|includes)\b|\bthe term\s.{0,100}?\smeans\b/i.test(
       text,
     )
   )
@@ -26,7 +26,7 @@ export function classifyChunk(text: string, heading = ''): ChunkType {
     return 'effective_date';
   if (
     /\bappropriat(?:e|ed|ion|ions)\b/i.test(context) ||
-    (/\bfrom the\s+(?:[^.!?\n]+\s+)?funds?\b/i.test(context) &&
+    (/\bfrom the\s[^.!?\n]{0,200}\bfunds?\b/i.test(context) &&
       /\$\s*\d|\b\d[\d,.]*\s+(?:dollars?|thousand|million|billion)\b/i.test(
         context,
       ))

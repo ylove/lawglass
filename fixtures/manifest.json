@@ -24,6 +24,17 @@
       "notes": "Same bill as HTML (govinfo pre-formatted text); optional HTML fixture."
     },
     {
+      "name": "us-s3235-118-rs",
+      "description": "End Iranian Terrorism Act, reported Senate bill with a committee substitute (XML).",
+      "format": "xml",
+      "url": "https://www.govinfo.gov/content/pkg/BILLS-118s3235rs/xml/BILLS-118s3235rs.xml",
+      "sha256": "39acaffcf9d5c933b45594ac0019a35c0edf6a47cb13722d6ea799bb3a674796",
+      "bytes": 48406,
+      "retrievedAt": "2026-10-21",
+      "jurisdiction": "US Congress",
+      "notes": "118th Congress S. 3235, Reported in Senate. Five whole sections marked changed=deleted are replaced by seven changed=added sections, reusing section numbers. Committee edits must not become changes to current law."
+    },
+    {
       "name": "oh-sb113-136-in",
       "description": "Ohio SB 113, as introduced in the 136th General Assembly.",
       "format": "pdf",

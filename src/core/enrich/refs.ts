@@ -61,29 +61,33 @@ export function isOhio(jurisdiction: string | null | undefined): boolean {
   return /\bOhio\b/i.test(jurisdiction ?? '');
 }
 
+// Between two items of a list: a comma ("1.2, 3.4", "1.2, and 3.4") or a joining word that
+// needs whitespace on both sides. The word branch hangs off the same leading `\s*` through a
+// lookbehind; two separate whitespace quantifiers there would backtrack polynomially.
+const LIST_SEP = String.raw`\s*(?:,\s*(?:(?:and|or)\s+)?|(?<=\s)(?:and|or|to|through)\s+)`;
 const PAREN = String.raw`\([A-Za-z0-9]+\)`;
 const PAREN_LIST = String.raw`(?:${PAREN})+(?:\s*(?:,|and|or)\s*(?:${PAREN})+)*`;
 // "division (A)(2) of " before "section 5747.01 of the Revised Code".
 const DIVISION_PREFIX = String.raw`(?:(?:divisions?|subdivisions?|subsections?|paragraphs?|clauses?)\s+${PAREN_LIST}\s+(?:of|in)\s+)?`;
 const RC_ITEM = String.raw`\d+\.\d+(?:\.\d+)?(?:${PAREN})*`;
 const RC_SECTIONS = new RegExp(
-  String.raw`${DIVISION_PREFIX}sections?\s+(${RC_ITEM}(?:(?:\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or|to|through)\s+)${RC_ITEM})*)\s+of\s+the\s+(?:Ohio\s+)?Revised\s+Code`,
+  String.raw`${DIVISION_PREFIX}sections?\s+(${RC_ITEM}(?:${LIST_SEP}${RC_ITEM})*)\s+of\s+the\s+(?:Ohio\s+)?Revised\s+Code`,
   'gi',
 );
 const RC_CHAPTERS =
   /\bchapters?\s+(\d+(?:\.\d+)?)\.?\s+of\s+the\s+(?:Ohio\s+)?Revised\s+Code/gi;
 const USC_TITLE_FIRST =
   /\b(\d{1,2})\s+(?:U\.\s?S\.\s?C\.?|USC)(?:\s+(?:§§?|secs?\.|sections?))?\s*(\d+[A-Za-z0-9]*(?:-\d+[A-Za-z0-9]*)?)/g;
-const USC_ITEM = String.raw`\d+[A-Za-z0-9]*(?:\([A-Za-z0-9]+\))*`;
-const USC_LIST = String.raw`${USC_ITEM}(?:(?:\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or|to|through)\s+)${USC_ITEM})*`;
+const USC_ITEM = String.raw`\d[A-Za-z0-9]*(?:\([A-Za-z0-9]+\))*`;
+const USC_LIST = String.raw`${USC_ITEM}(?:${LIST_SEP}${USC_ITEM})*`;
 const USC_CODE = String.raw`(?:United\s+States\s+Code|U\.\s?S\.\s+Code|U\.\s?S\.\s?C\.)`;
 const USC_SECTION_FIRST = new RegExp(
-  String.raw`\bsections?\s+(${USC_LIST})\s+of\s+title\s+(\d{1,2})\s*,?\s+${USC_CODE}`,
+  String.raw`\bsections?\s+(${USC_LIST})\s+of\s+title\s+(\d{1,2})(?:\s*,)?\s+${USC_CODE}`,
   'gi',
 );
 // "title 5, United States Code, section 552"
 const USC_TITLE_SECTION = new RegExp(
-  String.raw`\btitle\s+(\d{1,2})\s*,?\s+${USC_CODE},?\s+sections?\s+(${USC_LIST})`,
+  String.raw`\btitle\s+(\d{1,2})(?:\s*,)?\s+${USC_CODE},?\s+sections?\s+(${USC_LIST})`,
   'gi',
 );
 const IRC =
@@ -176,7 +180,9 @@ function rcCitations(
   list: string,
 ): { citation: string; sectionNum?: string }[] {
   const items = [
-    ...list.matchAll(new RegExp(`(\\d+\\.\\d+(?:\\.\\d+)?)(?:${PAREN})*`, 'g')),
+    ...list.matchAll(
+      new RegExp(`(?<!\\d)(\\d+\\.\\d+(?:\\.\\d+)?)(?:${PAREN})*`, 'g'),
+    ),
   ];
   const out: { citation: string; sectionNum?: string }[] = [];
   let rangeFrom: number | undefined;
@@ -366,7 +372,7 @@ export function collectExternalRefs(
 // ---------------------------------------------------------------------------------------
 
 const NUM_ITEM = String.raw`\d+(?:\.\d+)*(?:${PAREN})*`;
-const SEP = String.raw`(?:\s*,\s*(?:and\s+|or\s+)?|\s+(?:and|or|to|through)\s+)`;
+const SEP = LIST_SEP;
 const SECTION_REF = new RegExp(
   String.raw`\bsections?\s+(${NUM_ITEM}(?:${SEP}${NUM_ITEM})*)`,
   'gi',
@@ -388,7 +394,7 @@ type Tail =
  * a different law, which this document does not contain.
  */
 function tailOf(after: string): Tail & { length: number } {
-  const lead = /^\s*,?\s*(of|in)\s+/i.exec(after);
+  const lead = /^\s*(?:,\s*)?(of|in)\s+/i.exec(after);
   if (!lead) return { kind: 'none', length: 0 };
   const rest = after.slice(lead[0].length);
   const mine = /^this\s+([a-z]+)/i.exec(rest);
@@ -451,8 +457,10 @@ function designators(text: string): string[] {
 }
 
 function listItems(list: string): string[] {
+  // Lists are validated by the patterns that capture them, so only items, commas and joining
+  // words occur; splitting on those is the linear equivalent of splitting on the separator.
   return list
-    .split(new RegExp(SEP, 'i'))
+    .split(/,|(?<=\s)(?:and|or|to|through)(?=\s)/i)
     .map((item) => item.trim())
     .filter(Boolean);
 }

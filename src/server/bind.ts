@@ -6,16 +6,17 @@ import { AppError } from '../core/model/index.js';
 export function validateBindHost(
   host = '127.0.0.1',
   publicMode = false,
+  privateMode = false,
 ): string {
   const address = host.toLowerCase() === 'localhost' ? '127.0.0.1' : host;
   if (!isIP(address) || address.includes('%'))
     throw new AppError('INVALID_INPUT', 'Invalid bind host.', {
       userMessage: '--host must be an IP literal or localhost.',
     });
-  if (!publicMode && !isLoopbackAddress(address))
+  if (!publicMode && !privateMode && !isLoopbackAddress(address))
     throw new AppError('INVALID_INPUT', 'Non-loopback bind without --public.', {
       userMessage:
-        'Local mode has no authentication for network users. Use a loopback --host or explicitly opt in with --public.',
+        'Local mode has no authentication for network users. Use a loopback --host or explicitly opt in with --public or --private.',
     });
   return address;
 }

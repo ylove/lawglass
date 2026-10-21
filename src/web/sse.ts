@@ -3,6 +3,15 @@
 // event is one JSON object carrying its own `type`.
 import type { ZodType } from 'zod';
 
+export const LOST = 'The connection to the server was lost. Please try again.';
+/** The server sends a heartbeat every 15 s, so 45 s of silence means three missed beats. */
+export const DEFAULT_IDLE_MS = 45_000;
+
+export interface SseOptions {
+  /** Abort if no bytes at all (events or heartbeat comments) arrive for this long. */
+  idleMs?: number;
+}
+
 export const CUT_OFF = 'The answer was cut off. Please try again.';
 
 export class ApiError extends Error {
@@ -37,7 +46,9 @@ export function* parseSseBlocks(
 export async function* readSseEvents<T>(
   response: Response,
   schema: ZodType<T>,
+  options: SseOptions = {},
 ): AsyncGenerator<T> {
+  const idleMs = options.idleMs ?? DEFAULT_IDLE_MS;
   if (!response.body) {
     throw new ApiError('BAD_RESPONSE', 'The server sent an empty response.');
   }
@@ -49,7 +60,7 @@ export async function* readSseEvents<T>(
   let heldCr = false;
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      const { done, value } = await readWithin(reader, idleMs);
       let text: string =
         (heldCr ? '\r' : '') + decoder.decode(value, { stream: !done });
       heldCr = !done && text.endsWith('\r');
@@ -73,7 +84,25 @@ export async function* readSseEvents<T>(
     }
   } finally {
     // Stops the download when the consumer stops early (cancelled request, unmounted view).
-    await reader.cancel().catch(() => undefined);
+    void reader.cancel().catch(() => undefined);
+  }
+}
+
+/** One read that gives up after `ms` of silence; every new chunk starts a fresh wait. */
+async function readWithin(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  ms: number,
+): Promise<{ done: boolean; value?: Uint8Array }> {
+  let handle: ReturnType<typeof setTimeout> | undefined;
+  const silence = new Promise<never>((_, reject) => {
+    handle = setTimeout(() => {
+      reject(new ApiError('STREAM_LOST', LOST));
+    }, ms);
+  });
+  try {
+    return await Promise.race([reader.read(), silence]);
+  } finally {
+    clearTimeout(handle);
   }
 }
 
