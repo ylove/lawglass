@@ -8,7 +8,6 @@
  */
 import { z } from 'zod';
 import {
-  AppError,
   type BillMetadata,
   type DocKind,
   type LlmProvider,
@@ -184,9 +183,9 @@ async function fillMetadata(
     extracted = ExtractedMetadata.parse(object);
   } catch (err) {
     if (opts.signal?.aborted) throw err;
-    const code = err instanceof AppError ? err.code : 'unexpected error';
+    // Reader-facing: the web UI shows this under the header, so no error codes.
     warnings.push(
-      `Metadata extraction failed (${code}); unstated fields left empty.`,
+      'Some details about this document could not be read automatically, so they are left blank.',
     );
     return { metadata: existing, warnings };
   }

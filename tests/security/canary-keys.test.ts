@@ -293,9 +293,7 @@ describe('web server: SSE and JSON bodies', () => {
             `/api/docs/${String(done?.doc?.docId)}`,
           );
           const detailText = await detail.text();
-          expect(detailText).toContain(
-            'Metadata extraction failed (PROVIDER_ERROR)',
-          );
+          expect(detailText).toContain('could not be read automatically');
           expectNoCanary(`${name}/${mode} doc detail`, detailText);
           expectNoCanary(`${name}/${mode} console`, captured.join('\n'));
         },
