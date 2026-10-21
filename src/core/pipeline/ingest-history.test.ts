@@ -226,7 +226,7 @@ test.each([
   'https://www.congress.gov/help',
   'https://www.congress.gov./help',
   'https://api.congress.gov/help',
-  `${page}/all-info`,
+  `${page}/all-info/extra`,
   `${page}/../9001`,
   'http://congress.gov/bill/118th-congress/house-bill/9001',
 ])('unmatched congress.gov URL makes zero requests: %s', async (input) => {
