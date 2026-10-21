@@ -119,6 +119,28 @@ function buildTree(text: string, budget: ParseBudget): El {
   return root;
 }
 
+/**
+ * Committee strikes describe edits to a bill, not removals from current law. Prune them
+ * before any text, metadata or ids are collected. Count each omitted subtree once, even
+ * when it contains more committee marks, so repeated definition walks cannot inflate it.
+ */
+function omitCommitteeDeletions(
+  root: El,
+  budget: ParseBudget,
+): { root: El | undefined; omittedPassages: number } {
+  let omittedPassages = 0;
+  const keep = (el: El): boolean => {
+    budget.check();
+    if (el.attrs.changed === 'deleted' || el.name === 'deleted-phrase') {
+      omittedPassages++;
+      return false;
+    }
+    el.kids = el.kids.filter((kid) => typeof kid === 'string' || keep(kid));
+    return true;
+  };
+  return { root: keep(root) ? root : undefined, omittedPassages };
+}
+
 // ---------------------------------------------------------------------------
 // Step 2: text and span helpers.
 // ---------------------------------------------------------------------------
@@ -142,6 +164,7 @@ const INLINE = new Set([
   'header-in-text',
   'enum-in-header',
   'inline-comment',
+  'added-phrase',
   'target',
   'bold',
   'italic',
@@ -360,12 +383,12 @@ function genericDialect(name: 'uslm' | 'akn' | 'generic'): Dialect {
 /** Where a congressional document keeps its operative text. */
 const BODY_NAMES = ['legis-body', 'resolution-body', 'amendment-body'];
 
-function findBody(root: El): El | undefined {
+function findBodies(root: El): El[] {
   for (const name of BODY_NAMES) {
-    const found = findAll(root, name)[0];
-    if (found) return found;
+    const bodies = findAll(root, name);
+    if (bodies.length > 0) return bodies;
   }
-  return undefined;
+  return [];
 }
 
 const BILL_ROOTS = new Set([
@@ -380,7 +403,7 @@ function detectDialect(root: El): Dialect | 'bill-no-body' {
   // Checked before `bill`: USLM bills use the same root name as congressional bill XML.
   if (/uslm/i.test(root.attrs.xmlns ?? '')) return genericDialect('uslm');
   if (BILL_ROOTS.has(root.name)) {
-    return findBody(root) ? BILL : 'bill-no-body';
+    return findBodies(root).length > 0 ? BILL : 'bill-no-body';
   }
   return genericDialect('generic');
 }
@@ -807,7 +830,19 @@ function sessionLabel(
 /** "119 S202 IS: Short Title" -> "Short Title" (the Dublin Core title carries a file prefix). */
 const DC_PREFIX = /^\s*(?:\d+\s+)?[A-Za-z]+\s*\d+\s+[A-Z]+:\s+/;
 
-function billMetadata(root: El): BillMetadata {
+/** The bill's own short title, excluding titles in quoted law being amended. */
+function bodyShortTitle(el: El): string | null {
+  if (SKIP.has(el.name) || QUOTED.has(el.name)) return null;
+  if (el.name === 'short-title') return plainText(el) || null;
+  for (const kid of el.kids) {
+    if (typeof kid === 'string') continue;
+    const title = bodyShortTitle(kid);
+    if (title) return title;
+  }
+  return null;
+}
+
+function billMetadata(root: El, committeePruned: boolean): BillMetadata {
   const form = findAll(root, 'form')[0];
   // The frozen metadata contract has no cosponsors field; keep sponsorship roles distinct.
   // findAll already returns sponsor elements in document order.
@@ -817,9 +852,18 @@ function billMetadata(root: El): BillMetadata {
     '',
   );
   const shortTitle = stripped === '' ? undefined : stripped;
+  // Front matter may still name the struck version. Only override its usual precedence
+  // after committee pruning, using the surviving bill rather than quoted existing law.
+  let reportedShortTitle: string | null = null;
+  if (committeePruned)
+    for (const body of findBodies(root)) {
+      reportedShortTitle = bodyShortTitle(body);
+      if (reportedShortTitle) break;
+    }
   return {
     // The short title users know the bill by; the long official title is the fallback.
-    title: shortTitle ?? firstText(form, 'official-title'),
+    title:
+      reportedShortTitle ?? shortTitle ?? firstText(form, 'official-title'),
     billNumber: firstText(form, 'legis-num'),
     jurisdiction: 'United States',
     session: sessionLabel(
@@ -866,10 +910,19 @@ export function parseXml(
   const budget = new ParseBudget(options);
   const bytes = typeof input === 'string' ? Buffer.from(input, 'utf8') : input;
   const text = typeof input === 'string' ? input : decodeBytes(bytes);
-  const root = buildTree(text, budget);
+  const { root, omittedPassages } = omitCommitteeDeletions(
+    buildTree(text, budget),
+    budget,
+  );
+  if (!root)
+    throw new AppError('PARSE_FAILED', 'The XML document contains no text.');
 
   const detected = detectDialect(root);
   const warnings: string[] = [];
+  if (omittedPassages > 0)
+    warnings.push(
+      `This is the version reported by committee. ${String(omittedPassages)} ${omittedPassages === 1 ? 'passage the committee struck is' : 'passages the committee struck are'} left out; the text shown is the bill as reported.`,
+    );
   let dialect: Dialect;
   if (detected === 'bill-no-body') {
     dialect = genericDialect('generic');
@@ -897,12 +950,23 @@ export function parseXml(
   };
   // Bills only have structure inside legis-body; elsewhere (form, metadata) is not body text.
   const isBill = dialect.name === 'bill';
-  const scope = isBill ? (findBody(root) ?? root) : root;
+  const scopes = isBill ? findBodies(root) : [root];
   let sections: Section[] = [];
   let top = 0;
   // Bills only: text that sits outside any level (a resolution's "Whereas" preamble, loose
   // body text) is kept as a `preamble` section instead of being dropped.
-  const front = new RunBuffer();
+  let front = new RunBuffer();
+  const flushFront = (): void => {
+    const spans = front.toSpans();
+    if (spans.length === 0) return;
+    sections.push({
+      id: uniqueId(state, 'preamble', 'preamble'),
+      level: 1,
+      spans,
+      children: [],
+    });
+    front = new RunBuffer();
+  };
   const holdsLevel = (el: El): boolean =>
     el.kids.some(
       (k) =>
@@ -915,29 +979,29 @@ export function parseXml(
     budget.check();
     for (const kid of el.kids) {
       if (typeof kid === 'string' || SKIP.has(kid.name)) continue;
-      if (dialect.isLevel(kid)) sections.push(walkLevel(kid, [], state, ++top));
-      else if (!isBill || holdsLevel(kid)) collect(kid);
+      if (dialect.isLevel(kid)) {
+        // Loose instructions belong immediately before their provision, even across bodies.
+        flushFront();
+        sections.push(walkLevel(kid, [], state, ++top));
+      } else if (!isBill || holdsLevel(kid)) collect(kid);
       else collectInline(kid, front, 'unchanged', [], state, false);
     }
   };
-  if (isBill && scope !== root)
+  if (isBill)
     for (const kid of root.kids)
       if (typeof kid !== 'string' && kid.name === 'preamble')
         collectInline(kid, front, 'unchanged', [], state, false);
-  if (dialect.isLevel(scope) && scope !== root) {
-    sections.push(walkLevel(scope, [], state, ++top));
-  } else {
-    collect(scope);
+  // Visit every body independently: a pruned original must not hide its substitute, and
+  // ordinary amendment instructions must not be gathered ahead of earlier bodies.
+  for (const scope of scopes) {
+    if (dialect.isLevel(scope) && scope !== root) {
+      flushFront();
+      sections.push(walkLevel(scope, [], state, ++top));
+    } else {
+      collect(scope);
+    }
+    flushFront();
   }
-
-  const frontSpans = front.toSpans();
-  if (frontSpans.length > 0)
-    sections.unshift({
-      id: uniqueId(state, 'preamble', 'preamble'),
-      level: 1,
-      spans: frontSpans,
-      children: [],
-    });
 
   if (sections.length === 0) {
     // No recognizable structure: keep the text so the document is still searchable.
@@ -959,7 +1023,9 @@ export function parseXml(
     fetchedAt: options.fetchedAt,
     format: 'xml',
     metadata:
-      dialect.name === 'bill' ? billMetadata(root) : genericMetadata(root),
+      dialect.name === 'bill'
+        ? billMetadata(root, omittedPassages > 0)
+        : genericMetadata(root),
     sections,
     definitions: state.definitions,
     externalRefs: [...state.refs.values()],
