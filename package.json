@@ -33,6 +33,7 @@
     "build": "tsup && vite build",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "brand:assets": "tsx scripts/brand-assets.ts",
     "history:canary": "tsx scripts/history-canary.ts",
     "fixtures:fetch": "tsx scripts/fetch-fixtures.ts",
     "eval:smoke": "tsx scripts/eval-smoke.ts",
