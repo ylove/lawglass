@@ -10,7 +10,7 @@ import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
 import packageJson from '../../package.json' with { type: 'json' };
 import type { CliRuntime } from '../cli/runtime.js';
-import { BRAND } from '../core/brand.js';
+import { BRAND, envVar } from '../core/brand.js';
 import {
   AppError,
   AskRequest,
@@ -36,7 +36,13 @@ import { securityHeaders } from './security-headers.js';
 import { staticAssets } from './static.js';
 import { noopTurnstile, type TurnstileVerifier } from './turnstile.js';
 import { isLoopbackHost } from './bind.js';
-import { createSessionToken, localSession } from './session.js';
+import {
+  checkIngestFetchHost,
+  checkIngestHost,
+  ingestHosts,
+} from './ingest-hosts.js';
+import { createLogger, type LogWriter } from './log.js';
+import { createSessionToken, localSession, readAccessKey } from './session.js';
 
 export interface PublicLimits {
   questionsPerHour: number;
@@ -56,6 +62,13 @@ export const DEFAULT_PUBLIC_LIMITS: Omit<PublicLimits, 'maxDocs'> = {
 
 export interface AppOptions {
   publicMode?: boolean;
+  privateMode?: boolean;
+  accessKey?: string;
+  publicOrigin?: string;
+  ingestHosts?: ReadonlySet<string>;
+  ingestDeadlineMs?: number;
+  summaryWaitMs?: number;
+  logWriter?: LogWriter;
   /** Directory holding the built web UI (dist/web). Omit to serve the API only. */
   webRoot?: string;
   limits?: Partial<PublicLimits>;
@@ -64,8 +77,8 @@ export interface AppOptions {
   heartbeatMs?: number;
   /** Override how the client's address is found (tests, unusual proxies). */
   clientIp?: (c: Context) => string;
-  /** Read the client address from X-Forwarded-For. Only enable behind a proxy you control. */
-  trustProxy?: boolean;
+  /** Number of trusted proxies, counted from the right of X-Forwarded-For. */
+  trustProxyHops?: number;
   /** Reject requests whose Host is not loopback (DNS-rebinding defence). Default: not public. */
   localOnly?: boolean;
   /** Launch token; generated when omitted. Ignored in public mode. */
@@ -99,6 +112,16 @@ function invalid(userMessage: string): AppError {
 
 export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   const publicMode = options.publicMode ?? false;
+  const privateMode = options.privateMode ?? false;
+  if (privateMode && publicMode)
+    throw invalid('--private and --public cannot be used together.');
+  const hosted = publicMode || privateMode;
+  const hosts = options.ingestHosts ?? ingestHosts();
+  const hops = options.trustProxyHops ?? 0;
+  if (!Number.isSafeInteger(hops) || hops < 0)
+    throw invalid(
+      '--trust-proxy must be a whole number of hops, 0 or greater.',
+    );
   const limits: PublicLimits = {
     ...DEFAULT_PUBLIC_LIMITS,
     maxDocs: runtime.maxDocs,
@@ -118,11 +141,12 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   const clientIp =
     options.clientIp ??
     ((c: Context): string => {
-      if (options.trustProxy) {
-        const forwarded = c.req
-          .header('x-forwarded-for')
-          ?.split(',')[0]
-          ?.trim();
+      if (hops > 0) {
+        const entries = c.req.header('x-forwarded-for')?.split(',');
+        const forwarded =
+          entries && entries.length >= hops
+            ? entries[entries.length - hops]?.trim()
+            : undefined;
         if (forwarded) return forwarded;
       }
       try {
@@ -135,11 +159,14 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   const app = new Hono();
 
   // First, so its headers also land on responses that later middleware returns early.
-  app.use('*', securityHeaders({ publicMode }));
+  app.use('*', securityHeaders({ publicMode, privateMode }));
+
+  const log = createLogger(options.logWriter, now);
+  app.use('*', log.middleware);
 
   app.use('*', async (c, next) => {
     const host = c.req.header('host') ?? new URL(c.req.url).host;
-    if ((options.localOnly ?? !publicMode) && !isLoopbackHost(host))
+    if ((options.localOnly ?? !hosted) && !isLoopbackHost(host))
       return c.json(
         { error: { code: 'INVALID_INPUT', message: 'Unexpected host.' } },
         403,
@@ -196,8 +223,25 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     await next();
   });
 
-  if (!publicMode)
-    app.use('*', localSession(options.sessionToken ?? createSessionToken()));
+  if (!publicMode) {
+    const token = privateMode
+      ? readAccessKey(
+          options.accessKey === undefined
+            ? process.env
+            : { [envVar('ACCESS_KEY')]: options.accessKey },
+        )
+      : (options.sessionToken ?? createSessionToken());
+    const publicOrigin =
+      options.publicOrigin ?? process.env[envVar('PUBLIC_ORIGIN')];
+    app.use(
+      '*',
+      localSession(token, {
+        privateMode,
+        ...(options.webRoot ? { webRoot: options.webRoot } : {}),
+        ...(publicOrigin ? { publicOrigin } : {}),
+      }),
+    );
+  }
 
   const limitPostBody: MiddlewareHandler = bodyLimit({
     maxSize: 16 * 1024,
@@ -271,13 +315,25 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     return c.json(await buildDocDetail(runtime, DocSummary.parse(entry), doc));
   });
 
-  const summary = createSummaryService(runtime, { publicMode, now });
+  const summary = createSummaryService(runtime, {
+    publicMode,
+    now,
+    waitMs: options.summaryWaitMs,
+  });
 
   // Cache-only in public mode and never rate limited: a public visitor cannot start a model
   // call here, so there is nothing to meter.
   app.get('/api/docs/:docId/summary', async (c) => {
     const entry = await entryFor(c.req.param('docId'));
-    return c.json(await summary.get(entry.docId));
+    return c.json(
+      await summary.get(entry.docId, {
+        wait: c.req.method !== 'HEAD',
+        signal: c.req.raw.signal,
+        onError: (error, ms) => {
+          log.error(c, error, ms);
+        },
+      }),
+    );
   });
 
   app.delete('/api/docs/:docId', async (c) => {
@@ -313,6 +369,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     errorEvent: (error: ErrorPayload) => E,
     /** Called once the stream is over, whatever the outcome. */
     release: () => void = () => undefined,
+    deadlineMs?: number,
   ): Response {
     c.header('x-accel-buffering', 'no');
     return streamSSE(c, async (stream) => {
@@ -324,24 +381,68 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       c.req.raw.signal.addEventListener('abort', abort);
       // Parsing, document lookup and public checks may finish after the client disconnects.
       if (c.req.raw.signal.aborted || stream.aborted) abort();
+      const started = now();
+      const deadline = new AbortController();
+      const deadlineError = new AppError(
+        'TOO_LARGE',
+        'Ingest deadline exceeded.',
+        {
+          userMessage:
+            'This bill took too long to process. Try a link to a specific version, or try again later.',
+        },
+      );
+      const timer =
+        deadlineMs === undefined
+          ? undefined
+          : setTimeout(() => {
+              // Indexing already in progress finishes in the background until #221
+              // adds cancellation to the backend contract.
+              deadline.abort(deadlineError);
+            }, deadlineMs);
+      const signal = AbortSignal.any([controller.signal, deadline.signal]);
       const heartbeat = setInterval(() => {
         stream.write(': ping\n\n').catch(() => undefined);
       }, heartbeatMs);
       let tail: Promise<unknown> = Promise.resolve();
       // Events are queued so concurrent callbacks cannot interleave their frames.
+      let accepting = true;
       const emit = (event: E): void => {
+        if (!accepting || controller.signal.aborted) return;
         tail = tail
           .then(() => stream.writeSSE({ data: JSON.stringify(event) }))
           .catch(() => undefined);
       };
       try {
         controller.signal.throwIfAborted();
-        await run(emit, controller.signal);
+        // Race the signal as well: an injected or stuck dependency may ignore cancellation.
+        await new Promise<void>((resolve, reject) => {
+          const aborted = (): void => {
+            const reason: unknown = signal.reason;
+            reject(
+              reason instanceof Error ? reason : new Error('Request aborted.'),
+            );
+          };
+          signal.addEventListener('abort', aborted, { once: true });
+          if (signal.aborted) aborted();
+          else
+            run(emit, signal)
+              .then(resolve, reject)
+              .finally(() => {
+                signal.removeEventListener('abort', aborted);
+              })
+              .catch(() => undefined);
+        });
       } catch (error) {
         // Nobody is listening after an abort, so there is nobody to tell.
-        if (!controller.signal.aborted) emit(errorEvent(toErrorPayload(error)));
+        if (!controller.signal.aborted) {
+          const failure = deadline.signal.aborted ? deadlineError : error;
+          log.error(c, failure, now() - started);
+          emit(errorEvent(toErrorPayload(failure)));
+        }
       } finally {
+        accepting = false;
         clearInterval(heartbeat);
+        clearTimeout(timer);
         c.req.raw.signal.removeEventListener('abort', abort);
         release();
         await tail;
@@ -387,6 +488,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
         userMessage:
           'Enter a full web address, starting with http:// or https://.',
       });
+    if (hosted) checkIngestHost(body.url, hosts);
     await guardPublic(c, ingests, body.turnstileToken);
     if (
       publicMode &&
@@ -397,6 +499,16 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     // Resource policy reaches both the default parser and runtime-injected parsers.
     const parsePdf = runtime.parsePdf ?? defaultParsePdf;
     ingestsInFlight++;
+    const started = now();
+    let finished = false;
+    const sourceHost = new URL(body.url).hostname;
+    log.event(c, {
+      level: 'info',
+      event: 'ingest_start',
+      status: 200,
+      host: sourceHost,
+      ms: 0,
+    });
     return sse<IngestEvent>(
       c,
       async (emit, signal) => {
@@ -407,7 +519,21 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
               backend: runtime.backend,
               provider: runtime.extractProvider,
               registry: runtime.registry,
-              fetcher: runtime.fetcher,
+              fetcher: hosted
+                ? async (url, options) => {
+                    const validateUrl = (url: URL): void => {
+                      checkIngestFetchHost(url, hosts);
+                      options?.validateUrl?.(url);
+                    };
+                    validateUrl(new URL(url));
+                    const result = await runtime.fetcher(url, {
+                      ...options,
+                      validateUrl,
+                    });
+                    validateUrl(new URL(result.finalUrl));
+                    return result;
+                  }
+                : runtime.fetcher,
               now: runtime.now,
               // Public servers never evict: a visitor must not push out someone else's document.
               maxDocs: publicMode ? limits.maxDocs : runtime.maxDocs,
@@ -425,6 +551,20 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
               },
             },
           );
+          signal.throwIfAborted();
+          finished = true;
+          log.event(c, {
+            level: 'info',
+            event: 'ingest_finish',
+            status: 200,
+            docId: result.doc.docId,
+            host: sourceHost,
+            chunks: Object.values(result.stats.chunkCountsByType).reduce(
+              (sum, count) => sum + count,
+              0,
+            ),
+            ms: now() - started,
+          });
           emit({ type: 'done', doc: result.doc, stats: result.stats });
         } catch (error) {
           if (isAppError(error) && error.code === 'WRAPPER_PAGE') {
@@ -444,7 +584,16 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       (error) => ({ type: 'error', error }),
       () => {
         ingestsInFlight--;
+        if (!finished)
+          log.event(c, {
+            level: 'info',
+            event: 'ingest_finish',
+            status: 200,
+            host: sourceHost,
+            ms: now() - started,
+          });
       },
+      hosted ? (options.ingestDeadlineMs ?? 15 * 60 * 1000) : undefined,
     );
   });
 

@@ -446,3 +446,67 @@ describe('launch boundary', () => {
     await response.arrayBuffer();
   });
 });
+
+test('private launcher prints a placeholder, never a key or tokenized link, and never opens', async () => {
+  const accessKey = 'k'.repeat(40);
+  const start = vi.fn(() =>
+    Promise.resolve({
+      url: 'http://0.0.0.0:8080/?k=should-never-print',
+      port: 8080,
+      close: () => Promise.resolve(),
+    }),
+  );
+  const open = vi.fn();
+  let output = '';
+  await createLauncher({
+    start,
+    open,
+    env: {
+      [envVar('ACCESS_KEY')]: accessKey,
+      [envVar('PUBLIC_ORIGIN')]: 'https://preview.example',
+    },
+    write: (text) => {
+      output += text;
+    },
+    untilStopped: () => Promise.resolve(),
+  })(env.runtime, {
+    publicMode: false,
+    privateMode: true,
+    host: '0.0.0.0',
+    trustProxyHops: 1,
+  });
+  expect(output).toBe(
+    '\nPrivate mode on http://0.0.0.0:8080. Share https://preview.example/?k=<access key> with invited people.\n',
+  );
+  expect(output).not.toContain(accessKey);
+  expect(output).not.toContain('should-never-print');
+  expect(open).not.toHaveBeenCalled();
+  expect(start).toHaveBeenCalledWith(
+    env.runtime,
+    expect.objectContaining({
+      privateMode: true,
+      accessKey,
+      trustProxyHops: 1,
+    }),
+  );
+});
+
+test('private server permits network binds without generating a launch token', async () => {
+  const accessKey = 'x'.repeat(32);
+  server = await startServer(env.runtime, {
+    privateMode: true,
+    accessKey,
+    host: '0.0.0.0',
+    port: 0,
+  });
+  expect(new URL(server.url).search).toBe('');
+  const url = `http://127.0.0.1:${String(server.port)}`;
+  const response = await fetch(url);
+  expect(await response.text()).toContain('This is a private preview.');
+  const exchange = await fetch(`${url}/?k=${accessKey}`, {
+    redirect: 'manual',
+  });
+  expect(exchange.headers.get('location')).toBe('/');
+  expect(exchange.headers.get('set-cookie')).toContain('Secure');
+  await exchange.arrayBuffer();
+});

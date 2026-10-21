@@ -20,7 +20,11 @@ import type { ChipRunner } from '../core/pipeline/index.js';
 import { readSseEvents } from '../web/sse.js';
 import { createSessionTestApp as createApp } from '../../tests/support/session-app.js';
 import type { AppOptions } from './app.js';
-import { FAILED_RETRY_MS, SUMMARY_CACHE_VERSION } from './summary.js';
+import {
+  FAILED_RETRY_MS,
+  SUMMARY_CACHE_VERSION,
+  waitForSummary,
+} from './summary.js';
 import { AnswerCache } from '../core/answer-cache.js';
 import { SUMMARY_PROMPT_VERSION } from '../core/chip-summary.js';
 
@@ -185,7 +189,7 @@ describe('GET /api/docs/:docId/summary', () => {
     ]);
     expect([x.status, y.status, (z as SummaryResponse).status]).toEqual([
       'pending',
-      'pending',
+      'cached',
       'pending',
     ]);
     await settled(a, docId);
@@ -374,5 +378,175 @@ describe('public mode', () => {
     expect(await summary(app({ publicMode: true }), docId)).toEqual({
       status: 'disabled',
     });
+  });
+});
+
+describe('summary long-poll', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  test('220 expired polls retain no waiters, timers or abort listeners while completion is stuck', async () => {
+    vi.useFakeTimers();
+    // The same set stays attached to a generation that never delivers completion.
+    const waiters = new Set<() => void>();
+    const controller = new AbortController();
+    const added = vi.spyOn(controller.signal, 'addEventListener');
+    const removed = vi.spyOn(controller.signal, 'removeEventListener');
+    for (let i = 0; i < 220; i++) {
+      const poll = waitForSummary(waiters, 1000, controller.signal);
+      expect(waiters.size).toBe(1);
+      expect(vi.getTimerCount()).toBe(1);
+      await vi.advanceTimersByTimeAsync(1000);
+      await poll;
+      expect(waiters.size).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(removed).toHaveBeenLastCalledWith(
+        'abort',
+        added.mock.calls[i]?.[1],
+      );
+    }
+    expect(removed).toHaveBeenCalledTimes(220);
+  });
+
+  test("disconnect removes only that client's waiter, timer and abort listener", async () => {
+    vi.useFakeTimers();
+    const waiters = new Set<() => void>();
+    const controller = new AbortController();
+    const added = vi.spyOn(controller.signal, 'addEventListener');
+    const removed = vi.spyOn(controller.signal, 'removeEventListener');
+    const disconnected = waitForSummary(waiters, 20000, controller.signal);
+    const other = waitForSummary(waiters, 20000);
+    expect(waiters.size).toBe(2);
+    expect(vi.getTimerCount()).toBe(2);
+    controller.abort();
+    await disconnected;
+    expect(waiters.size).toBe(1);
+    expect(vi.getTimerCount()).toBe(1);
+    expect(removed).toHaveBeenCalledExactlyOnceWith(
+      'abort',
+      added.mock.calls[0]?.[1],
+    );
+    // Completion still wakes the connected client and removes its timer.
+    for (const finish of waiters) finish();
+    await other;
+    expect(waiters.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test('an already disconnected client adds no waiter or timer', async () => {
+    vi.useFakeTimers();
+    const waiters = new Set<() => void>();
+    await waitForSummary(waiters, 20000, AbortSignal.abort());
+    expect(waiters.size).toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  async function heldSummary(waitMs?: number) {
+    const { createSummaryService } = await import('./summary.js');
+    const a = app();
+    const docId = await ingestDoc(a);
+    const provider = countingProvider(env.provider);
+    Object.assign(env.runtime, { answerProvider: provider });
+    provider.state.hold();
+    const service = createSummaryService(env.runtime, {
+      publicMode: false,
+      ...(waitMs === undefined ? {} : { waitMs }),
+    });
+    expect(await service.get(docId)).toEqual({ status: 'pending' });
+    await vi.waitFor(() => {
+      expect(provider.state.calls).toBeGreaterThan(0);
+    });
+    return { provider, service, docId };
+  }
+
+  test('an existing generation finishing within the window returns cached and clears its timer', async () => {
+    const { provider, service, docId } = await heldSummary();
+    vi.useFakeTimers();
+    const pending = service.get(docId);
+    await vi.waitFor(() => {
+      expect(vi.getTimerCount()).toBe(1);
+    });
+    provider.state.release();
+    const result = await pending;
+    expect(result.status).toBe('cached');
+    expect(result.answer?.text).toBeTruthy();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test.each([undefined, 1000])(
+    'waits for the configured window (%s) then returns pending without starting another run',
+    async (waitMs) => {
+      const { provider, service, docId } = await heldSummary(waitMs);
+      vi.useFakeTimers();
+      let finished = false;
+      const pending = service.get(docId).then((result) => {
+        finished = true;
+        return result;
+      });
+      await vi.waitFor(() => {
+        expect(vi.getTimerCount()).toBe(1);
+      });
+      const calls = provider.state.calls;
+      await vi.advanceTimersByTimeAsync((waitMs ?? 20000) - 1);
+      expect(finished).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(await pending).toEqual({ status: 'pending' });
+      expect(provider.state.calls).toBe(calls);
+      expect(vi.getTimerCount()).toBe(0);
+      vi.useRealTimers();
+      provider.state.release();
+      await vi.waitFor(async () => {
+        expect((await service.get(docId)).status).toBe('cached');
+      });
+    },
+  );
+
+  test('HEAD never waits for an existing generation', async () => {
+    const provider = countingProvider(env.provider);
+    Object.assign(env.runtime, { answerProvider: provider });
+    const a = app();
+    const docId = await ingestDoc(a);
+    provider.state.hold();
+    await summary(a, docId);
+    await vi.waitFor(() => {
+      expect(provider.state.calls).toBeGreaterThan(0);
+    });
+    const response = await a.request(`/api/docs/${docId}/summary`, {
+      method: 'HEAD',
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toBe('');
+    provider.state.release();
+    await settled(a, docId);
+  });
+
+  test('the HTTP request abort signal clears the poll timer while generation remains stuck', async () => {
+    const provider = countingProvider(env.provider);
+    Object.assign(env.runtime, { answerProvider: provider });
+    const a = app();
+    const docId = await ingestDoc(a);
+    provider.state.hold();
+    await summary(a, docId);
+    await vi.waitFor(() => {
+      expect(provider.state.calls).toBeGreaterThan(0);
+    });
+    const calls = provider.state.calls;
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const pending = a.request(`/api/docs/${docId}/summary`, {
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => {
+      expect(vi.getTimerCount()).toBe(1);
+    });
+    controller.abort();
+    expect(await (await pending).json()).toEqual({ status: 'pending' });
+    expect(vi.getTimerCount()).toBe(0);
+    expect(provider.state.calls).toBe(calls);
+    vi.useRealTimers();
+    provider.state.release();
+    await settled(a, docId);
   });
 });

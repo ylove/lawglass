@@ -1,0 +1,101 @@
+import type { Context, MiddlewareHandler } from 'hono';
+import { routePath } from 'hono/route';
+import { isAppError } from '../core/model/index.js';
+
+export type LogWriter = (line: string) => void;
+interface EventFields {
+  level: 'info' | 'warn' | 'error';
+  event: 'refusal' | 'internal_error' | 'ingest_start' | 'ingest_finish';
+  status: number;
+  code?: string;
+  ms: number;
+  errorName?: string;
+  docId?: string;
+  host?: string;
+  chunks?: number;
+}
+
+/** Only explicit fields cross this boundary. Error messages and request URLs never do. */
+export function createLogger(
+  write: LogWriter = (line) => {
+    process.stderr.write(line);
+  },
+  now: () => number = Date.now,
+) {
+  function event(c: Context, fields: EventFields): void {
+    write(
+      JSON.stringify({
+        t: new Date(now()).toISOString(),
+        ...fields,
+        route: routePath(c) || '*',
+        method: c.req.method,
+      }) + '\n',
+    );
+  }
+  function error(c: Context, failure: unknown, ms: number): void {
+    if (isAppError(failure)) {
+      event(c, {
+        level: 'warn',
+        event: 'refusal',
+        status: c.res.status,
+        code: failure.code,
+        ms,
+      });
+    } else {
+      // Error.name is mutable too; do not let a provider put credentials in that field.
+      const name =
+        failure instanceof TypeError
+          ? 'TypeError'
+          : failure instanceof RangeError
+            ? 'RangeError'
+            : 'Error';
+      event(c, {
+        level: 'error',
+        event: 'internal_error',
+        status: c.res.status,
+        code: 'INTERNAL',
+        errorName: name,
+        ms,
+      });
+    }
+  }
+  const middleware: MiddlewareHandler = async (c, next) => {
+    const start = now();
+    await next();
+    if (c.error) {
+      error(c, c.error, now() - start);
+      return;
+    }
+    if (
+      [401, 403, 413, 415, 429].includes(c.res.status) ||
+      c.res.status >= 400
+    ) {
+      // Read only server-generated JSON error codes. No message/body is sent to the writer.
+      const payload: unknown = await c.res
+        .clone()
+        .json()
+        .catch(() => undefined);
+      const code = safeCode(payload);
+      event(c, {
+        level: 'warn',
+        event: 'refusal',
+        status: c.res.status,
+        ...(code ? { code } : {}),
+        ms: now() - start,
+      });
+    }
+  };
+  return { event, error, middleware };
+}
+
+function safeCode(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object' || !('error' in payload))
+    return undefined;
+  const error = payload.error;
+  if (!error || typeof error !== 'object' || !('code' in error))
+    return undefined;
+  // Codes originate in our HTTP layer, never in the submitted request.
+  return typeof error.code === 'string' && /^[A-Z_]{1,40}$/.test(error.code)
+    ? error.code
+    : undefined;
+}
