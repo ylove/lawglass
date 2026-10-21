@@ -1,5 +1,6 @@
 // Typed client for the HTTP API described in src/core/model/api.ts. Every response and every
 // stream event is validated with the shared zod schemas before the UI sees it.
+/// <reference types="vite/client" />
 import { z } from 'zod';
 import {
   AskEvent,
@@ -238,14 +239,20 @@ async function errorFrom(res: Response): Promise<ApiError> {
   );
 }
 
-/** Mock mode: `?mock=1` in the URL, or VITE_MOCK_API at build/dev time. */
+/**
+ * Mock mode: `?mock=1` in the URL, or VITE_MOCK_API at dev time. Dev builds only: a production
+ * bundle must never let a visitor swap the real server for the scripted mock.
+ */
 export function selectApi(search: string, envFlag?: string): ApiClient {
-  const mock =
-    new URLSearchParams(search).get('mock') === '1' ||
-    (envFlag !== undefined && envFlag !== '' && envFlag !== '0');
-  return mock
-    ? createMockApi({ publicMode: isPublicMock(search) })
-    : createHttpApi();
+  // Checked inline (not via a parameter) so the bundler folds it to `false` in production and
+  // drops the mock API from the bundle entirely.
+  if (import.meta.env.DEV) {
+    const mock =
+      new URLSearchParams(search).get('mock') === '1' ||
+      (envFlag !== undefined && envFlag !== '' && envFlag !== '0');
+    if (mock) return createMockApi({ publicMode: isPublicMock(search) });
+  }
+  return createHttpApi();
 }
 
 function isPublicMock(search: string): boolean {

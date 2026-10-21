@@ -274,6 +274,16 @@ describe('selectApi', () => {
     expect(selectApi('?mock=0').mock).toBeUndefined();
   });
 
+  test('production builds ignore ?mock=1 and the env flag', () => {
+    vi.stubEnv('DEV', false);
+    try {
+      expect(selectApi('?mock=1').mock).toBeUndefined();
+      expect(selectApi('', '1').mock).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   test('?public=1 makes the mock a public server', async () => {
     const cfg = await selectApi('?mock=1&public=1').getConfig();
     expect(cfg.publicMode).toBe(true);
