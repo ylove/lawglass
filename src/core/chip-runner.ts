@@ -42,6 +42,10 @@ import {
   retrieve,
 } from './retrieve/index.js';
 
+/** Appended to a what-changes answer built from retrieved instructions (see runChip). */
+export const INSTRUCTIONS_NOTE =
+  'This covers the changes in the passages that matched best. The bill may make other changes too; ask about a specific section to see it.';
+
 /** `definitions` lists at most this many terms; the rest are counted, not shown. */
 export const MAX_LISTED_DEFINITIONS = 25;
 
@@ -84,12 +88,18 @@ export async function runChip(
         ) {
           return runChangesChip(chip, docId, deps, options);
         }
-        return runRetrieveChip(
+        const run = await runRetrieveChip(
           WHAT_CHANGES_BY_INSTRUCTION,
           docId,
           deps,
           options,
         );
+        // Retrieval shows the model the best-matching instructions, not all of them, and a
+        // long bill can have hundreds. Say so rather than let the list read as complete.
+        return {
+          ...run,
+          answer: appendNote(run.answer, INSTRUCTIONS_NOTE, options.onToken),
+        };
       }
       return runRetrieveChip(chip, docId, deps, options);
   }
@@ -162,7 +172,7 @@ async function runRetrieveChip(
   let backendUsage: BackendUsage = ZERO_USAGE;
   const perQuery: SearchHit[][] = [];
 
-  // Queries run one after another: they are few (1-3) and sequential keeps backend load flat.
+  // Queries run one after another: they are few (at most six) and sequential keeps backend load flat.
   // Definitions are injected once at the end, for the final list, not once per query.
   for (const query of chip.queries) {
     const context = await retrieve(deps.backend, {

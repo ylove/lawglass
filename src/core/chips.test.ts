@@ -7,7 +7,11 @@ import {
   getChip,
   runChip,
 } from './chips.js';
-import { MAX_LISTED_DEFINITIONS, interleave } from './chip-runner.js';
+import {
+  INSTRUCTIONS_NOTE,
+  MAX_LISTED_DEFINITIONS,
+  interleave,
+} from './chip-runner.js';
 import type { ChipDeps } from './chip-types.js';
 import {
   BillMetadata,
@@ -436,9 +440,14 @@ describe('what-changes without amendment marks', () => {
     expect(
       retrieveSpy.mock.calls.map((c) => (c[1] as { query: string }).query),
     ).toEqual(WHAT_CHANGES_BY_INSTRUCTION.queries);
-    expect(optionsOf(0)).toMatchObject({ mode: 'hybrid', sparseWeight: 0.75 });
+    expect(optionsOf(0)).toMatchObject({
+      mode: 'hybrid',
+      sparseWeight: 0.75,
+      includeDeleted: false,
+    });
     expect(promptOf()).toContain("the bill's instructions for changing");
     expect(run.mode).toBe('hybrid');
+    expect(run.answer.text.endsWith(INSTRUCTIONS_NOTE)).toBe(true);
   });
 
   it('still uses the marks path (no retrieval) when the document has marks', async () => {

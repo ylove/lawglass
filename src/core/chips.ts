@@ -92,9 +92,15 @@ export const WHAT_CHANGES_BY_INSTRUCTION = defineChip({
     'is amended to read as follows',
     'is amended by redesignating',
   ],
-  retrieval: { mode: 'hybrid', sparseWeight: 0.75, topK: 10 },
+  // "amended" and "repealed" would otherwise opt in to struck text (see retrieve.ts).
+  retrieval: {
+    mode: 'hybrid',
+    sparseWeight: 0.75,
+    topK: 10,
+    includeDeleted: false,
+  },
   answerInstruction:
-    'The excerpts are the bill\'s instructions for changing existing law. Group your answer by the bill\'s section, in the order given. For each change, name the law being changed (the Act or U.S. Code section the excerpt names) and say in plain words what the change does: what wording is removed, what is added, and what new rule results. Quoted text after "striking" is old wording being removed; never describe it as something the law will now say. If an excerpt creates a new rule or program instead of amending a law, say that. Do not guess at existing-law wording the excerpts do not quote.',
+    'The excerpts are the bill\'s instructions for changing existing law. Group your answer by the bill\'s section, ordered by section number. For each change, name the law being changed (the Act, or the section of the United States Code, that the excerpt names) and say in plain words what the change does: what wording is removed, what is added, and what new rule results. Quoted text after "striking" is old wording being removed; never describe it as something the law will now say. If an excerpt creates a new rule or program instead of amending a law, say that. Do not guess at existing-law wording the excerpts do not quote.',
 });
 
 /**
