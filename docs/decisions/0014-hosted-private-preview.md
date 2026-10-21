@@ -25,7 +25,7 @@ Serverless functions (Vercel's, for example) keep no files between requests, sto
 5. **Local backend, models in the image.** The embedding and reranking models are pinned in `models.lock.json` and baked into the image, so there is no Pinecone key in the cloud and no download at startup.
 6. **State in a tarball, not a network filesystem.** The app keeps working on the instance's own filesystem. An entrypoint script restores `~/.lawglass` from a tarball in a private Cloud Storage bucket at boot. It saves a new tarball when the state has changed and gone quiet, and again on shutdown. Mounting the bucket as the live directory would put the registry's lock files and permission checks on a filesystem without POSIX locking.
 7. **Secrets in Secret Manager.** The Anthropic key and the access key reach the container only as environment variables at runtime. The image, the repository and CI never see them. The service account can read those two secrets and write one bucket, nothing else.
-8. **Builds from committed files only.** `deploy/cloud-run/deploy.sh` builds from `git archive` of a tag, so nothing local can enter the image.
+8. **Builds from committed files only, without Cloud Build.** `deploy/cloud-run/deploy.sh` builds from `git archive` of a tag, so nothing local can enter the image. It builds with Docker on the operator's machine and pushes to Artifact Registry, which keeps a deploy free of build charges and the registry near its free 0.5 GB (a cleanup policy keeps the two newest images).
 
 ## Consequences
 

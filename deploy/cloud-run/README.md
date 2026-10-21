@@ -23,10 +23,17 @@ gcloud projects create PROJECT_ID
 gcloud billing projects link PROJECT_ID --billing-account=BILLING_ACCOUNT_ID
 gcloud config set project PROJECT_ID
 gcloud services enable run.googleapis.com artifactregistry.googleapis.com \
-  cloudbuild.googleapis.com secretmanager.googleapis.com storage.googleapis.com
+  secretmanager.googleapis.com storage.googleapis.com
 
-# Image registry
+# Image registry. Keep the two newest images and delete older ones, to stay near the free
+# 0.5 GB of storage.
 gcloud artifacts repositories create lawglass --repository-format=docker --location=us-east1
+cat > cleanup.json <<'JSON'
+[{"name": "keep-latest-two", "action": {"type": "Keep"}, "mostRecentVersions": {"keepCount": 2}},
+ {"name": "delete-older", "action": {"type": "Delete"}, "condition": {"tagState": "any", "olderThan": "1d"}}]
+JSON
+gcloud artifacts repositories set-cleanup-policies lawglass --location=us-east1 \
+  --policy=cleanup.json --no-dry-run
 
 # Private, versioned state bucket. Keep the last three saves.
 gcloud storage buckets create gs://BUCKET --location=us-east1 \
@@ -65,7 +72,7 @@ Add a budget alert under Billing, then Budgets & alerts, for example $5 with ale
 PROJECT_ID=PROJECT_ID BUCKET=BUCKET deploy/cloud-run/deploy.sh v1.0.0
 ```
 
-The script exports the tag with `git archive`, builds the image with Cloud Build, fills in `service.yaml`, deploys it and allows unauthenticated requests (the app checks invites itself). It prints the `run.app` URL.
+The script exports the tag with `git archive`, builds the image locally with Docker for `linux/amd64` (on Apple silicon this runs under emulation and takes a few minutes), pushes it to Artifact Registry with a short-lived token, fills in `service.yaml`, deploys it and allows unauthenticated requests (the app checks invites itself). It prints the `run.app` URL. Cloud Build is not used, so a deploy adds no build charges.
 
 ## Custom domain
 

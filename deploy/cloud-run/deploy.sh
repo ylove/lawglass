@@ -1,6 +1,8 @@
 #!/bin/sh
 # Builds the image from a clean export of a git ref and deploys it to Cloud Run.
-# Only committed files reach Cloud Build, so nothing local (.env, downloads, caches) can leak in.
+# Only committed files reach the build, so nothing local (.env, downloads, caches) can leak in.
+# The image is built here with Docker for linux/amd64 and pushed to Artifact Registry; Cloud
+# Build is not used, so a deploy adds no build charges. Needs Docker with buildx.
 #
 # Usage: PROJECT_ID=my-project BUCKET=my-project-state deploy/cloud-run/deploy.sh v1.0.0
 # Optional: REGION (default us-east1), SERVICE (default lawglass),
@@ -21,7 +23,10 @@ context=$(mktemp -d)
 trap 'rm -rf "$context"' EXIT
 
 git archive "$ref" | tar -x -C "$context"
-gcloud builds submit "$context" --project "$PROJECT_ID" --tag "$IMAGE"
+# A short-lived token, so no long-term registry credential is stored.
+gcloud auth print-access-token |
+  docker login -u oauth2accesstoken --password-stdin "https://$REGION-docker.pkg.dev" >/dev/null
+docker buildx build --platform linux/amd64 --provenance=false --tag "$IMAGE" --push "$context"
 
 sed -e "s|\${SERVICE}|$SERVICE|g" \
   -e "s|\${REGION}|$REGION|g" \
