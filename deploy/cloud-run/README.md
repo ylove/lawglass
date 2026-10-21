@@ -98,5 +98,6 @@ The script exports the tag with `git archive`, builds the image locally with Doc
 
 - **One instance.** A deploy starts a new instance before the old one stops, so a document added in those few seconds can be lost. Deploy when nobody is using the preview.
 - **Cold starts.** After about 15 idle minutes the instance stops. The next visit waits for a cold start, about 5 to 15 seconds. Open the site a minute before a demo.
+- **Large bills.** Ingest embeds about 1,350 tokens a second here. Measured on v1.0.0: S. 202 took 8 seconds, H.R. 1 (119th, enrolled, 1,891 chunks) 3.7 minutes, and the FY2025 NDAA (4,861 chunks) 7.7 minutes. `LAWGLASS_MAX_CHUNKS=6000` refuses anything larger right after parsing, because it could not finish within the 15-minute ingest deadline. Two large ingests at once share the CPU and take about twice as long.
 - **Lost work on a crash.** A crash loses changes made since the last save; a clean shutdown loses none.
 - **Unreadable snapshot.** If `state.tar.gz` cannot be read at boot (after one retry), it is renamed `state.unreadable-<time>.tar.gz` and the instance starts empty. Inspect it, then copy a good version back over `state.tar.gz`.

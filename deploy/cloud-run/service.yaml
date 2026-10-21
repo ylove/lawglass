@@ -42,6 +42,11 @@ spec:
               value: anthropic
             - name: LAWGLASS_MAX_DOCS
               value: '30'
+            # Embedding runs at about 1,350 tokens a second on this instance, so the NDAA
+            # (4,861 chunks) takes about 8 minutes. A bill much larger than this cannot finish
+            # within the 15-minute ingest deadline; refuse it right after parsing instead.
+            - name: LAWGLASS_MAX_CHUNKS
+              value: '6000'
             - name: LAWGLASS_PUBLIC_ORIGIN
               value: ${PUBLIC_ORIGIN}
             - name: ANTHROPIC_API_KEY
