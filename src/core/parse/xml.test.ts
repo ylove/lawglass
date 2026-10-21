@@ -97,6 +97,32 @@ describe('congressional bill XML (synthetic)', () => {
     );
     expect(parse(xml).sections[0]!.id).toBe('sec-1');
   });
+
+  it('keeps each ordinary amendment body instruction before its own provision', () => {
+    const doc = parse(
+      '<amendment-doc>' +
+        '<amendment-body><amendment-instruction>Insert the first provision.</amendment-instruction>' +
+        '<amendment-block><section><enum>1.</enum><text>First provision.</text></section></amendment-block></amendment-body>' +
+        '<amendment-body><amendment-instruction>Insert the second provision.</amendment-instruction>' +
+        '<amendment-block><section><enum>2.</enum><text>Second provision.</text></section></amendment-block></amendment-body>' +
+        '</amendment-doc>',
+    );
+    expect(
+      doc.sections.map((s) => s.spans.map((span) => span.text).join('')),
+    ).toEqual([
+      'Insert the first provision.',
+      'First provision.',
+      'Insert the second provision.',
+      'Second provision.',
+    ]);
+    expect(ids(doc.sections)).toEqual([
+      'preamble',
+      'sec-1',
+      'preamble~2',
+      'sec-2',
+    ]);
+    expect(doc.warnings).toEqual([]);
+  });
 });
 
 describe('XML external entities and entity expansion', () => {
@@ -209,7 +235,7 @@ describe('committee-reported bill markup', () => {
     const chunks = chunkDocument(doc);
     expect(chunks.length).toBeGreaterThan(0);
     for (const text of omitted) {
-      expect(JSON.stringify(sections)).not.toContain(text);
+      expect(JSON.stringify(doc)).not.toContain(text);
       expect(JSON.stringify(chunks)).not.toContain(text);
     }
     const sectionText = sections
@@ -228,20 +254,26 @@ describe('committee-reported bill markup', () => {
     async (separateBodies) => {
       const substitute =
         '<section changed="added" reported-display-style="italic" committee-id="SYN00"><enum>1.</enum><header>Short title</header>' +
-        '<text>This Act is the Shared Gardens Act.</text></section>' +
+        '<text>This Act may be cited as the <quote><short-title>Shared Gardens Act</short-title></quote>.</text></section>' +
         '<section changed="added"><enum>2.</enum><header>Grants</header><text>Fund seed libraries.</text></section>';
       const original =
         '<section changed="deleted" reported-display-style="strikethrough" committee-id="SYN00"><enum>1.</enum><header>Abandoned title</header>' +
-        '<text>This Act is the Obsolete Orchards Act.</text><paragraph changed="deleted"><text>Nested obsolete rule.</text></paragraph></section>' +
+        '<text>This Act may be cited as the <quote><short-title>Obsolete Orchards Act</short-title></quote>.</text><paragraph changed="deleted"><text>Nested obsolete rule.</text></paragraph></section>' +
         '<section changed="deleted"><enum>2.</enum><header>Abandoned grants</header><text>Fund obsolete orchards.</text></section>';
+      const bodyXml = separateBodies
+        ? bill(original).replace(
+            '</bill>',
+            `<legis-body display-enacting-clause="no-display-enacting-clause">${substitute}</legis-body></bill>`,
+          )
+        : bill(original + substitute);
       const doc = parse(
-        separateBodies
-          ? bill(original).replace(
-              '</bill>',
-              `<legis-body display-enacting-clause="no-display-enacting-clause">${substitute}</legis-body></bill>`,
-            )
-          : bill(original + substitute),
+        bodyXml.replace(
+          '<bill >',
+          '<bill><metadata><dublinCore><title>119 S1 RS: Obsolete Orchards Act</title></dublinCore></metadata>' +
+            '<form><official-title>To support gardens.</official-title></form>',
+        ),
       );
+      expect(doc.metadata.title).toBe('Shared Gardens Act');
       expectReportedText(
         doc,
         ['Abandoned', 'Obsolete', 'obsolete'],
@@ -614,6 +646,38 @@ describe('definitions and references', () => {
 });
 
 describe('metadata', () => {
+  it.each([false, true])(
+    'keeps normal title precedence unless committee text was pruned: %s',
+    (pruned) => {
+      const doc = parse(
+        '<bill><metadata><title>119 S1 RS: Front matter title</title></metadata>' +
+          '<form><official-title>To support gardens.</official-title></form><legis-body>' +
+          (pruned
+            ? '<section changed="deleted"><header>Abandoned heading</header><text>Abandoned text.</text></section>'
+            : '') +
+          '<section><enum>1.</enum><header>Short title</header><text>This Act may be cited as the ' +
+          '<quote><short-title>Shared Gardens Act</short-title></quote>.</text></section></legis-body></bill>',
+      );
+      expect(doc.metadata.title).toBe(
+        pruned ? 'Shared Gardens Act' : 'Front matter title',
+      );
+      expect(JSON.stringify(doc)).not.toContain('Abandoned');
+    },
+  );
+
+  it('prunes official title text and ignores short titles inside quoted law', () => {
+    const doc = parse(
+      '<bill><form><official-title>To fund <deleted-phrase>obsolete orchards</deleted-phrase>' +
+        '<added-phrase>shared gardens</added-phrase>.</official-title></form><legis-body>' +
+        '<section><enum>1.</enum><header><deleted-phrase>Abandoned heading</deleted-phrase><added-phrase>Grants</added-phrase></header>' +
+        '<quoted-block><section><enum>9.</enum><text>This Act may be cited as the ' +
+        '<quote><short-title>Existing Law Act</short-title></quote>.</text></section></quoted-block></section></legis-body></bill>',
+    );
+    expect(doc.metadata.title).toBe('To fund shared gardens.');
+    expect(doc.sections[0]!.heading).toBe('Grants');
+    expect(JSON.stringify(doc)).not.toMatch(/obsolete|Abandoned/);
+  });
+
   it('takes the Dublin Core short title, minus its file prefix, and reports missing fields as null', () => {
     const doc = parse(
       '<bill bill-stage="Enrolled-Bill"><metadata xmlns:dc="http://purl.org/dc/elements/1.1/"><dublinCore><dc:title>HR 1 ENR: Short</dc:title></dublinCore></metadata>' +
@@ -974,6 +1038,7 @@ describeWithFixture('us-s3235-118-rs', () => {
     const sections = [...walkSections(doc.sections)];
     const chunks = chunkDocument(doc);
     expect(NormalizedDoc.safeParse(doc).success).toBe(true);
+    expect(doc.metadata.title).toBe('End Iranian Terrorism Act of 2024');
     expect(doc.sections.map((s) => s.id)).toEqual(
       Array.from({ length: 7 }, (_, i) => `sec-${String(i + 1)}`),
     );
@@ -982,7 +1047,7 @@ describeWithFixture('us-s3235-118-rs', () => {
     expect(doc.sections[0]!.spans.map((s) => s.text).join('')).toContain(
       'End Iranian Terrorism Act of 2024',
     );
-    expect(JSON.stringify(sections)).not.toContain(
+    expect(JSON.stringify(doc)).not.toContain(
       'End Iranian Terrorism Act of 2023',
     );
     expect(JSON.stringify(chunks)).not.toContain(
