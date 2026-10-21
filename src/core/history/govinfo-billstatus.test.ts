@@ -85,9 +85,8 @@ test('all human-readable fields strip upstream HTML, and literal markup is dropp
   expect(result.sponsorProfiles[0]?.name).toBe('Rep. Example, Alex [I-OH-3]');
   expect(result.history.versions.at(-1)?.label).toBe('Enrolled Bill');
   expect(result.history.actions[1]).toMatchObject({
-    // The shared sanitizer drops literal angle-bracket markup (here "< 3 & <untrusted>"), as it
-    // does for Ohio, so it can never reach a prompt or the page as a tag.
-    text: 'Referred to Example. 2 .',
+    // The tag-shaped "<untrusted>" is removed; the literal "<" comparison is real text and stays.
+    text: 'Referred to Example. 2 < 3 & .',
     committee: 'Example Committee',
   });
   expect(result.history.amendments[0]).toMatchObject({
@@ -404,4 +403,15 @@ test('a hostile amendment identifier cannot carry markup or control characters i
     item.id.startsWith('118samdt7'),
   );
   expect(added?.id).toBe('118samdt7');
+});
+
+test('comparison operators in BILLSTATUS text are kept; only tags are removed', () => {
+  const xml = BILLSTATUS_XML.replace(
+    'Referred to the Example Committee.',
+    'Applies if income &lt; $50,000 and age &gt; 65, or if x &lt; 5 &amp;lt;b&amp;gt;bold&amp;lt;/b&amp;gt; then more text follows.',
+  );
+  const text = parse(xml).history.actions[1]?.text;
+  expect(text).toBe(
+    'Applies if income < $50,000 and age > 65, or if x < 5 bold then more text follows.',
+  );
 });

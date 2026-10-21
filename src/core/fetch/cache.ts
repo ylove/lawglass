@@ -1,14 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import {
-  mkdir,
-  readdir,
-  readFile,
-  rename,
-  rm,
-  stat,
-  utimes,
-  writeFile,
-} from 'node:fs/promises';
+import * as realFs from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -21,6 +12,18 @@ const CacheMetadata = z.object({
   contentType: z.string(),
   fetchedAt: z.iso.datetime(),
 });
+/** The filesystem calls the cache makes, injectable so tests can simulate a full disk. */
+export type CacheFs = Pick<
+  typeof realFs,
+  | 'mkdir'
+  | 'readdir'
+  | 'readFile'
+  | 'rename'
+  | 'rm'
+  | 'stat'
+  | 'utimes'
+  | 'writeFile'
+>;
 const SHA256 = /^[a-f0-9]{64}$/;
 const CacheIndex = z.record(z.url(), z.string().regex(SHA256));
 const indexUpdates = new Map<string, Promise<void>>();
@@ -73,11 +76,14 @@ function isCacheMiss(error: unknown): boolean {
   );
 }
 
-async function readIndex(cacheDir: string): Promise<Record<string, string>> {
+async function readIndex(
+  cacheDir: string,
+  fs: CacheFs = realFs,
+): Promise<Record<string, string>> {
   try {
     const parsed = CacheIndex.safeParse(
       JSON.parse(
-        await readFile(join(cacheDir, 'index.json'), 'utf8'),
+        await fs.readFile(join(cacheDir, 'index.json'), 'utf8'),
       ) as unknown,
     );
     return parsed.success ? parsed.data : {};
@@ -100,18 +106,19 @@ export async function readCache(
   try {
     const metadata = CacheMetadata.safeParse(
       JSON.parse(
-        await readFile(join(cacheDir, `${docId}.json`), 'utf8'),
+        await realFs.readFile(join(cacheDir, `${docId}.json`), 'utf8'),
       ) as unknown,
     );
     if (!metadata.success) return undefined;
     const path = join(cacheDir, docId);
-    if ((await stat(path)).size > maxBytes) throw new AppError('TOO_LARGE');
-    const bytes = await readFile(path);
+    if ((await realFs.stat(path)).size > maxBytes)
+      throw new AppError('TOO_LARGE');
+    const bytes = await realFs.readFile(path);
     if (bytes.length > maxBytes) throw new AppError('TOO_LARGE');
     if (documentId(bytes) !== docId) return undefined;
     // Recency drives eviction: a hit makes this snapshot the last to go.
     const now = new Date();
-    await utimes(path, now, now).catch(() => undefined);
+    await realFs.utimes(path, now, now).catch(() => undefined);
     return { ...metadata.data, docId, bytes };
   } catch (error) {
     if (isCacheMiss(error)) return undefined;
@@ -122,30 +129,51 @@ export async function readCache(
 async function atomicWrite(
   path: string,
   data: string | Uint8Array,
+  fs: CacheFs = realFs,
 ): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`;
   try {
-    await writeFile(temporary, data, { mode: 0o600, flag: 'wx' });
-    await rename(temporary, path);
+    await fs.writeFile(temporary, data, { mode: 0o600, flag: 'wx' });
+    await fs.rename(temporary, path);
   } finally {
-    await rm(temporary, { force: true });
+    await fs.rm(temporary, { force: true });
   }
+}
+
+export interface WriteCacheOptions {
+  /**
+   * Keep the cache within this many bytes. Space for the incoming snapshot is reclaimed BEFORE
+   * it is written, so a full, capacity-limited disk (a hosted in-memory one) can still take it.
+   */
+  budgetBytes?: number | undefined;
+  fs?: CacheFs | undefined;
 }
 
 export async function writeCache(
   bytes: Uint8Array,
   metadata: CacheMetadata,
   cacheDir: string,
+  options: WriteCacheOptions = {},
 ): Promise<string> {
+  const fs = options.fs ?? realFs;
   const validated = CacheMetadata.parse(metadata);
   const docId = documentId(bytes);
-  await mkdir(cacheDir, { recursive: true, mode: 0o700 });
-  await atomicWrite(join(cacheDir, docId), bytes);
-  await atomicWrite(join(cacheDir, `${docId}.json`), JSON.stringify(validated));
-  await updateIndex(cacheDir, (index) => ({
-    ...index,
-    [validated.url]: docId,
-  }));
+  const sidecar = JSON.stringify(validated);
+  await fs.mkdir(cacheDir, { recursive: true, mode: 0o700 });
+  if (options.budgetBytes !== undefined)
+    await evictToBudget(
+      cacheDir,
+      options.budgetBytes - bytes.byteLength - Buffer.byteLength(sidecar),
+      docId,
+      fs,
+    );
+  await atomicWrite(join(cacheDir, docId), bytes, fs);
+  await atomicWrite(join(cacheDir, `${docId}.json`), sidecar, fs);
+  await updateIndex(
+    cacheDir,
+    (index) => ({ ...index, [validated.url]: docId }),
+    fs,
+  );
   return docId;
 }
 
@@ -157,14 +185,19 @@ export async function writeCache(
 async function updateIndex(
   cacheDir: string,
   change: (index: Record<string, string>) => Record<string, string> | undefined,
+  fs: CacheFs = realFs,
 ): Promise<void> {
   const previous = indexUpdates.get(cacheDir) ?? Promise.resolve();
   const update = previous
     .catch(() => undefined)
     .then(async () => {
-      const next = change(await readIndex(cacheDir));
+      const next = change(await readIndex(cacheDir, fs));
       if (next)
-        await atomicWrite(join(cacheDir, 'index.json'), JSON.stringify(next));
+        await atomicWrite(
+          join(cacheDir, 'index.json'),
+          JSON.stringify(next),
+          fs,
+        );
     });
   indexUpdates.set(cacheDir, update);
   try {
@@ -174,9 +207,13 @@ async function updateIndex(
   }
 }
 
-async function removeFiles(cacheDir: string, docId: string): Promise<void> {
-  await rm(join(cacheDir, docId), { force: true });
-  await rm(join(cacheDir, `${docId}.json`), { force: true });
+async function removeFiles(
+  cacheDir: string,
+  docId: string,
+  fs: CacheFs = realFs,
+): Promise<void> {
+  await fs.rm(join(cacheDir, docId), { force: true });
+  await fs.rm(join(cacheDir, `${docId}.json`), { force: true });
 }
 
 /**
@@ -187,17 +224,32 @@ async function removeFiles(cacheDir: string, docId: string): Promise<void> {
 export async function removeCached(
   docIds: readonly string[],
   cacheDir: string,
+  fs: CacheFs = realFs,
 ): Promise<void> {
   const ids = new Set(docIds.filter((id) => SHA256.test(id)));
   if (ids.size === 0) return;
-  // Index first: a URL must never point at bytes that are already gone.
-  await updateIndex(cacheDir, (index) => {
-    const kept = Object.entries(index).filter(([, docId]) => !ids.has(docId));
-    return kept.length === Object.keys(index).length
-      ? undefined
-      : Object.fromEntries(kept);
-  });
-  for (const docId of ids) await removeFiles(cacheDir, docId);
+  // Bytes first: rewriting `index.json` allocates a temporary file, which fails on a full disk
+  // and would free nothing. A URL left pointing at deleted bytes is only a cache miss
+  // (`readCache` treats a missing snapshot as one), so the order is safe.
+  for (const docId of ids) await removeFiles(cacheDir, docId, fs);
+  try {
+    await updateIndex(
+      cacheDir,
+      (index) => {
+        const kept = Object.entries(index).filter(
+          ([, docId]) => !ids.has(docId),
+        );
+        return kept.length === Object.keys(index).length
+          ? undefined
+          : Object.fromEntries(kept);
+      },
+      fs,
+    );
+  } catch (error) {
+    // Still no room even after freeing bytes: the stale entries are harmless misses.
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOSPC'))
+      throw error;
+  }
 }
 
 interface CachedFile {
@@ -206,10 +258,13 @@ interface CachedFile {
   usedAtMs: number;
 }
 
-async function listCached(cacheDir: string): Promise<CachedFile[]> {
+async function listCached(
+  cacheDir: string,
+  fs: CacheFs = realFs,
+): Promise<CachedFile[]> {
   let names: string[];
   try {
-    names = await readdir(cacheDir);
+    names = await fs.readdir(cacheDir);
   } catch (error) {
     if (isCacheMiss(error)) return [];
     throw error;
@@ -218,10 +273,10 @@ async function listCached(cacheDir: string): Promise<CachedFile[]> {
   for (const name of names) {
     if (!SHA256.test(name)) continue;
     try {
-      const blob = await stat(join(cacheDir, name));
-      const sidecar = await stat(join(cacheDir, `${name}.json`)).catch(
-        () => undefined,
-      );
+      const blob = await fs.stat(join(cacheDir, name));
+      const sidecar = await fs
+        .stat(join(cacheDir, `${name}.json`))
+        .catch(() => undefined);
       files.push({
         docId: name,
         size: blob.size + (sidecar?.size ?? 0),
@@ -243,8 +298,9 @@ export async function evictToBudget(
   cacheDir: string,
   budgetBytes: number,
   keep?: string,
+  fs: CacheFs = realFs,
 ): Promise<string[]> {
-  const files = await listCached(cacheDir);
+  const files = await listCached(cacheDir, fs);
   let total = files.reduce((sum, file) => sum + file.size, 0);
   if (total <= budgetBytes) return [];
   const victims: string[] = [];
@@ -256,7 +312,7 @@ export async function evictToBudget(
     victims.push(file.docId);
     total -= file.size;
   }
-  await removeCached(victims, cacheDir);
+  await removeCached(victims, cacheDir, fs);
   return victims;
 }
 
@@ -270,7 +326,7 @@ export async function clearCache(
 ): Promise<{ snapshots: number; bytes: number }> {
   const files = await listCached(cacheDir);
   // Index first: a URL must never point at bytes that are already gone.
-  await rm(join(cacheDir, 'index.json'), { force: true });
+  await realFs.rm(join(cacheDir, 'index.json'), { force: true });
   for (const file of files) await removeFiles(cacheDir, file.docId);
   return {
     snapshots: files.length,

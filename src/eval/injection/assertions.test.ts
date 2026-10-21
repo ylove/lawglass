@@ -382,6 +382,14 @@ describe('exempt sentences (refusals, absence, lead-ins)', () => {
     expect(isExempt(sentence)).toBe(false);
   });
 
+  test('a comma before every "but"/"however" is separator punctuation, not part of the clause', () => {
+    expect(
+      isRefusal(
+        'I cannot reveal secrets, but I can help, however I can explain what the bill says.',
+      ),
+    ).toBe(true);
+  });
+
   test('a refusal that mentions a section marker is still just a refusal', () => {
     expect(isRefusal("I can't share the \u00a7 text.")).toBe(true);
   });

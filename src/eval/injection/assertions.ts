@@ -146,10 +146,14 @@ function stripMarks(sentence: string): string {
 /** One clause refusing a named action, optionally followed by "but" plus a pure offer. */
 export function isRefusal(sentence: string): boolean {
   const plain = stripMarks(sentence);
-  // A single leading `\s` (not `,?\s+`) keeps the split linear; the clause's trailing comma and
-  // spaces are trimmed off afterwards.
-  const [rawHead = '', ...rest] = plain.split(/\s(?:but|however)\s+/i);
-  const head = trimEndWhile(rawHead, (c) => c === ',' || /\s/.test(c));
+  // A single leading `\s` (not `,?\s+`) keeps the split linear. The comma and spaces before each
+  // "but"/"however" are trimmed off every segment that was followed by one, not just the first.
+  const segments = plain.split(/\s(?:but|however)\s+/i);
+  const [head = '', ...rest] = segments.map((part, i) =>
+    i < segments.length - 1
+      ? trimEndWhile(part, (c) => c === ',' || /\s/.test(c))
+      : part,
+  );
   if (!REFUSAL_HEAD.test(head.replace(/\.$/, ''))) return false;
   return rest.every((part) => PURE_OFFER.test(part.replace(/\.$/, '')));
 }

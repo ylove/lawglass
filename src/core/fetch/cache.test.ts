@@ -1,3 +1,4 @@
+import * as realFs from 'node:fs/promises';
 import {
   mkdir,
   mkdtemp,
@@ -18,6 +19,7 @@ import {
   DEFAULT_CACHE_BUDGET_BYTES,
   defaultCacheDir,
   documentId,
+  type CacheFs,
   evictToBudget,
   readCache,
   removeCached,
@@ -293,4 +295,99 @@ it('reports a cache directory it cannot read instead of treating it as empty', a
   await expect(evictToBudget(notADirectory, 1)).rejects.toMatchObject({
     code: 'ENOTDIR',
   });
+});
+
+/** A real directory behind a capacity limit: writes that would exceed it fail with ENOSPC. */
+function fullDiskFs(directory: string, capacityBytes: number): CacheFs {
+  const used = async (): Promise<number> => {
+    let total = 0;
+    for (const name of await readdir(directory)) {
+      total += (await stat(join(directory, name))).size;
+    }
+    return total;
+  };
+  return {
+    ...realFs,
+    writeFile: (async (
+      path: string,
+      data: string | Uint8Array,
+      options: Parameters<CacheFs['writeFile']>[2],
+    ) => {
+      const size =
+        typeof data === 'string' ? Buffer.byteLength(data) : data.byteLength;
+      if ((await used()) + size > capacityBytes)
+        throw Object.assign(new Error('no space left on device'), {
+          code: 'ENOSPC',
+        });
+      return realFs.writeFile(path, data, options);
+    }) as CacheFs['writeFile'],
+  };
+}
+
+async function fillCache(
+  cacheDir: string,
+  count: number,
+  size: number,
+): Promise<string[]> {
+  const ids: string[] = [];
+  for (let i = 0; i < count; i++) {
+    const body = new Uint8Array(size).fill(i + 1);
+    ids.push(
+      await writeCache(
+        body,
+        { ...metadata, url: `https://example.gov/doc-${String(i)}` },
+        cacheDir,
+      ),
+    );
+    await utimes(
+      join(cacheDir, ids[i] ?? ''),
+      new Date(1000 * (i + 1)),
+      new Date(1000 * (i + 1)),
+    );
+  }
+  return ids;
+}
+
+it('evicts on a full disk by deleting bytes before it rewrites the index', async () => {
+  const cacheDir = join(dir, 'cache');
+  const ids = await fillCache(cacheDir, 3, 1000);
+  let total = 0;
+  for (const name of await readdir(cacheDir))
+    total += (await stat(join(cacheDir, name))).size;
+  // No headroom at all: any write, such as a replacement index.json, fails.
+  const fs = fullDiskFs(cacheDir, total);
+  const evicted = await evictToBudget(cacheDir, 1500, ids[2], fs);
+  expect(evicted).toEqual([ids[0], ids[1]]);
+  expect(
+    (await readdir(cacheDir)).filter((n) => /^[a-f0-9]{64}$/.test(n)),
+  ).toEqual([ids[2]]);
+  // The index could not be rewritten, but its stale entries are plain misses.
+  expect(
+    await readCache('https://example.gov/doc-0', cacheDir),
+  ).toBeUndefined();
+  expect(await readCache('https://example.gov/doc-2', cacheDir)).toMatchObject({
+    docId: ids[2],
+  });
+});
+
+it('reclaims space before writing incoming bytes on a full disk', async () => {
+  const cacheDir = join(dir, 'cache');
+  const ids = await fillCache(cacheDir, 3, 1000);
+  let total = 0;
+  for (const name of await readdir(cacheDir))
+    total += (await stat(join(cacheDir, name))).size;
+  const fs = fullDiskFs(cacheDir, total);
+  const incoming = new Uint8Array(1500).fill(9);
+  const docId = await writeCache(
+    incoming,
+    { ...metadata, url: 'https://example.gov/new' },
+    cacheDir,
+    { budgetBytes: 2_400, fs },
+  );
+  expect(await readCache(docId, cacheDir)).toMatchObject({ docId });
+  expect(await readCache(ids[0] ?? '', cacheDir)).toBeUndefined();
+  // Without a budget the same write hits ENOSPC.
+  await expect(
+    writeCache(new Uint8Array(5000).fill(7), metadata, cacheDir, { fs }),
+  ).rejects.toMatchObject({ code: 'ENOSPC' });
 });

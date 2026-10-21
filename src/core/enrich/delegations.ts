@@ -233,16 +233,24 @@ function fromVerb(sentence: string, from: number): string {
  * `before`, or all of it when there is none. A scan over that stretch replaces a greedy
  * `^.*\b(?:after|...)\s+(?=[^,;]*$)` regex, which backtracks polynomially.
  */
-function afterLastConjunction(before: string): string {
-  const stretch = before.slice(
-    Math.max(before.lastIndexOf(','), before.lastIndexOf(';')) + 1,
-  );
+export function afterLastConjunction(before: string): string {
+  const stretchStart =
+    Math.max(before.lastIndexOf(','), before.lastIndexOf(';')) + 1;
+  // The regex's `.*` stops at a line terminator, so only a conjunction on the first line counts.
+  const firstLineEnd = before.search(/[\n\r\u2028\u2029]/);
+  const limit = firstLineEnd < 0 ? before.length : firstLineEnd;
   let last: RegExpExecArray | undefined;
-  for (const m of stretch.matchAll(
-    /\b(?:after|before|once|until|if|when|unless|whenever|while)\s+/gi,
-  ))
+  for (const m of before
+    .slice(stretchStart)
+    .matchAll(
+      /\b(?:after|before|once|until|if|when|unless|whenever|while)\s+/gi,
+    )) {
+    if (stretchStart + m.index >= limit) break;
     last = m;
-  return last ? stretch.slice(last.index + last[0].length) : before;
+  }
+  return last
+    ? before.slice(stretchStart + last.index + last[0].length)
+    : before;
 }
 
 /** The words before a trailing phrase: what the approval or determination applies to. */

@@ -127,6 +127,31 @@ describe('verifySponsor', () => {
     expect(parseSponsor('Sen.')).toBeNull();
     expect(verifySponsor('(D)', FED)).toBe(false);
   });
+  it('drops parentheticals the way the regex did, including unmatched ones', () => {
+    expect(parseSponsor('Rep. John Smith (D-OH) (note)')).toEqual({
+      surname: 'Smith',
+      first: 'John',
+      chamber: 'house',
+    });
+    expect(parseSponsor('Smith (a (b) c, John')).toEqual({
+      surname: 'Smith c',
+      first: 'John',
+    });
+    expect(parseSponsor('John (unclosed Smith')).toMatchObject({
+      first: 'John',
+    });
+  });
+  it('parses hostile parenthesis runs in linear time', () => {
+    const run = (input: string): void => {
+      const started = performance.now();
+      parseSponsor(input);
+      expect(performance.now() - started).toBeLessThan(100);
+    };
+    run('(a'.repeat(40_000) + ' Smith');
+    run('('.repeat(80_000) + ' Smith');
+    run('(a)('.repeat(20_000) + ' Smith');
+    run(')('.repeat(40_000) + ' Smith');
+  });
   it('limits the search to the text before the bill body', () => {
     expect(sponsorRegion(FED)).not.toMatch(/Revised Code/);
     expect(sponsorRegion('x'.repeat(3000))).toHaveLength(1500);

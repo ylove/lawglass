@@ -414,9 +414,27 @@ export interface ParsedSponsor {
   chamber?: 'senate' | 'house';
 }
 
+/**
+ * Replace each `(...)` group with a space: from a `(` to the first `)` after it, as
+ * `/\([^)]*\)/g` does. One pass; with no `)` left the remainder is kept as is. The regex
+ * retries from every `(` of an unclosed run, which is quadratic.
+ */
+function dropParentheticals(value: string): string {
+  let out = '';
+  let at = 0;
+  for (;;) {
+    const open = value.indexOf('(', at);
+    if (open < 0) return out + value.slice(at);
+    const close = value.indexOf(')', open + 1);
+    if (close < 0) return out + value.slice(at);
+    out += `${value.slice(at, open)} `;
+    at = close + 1;
+  }
+}
+
 /** Handles "Rep. John Smith Jr. (D-OH)", "Smith, John" and a bare "Shaheen". */
 export function parseSponsor(raw: string): ParsedSponsor | null {
-  let s = raw.replace(/(?<!\()\([^)]*\)/g, ' ').replace(/’/g, "'");
+  let s = dropParentheticals(raw).replace(/’/g, "'");
   let chamber: ParsedSponsor['chamber'];
   for (;;) {
     const m = HONORIFIC.exec(s.trimStart());

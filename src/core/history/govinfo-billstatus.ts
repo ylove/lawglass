@@ -96,7 +96,10 @@ function plainText(
   const $ = load(value, null, false);
   $('script,style').remove();
   $('p,li,br,div,ul,ol,h1,h2,h3,h4,h5,h6,tr,td,th').before(' ');
-  return sanitizeText($.root().text(), max) || undefined;
+  // Bill text really contains "income < $50,000"; only genuine tags are removed.
+  return (
+    sanitizeText($.root().text(), max, { keepOperators: true }) || undefined
+  );
 }
 
 const textField = (

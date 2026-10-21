@@ -283,6 +283,7 @@ export async function safeFetch(
         signal.throwIfAborted();
         const result = makeResult(bytes, url.href, contentType, false, opts);
         const finalUrl = url.href;
+        const budgetBytes = opts.cacheBudgetBytes ?? DEFAULT_CACHE_BUDGET_BYTES;
         const commit = async (): Promise<void> => {
           await writeCache(
             bytes,
@@ -293,12 +294,9 @@ export async function safeFetch(
               fetchedAt: (opts.now ?? (() => new Date()))().toISOString(),
             },
             cacheDir,
+            { budgetBytes },
           );
-          await evictToBudget(
-            cacheDir,
-            opts.cacheBudgetBytes ?? DEFAULT_CACHE_BUDGET_BYTES,
-            result.docId,
-          );
+          await evictToBudget(cacheDir, budgetBytes, result.docId);
         };
         if (opts.deferCacheWrite) return { ...result, commitCache: commit };
         await commit();
