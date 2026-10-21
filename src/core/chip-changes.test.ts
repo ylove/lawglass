@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { MemoryBackend } from '../../tests/contracts/memory-backend.js';
 import { ScriptedProvider } from '../../tests/contracts/scripted-provider.js';
 import {
+  hasAmendmentMarks,
   MAX_CHANGED_SECTIONS,
   MAX_CHANGE_EXCERPT_CHARS,
   pickFairly,
@@ -333,12 +334,12 @@ describe('what-changes chip (built from spans)', () => {
     expect(e!.text.length).toBeLessThanOrEqual(MAX_CHANGE_EXCERPT_CHARS + 2);
   });
 
-  it('declines without a model call or retrieval when nothing is marked up', async () => {
+  it('falls back to instruction retrieval when nothing is marked up, and declines without a model call if that finds nothing', async () => {
     const provider = new ScriptedProvider();
     const r = await run([section('sec-1', [same('Plain.')])], provider);
     expect(r.answer.declined).toBe(true);
     expect(provider.calls).toHaveLength(0);
-    expect(r.backendUsage.embedTokens).toBe(0);
+    expect(r.mode).toBe('hybrid');
   });
 
   it('ignores blank runs when deciding whether a section changed', async () => {
@@ -377,6 +378,14 @@ describe('pickFairly', () => {
       hidden: 0,
     });
     expect(pickFairly([], 10)).toEqual({ picked: [], hidden: 0 });
+  });
+});
+
+describe('hasAmendmentMarks', () => {
+  it('is true for a nested marked change and false for plain text', () => {
+    expect(hasAmendmentMarks([retreat])).toBe(true);
+    expect(hasAmendmentMarks([section('sec-1', [same('Plain.')])])).toBe(false);
+    expect(hasAmendmentMarks([])).toBe(false);
   });
 });
 

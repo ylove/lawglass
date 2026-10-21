@@ -1,8 +1,17 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryBackend } from '../../tests/contracts/memory-backend.js';
 import { ScriptedProvider } from '../../tests/contracts/scripted-provider.js';
-import { CHIPS, getChip, runChip } from './chips.js';
-import { MAX_LISTED_DEFINITIONS, interleave } from './chip-runner.js';
+import {
+  CHIPS,
+  WHAT_CHANGES_BY_INSTRUCTION,
+  getChip,
+  runChip,
+} from './chips.js';
+import {
+  INSTRUCTIONS_NOTE,
+  MAX_LISTED_DEFINITIONS,
+  interleave,
+} from './chip-runner.js';
 import type { ChipDeps } from './chip-types.js';
 import {
   BillMetadata,
@@ -410,6 +419,71 @@ describe('runChip: retrieve chips', () => {
   });
 });
 
+describe('what-changes without amendment marks', () => {
+  const marked: Section = {
+    id: 'sec-1',
+    level: 1,
+    spans: [
+      { text: 'Keep ', status: 'unchanged' },
+      { text: 'new words', status: 'inserted' },
+      { text: '.', status: 'unchanged' },
+    ],
+    children: [],
+  };
+  const withDoc = (
+    sections: Section[],
+    scan?: ChipDeps['doc']['scan'],
+  ): ChipDeps => ({ ...deps, doc: { ...deps.doc, sections, scan } });
+
+  it('retrieves with the instruction queries and passes the fallback instruction to the model', async () => {
+    const run = await runChip(getChip('what-changes'), DOC, deps);
+    expect(
+      retrieveSpy.mock.calls.map((c) => (c[1] as { query: string }).query),
+    ).toEqual(WHAT_CHANGES_BY_INSTRUCTION.queries);
+    expect(optionsOf(0)).toMatchObject({
+      mode: 'hybrid',
+      sparseWeight: 0.75,
+      includeDeleted: false,
+    });
+    expect(promptOf()).toContain("the bill's instructions for changing");
+    expect(run.mode).toBe('hybrid');
+    expect(run.answer.text.endsWith(INSTRUCTIONS_NOTE)).toBe(true);
+  });
+
+  it('still uses the marks path (no retrieval) when the document has marks', async () => {
+    const run = await runChip(getChip('what-changes'), DOC, withDoc([marked]));
+    expect(retrieveSpy).not.toHaveBeenCalled();
+    expect(run.mode).toBe('none');
+    expect(promptOf()).toContain('Only the marked words changed');
+  });
+
+  it('keeps the scan caveat, with no retrieval, when marks are unreliable', async () => {
+    const run = await runChip(
+      getChip('what-changes'),
+      DOC,
+      withDoc([section('sec-1')], {
+        pages: [{ page: 1, marks: 'uncertain' }],
+      }),
+    );
+    expect(retrieveSpy).not.toHaveBeenCalled();
+    expect(run.answer.text).toMatch(/may be incomplete/);
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it('has a valid fallback definition that is not a served chip', () => {
+    expect(ChipDefinition.safeParse(WHAT_CHANGES_BY_INSTRUCTION).success).toBe(
+      true,
+    );
+    expect(Object.isFrozen(WHAT_CHANGES_BY_INSTRUCTION)).toBe(true);
+    expect(WHAT_CHANGES_BY_INSTRUCTION.id).toBe(getChip('what-changes').id);
+    expect(WHAT_CHANGES_BY_INSTRUCTION.label).toBe(
+      getChip('what-changes').label,
+    );
+    expect(CHIPS).not.toContain(WHAT_CHANGES_BY_INSTRUCTION);
+    expect(CHIPS.filter((c) => c.id === 'what-changes')).toHaveLength(1);
+  });
+});
+
 describe('ChipRun.mode', () => {
   it.each([
     ['who-affected', 'hybrid_rerank'],
@@ -418,7 +492,7 @@ describe('ChipRun.mode', () => {
     ['money', 'hybrid'],
     ['definitions', 'dense'],
     ['summary', 'none'],
-    ['what-changes', 'none'],
+    ['what-changes', 'hybrid'], // no marks in these sections: answered by instruction retrieval
     ['sponsors', 'none'],
   ] as const)('%s reports %s', async (id, mode) => {
     const run = await runChip(getChip(id), DOC, deps);

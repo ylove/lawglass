@@ -266,6 +266,15 @@ export function scanMarksUnreliable(scan: ScanStatus | undefined): boolean {
   return (scan?.pages ?? []).some((p) => p.marks !== 'read');
 }
 
+/**
+ * True when some section carries a struck or underlined change that `runChangesChip` would
+ * show. Reuses `collect`, so the two can never disagree about what counts as marked.
+ */
+export function hasAmendmentMarks(sections: readonly Section[]): boolean {
+  const counter = { n: 0 };
+  return sections.some((top) => collect('', [top], counter).length > 0);
+}
+
 const SCAN_CAVEAT =
   'Note: this document is a scan, and the strikethrough and underline marks on some pages were not read reliably, so this list of changes may be incomplete. Check the original pages.';
 
