@@ -1,12 +1,16 @@
 # Keep the build context to what the image needs. Secrets and local data must never reach it.
-.env
-.env.*
+# Patterns start with **/ so they also match nested copies, not only the context root.
+**/.env
+**/.env.*
 !.env.example
+**/.npmrc
+**/*.pem
+**/*.key
 .git
 .github
-.worktrees
-.cache
-node_modules
+**/.worktrees
+**/.cache
+**/node_modules
 dist
 coverage
 fixtures/downloads
@@ -14,4 +18,4 @@ playwright-report
 test-results
 handoff
 HANDOFF*.md
-*.log
+**/*.log

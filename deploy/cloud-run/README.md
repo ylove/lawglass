@@ -32,9 +32,10 @@ gcloud artifacts repositories create lawglass --repository-format=docker --locat
 gcloud storage buckets create gs://BUCKET --location=us-east1 \
   --uniform-bucket-level-access --public-access-prevention
 gcloud storage buckets update gs://BUCKET --versioning
-gcloud storage buckets update gs://BUCKET --lifecycle-file=- <<'JSON'
+cat > lifecycle.json <<'JSON'
 {"rule": [{"action": {"type": "Delete"}, "condition": {"numNewerVersions": 3, "isLive": false}}]}
 JSON
+gcloud storage buckets update gs://BUCKET --lifecycle-file=lifecycle.json
 
 # A service account that can do two things: use the bucket and read two secrets.
 gcloud iam service-accounts create lawglass-run --display-name="Lawglass Cloud Run"
@@ -81,9 +82,9 @@ The script exports the tag with `git archive`, builds the image with Cloud Build
 
 - **Logs:** run `gcloud run services logs read lawglass --region=us-east1`. App events are JSON lines. Snapshot events have `"event":"snapshot"`.
 - **Roll back:** run `gcloud run services update-traffic lawglass --region=us-east1 --to-revisions=<revision>=100`.
-- **Rotate the access key:** add a new version of `lawglass-access-key`, then redeploy, or run `gcloud run services update lawglass --region=us-east1` to start a new revision. Every existing session cookie stops working.
-- **Rotate the provider key:** create the new key in the Anthropic Console, add it as a new version of `anthropic-api-key`, start a new revision, then revoke the old key.
-- **Wipe all documents:** delete `gs://BUCKET/state.tar.gz` and start a new revision. Earlier versions stay in the bucket until the lifecycle rule removes them.
+- **Rotate the access key:** add a new version of `lawglass-access-key`, then start a new revision so the instance reads it: redeploy, or run `gcloud run services update lawglass --region=us-east1 --update-env-vars=SECRETS_ROTATED_AT=$(date +%s)`. Every existing session cookie stops working.
+- **Rotate the provider key:** create the new key in the Anthropic Console, add it as a new version of `anthropic-api-key`, start a new revision (as above), then revoke the old key.
+- **Wipe all documents:** delete `gs://BUCKET/state.tar.gz` and start a new revision (as above). Earlier versions stay in the bucket until the lifecycle rule removes them.
 - **Restore an earlier save:** list versions with `gcloud storage ls -a gs://BUCKET/state.tar.gz`, copy the one you want over the live object, and start a new revision.
 
 ## Limits to know
@@ -91,3 +92,4 @@ The script exports the tag with `git archive`, builds the image with Cloud Build
 - **One instance.** A deploy starts a new instance before the old one stops, so a document added in those few seconds can be lost. Deploy when nobody is using the preview.
 - **Cold starts.** After about 15 idle minutes the instance stops. The next visit waits for a cold start, about 5 to 15 seconds. Open the site a minute before a demo.
 - **Lost work on a crash.** A crash loses changes made since the last save; a clean shutdown loses none.
+- **Unreadable snapshot.** If `state.tar.gz` cannot be read at boot (after one retry), it is renamed `state.unreadable-<time>.tar.gz` and the instance starts empty. Inspect it, then copy a good version back over `state.tar.gz`.

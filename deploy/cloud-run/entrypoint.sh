@@ -10,7 +10,10 @@
 #     quiet for QUIET seconds (no write in progress);
 #   - on SIGTERM, stop the server and save once more. Cloud Run allows 10 seconds for this.
 # A save is discarded, not kept, if any file changed while tar was reading, so a tarball never
-# mixes old and new state. Without a writable SNAPSHOT_DIR the server runs without persistence.
+# mixes old and new state. A snapshot that cannot be read is moved aside, never overwritten.
+# Without a writable SNAPSHOT_DIR the server runs without persistence.
+# The script waits on the server itself, so a crash ends the container at once and Cloud Run
+# starts a fresh one; the periodic saves run in a background loop.
 set -u
 
 STATE_PARENT="$HOME"
@@ -47,15 +50,34 @@ changed_after() {
   [ -n "$(cd "$STATE_PARENT" && find $paths -newer "$1" -print -quit 2>/dev/null)" ]
 }
 
+# Removes restored state, for a restore that failed partway.
+clear_state() {
+  for path in $STATE_PATHS; do
+    rm -rf "${STATE_PARENT:?}/$path"
+  done
+}
+
 restore() {
   if [ ! -f "$SNAPSHOT" ]; then
     log info "no snapshot yet; starting with empty state"
     return
   fi
-  if gzip -t "$SNAPSHOT" 2>/dev/null && tar -xzpf "$SNAPSHOT" -C "$STATE_PARENT"; then
-    log info "state restored"
+  # A second try covers a transient read error on the mounted bucket.
+  for attempt in 1 2; do
+    if gzip -t "$SNAPSHOT" 2>/dev/null && tar -xzpf "$SNAPSHOT" -C "$STATE_PARENT"; then
+      log info "state restored"
+      return
+    fi
+    clear_state
+    [ "$attempt" = 1 ] && sleep 2
+  done
+  # Keep the unreadable file for inspection; the next save must not overwrite it.
+  aside="$SNAPSHOT_DIR/state.unreadable-$(date -u +%Y%m%dT%H%M%SZ).tar.gz"
+  if mv -f "$SNAPSHOT" "$aside"; then
+    log error "snapshot unreadable; kept as $(basename "$aside"); starting with empty state"
   else
-    log error "snapshot unreadable; starting with empty state"
+    log error "snapshot unreadable and could not be moved aside; saving is off for this instance"
+    SNAPSHOTS=off
   fi
 }
 
@@ -93,9 +115,22 @@ save_if_due() {
   save || true
 }
 
+# Runs in the background. A TERM interrupts the sleep at once; a save in progress finishes
+# first, because the shell runs the trap only after the current command returns.
+snapshot_loop() {
+  trap 'exit 0' TERM
+  while :; do
+    sleep "$INTERVAL" &
+    wait $!
+    save_if_due
+  done
+}
+
 mkdir -p "$HOME/.lawglass"
 chmod 700 "$HOME/.lawglass"
+SNAPSHOTS=off
 if snapshots_enabled; then
+  SNAPSHOTS=on
   restore
 else
   log warning "no writable $SNAPSHOT_DIR; state will not survive a restart"
@@ -105,19 +140,26 @@ touch "$SAVED_MARK"
 
 node /app/dist/cli.js serve "$@" &
 server=$!
-stopping=0
-trap 'stopping=1; kill -TERM "$server" 2>/dev/null' TERM INT
-
-while [ "$stopping" = 0 ] && kill -0 "$server" 2>/dev/null; do
-  # Sleep in the background so a signal interrupts `wait` straight away.
-  sleep "$INTERVAL" &
-  wait $! 2>/dev/null
-  [ "$stopping" = 0 ] && snapshots_enabled && save_if_due
-done
+loop=
+if [ "$SNAPSHOTS" = on ]; then
+  snapshot_loop &
+  loop=$!
+fi
+trap 'kill -TERM "$server" 2>/dev/null' TERM INT
 
 wait "$server"
 status=$?
-if snapshots_enabled && changed_after "$SAVED_MARK"; then
+# A trapped signal makes `wait` return early; keep waiting until the server has really exited.
+while kill -0 "$server" 2>/dev/null; do
+  wait "$server"
+  status=$?
+done
+
+if [ -n "$loop" ]; then
+  kill -TERM "$loop" 2>/dev/null
+  wait "$loop" 2>/dev/null
+fi
+if [ "$SNAPSHOTS" = on ] && changed_after "$SAVED_MARK"; then
   save || true
 fi
 exit "$status"
