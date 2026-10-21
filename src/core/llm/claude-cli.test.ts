@@ -120,10 +120,11 @@ describe('Claude CLI isolation and lifecycle', () => {
       TERM: 'xterm',
       CLAUDE_CONFIG_DIR: '/test/claude',
       CLAUDE_CODE_OAUTH_TOKEN: 'test-cli-token',
-      ANTHROPIC_API_KEY: 'test-cli-key',
       ANTHROPIC_BASE_URL: 'https://api.anthropic.com',
     };
     const excluded = [
+      'ANTHROPIC_API_KEY',
+      'ANTHROPIC_AUTH_TOKEN',
       'OPENAI_API_KEY',
       'OPENAI_BASE_URL',
       'GOOGLE_API_KEY',
@@ -157,6 +158,64 @@ describe('Claude CLI isolation and lifecycle', () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+  it.each([
+    ['unset', undefined, false],
+    ['0', '0', false],
+    ['true', 'true', false],
+    ['1', '1', true],
+  ])(
+    'forwards Anthropic API credentials only when %s opts in (%s -> %s)',
+    async (_label, optIn, forwarded) => {
+      try {
+        vi.stubEnv('ANTHROPIC_API_KEY', 'sk-ant-CANARY-env');
+        vi.stubEnv('ANTHROPIC_AUTH_TOKEN', 'CANARY-auth-token');
+        vi.stubEnv('ANTHROPIC_BASE_URL', 'https://api.anthropic.com');
+        vi.stubEnv('CLAUDE_CODE_OAUTH_TOKEN', 'login-token');
+        vi.stubEnv(envVar('CLAUDE_CLI_USE_API_KEY'), optIn ?? '');
+        const fake = fakeCli();
+        await drain(new ClaudeCliProvider(config, fake));
+        const env = fake.calls[0]!.options.env!;
+        expect(env.ANTHROPIC_API_KEY).toBe(
+          forwarded ? 'sk-ant-CANARY-env' : undefined,
+        );
+        expect(env.ANTHROPIC_AUTH_TOKEN).toBe(
+          forwarded ? 'CANARY-auth-token' : undefined,
+        );
+        // Login-based configuration always survives, so the subscription is billed.
+        expect(env.CLAUDE_CODE_OAUTH_TOKEN).toBe('login-token');
+        expect(env.ANTHROPIC_BASE_URL).toBe('https://api.anthropic.com');
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
+  it.each([
+    '--dangerously-skip-permissions',
+    '-p',
+    '',
+    ' sonnet',
+    'sonnet --tools Bash',
+    'a'.repeat(101),
+    '.hidden',
+    'model\nx',
+    'model;rm',
+  ])('rejects model %j before any process is spawned', (model) => {
+    const fake = fakeCli();
+    expect(() => new ClaudeCliProvider({ ...config, model }, fake)).toThrow(
+      expect.objectContaining({ code: 'INVALID_INPUT' }),
+    );
+    expect(fake.calls).toHaveLength(0);
+  });
+  it.each([
+    'sonnet',
+    'claude-sonnet-5-5',
+    'a'.repeat(100),
+    'x.y_z:1-2'.replace('_', '.'),
+  ])('accepts model %j', (model) => {
+    expect(new ClaudeCliProvider({ ...config, model }, fakeCli()).model).toBe(
+      model,
+    );
   });
   it('validates structured output', async () => {
     const fake = fakeCli({ transcript: objectTranscript() });

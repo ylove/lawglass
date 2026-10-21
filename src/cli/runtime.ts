@@ -5,6 +5,7 @@
 import { Pinecone } from '@pinecone-database/pinecone';
 import {
   LocalBackend,
+  disableSdkDiagnostics,
   PineconeBackend,
   type PineconeClient,
 } from '../core/index/index.js';
@@ -49,10 +50,20 @@ export interface RuntimeOptions {
 
 export type RuntimeFactory = (options: RuntimeOptions) => Promise<CliRuntime>;
 
-export function createPineconeClient(apiKey: string): PineconeClient {
-  // SDK curl logging exposes API keys; ordinary PINECONE_DEBUG already redacts them.
-  delete process.env.PINECONE_DEBUG_CURL;
-  return new Pinecone({ apiKey, maxRetries: 0 });
+export function createPineconeClient(
+  apiKey: string,
+  /** Test seam: replaces the SDK's HTTP transport; its logging code still runs. */
+  fetchApi?: typeof fetch,
+): PineconeClient {
+  // The SDK wires its request/response logging when it is constructed, so the debug
+  // variables must be cleared first: PINECONE_DEBUG prints bodies (which can echo the key or
+  // contain the user's question) and PINECONE_DEBUG_CURL prints the Api-Key header.
+  disableSdkDiagnostics();
+  return new Pinecone({
+    apiKey,
+    maxRetries: 0,
+    ...(fetchApi ? { fetchApi } : {}),
+  });
 }
 
 function buildBackend(

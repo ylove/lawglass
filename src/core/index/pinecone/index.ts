@@ -1,4 +1,4 @@
-export { PineconeBackend, settle } from './pinecone.js';
+export { disableSdkDiagnostics, PineconeBackend, settle } from './pinecone.js';
 export type {
   PineconeBackendOptions,
   PineconeClient,

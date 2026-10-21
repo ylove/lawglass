@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { envVar } from '../brand.js';
 import { asset, drain, httpReplay, KEY } from '../../../tests/llm/http.js';
 import {
   describeHttpProvider,
@@ -215,5 +216,61 @@ describe('OpenAI compatibility', () => {
       { model: 'gpt-4.1' },
     ).generateObject(objectRequest);
     expect(result.usage).toEqual({ inputTokens: 0, outputTokens: 0 });
+  });
+});
+
+describe('API key transport (G15)', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+  async function authorization(
+    baseURL: string | undefined,
+    apiKey: string | undefined,
+  ): Promise<string | null> {
+    const replay = httpReplay([
+      { body: asset('openai-stream.sse'), stream: true },
+    ]);
+    await drain(make(replay.fetch, { baseURL, apiKey }));
+    return replay.requests[0]!.headers.get('authorization');
+  }
+  it.each([
+    ['https://openrouter.ai/api/v1', 'remote https'],
+    ['https://192.168.1.20:8443/v1', 'LAN https'],
+    ['http://localhost:11434/v1', 'localhost http'],
+    ['http://127.0.0.1:1234/v1', 'loopback http'],
+    ['http://[::1]:1234/v1', 'ipv6 loopback http'],
+  ])('sends the key to %s (%s)', async (baseURL) => {
+    expect(await authorization(baseURL, KEY)).toBe(`Bearer ${KEY}`);
+  });
+  it.each([
+    'http://192.168.1.20:11434/v1',
+    'http://ollama.lan:11434/v1',
+    'http://example.com/v1',
+  ])('never sends the key to plain-http %s', async (baseURL) => {
+    expect(await authorization(baseURL, KEY)).toBe('Bearer local');
+  });
+  it('lets a keyless LAN Ollama server work', async () => {
+    expect(await authorization('http://192.168.1.20:11434/v1', undefined)).toBe(
+      'Bearer local',
+    );
+  });
+  it('sends the key over plain http only with the explicit opt-in', async () => {
+    for (const value of ['0', 'true', '']) {
+      vi.stubEnv(envVar('ALLOW_INSECURE_KEY'), value);
+      expect(await authorization('http://192.168.1.20:11434/v1', KEY)).toBe(
+        'Bearer local',
+      );
+    }
+    vi.stubEnv(envVar('ALLOW_INSECURE_KEY'), '1');
+    expect(await authorization('http://192.168.1.20:11434/v1', KEY)).toBe(
+      `Bearer ${KEY}`,
+    );
+    // The opt-in does not invent a key.
+    expect(() =>
+      make(httpReplay([]).fetch, {
+        baseURL: 'http://192.168.1.20:11434/v1',
+        apiKey: undefined,
+      }),
+    ).toThrow(expect.objectContaining({ code: 'MISSING_KEY' }));
   });
 });

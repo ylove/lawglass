@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { z } from 'zod';
 import lock from '../../../../models.lock.json' with { type: 'json' };
 import { BRAND } from '../../brand.js';
+import { ensurePrivateSubdirectory } from '../../config-files.js';
 import { AppError } from '../../model/index.js';
 
 export const MODEL_LOCK = lock;
@@ -94,6 +95,8 @@ export function createLocalModels(options: LocalModelOptions = {}): {
   async function prepare(
     model: ModelIdentity,
   ): Promise<typeof import('@huggingface/transformers')> {
+    // Create the cache 0700 ourselves; transformers.js would use the umask default.
+    await ensurePrivateSubdirectory(cacheDir);
     const transformers = await loadRuntime();
     transformers.env.cacheDir = cacheDir;
     transformers.env.allowRemoteModels = allowRemote;

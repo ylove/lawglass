@@ -7,27 +7,90 @@ import { AppError } from './model/index.js';
 
 const warnedDirectories = new Set<string>();
 
-/** Warn (once per directory) if the directory is a symlink or open to group/world. Never throws. */
-async function checkDirectory(
+const GROUP_OR_WORLD_WRITABLE = 0o022;
+const GROUP_OR_WORLD_ACCESS = 0o077;
+
+/**
+ * Vet the directory that holds credentials. Never skipped for a directory that others can
+ * write to: they could swap config.json for one that redirects keys. Throws in that case
+ * (also when a symlink points at such a directory). Mere readability by others is tightened
+ * to 0700 and reported once. Missing directories are left to the caller.
+ */
+async function ensurePrivateDirectory(
   directory: string,
   fs: ConfigFileSystem,
   warn: (message: string) => void,
+  options: { tighten: boolean },
 ): Promise<void> {
-  if (process.platform === 'win32' || warnedDirectories.has(directory)) return;
-  let problem: string | undefined;
+  if (process.platform === 'win32') return;
+  let link: boolean;
+  let mode: number;
   try {
     const stat = await fs.lstat(directory);
-    if (stat.isSymbolicLink())
-      problem = 'The local data directory is a symbolic link.';
-    else if ((stat.mode & 0o077) !== 0)
-      problem =
-        'The local data directory is accessible to other users. Set its mode to 0700.';
+    link = stat.isSymbolicLink();
+    mode = link ? (await fs.stat(directory)).mode : stat.mode;
   } catch {
     return; // A missing directory is handled by the file open below.
   }
-  if (!problem) return;
+  if ((mode & GROUP_OR_WORLD_WRITABLE) !== 0)
+    throw storageError(
+      `Refusing to use the local data directory: ${link ? 'the directory it links to is' : 'it is'} writable by other users. Run chmod 700 on it.`,
+    );
+  if (link) {
+    // chmod would follow the link and change a directory that is not ours.
+    if (!warnedDirectories.has(directory)) {
+      warnedDirectories.add(directory);
+      warn('The local data directory is a symbolic link.');
+    }
+    return;
+  }
+  if ((mode & GROUP_OR_WORLD_ACCESS) === 0) return;
+  let tightened = false;
+  if (options.tighten) {
+    try {
+      await fs.chmod(directory, 0o700);
+      tightened = true;
+    } catch {
+      // Not our directory: fall through to the warning.
+    }
+  }
+  if (warnedDirectories.has(directory)) return;
   warnedDirectories.add(directory);
-  warn(problem);
+  warn(
+    tightened
+      ? 'The local data directory was accessible to other users. Its mode is now 0700.'
+      : 'The local data directory is accessible to other users. Set its mode to 0700.',
+  );
+}
+
+/**
+ * Create a private (0700) subdirectory of the config directory, such as the model cache.
+ * A symlink is never chmod'd (that would change a directory that is not ours); a loose
+ * target is reported instead. A failed chmod is a warning, not a reason to stop.
+ */
+export async function ensurePrivateSubdirectory(
+  directory: string,
+  fs: ConfigFileSystem = configFileSystem,
+  warn: (message: string) => void = (message) => {
+    console.warn(`Configuration warning: ${message}`);
+  },
+): Promise<void> {
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  if (process.platform === 'win32') return;
+  try {
+    const link = (await fs.lstat(directory)).isSymbolicLink();
+    const { mode } = await fs.stat(directory);
+    if (link) {
+      if ((mode & GROUP_OR_WORLD_ACCESS) !== 0)
+        warn(
+          'The model cache directory is a symbolic link to a directory that other users can access. Set its mode to 0700.',
+        );
+      return;
+    }
+    if ((mode & GROUP_OR_WORLD_ACCESS) !== 0) await fs.chmod(directory, 0o700);
+  } catch {
+    warn('The model cache directory could not be restricted to 0700.');
+  }
 }
 
 const IGNORABLE_SYNC_ERRORS = new Set([
@@ -84,13 +147,14 @@ export async function readPrivateJson(
   fs: ConfigFileSystem,
   warn?: (message: string) => void,
 ): Promise<unknown> {
-  await checkDirectory(
+  await ensurePrivateDirectory(
     dirname(path),
     fs,
     warn ??
       ((message) => {
         console.warn(`Configuration warning: ${message}`);
       }),
+    { tighten: true },
   );
   let handle;
   try {
@@ -130,7 +194,14 @@ export async function writePrivateJson(
   const temp = `${path}.${randomUUID()}.tmp`;
   try {
     await fs.mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    await fs.chmod(dirname(path), 0o700);
+    await ensurePrivateDirectory(
+      dirname(path),
+      fs,
+      (message) => {
+        console.warn(`Configuration warning: ${message}`);
+      },
+      { tighten: true },
+    );
     const handle = await fs.open(temp, 'wx', 0o600);
     try {
       await handle.chmod(0o600);
@@ -141,7 +212,9 @@ export async function writePrivateJson(
     }
     await fs.rename(temp, path);
     await syncDirectory(dirname(path), fs);
-  } catch {
+  } catch (error) {
+    // Our own refusal says how to fix the directory; anything else may hold secrets.
+    if (error instanceof AppError) throw error;
     throw storageError('The local data file could not be saved.');
   } finally {
     await fs.unlink(temp).catch(() => undefined);
