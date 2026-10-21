@@ -115,14 +115,15 @@ save_if_due() {
   save || true
 }
 
-# Runs in the background. A TERM interrupts the sleep at once; a save in progress finishes
-# first, because the shell runs the trap only after the current command returns.
+# Runs in the background. A TERM only sets a flag: it interrupts the sleep at once, but a save
+# that is already running completes, so the final save after shutdown has less left to do.
 snapshot_loop() {
-  trap 'exit 0' TERM
-  while :; do
+  stop=0
+  trap 'stop=1' TERM
+  while [ "$stop" = 0 ]; do
     sleep "$INTERVAL" &
     wait $!
-    save_if_due
+    [ "$stop" = 0 ] && save_if_due
   done
 }
 
