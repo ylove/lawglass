@@ -59,6 +59,7 @@ test.each([
   'https://www.congress.gov/118/bills/hr9001/BILLS-118hr9001ih.pdf',
   'https://www.congress.gov/118/bills/hr9001/BILLS-118hr9001ih.htm',
   'https://congress.gov/118/bills/hr9001/BILLS-118hr9001ih.xml',
+  'https://www.congress.gov/118/bills/hr9001/BILLS-118hr9001ih.pdf?x=1#y',
 ])('maps the congress.gov text file %s to its GovInfo version', (url) => {
   expect(resolveHistory(url)).toEqual({
     ...resolveHistory(page),
@@ -66,6 +67,30 @@ test.each([
     textUrl:
       'https://www.govinfo.gov/content/pkg/BILLS-118hr9001ih/xml/BILLS-118hr9001ih.xml',
   });
+});
+
+test.each(['hr', 's', 'hjres', 'sjres', 'hconres', 'sconres', 'hres', 'sres'])(
+  'maps a congress.gov text file for type %s',
+  (type) => {
+    expect(
+      resolveHistory(
+        `https://www.congress.gov/118/bills/${type}5/BILLS-118${type}5ih.pdf`,
+      ),
+    ).toMatchObject({ type, number: 5, version: 'ih' });
+  },
+);
+
+test.each([
+  ['hr5', 'hres5'],
+  ['hres5', 'hr5'],
+  ['s5', 'sres5'],
+  ['hjres5', 'hconres5'],
+])('refuses a text file in folder %s named for %s', (folder, bill) => {
+  expect(() =>
+    resolveHistory(
+      `https://www.congress.gov/118/bills/${folder}/BILLS-118${bill}ih.pdf`,
+    ),
+  ).toThrow(AppError);
 });
 
 test.each([
