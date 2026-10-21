@@ -84,6 +84,7 @@ export function CitationDrawer({
 }) {
   const [excerpt, setExcerpt] = useState<SectionExcerpt | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const panel = useRef<HTMLDivElement>(null);
   const closeButton = useRef<HTMLButtonElement>(null);
 
@@ -100,7 +101,7 @@ export function CitationDrawer({
     return () => {
       live = false;
     };
-  }, [api, docId, sectionId]);
+  }, [api, docId, sectionId, attempt]);
 
   // Move focus into the dialog on open; give it back to the citation on close.
   useEffect(() => {
@@ -158,9 +159,21 @@ export function CitationDrawer({
           </button>
         </div>
         {error && (
-          <p role="alert" className="error">
-            {error}
-          </p>
+          <>
+            <p role="alert" className="error">
+              {error}
+            </p>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                setError(null);
+                setAttempt((n) => n + 1);
+              }}
+            >
+              Retry
+            </button>
+          </>
         )}
         {!excerpt && !error && <p role="status">Loading the section...</p>}
         {excerpt && (

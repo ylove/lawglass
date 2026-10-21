@@ -135,20 +135,22 @@ export function DocumentView({
   }
 
   if (loadError) {
+    const retry = () => {
+      setLoadError(null);
+      setAttempt((n) => n + 1);
+    };
     if (loadError instanceof ApiError && loadError.code === 'NETWORK') {
-      return (
-        <ServerDownCard
-          onRetry={() => {
-            setLoadError(null);
-            setAttempt((n) => n + 1);
-          }}
-        />
-      );
+      return <ServerDownCard onRetry={retry} />;
     }
     return (
-      <p role="alert" className="error">
-        {errorMessage(loadError)}
-      </p>
+      <>
+        <p role="alert" className="error">
+          {errorMessage(loadError)}
+        </p>
+        <button type="button" className="btn" onClick={retry}>
+          Retry
+        </button>
+      </>
     );
   }
   if (!detail) return <p role="status">Loading the document...</p>;
