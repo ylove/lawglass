@@ -43,26 +43,42 @@ export function coveredSectionIds(c: StoredChunk): string[] {
 
 /** Rewrite `[S:a, b]` and `[S:a; S:b]` as `[S:a] [S:b]` so each id is validated. */
 function splitMultiMarkers(text: string, allowed: ReadonlySet<string>): string {
-  // Stop at another opener so unclosed markers cannot repeatedly scan the remaining answer.
-  return text.replace(/\[S:([^[\]]*[,;][^[\]]*)\]/g, (whole, inner: string) => {
+  // Scan each bracket-free body once; overlapping repeats around a separator backtrack quadratically.
+  return text.replace(/\[S:([^[\]]*)\]/g, (whole, inner: string) => {
+    if (!/[,;]/.test(inner)) return whole;
     // A section id that itself contains a comma or semicolon is one id, not several.
     if (allowed.has(inner)) return whole;
-    const ids = inner.split(/\s*[,;]\s*/).map((s) => s.replace(/^S:/, ''));
+    const ids = inner.split(/[,;]/).map((s, i, parts) => {
+      // Trim only beside separators: whitespace at the body's outer edges stays malformed.
+      let trimmed = s;
+      if (i > 0) trimmed = trimmed.trimStart();
+      if (i < parts.length - 1) trimmed = trimmed.trimEnd();
+      return trimmed.replace(/^S:/, '');
+    });
     if (ids.some((id) => !id || /\s/.test(id))) return whole;
     return ids.map((id) => `[S:${id}]`).join(' ');
   });
 }
 
-function escapeRegExp(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 /** Remove every marker for `id`, plus the space before it so "x [S:a]." becomes "x.". */
 function stripMarker(text: string, id: string): string {
-  return text.replace(
-    new RegExp(`[ \\t]*\\[S:${escapeRegExp(id)}\\]`, 'g'),
-    '',
-  );
+  const marker = `[S:${id}]`;
+  const parts: string[] = [];
+  let start = 0;
+  for (
+    let index = text.indexOf(marker);
+    index !== -1;
+    index = text.indexOf(marker, start)
+  ) {
+    // Search for the literal marker first so unrelated whitespace is never rescanned.
+    let end = index;
+    while (end > start && (text[end - 1] === ' ' || text[end - 1] === '\t'))
+      end--;
+    parts.push(text.slice(start, end));
+    start = index + marker.length;
+  }
+  parts.push(text.slice(start));
+  return parts.join('');
 }
 
 function buildCitation(sectionId: string, chunks: StoredChunk[]): Citation {

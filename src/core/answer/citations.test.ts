@@ -66,6 +66,15 @@ describe('validateCitations', () => {
     expect(r.text).toBe('Hi there.');
   });
 
+  it('removes adjacent invalid markers and only their preceding spaces and tabs', () => {
+    const r = validateCitations(
+      '\t[S:fake][S:fake]A \t[S:fake]\n\t[S:fake] B\tC [S:sec-1]',
+      ids,
+    );
+    expect(r.text).toBe('A\n B\tC [S:sec-1]');
+    expect(r.invalidCitations).toEqual(['fake']);
+  });
+
   it('warns when there are no valid citations', () => {
     const r = validateCitations('It pays money.', ids, chunks);
     expect(r.warnings).toEqual(['NO_VALID_CITATIONS']);
@@ -154,6 +163,50 @@ describe('validateCitations', () => {
     expect(elapsed).toBeLessThan(50);
   });
 
+  it.each([
+    ['commas', ','],
+    ['semicolons', ';'],
+    ['mixed separators', ',;'],
+    ['long ids', 'a'],
+  ])(
+    'validates an unclosed body of 200,000 %s in under 50 ms',
+    (_label, unit) => {
+      const text = `[S:${unit.repeat(200_000 / unit.length)}`;
+      const start = performance.now();
+      const r = validateCitations(text, []);
+      const elapsed = performance.now() - start;
+
+      expect(r.text).toBe(text);
+      expect(r.citations).toEqual([]);
+      expect(r.invalidCitations).toEqual([]);
+      expect(r.warnings).toEqual(['NO_VALID_CITATIONS']);
+      expect(r.declined).toBe(false);
+      expect(elapsed).toBeLessThan(50);
+    },
+  );
+
+  it('handles a closed body with 200,000 spaces in under 50 ms', () => {
+    const text = `[S:${' '.repeat(200_000)}sec-1,sec-2]`;
+    const start = performance.now();
+    const r = validateCitations(text, ids);
+    const elapsed = performance.now() - start;
+
+    expect(r.text).toBe(text);
+    expect(r.citations).toEqual([]);
+    expect(elapsed).toBeLessThan(50);
+  });
+
+  it('strips an invalid marker after 200,000 unrelated spaces in under 50 ms', () => {
+    const text = `A${' '.repeat(200_000)}B [S:fake].`;
+    const start = performance.now();
+    const r = validateCitations(text, []);
+    const elapsed = performance.now() - start;
+
+    expect(r.text).toBe('A B.');
+    expect(r.invalidCitations).toEqual(['fake']);
+    expect(elapsed).toBeLessThan(50);
+  });
+
   describe('merged chunks', () => {
     const merged = hit({
       id: 'm',
@@ -201,6 +254,21 @@ describe('validateCitations', () => {
     expect(r.text).toBe('A [S:sec-1] [S:sec-2]. B [S:sec-1].');
     expect(r.invalidCitations).toEqual(['nope']);
   });
+
+  it('trims whitespace beside separators, including repeated S: prefixes', () => {
+    const r = validateCitations('[S:sec-1 \t,\nS:sec-2\u00a0; S:sec-1]', ids);
+    expect(r.text).toBe('[S:sec-1] [S:sec-2] [S:sec-1]');
+    expect(r.citations.map((c) => c.sectionId)).toEqual(ids);
+  });
+
+  it.each(['[S: sec-1,sec-2]', '[S:sec-1,sec-2 ]'])(
+    'preserves malformed whitespace at the outer edges of %s',
+    (text) => {
+      const r = validateCitations(text, ids);
+      expect(r.text).toBe(text);
+      expect(r.citations).toEqual([]);
+    },
+  );
 
   it('does not split a marker that is itself an allowed section id', () => {
     const r = validateCitations('A [S:sec-1, sec-2].', ['sec-1, sec-2'], []);
