@@ -7,9 +7,10 @@ const MARKER = new RegExp(CITATION_PATTERN.source, 'g');
 const MAX_EMPHASIS_DEPTH = 3;
 const PUNCTUATION = /^[.,;:!?)]/;
 // A marker followed by punctuation takes the whitespace before it along, so removing
-// "agreement [S:x]." leaves "agreement." rather than "agreement .".
+// "agreement [S:x]." leaves "agreement." rather than "agreement .". Matching only from the start
+// of a whitespace run gives the same matches without retrying at every space in a long run.
 const MARKER_BEFORE_PUNCTUATION = new RegExp(
-  `\\s+(?:${CITATION_PATTERN.source})(?=[.,;:!?)])`,
+  `(?<!\\s)\\s+(?:${CITATION_PATTERN.source})(?=[.,;:!?)])`,
   'g',
 );
 
