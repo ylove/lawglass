@@ -78,7 +78,7 @@ const RC_CHAPTERS =
   /\bchapters?\s+(\d+(?:\.\d+)?)\.?\s+of\s+the\s+(?:Ohio\s+)?Revised\s+Code/gi;
 const USC_TITLE_FIRST =
   /\b(\d{1,2})\s+(?:U\.\s?S\.\s?C\.?|USC)(?:\s+(?:§§?|secs?\.|sections?))?\s*(\d+[A-Za-z0-9]*(?:-\d+[A-Za-z0-9]*)?)/g;
-const USC_ITEM = String.raw`\d+[A-Za-z0-9]*(?:\([A-Za-z0-9]+\))*`;
+const USC_ITEM = String.raw`\d[A-Za-z0-9]*(?:\([A-Za-z0-9]+\))*`;
 const USC_LIST = String.raw`${USC_ITEM}(?:${LIST_SEP}${USC_ITEM})*`;
 const USC_CODE = String.raw`(?:United\s+States\s+Code|U\.\s?S\.\s+Code|U\.\s?S\.\s?C\.)`;
 const USC_SECTION_FIRST = new RegExp(

@@ -6,7 +6,7 @@
  * Each guard returns the value to keep (possibly canonicalised) or null to discard it.
  */
 
-import { trimEdgesWhile } from '../trim.js';
+import { trimEdgesWhile, trimEndWhile } from '../trim.js';
 
 /** Lowercased letter/digit runs. "2025-2026" gives ["2025", "2026"]; "136th" stays whole. */
 export function words(s: string): string[] {
@@ -76,10 +76,13 @@ interface LocalNumber {
   id: string | undefined;
 }
 
+const trimDotsDashes = (v: string): string =>
+  trimEndWhile(v, (c) => c === '.' || c === '-');
+
 function parseLocalNumber(s: string): LocalNumber | null {
   const m = LOCAL_NUMBER.exec(s.trim());
   if (!m?.[1]) return null;
-  const id = m[2]?.replace(/[.-]+$/, '').toLowerCase();
+  const id = trimDotsDashes(m[2] ?? '').toLowerCase() || undefined;
   const kind = m[1].toLowerCase().replace(/\s+/g, ' ');
   if (!id && kind !== 'charter amendment') return null;
   return { kind, id: id === '' ? undefined : id };
@@ -100,7 +103,7 @@ function verifyLocalNumber(value: string, text: string): boolean {
     'gi',
   );
   for (const m of text.matchAll(printed)) {
-    if (m[1]?.replace(/[.-]+$/, '').toLowerCase() === claimed.id) return true;
+    if (trimDotsDashes(m[1] ?? '').toLowerCase() === claimed.id) return true;
   }
   return false;
 }
