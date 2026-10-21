@@ -123,7 +123,9 @@ describe('HTTP client', () => {
     ) as unknown as typeof fetch;
     const api = createHttpApi({ fetchImpl });
     await expect(api.getConfig()).resolves.toMatchObject({ productName: 'X' });
-    expect(fetchImpl).toHaveBeenCalledWith('/api/config', undefined);
+    expect(fetchImpl).toHaveBeenCalledWith('/api/config', {
+      signal: expect.any(AbortSignal) as AbortSignal,
+    });
   });
 
   test('getScenario posts the subject and validates the response', async () => {
@@ -195,7 +197,10 @@ describe('HTTP client', () => {
     }) as typeof fetch;
     const api = createHttpApi({ fetchImpl, baseUrl: 'http://h' });
     await api.removeDoc('a/b');
-    expect(calls[0]).toEqual(['http://h/api/docs/a%2Fb', { method: 'DELETE' }]);
+    expect(calls[0]).toEqual([
+      'http://h/api/docs/a%2Fb',
+      { method: 'DELETE', signal: expect.any(AbortSignal) as AbortSignal },
+    ]);
     const failing = createHttpApi({
       fetchImpl: () => Promise.resolve(new Response(null, { status: 500 })),
     });
@@ -267,6 +272,16 @@ describe('selectApi', () => {
     expect(selectApi('', '1').mock).toBe(true);
     expect(selectApi('', '0').mock).toBeUndefined();
     expect(selectApi('?mock=0').mock).toBeUndefined();
+  });
+
+  test('production builds ignore ?mock=1 and the env flag', () => {
+    vi.stubEnv('DEV', false);
+    try {
+      expect(selectApi('?mock=1').mock).toBeUndefined();
+      expect(selectApi('', '1').mock).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   test('?public=1 makes the mock a public server', async () => {

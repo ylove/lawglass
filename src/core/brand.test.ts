@@ -18,4 +18,5 @@ test('fetch identity uses package version and the repository’s HTTPS URL', () 
     packageJson.repository.url.replace(/^git\+/, ''),
   );
   expect(new URL(BRAND.repositoryUrl).protocol).toBe('https:');
+  expect(new URL(BRAND.siteUrl).protocol).toBe('https:');
 });

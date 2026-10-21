@@ -80,3 +80,10 @@ main:focus {
   color: var(--muted);
   font-size: 0.9rem;
 }
+.site-footer p {
+  margin: 0 0 0.35rem;
+}
+.site-footer a {
+  color: inherit;
+  text-decoration: underline;
+}

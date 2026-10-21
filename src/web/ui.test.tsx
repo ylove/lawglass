@@ -7,6 +7,7 @@ import {
   within,
 } from '@testing-library/react';
 import { afterEach, describe, expect, test } from 'vitest';
+import { BRAND } from '../core/brand.js';
 import { App } from './App.js';
 import type { ApiClient } from './api.js';
 import { numberCitations, stripMarkers } from './AnswerText.js';
@@ -756,6 +757,19 @@ describe('sidebar and shell', () => {
     ).toBeTruthy();
   });
 
+  test('the footer names the provider that receives bill text and questions', async () => {
+    const api = mock();
+    api.getConfig = async () => ({
+      ...(await mock().getConfig()),
+      provider: 'anthropic',
+    });
+    render(<App api={api} />);
+    await ready();
+    expect(screen.getByRole('contentinfo').textContent).toContain(
+      'Bill text and your questions are sent to Anthropic to write answers.',
+    );
+  });
+
   test('has landmarks, a skip link, the config product name and the footer', async () => {
     const api = mock();
     api.getConfig = async () => ({
@@ -766,9 +780,15 @@ describe('sidebar and shell', () => {
     await ready();
     expect(screen.getByRole('banner')).toBeTruthy();
     expect(screen.getByRole('main')).toBeTruthy();
-    expect(screen.getByRole('contentinfo').textContent).toBe(
+    const footer = screen.getByRole('contentinfo');
+    expect(footer.textContent).toContain(
       'Not legal advice. Answers are generated only from the text of this document.',
     );
+    // The mock provider sends nothing anywhere, so no data note is shown.
+    expect(footer.textContent).not.toContain('are sent to');
+    const repo = within(footer).getByRole('link', { name: 'Source code' });
+    expect(repo.getAttribute('href')).toBe(BRAND.repositoryUrl);
+    expect(repo.getAttribute('rel')).toBe('noopener noreferrer');
     expect(
       screen
         .getByRole('link', { name: 'Skip to main content' })

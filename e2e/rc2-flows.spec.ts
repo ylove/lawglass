@@ -165,7 +165,7 @@ test('server-down card appears when the server stops, and Retry recovers', async
 
   await first.stop();
   await sidebar.getByRole('button', { name: new RegExp(`^${other}`) }).click();
-  const card = page.getByRole('region', { name: /local server isn't running/ });
+  const card = page.getByRole('region', { name: /can't reach its server/ });
   await expect(card).toBeVisible();
 
   // Same port, so the open page's relative requests reach the restarted server.
