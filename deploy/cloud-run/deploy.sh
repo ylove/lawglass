@@ -20,12 +20,14 @@ IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/$SERVICE/$SERVICE:$(git rev-parse --sh
 
 here=$(cd "$(dirname "$0")" && pwd)
 context=$(mktemp -d)
-trap 'rm -rf "$context"' EXIT
+registry="https://$REGION-docker.pkg.dev"
+# Log out on exit so the registry token does not stay in Docker's config file.
+trap 'rm -rf "$context"; docker logout "$registry" >/dev/null 2>&1 || true' EXIT
 
 git archive "$ref" | tar -x -C "$context"
-# A short-lived token, so no long-term registry credential is stored.
-gcloud auth print-access-token |
-  docker login -u oauth2accesstoken --password-stdin "https://$REGION-docker.pkg.dev" >/dev/null
+# A short-lived (one hour) token. Captured first so a failure stops the deploy under `set -e`.
+token=$(gcloud auth print-access-token)
+printf '%s' "$token" | docker login -u oauth2accesstoken --password-stdin "$registry" >/dev/null
 docker buildx build --platform linux/amd64 --provenance=false --tag "$IMAGE" --push "$context"
 
 sed -e "s|\${SERVICE}|$SERVICE|g" \
