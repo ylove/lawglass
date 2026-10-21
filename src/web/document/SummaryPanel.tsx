@@ -42,6 +42,7 @@ export function SummaryPanel({
   maxWaitMs?: number;
 }) {
   const [state, setState] = useState<State>({ kind: 'loading' });
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -78,8 +79,12 @@ export function SummaryPanel({
       live = false;
       clearTimeout(timer);
     };
-  }, [api, docId, pollMs, maxWaitMs]);
+  }, [api, docId, pollMs, maxWaitMs, attempt]);
 
+  const retry = () => {
+    setState({ kind: 'loading' });
+    setAttempt((n) => n + 1);
+  };
   const cached = state.kind === 'cached' ? state.answer : null;
   const chipHint = !publicMode;
   return (
@@ -113,12 +118,19 @@ export function SummaryPanel({
         {state.kind === 'timeout' && (
           <p className="muted summary-note">
             The summary is taking longer than expected.
-            {chipHint && " Choose 'Summarize this bill' to ask for it now."}
+            {chipHint &&
+              " Choose 'Summarize this bill' to ask for it now."}{' '}
+            <button type="button" className="link-btn" onClick={retry}>
+              Try again
+            </button>
           </p>
         )}
         {state.kind === 'error' && (
           <p className="muted summary-note">
-            The summary could not be loaded right now.
+            The summary could not be loaded right now.{' '}
+            <button type="button" className="link-btn" onClick={retry}>
+              Try again
+            </button>
           </p>
         )}
         {state.kind === 'disabled' && chipHint && (
