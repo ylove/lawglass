@@ -3,7 +3,7 @@ import { dataNote } from './provider-label.js';
 
 test.each([
   ['anthropic', 'Anthropic'],
-  ['openai', 'OpenAI'],
+  ['openai', 'your configured OpenAI-compatible provider'],
   ['google', 'Google'],
   ['claude-cli', 'Claude through your local Claude Code'],
 ])('names the provider for %s', (id, who) => {

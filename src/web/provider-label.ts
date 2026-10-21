@@ -7,7 +7,9 @@ export function dataNote(provider: string): string | null {
     case 'anthropic':
       return sentTo('Anthropic');
     case 'openai':
-      return sentTo('OpenAI');
+      // The openai adapter also serves OpenAI-compatible endpoints (Ollama, OpenRouter, ...),
+      // so name no vendor we cannot be sure of.
+      return sentTo('your configured OpenAI-compatible provider');
     case 'google':
       return sentTo('Google');
     case 'claude-cli':

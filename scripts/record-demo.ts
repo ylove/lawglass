@@ -70,7 +70,8 @@ async function serveBuiltUi(): Promise<{ server: Server; url: string }> {
       root,
       '--emptyOutDir',
     ],
-    { stdio: 'ignore' },
+    // NODE_ENV must be development too, or vite defaults it to production and strips the mock.
+    { stdio: 'ignore', env: { ...process.env, NODE_ENV: 'development' } },
   );
   const server = createServer((req, res) => {
     const path = new URL(req.url ?? '/', 'http://x').pathname;

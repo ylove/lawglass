@@ -17,6 +17,13 @@ test('emits the title, social, theme, noindex and icon tags from BRAND', () => {
   expect(tags).toContain(`<title>${BRAND.displayName}</title>`);
   expect(tags).toContain(`property="og:title" content="${BRAND.displayName}"`);
   expect(tags).toContain(META_DESCRIPTION);
+  expect(tags).toContain(`property="og:url" content="${BRAND.siteUrl}"`);
+  expect(tags).toContain(
+    `property="og:image" content="${BRAND.siteUrl}/og-image.png"`,
+  );
+  expect(tags).toContain(
+    `name="twitter:image" content="${BRAND.siteUrl}/og-image.png"`,
+  );
   expect(tags).toContain('name="twitter:card" content="summary_large_image"');
   expect(tags).toContain('name="theme-color" content="#0f3b6e"');
   expect(tags).toContain('name="robots" content="noindex"');

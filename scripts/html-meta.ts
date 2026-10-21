@@ -19,15 +19,22 @@ export function escapeHtmlAttr(value: string): string {
 export function brandHeadTags(
   name: string = BRAND.displayName,
   description: string = META_DESCRIPTION,
+  siteUrl: string = BRAND.siteUrl,
 ): string {
   const n = escapeHtmlAttr(name);
   const d = escapeHtmlAttr(description);
+  // Social crawlers need absolute URLs.
+  const site = escapeHtmlAttr(siteUrl);
+  const image = escapeHtmlAttr(new URL('/og-image.png', siteUrl).href);
   return [
     `<title>${n}</title>`,
     `<meta name="description" content="${d}" />`,
     `<meta property="og:title" content="${n}" />`,
     `<meta property="og:description" content="${d}" />`,
     `<meta property="og:type" content="website" />`,
+    `<meta property="og:url" content="${site}" />`,
+    `<meta property="og:image" content="${image}" />`,
+    `<meta name="twitter:image" content="${image}" />`,
     `<meta name="twitter:card" content="summary_large_image" />`,
     `<meta name="theme-color" content="${THEME_COLOR}" />`,
     // Private preview: remove at public launch (together with Disallow in public/robots.txt).
