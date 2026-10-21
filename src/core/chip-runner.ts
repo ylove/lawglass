@@ -11,8 +11,13 @@
  *   retrieve      one `retrieve()` per query, merged, reranked once, then `answer()`
  */
 import { answer, fleschKincaidGrade } from './answer/index.js';
-import { runChangesChip } from './chip-changes.js';
+import {
+  hasAmendmentMarks,
+  runChangesChip,
+  scanMarksUnreliable,
+} from './chip-changes.js';
 import { runHistoryChip } from './chip-history.js';
+import { WHAT_CHANGES_BY_INSTRUCTION } from './chips.js';
 import { runOutlineChip } from './chip-summary.js';
 import {
   appendNote,
@@ -68,9 +73,25 @@ export async function runChip(
     case 'retrieve':
       // The contract has no "spans" strategy, so what-changes is a `retrieve` chip by label
       // but is answered from the amendment spans (see chip-changes.ts for why).
-      return chip.id === 'what-changes'
-        ? runChangesChip(chip, docId, deps, options)
-        : runRetrieveChip(chip, docId, deps, options);
+      if (chip.id === 'what-changes') {
+        // Federal bills state their changes as prose instructions ("is amended by striking
+        // ... and inserting ..."), not as struck/underlined text, so they have no marks and
+        // the spans path would find nothing. A doubtful scan keeps the spans path: unread
+        // marks look like "no marks", and that path knows how to say so.
+        if (
+          hasAmendmentMarks(deps.doc.sections) ||
+          scanMarksUnreliable(deps.doc.scan)
+        ) {
+          return runChangesChip(chip, docId, deps, options);
+        }
+        return runRetrieveChip(
+          WHAT_CHANGES_BY_INSTRUCTION,
+          docId,
+          deps,
+          options,
+        );
+      }
+      return runRetrieveChip(chip, docId, deps, options);
   }
 }
 

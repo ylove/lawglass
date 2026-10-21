@@ -71,6 +71,33 @@ const whatChanges = defineChip({
 });
 
 /**
+ * What does it change? (for bills with no strike/underline marks)
+ * Federal bills state their changes as instructions ("Section 5 is amended by striking X and
+ * inserting Y", "is amended by adding at the end the following", "is repealed"), so the spans
+ * path above finds nothing. The instruction verbs are predictable literal phrases, so sparse
+ * search gets 75% of the vote, as in `penalties`. No chunk-type filter: an instruction sits in
+ * whatever section carries it. The queries are keyword bags, so the merged candidates get one
+ * cross-encoder pass against the question. Same id and label as `whatChanges`: it is the same
+ * chip answered differently, so it is deliberately NOT in `CHIPS` (chip-runner.ts picks it).
+ */
+export const WHAT_CHANGES_BY_INSTRUCTION = defineChip({
+  id: 'what-changes',
+  label: 'What does it change?',
+  strategy: 'retrieve',
+  queries: [
+    'is amended by striking and inserting',
+    'is amended by adding at the end the following',
+    'is amended by inserting after',
+    'is repealed',
+    'is amended to read as follows',
+    'is amended by redesignating',
+  ],
+  retrieval: { mode: 'hybrid', sparseWeight: 0.75, topK: 10 },
+  answerInstruction:
+    'The excerpts are the bill\'s instructions for changing existing law. Group your answer by the bill\'s section, in the order given. For each change, name the law being changed (the Act or U.S. Code section the excerpt names) and say in plain words what the change does: what wording is removed, what is added, and what new rule results. Quoted text after "striking" is old wording being removed; never describe it as something the law will now say. If an excerpt creates a new rule or program instead of amending a law, say that. Do not guess at existing-law wording the excerpts do not quote.',
+});
+
+/**
  * Who does it affect?
  * A vague question with no distinctive keywords, so the best bet is hybrid candidates
  * re-ordered by the cross-encoder reranker.
