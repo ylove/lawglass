@@ -118,6 +118,19 @@
   margin: 0.75rem 0;
   font-size: 0.85rem;
 }
+.history-details {
+  margin: 0.6rem 0 0;
+  font-size: 0.9rem;
+}
+.history-details summary {
+  cursor: pointer;
+  color: var(--muted);
+  margin-bottom: 0.6rem;
+}
+/* Long sponsor names such as "Sen. Paul, Rand [R-KY]" must wrap, not widen a 390px phone. */
+.history .timeline li {
+  overflow-wrap: anywhere;
+}
 .history .btn {
   width: 100%;
 }

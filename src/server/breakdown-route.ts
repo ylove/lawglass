@@ -3,6 +3,7 @@
  * Kept out of app.ts, which several other changes are editing; app.ts registers them with one line.
  */
 import type { Context, Hono } from 'hono';
+import type { BreakdownLog } from '../core/breakdown/generate.js';
 import type { CliRuntime } from '../cli/runtime.js';
 import { AppError, isAppError } from '../core/model/index.js';
 import type { SummaryService } from './summary.js';
@@ -34,6 +35,7 @@ export function registerBreakdownRoutes(
   runtime: CliRuntime,
   options: {
     publicMode: boolean;
+    log?: BreakdownLog | undefined;
     now?: (() => number) | undefined;
     summary: SummaryService;
     waitMs?: number | undefined;
@@ -46,6 +48,7 @@ export function registerBreakdownRoutes(
     options.service ??
     createBreakdownService(runtime, {
       publicMode: options.publicMode,
+      log: options.log,
       now,
       waitMs: options.waitMs,
       afterSummary: settledSummary(options.summary),

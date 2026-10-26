@@ -1,20 +1,33 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   breakdownProvider,
   listedIds,
 } from '../../../tests/support/breakdown-provider.js';
 import { MockProvider } from '../llm/mock.js';
-import { AppError, type LlmTextPart } from '../model/index.js';
+import { AppError, messageText, type LlmTextPart } from '../model/index.js';
+import { envVar } from '../brand.js';
+import { trustMarkers } from '../answer/markers.js';
+import { fleschKincaidGrade, stripCitations } from '../answer/readability.js';
+import {
+  PLAIN_LANGUAGE_INSTRUCTION,
+  REGENERATION_VERSION,
+} from '../answer/regenerate.js';
+import { promptVersion, WHOLE_SYSTEM_PROMPT } from '../answer/prompt.js';
+import { UNIT_RULES_VERSION } from './units.js';
 import {
   BREAKDOWN_INSTRUCTION,
   BREAKDOWN_PROMPT_VERSION,
+  breakdownPromptVersion,
   EXCERPT_BATCH_SIZE,
   generateBreakdown,
   MAX_BRIEF_CHARS,
   WHOLE_BATCH_SIZE,
   type BreakdownInput,
+  type BriefRegenerationEvent,
 } from './generate.js';
 import { chunkHit, DOC_ID, fakeBackend, sec } from './test-support.js';
+
+afterEach(() => vi.unstubAllEnvs());
 
 const metadata = {
   title: 'Community Gardens Act',
@@ -291,5 +304,212 @@ describe('generateBreakdown in excerpt mode', () => {
 describe('BREAKDOWN_PROMPT_VERSION', () => {
   it('is a stable short hash', () => {
     expect(BREAKDOWN_PROMPT_VERSION).toMatch(/^[a-f0-9]{12}$/);
+  });
+  it('includes the ceiling and the regeneration rule', () => {
+    const expected = (ceiling: number, regeneration: string) =>
+      promptVersion(
+        BREAKDOWN_INSTRUCTION,
+        WHOLE_SYSTEM_PROMPT,
+        JSON.stringify({
+          whole: WHOLE_BATCH_SIZE,
+          excerpt: EXCERPT_BATCH_SIZE,
+          max: MAX_BRIEF_CHARS,
+          units: UNIT_RULES_VERSION,
+          ceiling,
+          regeneration,
+        }),
+      );
+    expect(breakdownPromptVersion(8)).toBe(expected(8, REGENERATION_VERSION));
+    expect(breakdownPromptVersion(8)).not.toBe(expected(8, 'old-rule'));
+    expect(breakdownPromptVersion(8)).not.toBe(breakdownPromptVersion(9));
+  });
+});
+
+const HARD =
+  'The Administrator shall promulgate regulations establishing eligibility requirements for participating municipalities, which must demonstrate substantial compliance with applicable environmental standards for ten years [S:sec-1].';
+const EASY = 'Towns must follow the rules for ten years [S:sec-1].';
+
+function rewriteProvider(second: string) {
+  const provider = breakdownProvider(new MockProvider());
+  provider.behavior = (req) => ({
+    briefs: listedIds(req.prompt).map((id) => ({
+      id,
+      text:
+        id !== 'sec-1'
+          ? `Towns get help [S:${id}].`
+          : messageText(req.prompt).includes('6th-grade reader')
+            ? second
+            : HARD,
+      example: 'available',
+    })),
+  });
+  return provider;
+}
+
+describe('brief reading-level regeneration', () => {
+  it.each(['whole', 'excerpts'] as const)(
+    'rewrites only high-grade units once with the same context in %s mode',
+    async (mode) => {
+      const provider = rewriteProvider(EASY);
+      const events: BriefRegenerationEvent[] = [];
+      const out = await generateBreakdown({
+        ...input(provider, 2, mode),
+        log: (e) => events.push(e),
+      });
+      expect(fleschKincaidGrade(stripCitations(HARD))).toBeGreaterThan(8);
+      expect(out.briefs[0]?.text).toBe(EASY);
+      expect(out.briefs[0]?.readingGrade).toBeLessThan(8);
+      expect(provider.breakdownCalls).toBe(2);
+      expect(out.usage).toEqual({ inputTokens: 22, outputTokens: 26 });
+      expect(events).toEqual([
+        { event: 'brief_regeneration', rewritten: 1, refused: 0 },
+      ]);
+      const [first, second] = provider.requests;
+      expect(second?.system).toBe(first?.system);
+      expect(listedIds(first!.prompt)).toEqual(['sec-1', 'sec-2']);
+      expect(listedIds(second!.prompt)).toEqual(['sec-1']);
+      // Whole-bill prompts XML-escape the task text; excerpt prompts do not.
+      const escaped = PLAIN_LANGUAGE_INSTRUCTION.replaceAll('"', '&quot;');
+      const sent = messageText(second!.prompt);
+      expect(
+        sent.includes(PLAIN_LANGUAGE_INSTRUCTION) || sent.includes(escaped),
+      ).toBe(true);
+      if (mode === 'whole')
+        expect(parts(second!.prompt)[0]).toEqual(parts(first!.prompt)[0]);
+      else
+        expect(messageText(second!.prompt).split('</excerpts>')[0]).toBe(
+          messageText(first!.prompt).split('</excerpts>')[0],
+        );
+    },
+  );
+
+  it.each([
+    ['not simpler', HARD],
+    ['no citation', 'Towns get help.'],
+    ['another part only', 'Towns get help [S:sec-2].'],
+    ['new warning', `${EASY} Towns get help [S:missing].`],
+    ['too long', `${'Towns get help. '.repeat(90)} [S:sec-1]`],
+    ['unmeasurable', '[S:sec-1]'],
+  ])('keeps the original when the rewrite has %s', async (_, second) => {
+    const provider = rewriteProvider(second);
+    const events: BriefRegenerationEvent[] = [];
+    const out = await generateBreakdown({
+      ...input(provider, 2),
+      log: (e) => events.push(e),
+    });
+    expect(provider.breakdownCalls).toBe(2);
+    expect(out.briefs[0]?.text).toBe(HARD);
+    expect(out.dropped).toBe(0);
+    expect(events).toEqual([
+      { event: 'brief_regeneration', rewritten: 0, refused: 1 },
+    ]);
+  });
+
+  it.each([
+    ['Towns must follow the rules for ten years [S:sec-1].', true],
+    ['Towns must follow the rules for fifteen years [S:sec-1].', false],
+    ['Towns must follow the rules [S:sec-1].', false],
+  ])('applies the amendment guard per unit: %s', async (second, accepted) => {
+    const provider = rewriteProvider(second);
+    const args = input(provider, 2);
+    const amended = chunkHit(
+      'sec-1',
+      'Towns get [struck]fifteen years[/struck] [inserted]ten years[/inserted].',
+    );
+    trustMarkers(amended.chunk);
+    // Another unit's live wording must not hide a struck-only value in this one.
+    args.context.hits = [
+      amended,
+      chunkHit('sec-2', 'Towns get fifteen years.'),
+    ];
+    const out = await generateBreakdown(args);
+    expect(out.briefs[0]?.text).toBe(accepted ? second : HARD);
+  });
+
+  it('keeps every cited section and the original example choice', async () => {
+    const provider = rewriteProvider(EASY);
+    let call = 0;
+    provider.behavior = () => ({
+      briefs: [
+        {
+          id: 'sec-1',
+          text: call++ === 0 ? `${HARD} Reports are due [S:sec-2].` : EASY,
+          example: 'none',
+        },
+      ],
+    });
+    const out = await generateBreakdown(input(provider, 2));
+    expect(out.briefs[0]?.text).toContain('[S:sec-2]');
+    const accepted = rewriteProvider(EASY);
+    call = 0;
+    accepted.behavior = () => ({
+      briefs: [
+        {
+          id: 'sec-1',
+          text: call++ === 0 ? HARD : EASY,
+          example: call === 1 ? 'none' : 'available',
+        },
+      ],
+    });
+    expect(
+      (await generateBreakdown(input(accepted, 1))).briefs[0]?.example,
+    ).toBe('none');
+  });
+
+  it('makes no extra call when briefs are within the ceiling or the ceiling is zero', async () => {
+    const easy = breakdownProvider(new MockProvider());
+    const events: BriefRegenerationEvent[] = [];
+    await generateBreakdown({ ...input(easy, 2), log: (e) => events.push(e) });
+    expect(easy.breakdownCalls).toBe(1);
+    vi.stubEnv(envVar('READING_GRADE_MAX'), '0');
+    const disabled = rewriteProvider(EASY);
+    expect((await generateBreakdown(input(disabled, 1))).briefs[0]?.text).toBe(
+      HARD,
+    );
+    expect(disabled.breakdownCalls).toBe(1);
+    expect(events).toEqual([]);
+  });
+
+  it('does not retry a rewrite that is still above the ceiling', async () => {
+    const second =
+      'The department must establish eligibility rules for towns that want to participate [S:sec-1].';
+    const provider = rewriteProvider(second);
+    expect(fleschKincaidGrade(stripCitations(second))).toBeGreaterThan(8);
+    expect((await generateBreakdown(input(provider, 1))).briefs[0]?.text).toBe(
+      second,
+    );
+    expect(provider.breakdownCalls).toBe(2);
+  });
+
+  it.each(['malformed', 'error', 'missing'] as const)(
+    'keeps originals on a %s rewrite without retrying',
+    async (failure) => {
+      const provider = rewriteProvider(EASY);
+      let call = 0;
+      provider.behavior = () => {
+        if (call++ === 0)
+          return { briefs: [{ id: 'sec-1', text: HARD, example: 'none' }] };
+        if (failure === 'error') throw new AppError('PROVIDER_ERROR');
+        return { briefs: failure === 'missing' ? [] : 'bad' };
+      };
+      const out = await generateBreakdown(input(provider, 1));
+      expect(out.briefs[0]?.text).toBe(HARD);
+      expect(provider.breakdownCalls).toBe(2);
+    },
+  );
+
+  it('rethrows a caller abort during the rewrite', async () => {
+    const provider = rewriteProvider(EASY);
+    const controller = new AbortController();
+    provider.gate = () => {
+      if (provider.breakdownCalls === 2) {
+        controller.abort();
+        controller.signal.throwIfAborted();
+      }
+      return Promise.resolve();
+    };
+    await expect(
+      generateBreakdown({ ...input(provider, 1), signal: controller.signal }),
+    ).rejects.toThrow();
   });
 });

@@ -23,13 +23,20 @@ import { wholeBillEffort, type DocumentContext } from '../answer/context.js';
 import {
   buildPrompt,
   promptVersion,
-  SYSTEM_PROMPT,
   WHOLE_SYSTEM_PROMPT,
 } from '../answer/prompt.js';
+import {
+  PLAIN_LANGUAGE_INSTRUCTION,
+  readingGradeCeiling,
+  REGENERATION_TIMEOUT_MS,
+  REGENERATION_VERSION,
+  refuseRegeneration,
+} from '../answer/regenerate.js';
 import { fleschKincaidGrade, stripCitations } from '../answer/readability.js';
 import { jsonSchema, validateObject } from '../llm/shared.js';
 import {
   AppError,
+  type AnswerWarning,
   type LlmProvider,
   type NormalizedDoc,
   type RetrievalBackend,
@@ -70,20 +77,36 @@ export const BriefBatch = z.object({
 });
 export type BriefBatch = z.infer<typeof BriefBatch>;
 
-/** Changing the instruction, batching or either system prompt invalidates cached breakdowns. */
-export const BREAKDOWN_PROMPT_VERSION = promptVersion(
-  BREAKDOWN_INSTRUCTION,
-  WHOLE_SYSTEM_PROMPT,
-  JSON.stringify({
-    whole: WHOLE_BATCH_SIZE,
-    excerpt: EXCERPT_BATCH_SIZE,
-    max: MAX_BRIEF_CHARS,
-    units: UNIT_RULES_VERSION,
-  }),
-);
+/** Changing the prompts, reading rules or batching invalidates cached breakdowns. */
+export function breakdownPromptVersion(
+  ceiling = readingGradeCeiling(),
+): string {
+  return promptVersion(
+    BREAKDOWN_INSTRUCTION,
+    WHOLE_SYSTEM_PROMPT,
+    JSON.stringify({
+      whole: WHOLE_BATCH_SIZE,
+      excerpt: EXCERPT_BATCH_SIZE,
+      max: MAX_BRIEF_CHARS,
+      units: UNIT_RULES_VERSION,
+      ceiling,
+      regeneration: REGENERATION_VERSION,
+    }),
+  );
+}
+
+export const BREAKDOWN_PROMPT_VERSION = breakdownPromptVersion();
+
+export interface BriefRegenerationEvent {
+  event: 'brief_regeneration';
+  rewritten: number;
+  refused: number;
+}
+export type BreakdownLog = (event: BriefRegenerationEvent) => void;
 
 export interface BreakdownInput {
   provider: LlmProvider;
+  log?: BreakdownLog | undefined;
   docId: string;
   backend: RetrievalBackend;
   doc: Pick<
@@ -122,12 +145,17 @@ function batchQuestion(units: readonly Section[]): string {
     .join('\n')}`;
 }
 
+interface CheckedBrief {
+  brief: SectionBrief;
+  warnings: AnswerWarning[];
+}
+
 /** Validate one model brief against the sections that were in the prompt. */
 function toBrief(
   unit: Section,
   raw: BriefBatch['briefs'][number],
   hits: readonly SearchHit[],
-): SectionBrief | undefined {
+): CheckedBrief | undefined {
   const allowed = hits.flatMap((h) => coveredSectionIds(h.chunk));
   const checked = validateCitations(
     raw.text,
@@ -148,13 +176,16 @@ function toBrief(
   )
     return undefined;
   return {
-    sectionId: unit.id,
-    ...(unit.num ? { num: unit.num } : {}),
-    ...(unit.heading ? { heading: unit.heading } : {}),
-    text,
-    citations,
-    readingGrade: fleschKincaidGrade(stripCitations(text)),
-    example: raw.example,
+    warnings: checked.warnings,
+    brief: {
+      sectionId: unit.id,
+      ...(unit.num ? { num: unit.num } : {}),
+      ...(unit.heading ? { heading: unit.heading } : {}),
+      text,
+      citations,
+      readingGrade: fleschKincaidGrade(stripCitations(text)),
+      example: raw.example,
+    },
   };
 }
 
@@ -162,6 +193,7 @@ export async function generateBreakdown(
   input: BreakdownInput,
 ): Promise<BreakdownOutput> {
   jsonSchema(BriefBatch);
+  const ceiling = readingGradeCeiling();
   const whole = input.context.mode === 'whole';
   const size = whole ? WHOLE_BATCH_SIZE : EXCERPT_BATCH_SIZE;
   const briefs: SectionBrief[] = [];
@@ -172,20 +204,9 @@ export async function generateBreakdown(
   for (let i = 0; i < input.units.length; i += size) {
     input.signal?.throwIfAborted();
     const batch = input.units.slice(i, i + size);
-    let hits: SearchHit[];
-    let system: string;
-    let prompt: Parameters<LlmProvider['generateObject']>[0]['prompt'];
+    let contextHits: readonly SearchHit[];
     if (whole) {
-      const built = buildPrompt({
-        mode: 'whole',
-        question: batchQuestion(batch),
-        hits: input.context.hits,
-        metadata: input.doc.metadata,
-        chipInstruction: BREAKDOWN_INSTRUCTION,
-      });
-      hits = built.hits;
-      system = built.system;
-      prompt = built.user;
+      contextHits = input.context.hits;
     } else {
       const contexts = [];
       for (const unit of batch) {
@@ -201,16 +222,35 @@ export async function generateBreakdown(
         backendUsage.rerankUnits += c.usage.rerankUnits;
         contexts.push(c);
       }
-      const built = buildPrompt({
-        question: batchQuestion(batch),
-        hits: contexts.flatMap(unitExcerpts),
-        metadata: input.doc.metadata,
-        chipInstruction: BREAKDOWN_INSTRUCTION,
-      });
-      hits = built.hits;
-      system = SYSTEM_PROMPT;
-      prompt = built.user;
+      contextHits = contexts.flatMap(unitExcerpts);
     }
+    const makePrompt = (units: readonly Section[], instruction: string) =>
+      buildPrompt({
+        mode: input.context.mode,
+        question: batchQuestion(units),
+        hits: contextHits,
+        metadata: input.doc.metadata,
+        chipInstruction: instruction,
+      });
+    const built = makePrompt(batch, BREAKDOWN_INSTRUCTION);
+    const hits = built.hits;
+    const call = async (
+      prompt: typeof built,
+      signal: AbortSignal | undefined = input.signal,
+    ): Promise<BriefBatch> => {
+      const result = await input.provider.generateObject({
+        system: prompt.system,
+        prompt: prompt.user,
+        schema: BriefBatch,
+        schemaName: 'section_briefs',
+        maxTokens: BATCH_MAX_TOKENS,
+        ...(whole ? { effort: wholeBillEffort() } : {}),
+        signal,
+      });
+      usage.inputTokens += result.usage.inputTokens;
+      usage.outputTokens += result.usage.outputTokens;
+      return validateObject(BriefBatch, result.object);
+    };
 
     // One malformed reply is retried once; a batch that stays malformed loses its parts (they
     // are counted as dropped), not the whole breakdown. Anything else (a budget, an abort, a
@@ -218,18 +258,7 @@ export async function generateBreakdown(
     let reply: BriefBatch | undefined;
     for (let attempt = 0; attempt < 2 && !reply; attempt++) {
       try {
-        const result = await input.provider.generateObject({
-          system,
-          prompt,
-          schema: BriefBatch,
-          schemaName: 'section_briefs',
-          maxTokens: BATCH_MAX_TOKENS,
-          ...(whole ? { effort: wholeBillEffort() } : {}),
-          signal: input.signal,
-        });
-        usage.inputTokens += result.usage.inputTokens;
-        usage.outputTokens += result.usage.outputTokens;
-        reply = validateObject(BriefBatch, result.object);
+        reply = await call(built);
       } catch (error) {
         if (!(
           error instanceof AppError && error.code === 'PROVIDER_BAD_OUTPUT'
@@ -245,16 +274,68 @@ export async function generateBreakdown(
     // Match replies to the batch by id (a stray or repeated id is ignored), then keep the
     // bill's own order whatever order the model answered in.
     const byId = new Map(batch.map((u) => [u.id, u]));
-    const finished = new Map<string, SectionBrief>();
+    const finished = new Map<string, CheckedBrief>();
     for (const raw of reply.briefs) {
       const unit = byId.get(raw.id);
       if (!unit || finished.has(raw.id)) continue;
       const brief = toBrief(unit, raw, hits);
       if (brief) finished.set(raw.id, brief);
     }
+    const difficult = batch.filter((unit) => {
+      const grade = finished.get(unit.id)?.brief.readingGrade;
+      return ceiling > 0 && grade != null && grade > ceiling;
+    });
+    if (difficult.length > 0) {
+      let rewritten = 0;
+      const timeout = AbortSignal.timeout(REGENERATION_TIMEOUT_MS);
+      const signal = input.signal
+        ? AbortSignal.any([input.signal, timeout])
+        : timeout;
+      try {
+        const second = await call(
+          makePrompt(
+            difficult,
+            `${BREAKDOWN_INSTRUCTION} ${PLAIN_LANGUAGE_INSTRUCTION}`,
+          ),
+          signal,
+        );
+        const seen = new Set<string>();
+        for (const raw of second.briefs) {
+          const unit = difficult.find((u) => u.id === raw.id);
+          if (!unit || seen.has(raw.id)) continue;
+          seen.add(raw.id);
+          const first = finished.get(raw.id);
+          const next = toBrief(unit, raw, hits);
+          if (
+            !first ||
+            !next ||
+            refuseRegeneration(
+              { ...first.brief, warnings: first.warnings, declined: false },
+              { ...next.brief, warnings: next.warnings, declined: false },
+              hits,
+            )
+          )
+            continue;
+          finished.set(raw.id, {
+            ...next,
+            brief: { ...next.brief, example: first.brief.example },
+          });
+          rewritten++;
+        }
+      } catch (error) {
+        if (input.signal?.aborted) throw error;
+        // A failed optional rewrite must not discard validated briefs. A call that never
+        // returned usage may still have been billed; its cost is unknown to us.
+      }
+      input.log?.({
+        event: 'brief_regeneration',
+        rewritten,
+        refused: difficult.length - rewritten,
+      });
+    }
     for (const unit of batch) {
       const brief = finished.get(unit.id);
-      if (brief) briefs.push(brief);
+      if (brief) briefs.push(brief.brief);
       else dropped++;
     }
     input.onProgress?.([...briefs]);
