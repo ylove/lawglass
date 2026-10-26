@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, expect, test } from 'vitest';
 import { BRAND } from '../core/brand.js';
-import { gateAssets, gatePage } from './gate.js';
+import { gateAssets, gatePage, quickstartHtml } from './gate.js';
 
 let root: string;
 beforeEach(async () => {
@@ -14,7 +14,7 @@ beforeEach(async () => {
     'apple-touch-icon.png',
     'og-image.png',
     'robots.txt',
-    'gate.css',
+    'site.css',
   ])
     await writeFile(join(root, file), file);
 });
@@ -22,17 +22,16 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
-test('gate is branded, static and has social metadata without inventing an origin', async () => {
+test('gate is the landing page: static, noindex, with social metadata and no invented origin', async () => {
   const html = await gatePage(undefined, root);
-  expect(html).toContain(`<h1>${BRAND.displayName}</h1>`);
+  expect(html).toContain('<h1>Know what a bill really says.</h1>');
   expect(html).toContain(BRAND.repositoryUrl);
-  expect(html).toContain('This is a private preview.');
   expect(html).toContain('content="noindex"');
   expect(html).toContain('property="og:title"');
   expect(html).toContain('property="og:description"');
   expect(html).toContain('name="twitter:card" content="summary"');
-  expect(html).toContain('<link rel="stylesheet" href="/gate.css">');
-  expect(html).toContain('<img src="/favicon.svg" alt=""');
+  expect(html).toContain('<link rel="stylesheet" href="/site.css">');
+  expect(html).toContain('<link rel="icon" href="/favicon.svg"');
   expect(html).not.toMatch(
     /<script|<style|style=|id="root"|property="og:(image|url)"/,
   );
@@ -40,7 +39,7 @@ test('gate is branded, static and has social metadata without inventing an origi
 
 test('the description names every jurisdiction a hosted server reads', async () => {
   const html = await gatePage(undefined, root);
-  expect(html).toContain(`<p>${BRAND.description}</p>`);
+  expect(html).toContain(`content="${BRAND.description}"`);
   for (const place of ['federal', 'Ohio', 'New York', 'New Jersey'])
     expect(BRAND.description).toContain(place);
 });
@@ -59,6 +58,9 @@ test('uses only a configured http(s) origin and escapes HTML', async () => {
   );
   expect(html).toContain(
     'property="og:url" content="https://preview.example/"',
+  );
+  expect(await quickstartHtml('https://preview.example', root)).toContain(
+    'property="og:url" content="https://preview.example/quickstart"',
   );
   expect(html).not.toContain('secret');
   for (const origin of ['invalid', 'javascript:alert(1)', 'file:///private'])
@@ -79,9 +81,8 @@ test('missing branding assets leave a readable gate and text-only social metadat
   // A directory at an asset path must also count as absent.
   await mkdir(join(root, 'favicon.svg'));
   const html = await gatePage('https://preview.example', root);
-  expect(html).toContain(`<h1>${BRAND.displayName}</h1>`);
-  expect(html).toContain('This is a private preview.');
-  expect(html).toContain('<link rel="stylesheet" href="/gate.css">');
+  expect(html).toContain('<h1>Know what a bill really says.</h1>');
+  expect(html).toContain('<link rel="stylesheet" href="/site.css">');
   expect(html).toContain('name="twitter:card" content="summary"');
   expect(html).not.toMatch(/<img|rel="icon"|apple-touch-icon|og:image/);
   expect(await gatePage()).not.toMatch(/<img|<link|og:image/);
@@ -101,7 +102,7 @@ test('serves only existing allowlisted assets and never the SPA', async () => {
       'apple-touch-icon.png',
       'og-image.png',
       'robots.txt',
-      'gate.css',
+      'site.css',
       'index.html',
       'assets/app.js',
     ])
@@ -113,7 +114,7 @@ test('serves only existing allowlisted assets and never the SPA', async () => {
       'apple-touch-icon.png',
       'og-image.png',
       'robots.txt',
-      'gate.css',
+      'site.css',
     ]) {
       const response = await app.request(`/${file}`);
       expect(response.status).toBe(200);
@@ -124,10 +125,10 @@ test('serves only existing allowlisted assets and never the SPA', async () => {
       'index.html',
       'assets/app.js',
       'unknown',
-      'gate.css/extra',
+      'site.css/extra',
       '..%2fpackage.json',
-      'gate.css/../index.html',
-      'gate.css%2f..%2findex.html',
+      'site.css/../index.html',
+      'site.css%2f..%2findex.html',
       'favicon.svg/extra',
       'favicon.svg.bak',
     ])

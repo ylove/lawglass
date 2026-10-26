@@ -354,6 +354,7 @@ export function parseGovinfoBillStatus(
       date: date(field(summary.item, 'actionDate')),
     };
   }
+  const title = officialTitle(bill);
   const history = BillHistory.parse({
     officialSummary,
     // Stored versions are oldest first. BILLSTATUS lists them newest first, so reverse.
@@ -383,11 +384,7 @@ export function parseGovinfoBillStatus(
       .map(amendment)
       .filter((item) => item !== undefined),
     sources: [{ host: 'www.govinfo.gov', url: plan.billStatusUrl, fetchedAt }],
-  });
-  const title = officialTitle(bill);
-  return {
-    history,
-    sponsorProfiles,
     ...(title ? { officialTitle: title } : {}),
-  };
+  });
+  return { history, sponsorProfiles };
 }

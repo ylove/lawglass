@@ -1,5 +1,5 @@
 import { createApp as createRawApp } from './app.js';
-import { SESSION_COOKIE } from './session.js';
+import { sessionCookieName } from './session.js';
 import { MemoryBackend } from '../../tests/contracts/memory-backend.js';
 import { ScriptedProvider } from '../../tests/contracts/scripted-provider.js';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -882,7 +882,7 @@ describe('HTTP security boundary', () => {
     return { a, provider, backend };
   };
   const securityToken = 'a'.repeat(43);
-  const cookie = `${SESSION_COOKIE}=${securityToken}`;
+  const cookie = `${sessionCookieName(4317)}=${securityToken}`;
 
   test.each([
     '127.0.0.2',
@@ -981,7 +981,7 @@ describe('HTTP security boundary', () => {
     const { a } = secureApp();
     for (const headers of [
       new Headers(),
-      new Headers({ cookie: `${SESSION_COOKIE}=wrong` }),
+      new Headers({ cookie: `${sessionCookieName(4317)}=wrong` }),
     ]) {
       const response = await a.request(path, { headers });
       expect(response.status).toBe(401);
@@ -1047,5 +1047,49 @@ describe('HTTP security boundary', () => {
         })
       ).status,
     ).toBe(403);
+  });
+});
+
+test('the quickstart is served in local mode even without a session cookie', async () => {
+  const res = await app({ sessionToken: 'local-token' }).request('/quickstart');
+  expect(res.status).toBe(200);
+  expect(await res.text()).toContain('on your computer');
+});
+
+describe('public site assets in local mode', () => {
+  let root: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'local-site-'));
+    await writeFile(join(root, 'site.css'), 'body{}');
+    await writeFile(join(root, 'secret.js'), 'SECRET');
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  test('a signed-out visitor gets the allowlisted files, and nothing else', async () => {
+    const a = createRawApp(env.runtime, {
+      sessionToken: 'local-token',
+      webRoot: root,
+      localOnly: false,
+    });
+    const css = await a.request('/site.css');
+    expect(css.status).toBe(200);
+    expect(css.headers.get('content-type')).toContain('text/css');
+    expect((await a.request('/api/docs')).status).toBe(401);
+    expect(await (await a.request('/secret.js')).text()).not.toContain(
+      'SECRET',
+    );
+  });
+
+  test('a key in the query string still runs the session exchange first', async () => {
+    const a = createRawApp(env.runtime, {
+      sessionToken: 'local-token',
+      webRoot: root,
+      localOnly: false,
+    });
+    const exchange = await a.request('/site.css?k=local-token');
+    expect(exchange.status).toBe(302);
+    expect(exchange.headers.get('set-cookie')).toContain('=');
   });
 });

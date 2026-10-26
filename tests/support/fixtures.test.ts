@@ -84,3 +84,42 @@ test('registers a skipped suite with fetch instructions when absent', () => {
   );
   expect(suite.run).not.toHaveBeenCalled();
 });
+
+test('asynchronous fixture suites run on a text match despite differing raw bytes, and skip changed text', async () => {
+  const { fixturePathAsync, describeWithFixtureAsync } =
+    await import('./fixtures.js');
+  const { normalizedFixtureSha256 } =
+    await import('../../src/eval/fixture-integrity.js');
+  const html =
+    '<article><h1>Section 1. Notices.</h1><p>Each steward shall send a notice.</p></article>';
+  const entry = {
+    ...fixture,
+    format: 'html' as const,
+    normalizedTextSha256: await normalizedFixtureSha256(Buffer.from(html), {
+      format: 'html',
+      url: fixture.url,
+    }),
+  };
+  vi.mocked(readManifest).mockReturnValue({
+    $comment: 'Test',
+    fixtures: [entry],
+  });
+  vi.mocked(readFileSync).mockReturnValue(
+    Buffer.from(`<script src="random-12345.js"></script>${html}`),
+  );
+  const suite = { run: vi.fn(), skip: vi.fn() };
+  const fn = vi.fn();
+  expect(await fixturePathAsync(fixture.name)).toBe(
+    join(downloadsDirectory, 'sample-bill.html'),
+  );
+  await describeWithFixtureAsync(fixture.name, fn, suite);
+  expect(suite.run).toHaveBeenCalledWith(fixture.name, fn);
+  vi.mocked(readFileSync).mockReturnValue(
+    Buffer.from(html.replace('steward', 'farmer')),
+  );
+  await describeWithFixtureAsync(fixture.name, fn, suite);
+  expect(suite.skip).toHaveBeenCalledWith(
+    expect.stringContaining('fixture absent or invalid'),
+    fn,
+  );
+});

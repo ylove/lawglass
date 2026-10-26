@@ -259,6 +259,26 @@ test('scoreAnswers combines every answer metric', () => {
   expect(removalAcknowledgedRate).toBe(1);
 });
 
+test('scoreAnswers scores soft declines and reports the remaining unanswerable answers separately', () => {
+  const answers = [
+    "The excerpts don't show any tax cuts. They describe grants. [S:sec-3/a]",
+    'The tax cut is ten percent. [S:sec-3/a]',
+  ];
+  const scored = scoreAnswers(
+    answers.map((text) => ({
+      kind: 'unanswerable',
+      text,
+      declined: false,
+      validCitations: 1,
+      invalidCitations: 0,
+      readingGrade: 7,
+    })),
+    [],
+  );
+  expect(scored.metrics.declineRate).toBe(0.5);
+  expect(scored.inventedAnswerRate).toBe(0.5);
+});
+
 test('runs retrieval for every variant, leaves the backend clean and never fetches the network', async () => {
   const golden = await syntheticGolden();
   const messages: string[] = [];
