@@ -28,6 +28,7 @@ import {
   DocFormat,
   ScanStatus,
   ExternalRef,
+  HttpsUrl,
   SectionId,
   SourceLocation,
   Span,
@@ -157,6 +158,19 @@ export const DocDetail = z.object({
   hasLineNumbers: z.boolean(),
   /** Official history (summary, versions, actions, amendments), when available. */
   history: BillHistory.optional(),
+  /**
+   * Public pages on the official site where the full record lives, derived at request time
+   * from the document's own source (so history cached before this field existed gets them).
+   * Always https on the official host; absent when the source is not understood.
+   */
+  historyLinks: z
+    .object({
+      /** Every recorded action, e.g. Congress.gov "All Actions". */
+      actions: HttpsUrl.optional(),
+      /** Every amendment, e.g. Congress.gov "Amendments". */
+      amendments: HttpsUrl.optional(),
+    })
+    .optional(),
   /** One-line "what is this bill" shown before any question is asked. */
   preview: z
     .object({

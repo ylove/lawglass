@@ -9,6 +9,10 @@ import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { sniffFormat } from '../core/fetch/index.js';
 import type { Fetcher } from '../core/pipeline/index.js';
+import {
+  FixtureIntegrity,
+  verifyFixtureIntegrity,
+} from './fixture-integrity.js';
 import { AppError } from '../core/model/index.js';
 
 export interface EvalFixture {
@@ -42,10 +46,16 @@ export function memoryFetcher(fixtures: readonly EvalFixture[]): Fetcher {
 
 const Manifest = z.object({
   fixtures: z.array(
-    z.object({
-      name: z.string(),
-      format: z.enum(['xml', 'pdf', 'html', 'text']),
-    }),
+    FixtureIntegrity.partial()
+      .extend({
+        name: z.string(),
+        format: FixtureIntegrity.shape.format,
+      })
+      .refine(
+        (entry) =>
+          (!entry.sha256 && !entry.bytes && !entry.normalizedTextSha256) ||
+          FixtureIntegrity.safeParse(entry).success,
+      ),
   ),
 });
 
@@ -88,6 +98,16 @@ export async function readDownloadedFixture(
   const path = join(fixturesDir, 'downloads', fileName(name, entry.format));
   try {
     const bytes = new Uint8Array(await readFile(path));
+    if (entry.sha256) {
+      const verification = await verifyFixtureIntegrity(
+        bytes,
+        FixtureIntegrity.parse(entry),
+      );
+      if (!verification.matches)
+        return {
+          missing: 'fixture fingerprint mismatch (run npm run fixtures:fetch)',
+        };
+    }
     return {
       fixture: {
         name,
@@ -97,6 +117,8 @@ export async function readDownloadedFixture(
       },
     };
   } catch {
-    return { missing: 'not downloaded (run npm run fixtures:fetch)' };
+    return {
+      missing: 'not downloaded or unreadable (run npm run fixtures:fetch)',
+    };
   }
 }

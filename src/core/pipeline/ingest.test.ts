@@ -23,7 +23,12 @@ import {
 } from '../../../tests/support/pipeline-env.js';
 import { documentContext } from '../answer/context.js';
 import { AppError, messageText, type AnswerResult } from '../model/index.js';
-import { ingest, type IngestDeps, type IngestProgress } from './ingest.js';
+import {
+  hostLabel,
+  ingest,
+  type IngestDeps,
+  type IngestProgress,
+} from './ingest.js';
 import { Limits } from './limits.js';
 
 let env: PipelineEnv;
@@ -123,6 +128,50 @@ test('ingests plain text', async () => {
   expect(result.stats.sectionCount).toBeGreaterThan(3);
   // No title in the text, so the default label falls back to the URL's last segment.
   expect(result.doc.label).toBe('gardens.txt');
+});
+
+test.each([
+  [
+    'https://search-prod.lis.state.oh.us/api/v2/general_assembly_136/legislation/sb113/00_IN/pdf/',
+    'sb113',
+  ],
+  [
+    'https://search-prod.lis.state.oh.us/api/v2/general_assembly_136/legislation/hb62/01_EN/pdf/',
+    'hb62',
+  ],
+  [
+    'https://www.govinfo.gov/content/pkg/BILLS-119s202is/pdf/',
+    'BILLS-119s202is',
+  ],
+  [
+    'https://www.govinfo.gov/content/pkg/BILLS-119s202is/xml/',
+    'BILLS-119s202is',
+  ],
+  [
+    'https://www.govinfo.gov/content/pkg/BILLS-119s202is/pdf/BILLS-119s202is.pdf',
+    'BILLS-119s202is.pdf',
+  ],
+  ['https://www.congress.gov/bill/119th-congress/senate-bill/202/text', '202'],
+  ['https://example.gov/bills/SB%20113/01_en/PDF/?download=1', 'SB 113'],
+  [
+    'https://example.gov/bill-5/html/htm/txt/text/download/file/files/view/content/latest/',
+    'bill-5',
+  ],
+  ['https://example.gov/pdf/xml/latest/', 'example.gov'],
+  ['https://example.gov/', 'example.gov'],
+  ['https://example.gov/gardens.txt', 'gardens.txt'],
+  ['https://example.gov/bill%ZZ/pdf/', ''],
+  ['invalid-url', ''],
+])('URL fallback labels skip generic segments: %s', (url, expected) => {
+  expect(hostLabel(url)).toBe(expected);
+});
+
+test('uses the bill segment as the default label for Ohio API text with no metadata', async () => {
+  const url =
+    'https://search-prod.lis.state.oh.us/api/v2/general_assembly_136/legislation/sb113/00_IN/pdf/';
+  env.serve(url, makeSectionedText(), 'text/plain');
+  const result = await ingest(url, deps());
+  expect(result.doc.label).toBe('sb113');
 });
 
 test('ingests a PDF through the injected parser and keeps page and line spans', async () => {
@@ -401,6 +450,26 @@ test('an aborted ingest stops without indexing', async () => {
       signal: controller.signal,
     }),
   ).rejects.toBeDefined();
+  expect(await env.registry.list()).toEqual([]);
+});
+
+test('ingest hands its signal to the backend, and a mid-embedding abort leaves no document (#221)', async () => {
+  env.serve('https://example.gov/s9001.xml', makeCongressionalBillXml());
+  const controller = new AbortController();
+  const real = env.backend.upsertChunks.bind(env.backend);
+  const spy = vi
+    .spyOn(env.backend, 'upsertChunks')
+    .mockImplementation((docId, chunks, onProgress, signal) => {
+      // The client disconnects while the backend is embedding.
+      controller.abort();
+      return real(docId, chunks, onProgress, signal);
+    });
+  await expect(
+    ingest('https://example.gov/s9001.xml', deps(), {
+      signal: controller.signal,
+    }),
+  ).rejects.toBeDefined();
+  expect(spy.mock.calls[0]?.[3]).toBe(controller.signal);
   expect(await env.registry.list()).toEqual([]);
 });
 

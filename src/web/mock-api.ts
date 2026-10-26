@@ -16,6 +16,8 @@ import {
   type DocSummary,
   type IngestEvent,
   type IngestRequest,
+  type PictureEntry,
+  type PicturesResponse,
   type Scenario,
   type ScenarioRequest,
   type ScanStatus,
@@ -24,6 +26,7 @@ import {
   type SponsorProfile,
   type SummaryResponse,
 } from '../core/model/index.js';
+import { listItems } from '../core/answer/list-items.js';
 import { BRAND } from '../core/brand.js';
 import { NO_EXAMPLE_NOTE } from '../core/breakdown/notes.js';
 import type { ApiClient } from './api.js';
@@ -193,7 +196,7 @@ const CHARTER_SUMMARY =
 
 const ANSWERS: Record<ChipId, string> = {
   summary:
-    'This bill requires water utilities to replace lead pipes and sets fines for missing the deadline [S:sec-4/b]. It takes effect on July 1, 2027 [S:sec-7].\n\nIt also defines the key terms it uses, such as "public water system" and "utility" [S:sec-2/a].',
+    'This bill requires water utilities to replace lead pipes and sets fines for missing the deadline [S:sec-4/b]. It takes effect on July 1, 2027 [S:sec-7].\n\nMain parts:\n- Who does the work: city-run utilities, private water companies, and companies the state approves [S:sec-2/a]\n- Money and reports: a utility must set aside money equal to the cost of each replacement, and report to the state every year [S:sec-5]\n- Deadlines and fines: ten years to replace each line, and up to $1,000 for each day late [S:sec-6]\n- Legal status: the act stays a draft until the council votes to pass it [S:sec-1]',
   'what-changes':
     'The bill shortens the deadline for replacing lead service lines from fifteen years to ten years [S:sec-4/b]. It also removes a rule that allowed notice by posting at the utility office [S:sec-4/b].',
   'who-affected':
@@ -369,10 +372,99 @@ const SAMPLE_BRIEFS: readonly {
   },
 ];
 
+/**
+ * Pictures for the sample briefs; the report brief (sec-5) stays plain text. As on the server,
+ * every label is made of words from the brief's own text.
+ */
+const BRIEF_PICTURE_PANELS: Record<string, PictureEntry['panels']> = {
+  'sec-4/b': [
+    {
+      left: { glyphs: ['water'], label: 'Lead line' },
+      link: 'to',
+      right: { glyphs: ['calendar'], label: 'Ten years' },
+    },
+    {
+      left: { glyphs: ['business'], label: 'Utility' },
+      link: 'to',
+      carry: 'mail',
+      right: { glyphs: ['house'], label: 'Household' },
+    },
+  ],
+  'sec-6': [
+    {
+      left: { glyphs: ['business'], label: 'Utility' },
+      link: 'to',
+      carry: 'money',
+      right: { glyphs: ['government'], label: '$1,000' },
+    },
+  ],
+};
+
+/**
+ * Pictures for the sample summary's bullets, in the grammar of core/model/picture.ts. The first
+ * two follow the product owner's examples (one source, three kinds of approval; money that must
+ * equal an amount set aside, plus a yearly report). The last bullet has no picture, so the page
+ * also shows an item that stays plain text. Labels use only words of the bullet they illustrate.
+ */
+const SUMMARY_PICTURE_PANELS: readonly PictureEntry['panels'][] = [
+  [
+    {
+      left: { glyphs: ['government'], label: 'City' },
+      link: 'to',
+      carry: 'water',
+      right: { glyphs: ['house'] },
+    },
+    {
+      left: { glyphs: ['business'], label: 'Private' },
+      link: 'to',
+      carry: 'water',
+      right: { glyphs: ['house'] },
+    },
+    {
+      left: { glyphs: ['business'], label: 'Companies' },
+      link: 'to',
+      carry: 'water',
+      right: { glyphs: ['house'] },
+      stamp: { glyph: 'seal', label: 'State' },
+    },
+  ],
+  [
+    {
+      left: { glyphs: ['coins'], label: 'Set aside' },
+      link: 'equals',
+      right: { glyphs: ['money'], label: 'Cost' },
+    },
+    {
+      left: { glyphs: ['calendar'], label: 'Every year' },
+      link: 'to',
+      carry: 'document',
+      right: { glyphs: ['government'], label: 'State' },
+    },
+  ],
+  [
+    {
+      left: { glyphs: ['water', 'calendar'], label: 'Ten years' },
+      link: 'none',
+      stamp: { glyph: 'clock' },
+    },
+    {
+      left: { glyphs: ['business'], label: 'Late' },
+      link: 'to',
+      carry: 'money',
+      right: { glyphs: ['government'], label: '$1,000' },
+    },
+  ],
+];
+
 const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
   new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(abortError());
+      return;
+    }
+    // A zero-delay stream should not accumulate one scheduled timer per word in tests.
+    if (ms <= 0) {
+      resolve();
       return;
     }
     const timer = setTimeout(resolve, ms);
@@ -425,6 +517,8 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
   const summariesStarted = new Set<string>();
   // How many times each breakdown / example has been looked at, so a poll sees it progress.
   const breakdownLooks = new Map<string, number>();
+  const summaryPictureLooks = new Map<string, number>();
+  const breakdownPictureLooks = new Map<string, number>();
   const exampleLooks = new Map<string, number>();
 
   const config: ClientConfig = {
@@ -695,6 +789,49 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
       if (summariesStarted.has(docId)) return cached();
       summariesStarted.add(docId);
       return { status: 'pending' };
+    },
+
+    // Same contract as GET /api/docs/:id/summary/pictures: pending on the first look, then the
+    // drawings for the sample summary's bullets (none for the charter's, which has no list).
+    // eslint-disable-next-line @typescript-eslint/require-await
+    async getSummaryPictures(docId): Promise<PicturesResponse> {
+      const doc = need(docId);
+      if (CHARTER_URL.test(doc.sourceUrl)) return { status: 'none' };
+      const looks = (summaryPictureLooks.get(docId) ?? 0) + 1;
+      summaryPictureLooks.set(docId, looks);
+      if (looks === 1 && !publicMode) return { status: 'pending' };
+      if (publicMode && docId !== SAMPLE_ID) return { status: 'disabled' };
+      const entries = listItems(ANSWERS.summary).flatMap(({ index, text }) => {
+        const panels = SUMMARY_PICTURE_PANELS[index];
+        return panels
+          ? [{ item: index, text, panels: structuredClone(panels) }]
+          : [];
+      });
+      return { status: 'cached', entries };
+    },
+
+    // Same contract as GET /api/docs/:id/breakdown/pictures: one picture per sample brief.
+    // eslint-disable-next-line @typescript-eslint/require-await
+    async getBreakdownPictures(docId): Promise<PicturesResponse> {
+      need(docId);
+      if (publicMode) return { status: 'disabled' };
+      const looks = (breakdownPictureLooks.get(docId) ?? 0) + 1;
+      breakdownPictureLooks.set(docId, looks);
+      if (looks === 1) return { status: 'pending' };
+      const entries: PictureEntry[] = SAMPLE_BRIEFS.flatMap((b, item) => {
+        const panels = BRIEF_PICTURE_PANELS[b.sectionId];
+        return panels
+          ? [
+              {
+                item,
+                text: b.text,
+                sectionId: b.sectionId,
+                panels: structuredClone(panels),
+              },
+            ]
+          : [];
+      });
+      return { status: 'cached', entries };
     },
 
     // Same contract as GET /api/docs/:id/breakdown: pending, then one part finished, then all.

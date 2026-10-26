@@ -38,8 +38,6 @@ describe('figure normalization', () => {
     expect(billContains(4, 'percent', '4 days')).toBe(false);
     expect(billContains(500, 'USD', '$50,00')).toBe(false);
     expect(textNumbers('abc123')).toEqual([]);
-    // A raw section id is not exempt: it fails closed rather than hiding amounts.
-    expect(numberTokens('sec-1').length).toBeGreaterThan(0);
   });
   it('normalizes spelled-out scales without treating one hundred as one', () => {
     expect(billContains(100, 'percent', 'one hundred percent')).toBe(true);
@@ -56,6 +54,57 @@ describe('figure normalization', () => {
       { value: 2, unit: 'bedroom' },
     ]);
   });
+  it.each([
+    '(sec-1)',
+    'See sec-12.',
+    'sec-4/b',
+    'sec-5747.01~2/a/1',
+    'sec-3-2a/a~3',
+    'article-iv/chapter-2/sec-12/a/1',
+    'preamble/1',
+  ])('treats parser section ids as labels: %s', (text) => {
+    expect(numberTokens(text)).toEqual([]);
+    const caption = `${text}: $777`;
+    expect(numberTokens(caption)).toEqual([
+      {
+        value: 777,
+        unit: 'usd',
+        start: caption.indexOf('$'),
+        end: caption.length,
+      },
+    ]);
+  });
+  it.each([
+    ['H.R.5009', 5009],
+    ['COVID-19', 19],
+    ['2nd', 2],
+    ['401(k)', 401],
+  ])('preserves the complete numeric token in %s', (text, value) => {
+    expect(textNumbers(text)).toEqual([{ value, unit: '' }]);
+  });
+  it.each([
+    ['tax4 percent', 4, 'percent', '4 percent'],
+    ['fee500 dollars', 500, 'usd', '500 dollars'],
+    ['rate4%', 4, 'percent', '4%'],
+    ['$500fee', 500, 'usd', '$500'],
+    ['fee500dollars', 500, 'usd', '500dollars'],
+    ['rate4percent', 4, 'percent', '4percent'],
+    ['fee$500', 500, 'usd', '$500'],
+    ['rate4.5%', 4.5, 'percent', '4.5%'],
+    ['rate-4percent', 4, 'percent', '4percent'],
+    ['rate-4 percent', 4, 'percent', '4 percent'],
+    ['a -4 percent change', -4, 'percent', '-4 percent'],
+    ['fee1,500 dollars', 1500, 'usd', '1,500 dollars'],
+    ['$2Mfee', 2000000, 'usd', '$2M'],
+  ] as const)(
+    'audits the whole letter-glued quantity %s',
+    (text, value, unit, token) => {
+      const start = text.indexOf(token);
+      expect(numberTokens(text)).toEqual([
+        { value, unit, start, end: start + token.length },
+      ]);
+    },
+  );
 });
 
 it.each([

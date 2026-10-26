@@ -202,25 +202,63 @@ function inline(
   return root.children;
 }
 
+function withFigure(
+  itemFigure:
+    ((item: { index: number; text: string }) => ReactNode) | undefined,
+  index: number,
+  text: string,
+  children: ReactNode[],
+  key: number,
+): ReactNode {
+  const figure = itemFigure?.({ index, text });
+  if (figure === null || figure === undefined || figure === false)
+    return <li key={key}>{children}</li>;
+  return (
+    <li key={key} className="picture-item">
+      <figure>
+        {figure}
+        <figcaption>{children}</figcaption>
+      </figure>
+    </li>
+  );
+}
+
 export function AnswerText({
   text,
   citations,
   onOpenCitation,
   citationLabel = 'Source',
+  itemFigure,
 }: {
   text: string;
   citations: readonly Citation[];
   onOpenCitation: OpenCitation;
   /** Accessible name prefix for the numbered buttons; a second block on a page needs its own. */
   citationLabel?: string;
+  /**
+   * A drawing for a list item (#345), or null. `index` and `text` are exactly listItems()'s, so
+   * the caller can match them to a picture made on the server. The item's own text becomes the
+   * figure's caption.
+   */
+  itemFigure?: (item: { index: number; text: string }) => ReactNode | null;
 }) {
   const numbers = numberCitations(text, citations);
+  const blocks = answerBlocks(text);
+  // Where each block's items start, counted over every list item of every list, empty ones
+  // included, the way listItems() counts.
+  const firstIndexes: number[] = [];
+  let counted = 0;
+  for (const block of blocks) {
+    firstIndexes.push(counted);
+    if (block.kind !== 'p') counted += block.lines.length;
+  }
   return (
     <>
-      {answerBlocks(text).map((block) => {
+      {blocks.map((block, bi) => {
         const key = String(block.key);
         if (block.kind !== 'p') {
           const List = block.kind;
+          const firstIndex = firstIndexes[bi] ?? 0;
           const items = block.lines.map((line, li) =>
             inline(
               line,
@@ -231,11 +269,15 @@ export function AnswerText({
             ),
           );
           const nonempty = items.map((children, li) =>
-            children.some(
-              (child) => typeof child !== 'string' || child.trim(),
-            ) ? (
-              <li key={li}>{children}</li>
-            ) : null,
+            children.some((child) => typeof child !== 'string' || child.trim())
+              ? withFigure(
+                  itemFigure,
+                  firstIndex + li,
+                  block.lines[li] ?? '',
+                  children,
+                  li,
+                )
+              : null,
           );
           if (nonempty.every((item) => item === null)) return null;
           return (

@@ -131,8 +131,12 @@ export class LocalBackend implements RetrievalBackend {
     docId: string,
     input: readonly Chunk[],
     onProgress?: (progress: UpsertProgress) => void,
+    signal?: AbortSignal,
   ): Promise<{ usage: BackendUsage }> {
     return this.store.run(docId, async () => {
+      // The queue may have made this call wait behind another write; a client that left in
+      // the meantime must not start an embedding run.
+      throwIfAborted(signal);
       const incoming = input.map((chunk) => {
         const parsed = Chunk.safeParse(chunk);
         if (!parsed.success)
@@ -168,6 +172,7 @@ export class LocalBackend implements RetrievalBackend {
         ? await this.embedder.embed(
             [...changed.values()].map((chunk) => chunk.embedText),
             'document',
+            signal,
           )
         : { vectors: [], tokens: 0 };
       if (
@@ -188,9 +193,14 @@ export class LocalBackend implements RetrievalBackend {
           );
         vectorsById.set(id, normalize(vector, this.embedder.dims));
       });
+      // Nothing is on disk until save() publishes a complete generation (staged in a temporary
+      // directory, then renamed), so cancelling here leaves the previous generation or nothing.
+      throwIfAborted(signal);
       incoming.forEach((_chunk, i) =>
         onProgress?.({ done: i + 1, total: incoming.length }),
       );
+      // Progress callbacks may be where the client was found gone; do not publish after that.
+      throwIfAborted(signal);
       const chunks = [...chunksById.values()];
       if (
         !previous ||
