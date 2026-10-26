@@ -6,7 +6,7 @@ import {
 import { makeSectionedText } from '../../../tests/synth/index.js';
 import { ingest } from '../pipeline/ingest.js';
 import { Limits } from '../pipeline/limits.js';
-import type { LlmProvider } from '../model/index.js';
+import { messageText, type LlmProvider } from '../model/index.js';
 import { cleanSentence, locate } from './index.js';
 
 let env: PipelineEnv;
@@ -116,7 +116,7 @@ it('selects source words through the complete retrieval path and validates the s
     .spyOn(provider, 'generateObject')
     .mockImplementation((req) => {
       const passage = /<excerpt id="(\d+)" section="sec-2"/.exec(
-        req.prompt,
+        messageText(req.prompt),
       )?.[1];
       expect(passage).toBeDefined();
       return Promise.resolve({
