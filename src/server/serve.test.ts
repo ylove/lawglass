@@ -55,6 +55,26 @@ async function authenticate(running: RunningServer): Promise<string> {
 }
 
 describe('a real server on loopback', () => {
+  test('the launch link opens the document and the key exchange keeps the path but drops the key', async () => {
+    const docId = 'b'.repeat(64);
+    server = await startServer(env.runtime, {
+      port: 0,
+      webRoot,
+      openPath: `/doc/${docId}`,
+    });
+    expect(server.url).toMatch(
+      new RegExp(
+        `^http://127\\.0\\.0\\.1:\\d+/doc/${docId}\\?k=[A-Za-z0-9_-]{43}$`,
+      ),
+    );
+    const exchange = await fetch(server.url, { redirect: 'manual' });
+    expect(exchange.status).toBe(302);
+    const location = new URL(exchange.headers.get('location')!);
+    expect(location.pathname).toBe(`/doc/${docId}`);
+    expect(location.search).toBe('');
+    await exchange.arrayBuffer();
+  });
+
   test('binds 127.0.0.1 and serves the web index and the API on one origin', async () => {
     server = await startServer(env.runtime, { port: 0, webRoot });
     expect(server.url).toMatch(
@@ -240,6 +260,22 @@ describe('launcher', () => {
     };
   };
 
+  test('a document id becomes the page the launch link opens', async () => {
+    const start = vi.fn(() => Promise.resolve(fakeServer()));
+    const docId = 'a'.repeat(64);
+    await createLauncher({
+      start,
+      open: vi.fn(),
+      env: {},
+      write: () => undefined,
+      untilStopped: () => Promise.resolve(),
+    })(env.runtime, { publicMode: false, docId });
+    expect(start).toHaveBeenCalledWith(env.runtime, {
+      publicMode: false,
+      openPath: `/doc/${docId}`,
+    });
+  });
+
   test('starts, prints the address, opens the browser, waits, then closes', async () => {
     const running = fakeServer();
     const start = vi.fn(() => Promise.resolve(running));
@@ -379,13 +415,26 @@ describe('launch boundary', () => {
     expect(response.status).toBe(401);
     await response.arrayBuffer();
   });
+  test('a public launch link names the document to open, without a key', async () => {
+    const docId = 'c'.repeat(64);
+    server = await startServer(env.runtime, {
+      host: '0.0.0.0',
+      publicMode: true,
+      port: 0,
+      openPath: `/doc/${docId}`,
+    });
+    expect(server.url).toBe(
+      `http://0.0.0.0:${String(server.port)}/doc/${docId}`,
+    );
+  });
   test('public bind works without a token or cookie, including matching non-loopback Host and Origin', async () => {
     server = await startServer(env.runtime, {
       host: '0.0.0.0',
       publicMode: true,
       port: 0,
     });
-    expect(server.url).toBe(`http://0.0.0.0:${String(server.port)}`);
+    // The public launch link has no key, but still names the page to open.
+    expect(server.url).toBe(`http://0.0.0.0:${String(server.port)}/`);
     const response = await new Promise<{
       status: number;
       cookie: string[] | undefined;

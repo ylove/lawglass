@@ -385,3 +385,27 @@ test('anchoring the whitespace run does not change which markers are removed', (
     );
   }
 });
+
+describe('.gov links in answers', () => {
+  test('links a .gov URL beside a citation marker, inside emphasis and in lists', () => {
+    const { container } = answer(
+      'See https://www.congress.gov/bill/1. [S:sec-2]\n\n- **Read https://codes.ohio.gov/x**, then https://evil.com/y',
+    );
+    const anchors = Array.from(container.querySelectorAll('a'));
+    expect(anchors.map((a) => a.getAttribute('href'))).toEqual([
+      'https://www.congress.gov/bill/1',
+      'https://codes.ohio.gov/x',
+    ]);
+    for (const a of anchors) {
+      expect(a.getAttribute('rel')).toBe('noopener noreferrer');
+      expect(a.getAttribute('target')).toBe('_blank');
+    }
+    expect(screen.getByRole('button', { name: 'Source 1' })).toBeTruthy();
+    expect(container.textContent).toContain('https://evil.com/y');
+  });
+
+  test('leaves lookalike hosts as text', () => {
+    const { container } = answer('https://gov.evil.com and https://x@evil.com');
+    expect(container.querySelector('a')).toBeNull();
+  });
+});

@@ -86,3 +86,21 @@ test('officialUrl maps only clean Ohio citations and never builds a search link'
   expect(officialUrl('R.C. 1.1/../x')).toBeUndefined();
   expect(officialUrl('42 U.S.C. 1983')).toBeUndefined();
 });
+
+// reading.css scopes the compact list styling to `.refs`; without this class the rule would
+// silently stop applying (or, if widened again, shrink lists in summaries and answers).
+test('marks its section with the refs class the list styling is scoped to', () => {
+  const { container } = render(
+    <ReferencedCard
+      externalRefs={[
+        {
+          text: 'a',
+          citation: 'R.C. 3501.01',
+          kind: 'state_code',
+          sectionIds: ['s1'],
+        },
+      ]}
+    />,
+  );
+  expect(container.querySelector('section.card.refs ul')).toBeTruthy();
+});

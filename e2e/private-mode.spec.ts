@@ -39,6 +39,10 @@ test('private preview gate, invite exchange and hosted ingest policy', async ({
     );
     await expect(page.locator('#root')).toHaveCount(0);
     await expect(page.locator('script')).toHaveCount(0);
+    // A document address is gated like everything else: it gets the gate page, not the app.
+    const gatedDoc = await page.goto(`${origin.origin}/doc/${'a'.repeat(64)}`);
+    expect(gatedDoc?.status()).toBe(200);
+    await expect(page.locator('#root')).toHaveCount(0);
     const denied = await context.request.get(`${origin.origin}/api/docs`);
     expect(denied.status()).toBe(401);
     expect(await denied.json()).toMatchObject({
@@ -71,8 +75,22 @@ test('private preview gate, invite exchange and hosted ingest policy', async ({
       freeformEnabled: true,
       scenariosEnabled: true,
     });
-    // Open the ingest screen even when the packed fixture already has a document selected.
-    await page.getByRole('button', { name: 'Add a bill', exact: true }).click();
+    // Visitors land on the homepage with the example line, never inside a document.
+    await expect(
+      page.getByText('Understand any bill, line by line.'),
+    ).toBeVisible();
+    await expect(page).toHaveURL(`${origin.origin}/`);
+    const reader = (await context.cookies(origin.origin)).find(
+      (cookie) => cookie.name === `${BRAND.name}_reader`,
+    );
+    expect(reader).toMatchObject({
+      secure: true,
+      httpOnly: true,
+      sameSite: 'Strict',
+    });
+    // /doc/<id> reloads and the logo are covered by legislation.spec.ts; a production build
+    // never enables ?mock=1, so this spec has no document to open.
+    await page.goto(origin.origin);
     await page
       .getByRole('textbox', { name: /url|address|link/i })
       .fill('https://pub.njleg.gov/bill.pdf');

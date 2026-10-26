@@ -20,6 +20,8 @@ export interface LaunchRequest {
   trustProxyHops?: number;
   /** Set by `--no-open`. */
   noOpen?: boolean | undefined;
+  /** The document just ingested; the browser opens straight to it. */
+  docId?: string | undefined;
 }
 
 export type Launcher = (
@@ -88,6 +90,9 @@ export function createLauncher(deps: LauncherDeps = {}): Launcher {
       ...(request.trustProxyHops === undefined
         ? {}
         : { trustProxyHops: request.trustProxyHops }),
+      ...(request.docId === undefined
+        ? {}
+        : { openPath: `/doc/${encodeURIComponent(request.docId)}` }),
       ...(request.port === undefined ? {} : { port: request.port }),
       ...(request.host === undefined ? {} : { host: request.host }),
     });

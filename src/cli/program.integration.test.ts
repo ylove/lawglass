@@ -192,7 +192,10 @@ test('a wrapper page lists the candidate links in the error', async () => {
 test('the bare URL form ingests, then hands off to serve when available', async () => {
   const serve = vi.fn(() => Promise.resolve());
   await run(['https://example.gov/gardens.txt'], { serve });
-  expect(serve).toHaveBeenCalledWith(env.runtime, { publicMode: false });
+  expect(serve).toHaveBeenCalledWith(env.runtime, {
+    publicMode: false,
+    docId: expect.any(String) as string,
+  });
   expect(output).toContain('Format: text');
 });
 
@@ -223,6 +226,7 @@ test('the bare URL form passes --no-open to the launcher', async () => {
   await run(['https://example.gov/gardens.txt', '--no-open'], { serve });
   expect(serve).toHaveBeenCalledWith(env.runtime, {
     publicMode: false,
+    docId: expect.any(String) as string,
     noOpen: true,
   });
 });
@@ -276,6 +280,16 @@ test.each([
     serve: () => Promise.resolve(),
   }).parseAsync(args, { from: 'user' });
   expect(seen).toEqual(['local']);
+});
+
+test('the root command hands the ingested document to the launcher so the browser opens it', async () => {
+  const serve = vi.fn(() => Promise.resolve());
+  await run(['https://example.gov/gardens.txt'], { serve });
+  const [entry] = await env.registry.list();
+  expect(serve).toHaveBeenCalledWith(
+    env.runtime,
+    expect.objectContaining({ docId: entry!.docId }),
+  );
 });
 
 test('ask prints text from other chips and the model unchanged (no unescaping)', async () => {
@@ -461,6 +475,7 @@ test('bare URL passes explicit public bind and port to the launcher', async () =
   );
   expect(serve).toHaveBeenCalledWith(env.runtime, {
     publicMode: true,
+    docId: expect.any(String) as string,
     host: '0.0.0.0',
     port: 4999,
   });

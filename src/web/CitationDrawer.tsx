@@ -8,6 +8,7 @@ import type {
 } from '../core/model/index.js';
 import type { ApiClient } from './api.js';
 import { errorMessage } from './errors.js';
+import { linkifyGov } from './linkify.js';
 
 /** "Page 3, lines 5-12", or a plain statement when the file has no printed lines. */
 export function describeLocation(
@@ -46,7 +47,7 @@ export function ExcerptSpans({ spans }: { spans: readonly Span[] }) {
           return (
             <del key={i}>
               <span className="sr-only">removed: </span>
-              {span.text}
+              {linkifyGov(span.text, String(i))}
             </del>
           );
         }
@@ -54,11 +55,11 @@ export function ExcerptSpans({ spans }: { spans: readonly Span[] }) {
           return (
             <ins key={i}>
               <span className="sr-only">added: </span>
-              {span.text}
+              {linkifyGov(span.text, String(i))}
             </ins>
           );
         }
-        return <span key={i}>{span.text}</span>;
+        return <span key={i}>{linkifyGov(span.text, String(i))}</span>;
       })}
     </p>
   );

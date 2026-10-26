@@ -13,6 +13,7 @@ This is the runbook for the invite-only preview (decision 0014). One Cloud Run i
 | Model provider key                 | Secret Manager secret `anthropic-api-key`                          |
 | Invite key (`LAWGLASS_ACCESS_KEY`) | Secret Manager secret `lawglass-access-key`                        |
 | Saved state                        | `gs://<bucket>/state.tar.gz` (versioned)                           |
+| Homepage examples                  | `LAWGLASS_EXAMPLES` in `deploy/cloud-run/service.yaml`             |
 
 ## One-time setup
 
@@ -93,6 +94,12 @@ The script exports the tag with `git archive`, builds the image locally with Doc
 - **Rotate the provider key:** create the new key in the Anthropic Console, add it as a new version of `anthropic-api-key`, start a new revision (as above), then revoke the old key.
 - **Wipe all documents:** delete `gs://BUCKET/state.tar.gz` and start a new revision (as above). Earlier versions stay in the bucket until the lifecycle rule removes them.
 - **Restore an earlier save:** list versions with `gcloud storage ls -a gs://BUCKET/state.tar.gz`, copy the one you want over the live object, and start a new revision.
+
+## Homepage examples and reader lists
+
+The homepage offers a "Try an example" line. It comes from `LAWGLASS_EXAMPLES`, a JSON array of up to six `{"label": "...", "url": "https://..."}` objects (hosts must still be on the ingest allow-list). An invalid value is ignored with a warning in the log; it never stops the server. Leave it unset for no examples line.
+
+Each browser has its own "Your documents" list, kept under `~/.lawglass/readers/` (included in the state save) and keyed by a random `lawglass_reader` cookie. All invitees still share one document store: removing a document only takes it off your list, and a `/doc/<id>` link opens for anyone with an invite. When the document cap is reached, documents no reader lists are evicted first.
 
 ## Limits to know
 

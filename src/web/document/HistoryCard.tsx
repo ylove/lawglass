@@ -36,17 +36,7 @@ function ExternalLink({ href, children }: { href: string; children: string }) {
  * "How did it get here?" from the official record. Nothing is inferred: a field the record
  * leaves out is left out here too, and people are named only where the record names them.
  */
-export function HistoryCard({
-  history,
-  canAskFullStory,
-  busy,
-  onFullStory,
-}: {
-  history: BillHistory | undefined;
-  canAskFullStory: boolean;
-  busy: boolean;
-  onFullStory: () => void;
-}) {
+export function HistoryCard({ history }: { history: BillHistory | undefined }) {
   const versions = history ? byDate(history.versions) : [];
   const actions = history ? byDate(history.actions) : [];
   const [firstAction, ...laterActions] = actions;
@@ -133,18 +123,6 @@ export function HistoryCard({
           From the official record. People are named only when the record names
           them.
         </p>
-      )}
-      {canAskFullStory && (
-        <button
-          type="button"
-          className="btn"
-          aria-disabled={busy}
-          onClick={() => {
-            if (!busy) onFullStory();
-          }}
-        >
-          The full story
-        </button>
       )}
     </section>
   );

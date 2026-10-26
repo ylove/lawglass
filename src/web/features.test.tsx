@@ -8,8 +8,9 @@ import {
   waitFor,
   within,
 } from '@testing-library/react';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { BRAND } from '../core/brand.js';
+import { SAMPLE_PATH, visit } from '../../tests/support/web-routes.js';
 import { App } from './App.js';
 import type { ApiClient } from './api.js';
 import { createMockApi } from './mock-api.js';
@@ -21,6 +22,10 @@ import { AvatarId, IconId } from '../core/model/index.js';
 import type { Scenario, SponsorLink } from '../core/model/index.js';
 import { ApiError } from './sse.js';
 
+beforeEach(() => {
+  // These suites exercise an open document; the homepage has its own tests.
+  visit(SAMPLE_PATH);
+});
 afterEach(cleanup);
 
 const mock = (publicMode = false): ApiClient =>
@@ -277,7 +282,7 @@ describe('sponsor byline', () => {
 });
 
 describe('history card', () => {
-  test('lists versions and actions oldest first, amendments, the note and the full-story chip', async () => {
+  test('lists versions and actions oldest first, amendments, and the note', async () => {
     render(<App api={mock()} />);
     await ready();
     const card = screen.getByRole('region', { name: 'How did it get here?' });
@@ -289,11 +294,7 @@ describe('history card', () => {
         'From the official record. People are named only when the record names them.',
       ),
     ).toBeTruthy();
-    fireEvent.click(
-      within(card).getByRole('button', { name: 'The full story' }),
-    );
-    const answer = screen.getByRole('region', { name: 'Answer' });
-    await within(answer).findByText(/official record says/);
+    expect(within(card).queryByRole('button')).toBeNull();
   });
 
   test('says plainly when no history is available', async () => {
