@@ -84,3 +84,15 @@
 .cosponsors[open] summary {
   margin-bottom: 0.25rem;
 }
+.ref-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.ref-list li {
+  margin-bottom: 0.6rem;
+}
+.ref-list small .link-btn {
+  padding: 0;
+  font-size: inherit;
+}

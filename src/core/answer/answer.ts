@@ -8,12 +8,14 @@ import {
   type BillMetadata,
   type LlmProvider,
   type LlmUsage,
+  type ReferenceText,
   type SearchHit,
 } from '../model/index.js';
 import { coveredSectionIds, validateCitations } from './citations.js';
 import { createEchoGuard, echoesSystemPrompt } from './echo.js';
 import { wholeBillEffort, type ContextMode } from './context.js';
 import { buildPrompt } from './prompt.js';
+import { referenceHeading, selectReferences } from './references.js';
 import { fleschKincaidGrade, stripCitations } from './readability.js';
 
 export interface AnswerContext {
@@ -22,6 +24,12 @@ export interface AnswerContext {
   hits: readonly SearchHit[];
   /** Definition chunks injected for defined terms used in the hits. */
   definitions?: readonly SearchHit[] | undefined;
+  /**
+   * Every reference text the document has (U.S. Code definitions read at ingest). The ones
+   * worth showing are chosen here: all of them reading the whole bill, else those whose terms
+   * appear in the hits.
+   */
+  references?: readonly ReferenceText[] | undefined;
   metadata?: BillMetadata | undefined;
 }
 
@@ -54,6 +62,11 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
     mode: context.mode,
     hits: context.hits,
     definitions: context.definitions,
+    references: selectReferences(
+      context.references,
+      [...context.hits, ...(context.definitions ?? [])],
+      context.mode,
+    ),
     metadata: context.metadata,
     chipInstruction: input.chipInstruction,
   });
@@ -108,13 +121,18 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
     raw = `${raw.trimEnd()}…`;
   }
 
-  const sectionIds = new Set(
-    prompt.hits.flatMap((h) => coveredSectionIds(h.chunk)),
-  );
+  const sectionIds = new Set([
+    ...prompt.hits.flatMap((h) => coveredSectionIds(h.chunk)),
+    ...prompt.references.map((r) => r.sectionId),
+  ]);
   const validated = validateCitations(
     raw,
     sectionIds,
     prompt.hits.map((h) => h.chunk),
+    prompt.references.map((r) => ({
+      sectionId: r.sectionId,
+      breadcrumb: referenceHeading(r),
+    })),
   );
   // After citation validation, so the check sees the text the user would get. The streaming
   // guard keeps a recited run from reaching `onToken`; the final text is what callers store.

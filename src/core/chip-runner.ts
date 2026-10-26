@@ -6,17 +6,20 @@
  *
  *   metadata      formatted from `BillMetadata`; no retrieval and no LLM call
  *   outline       chip-summary.ts: outline + first chunks, capped map-reduce
+ *   extract       chip-delegations.ts: code-extracted list plus an optional one-line lede
  *   what-changes  chip-changes.ts: struck and underlined runs read from the section tree
  *   definitions   every definition chunk, document-wide ones first, capped and counted
  *   retrieve      one `retrieve()` per query, merged, reranked once, then `answer()`
  */
 import { documentContext } from './answer/context.js';
+import { referenceTokens } from './answer/references.js';
 import { answer, fleschKincaidGrade } from './answer/index.js';
 import {
   hasAmendmentMarks,
   runChangesChip,
   scanMarksUnreliable,
 } from './chip-changes.js';
+import { runDelegationsChip } from './chip-delegations.js';
 import { runHistoryChip } from './chip-history.js';
 import { WHAT_CHANGES_BY_INSTRUCTION } from './chips.js';
 import { runOutlineChip, SUMMARY_WHOLE_INSTRUCTION } from './chip-summary.js';
@@ -73,10 +76,7 @@ export async function runChip(
     case 'definitions':
       return runDefinitionsChip(chip, docId, deps, options);
     case 'extract':
-      // No chip uses this strategy yet; #202 serves the delegations chip.
-      throw new Error(
-        `Chip strategy 'extract' is not served yet (${chip.id}).`,
-      );
+      return runDelegationsChip(chip, docId, deps, options);
     case 'retrieve':
       // The contract has no "spans" strategy, so what-changes is a `retrieve` chip by label
       // but is answered from the amendment spans (see chip-changes.ts for why).
@@ -132,13 +132,18 @@ async function runWholeChip(
     {
       budget: options.wholeBillMaxTokens,
       signal: options.signal,
+      reservedTokens: referenceTokens(deps.doc.references),
     },
   );
   if (context.mode !== 'whole') return undefined;
   const result = await answer({
     provider: deps.provider,
     question: chip.label,
-    context: { ...context, metadata: deps.doc.metadata },
+    context: {
+      ...context,
+      references: deps.doc.references,
+      metadata: deps.doc.metadata,
+    },
     chipInstruction:
       chip.id === 'summary'
         ? SUMMARY_WHOLE_INSTRUCTION
@@ -275,6 +280,7 @@ async function runRetrieveChip(
     context: {
       hits: ranked,
       definitions: injected,
+      references: deps.doc.references,
       metadata: deps.doc.metadata,
     },
     chipInstruction: chip.answerInstruction,

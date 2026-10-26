@@ -1,9 +1,11 @@
 /** Turns validated citations into the CLI's `Sec. X, p. Y, lines A–B` form. */
-import type {
-  Citation,
-  NormalizedDoc,
-  Section,
-  SourceLocation,
+import { referenceHeading } from '../answer/references.js';
+import {
+  REFERENCE_ID_PREFIX,
+  type Citation,
+  type NormalizedDoc,
+  type Section,
+  type SourceLocation,
 } from '../model/index.js';
 import { findSectionPath, numLabel, sectionExcerpt } from './excerpt.js';
 
@@ -68,8 +70,17 @@ function pathLabel(path: readonly Section[]): string {
  */
 export function formatCitation(
   citation: Citation,
-  doc: Pick<NormalizedDoc, 'sections'>,
+  doc: Pick<NormalizedDoc, 'sections'> &
+    Partial<Pick<NormalizedDoc, 'references'>>,
 ): string {
+  // Another law's text read for this bill: name the law and where it was read, not the bare id.
+  if (citation.sectionId.startsWith(REFERENCE_ID_PREFIX)) {
+    const reference = doc.references?.find(
+      (r) => r.sectionId === citation.sectionId,
+    );
+    if (reference)
+      return `${citation.breadcrumb ?? referenceHeading(reference)}, ${reference.sourceUrl}`;
+  }
   const path = findSectionPath(doc.sections, citation.sectionId);
   if (!path) {
     return [citation.sectionId, formatLocation(citation.location)]

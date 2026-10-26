@@ -28,6 +28,7 @@ import {
   walkSections,
   type AnswerResult,
   type NormalizedDoc,
+  ZERO_USAGE,
 } from '../core/model/index.js';
 import type { ChipRunner } from '../core/pipeline/index.js';
 import { scenarioProvider } from '../../tests/support/scenario-provider.js';
@@ -97,7 +98,7 @@ describe('basic routes', () => {
       backend: 'local',
       provider: 'mock',
     });
-    expect(config.chips).toHaveLength(9);
+    expect(config.chips).toHaveLength(10);
     expect(config.chips[3]).toEqual({
       id: 'history',
       label: 'How did it get here?',
@@ -210,6 +211,52 @@ describe('ingest and documents', () => {
     expect(excerpt.spans.map((s) => s.text).join('')).toContain(
       child?.spans[0]?.text ?? 'missing',
     );
+  });
+
+  test('serves the text read for a referenced law under its ref: id, and 404s an unknown one', async () => {
+    const a = app();
+    const doc = await ingestDoc(a);
+    const stored: NormalizedDoc = await env.registry.getDocument(doc.docId);
+    await env.registry.updateDocument({
+      ...stored,
+      references: [
+        {
+          sectionId: 'ref:usc/15/6809',
+          citation: '15 U.S.C. 6809',
+          heading: '§6809. Definitions',
+          sourceUrl:
+            'https://www.govinfo.gov/link/uscode/15/6809?link-type=html',
+          text: 'The term "financial institution" means any institution.',
+          terms: ['financial institution'],
+          fetchedAt: '2026-10-26T00:00:00.000Z',
+        },
+      ],
+    });
+    const res = await a.request(
+      `/api/docs/${doc.docId}/sections/${encodeURIComponent('ref:usc/15/6809')}`,
+    );
+    expect(res.status).toBe(200);
+    const excerpt = SectionExcerpt.parse(await res.json());
+    expect(excerpt).toMatchObject({
+      sectionId: 'ref:usc/15/6809',
+      breadcrumb:
+        "15 U.S.C. 6809 (U.S. Code, read for 'financial institution')",
+      spans: [
+        {
+          text: 'The term "financial institution" means any institution.',
+          status: 'unchanged',
+        },
+      ],
+      location: {},
+      reference: {
+        citation: '15 U.S.C. 6809',
+        url: 'https://www.govinfo.gov/link/uscode/15/6809?link-type=html',
+      },
+    });
+    const missing = await a.request(
+      `/api/docs/${doc.docId}/sections/${encodeURIComponent('ref:usc/15/1')}`,
+    );
+    expect(missing.status).toBe(404);
   });
 
   test('re-ingesting the same bytes reports reuse', async () => {
@@ -390,6 +437,57 @@ describe('error events carry the plain-language message', () => {
       },
     });
   });
+
+  test.each([false, true])(
+    'a chip gets a lazy provider and the public-mode flag (publicMode %s)',
+    async (publicMode) => {
+      const doc = await ingestDoc(app());
+      const seen: { provider: string; publicMode: boolean | undefined }[] = [];
+      env.runtime = Object.create(env.runtime, {
+        answerProvider: {
+          get: () => {
+            throw new AppError('MISSING_KEY');
+          },
+        },
+      }) as typeof env.runtime;
+      env.runtime.chips = (_id, _docId, ctx) => {
+        let provider = 'readable';
+        try {
+          expect(ctx.provider.id).toBeTruthy();
+        } catch (error) {
+          provider = (error as AppError).code;
+        }
+        seen.push({ provider, publicMode: ctx.publicMode });
+        return Promise.resolve({
+          answer: {
+            text: 'List.',
+            citations: [],
+            invalidCitations: [],
+            warnings: [],
+            declined: false,
+            readingGrade: 1,
+            provider: 'none' as const,
+            model: 'delegations',
+            usage: { inputTokens: 0, outputTokens: 0 },
+          },
+          hits: [],
+          backendUsage: ZERO_USAGE,
+          mode: 'none',
+        });
+      };
+      const evs = await events(
+        await post(
+          createApp(env.runtime, { localOnly: false, publicMode }),
+          `/api/docs/${doc.docId}/ask`,
+          { chipId: 'delegations' },
+        ),
+        AskEvent,
+      );
+      expect(evs.at(-1)?.type).toBe('done');
+      // The key error waits until the chip actually reads the provider.
+      expect(seen).toEqual([{ provider: 'MISSING_KEY', publicMode }]);
+    },
+  );
 
   test('chips run by default (sponsors needs no model or retrieval)', async () => {
     const a = app();

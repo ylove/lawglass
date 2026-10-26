@@ -389,10 +389,17 @@ export async function documentContext(
     budget?: number | undefined;
     includeDeleted?: boolean;
     signal?: AbortSignal | undefined;
+    /** Tokens the prompt also spends on other law shown beside the bill (see `referenceTokens`). */
+    reservedTokens?: number | undefined;
   } = {},
 ): Promise<DocumentContext> {
-  const budget = options.budget ?? wholeBillBudget();
-  if (budget === 0) return { mode: 'excerpts', hits: [] };
+  // Reference texts follow the bill in the same prompt, so the bill gets what they leave.
+  const configured = options.budget ?? wholeBillBudget();
+  const budget =
+    configured === 0
+      ? 0
+      : configured - Math.max(0, options.reservedTokens ?? 0);
+  if (configured === 0 || budget <= 0) return { mode: 'excerpts', hits: [] };
   // A bill far over budget (the NDAA) must not fetch every chunk on every question just to
   // learn that. Characters / 4 approximates tokens; the margin keeps borderline bills exact.
   if (estimatedTokens(sections, options.includeDeleted === true) > budget * 1.5)

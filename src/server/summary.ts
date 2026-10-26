@@ -5,6 +5,7 @@
  */
 import { join } from 'node:path';
 import { documentContext, type ContextMode } from '../core/answer/context.js';
+import { referenceTokens } from '../core/answer/references.js';
 import type { CliRuntime } from '../cli/runtime.js';
 import {
   AnswerCache,
@@ -49,6 +50,7 @@ export async function summaryCacheKey(
   const doc = await runtime.registry.getDocument(docId);
   const context = await documentContext(runtime.backend, docId, doc.sections, {
     signal,
+    reservedTokens: referenceTokens(doc.references),
   });
   return summaryKeyFor(runtime, docId, provider, context.mode);
 }

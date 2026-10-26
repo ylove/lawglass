@@ -377,3 +377,52 @@ it('serves a cached scenario when the scan fails', async () => {
   const again = await runScenario(DOC, 'a librarian', deps);
   expect(again).toEqual(first);
 });
+
+it('shows the U.S. Code text a bill relies on after the bill, in the cached prefix, for questions and chips', async () => {
+  const withReference: NormalizedDoc = {
+    ...doc,
+    references: [
+      {
+        sectionId: 'ref:usc/15/6809',
+        citation: '15 U.S.C. 6809',
+        heading: '§6809. Definitions',
+        sourceUrl: 'https://www.govinfo.gov/link/uscode/15/6809?link-type=html',
+        text: 'The term "eligible entity" means a body that is eligible.',
+        terms: ['eligible entity'],
+        fetchedAt: '2026-10-26T00:00:00.000Z',
+      },
+    ],
+  };
+  await registry.updateDocument(withReference);
+  provider = new ScriptedProvider({
+    reply:
+      'It means an eligible body [S:ref:usc/15/6809]. Not shown [S:ref:usc/15/1].',
+  });
+  const asked = await ask(
+    DOC,
+    { question: 'What is an eligible entity?' },
+    { backend, registry, provider },
+  );
+  const parts = requests()[0]!.messages[0]!.content;
+  if (typeof parts === 'string') throw new Error('Expected parts');
+  expect(parts[0]!.cache).toBe(true);
+  expect(parts[0]!.text).toMatch(
+    /<\/bill>\n<references>\n<part id="13" section="ref:usc\/15\/6809"[^>]*kind="reference"/,
+  );
+  expect(asked.answer.invalidCitations).toEqual(['ref:usc/15/1']);
+  expect(asked.answer.citations[0]).toMatchObject({
+    sectionId: 'ref:usc/15/6809',
+    valid: true,
+    breadcrumb: "15 U.S.C. 6809 (U.S. Code, read for 'eligible entity')",
+  });
+
+  provider.calls.length = 0;
+  await runChip(getChip('money'), DOC, {
+    backend,
+    provider,
+    doc: withReference,
+  });
+  const chipParts = requests()[0]!.messages[0]!.content;
+  if (typeof chipParts === 'string') throw new Error('Expected parts');
+  expect(chipParts[0]!.text).toContain('kind="reference"');
+});

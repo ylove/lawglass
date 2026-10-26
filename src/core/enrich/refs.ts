@@ -77,7 +77,7 @@ const RC_SECTIONS = new RegExp(
 const RC_CHAPTERS =
   /\bchapters?\s+(\d+(?:\.\d+)?)\.?\s+of\s+the\s+(?:Ohio\s+)?Revised\s+Code/gi;
 const USC_TITLE_FIRST =
-  /\b(\d{1,2})\s+(?:U\.\s?S\.\s?C\.?|USC)(?:\s+(?:§§?|secs?\.|sections?))?\s*(\d+[A-Za-z0-9]*(?:-\d+[A-Za-z0-9]*)?)/g;
+  /\b(\d{1,2})\s+(?:U\.\s?S\.\s?C\.?|USC)(?:\s+(?:§§?|secs?\.|sections?))?\s*(\d+[A-Za-z0-9]*(?:[-–—]\d+[A-Za-z0-9]*)?)/g;
 const USC_ITEM = String.raw`\d[A-Za-z0-9]*(?:\([A-Za-z0-9]+\))*`;
 const USC_LIST = String.raw`${USC_ITEM}(?:${LIST_SEP}${USC_ITEM})*`;
 const USC_CODE = String.raw`(?:United\s+States\s+Code|U\.\s?S\.\s+Code|U\.\s?S\.\s?C\.)`;
@@ -154,6 +154,17 @@ function cleanCity(raw: string | undefined): string | undefined {
 
 export function charterName(city: string | undefined): string {
   return city === undefined ? 'City Charter' : `${city} City Charter`;
+}
+
+/**
+ * A section number as printed, with the dash GPO uses (en or em) turned into a hyphen: "1395w–4"
+ * is section 1395w-4. A dash after digits only ("1395–1396") is a range, so it names its first section.
+ */
+function uscSection(raw: string): string {
+  const dash = raw.search(/[–—]/);
+  if (dash === -1) return raw.replace(/-$/, '');
+  const head = raw.slice(0, dash);
+  return /^\d+$/.test(head) ? head : raw.replace(/[–—]/g, '-');
 }
 
 function uscCitations(list: string, title: string): string[] {
@@ -242,7 +253,7 @@ export function findExternalMatches(
   for (const m of text.matchAll(RC_CHAPTERS))
     add(m, `R.C. Chapter ${m[1] ?? ''}`, 'state_code');
   for (const m of text.matchAll(USC_TITLE_FIRST))
-    add(m, `${m[1] ?? ''} U.S.C. ${(m[2] ?? '').replace(/-$/, '')}`, 'us_code');
+    add(m, `${m[1] ?? ''} U.S.C. ${uscSection(m[2] ?? '')}`, 'us_code');
   for (const m of text.matchAll(USC_SECTION_FIRST))
     for (const citation of uscCitations(m[1] ?? '', m[2] ?? ''))
       add(m, citation, 'us_code');
