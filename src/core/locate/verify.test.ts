@@ -399,3 +399,54 @@ describe('second review fixes', () => {
     expect(verifyQuote(s, '-shall report a loss')).toEqual([]);
   });
 });
+
+describe('ordinary legal wording is not a verdict (#312)', () => {
+  it.each([
+    [
+      'The Senate must confirm the nominee [S:s]',
+      'the Senate shall confirm the nominee',
+    ],
+    [
+      'Jurisdiction lies with the district court [S:s]',
+      'jurisdiction lies with the district court',
+    ],
+    ['The clerk sends a true copy [S:s]', 'a true copy of the order'],
+    [
+      'It applies after a jury verdict [S:s]',
+      'after the jury verdict is entered',
+    ],
+    ['The agency corrects the record [S:s]', 'the agency corrected the record'],
+  ])('%s', (text, bill) => {
+    expect(hasVerdictLanguage(text, bill)).toBe(false);
+  });
+  it.each([
+    ['This is true [S:s]', 'the clerk sends a true copy'],
+    ['That is correct [S:s]', 'the clerk files a corrected copy'],
+    [
+      'The bill confirms your claim [S:s]',
+      'Senate confirmation of the nominee',
+    ],
+    ['The sponsor lies about this [S:s]', 'a lien on the property'],
+    ['This is false [S:s]', 'whoever falsely represents a fact'],
+    ['This is accurate [S:s]', 'keep accurate records'],
+    ['This is true. [S:s]', 'the certificate is true'],
+    ['Your reading is correct. [S:s]', 'the amount is correct'],
+    ['This is accurate. [S:s]', 'if the report is accurate'],
+    ['That is true. [S:s]', 'that is true of each member'],
+    [
+      'This is true and correct. [S:s]',
+      'a true and correct copy of the record',
+    ],
+  ])(
+    'a verdict is caught when the section uses the word another way: %s',
+    (text, bill) => {
+      expect(hasVerdictLanguage(text, bill)).toBe(true);
+    },
+  );
+  it('still catches the same words when the section does not use them, and strict phrases always', () => {
+    expect(hasVerdictLanguage('This is true [S:s]', 'a fee of $50')).toBe(true);
+    expect(
+      hasVerdictLanguage('The claim is misleading [S:s]', 'misleading'),
+    ).toBe(true);
+  });
+});

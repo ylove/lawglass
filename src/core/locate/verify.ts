@@ -208,9 +208,67 @@ export function quoteLabel(
  * "Never a verdict" backstop. The prompt asks for neutral wording; this makes it deterministic.
  * Words inside a double-quoted phrase that really occurs in the bill are exempt, so a bill's own
  * "false statement" can be quoted.
+ *
+ * Two lists: wording that only ever judges the reader's sentence ("the claim is", "misleading"),
+ * and words that are verdicts in a claim check but ordinary in law ("confirm the nominee",
+ * "jurisdiction lies with", "a true copy", "jury verdict"). An ambiguous word is allowed when the
+ * matched section itself uses it (#312); a strict phrase never is.
  */
 const VERDICT =
-  /\b(?:true|untrue|false|correct(?:ly)?|incorrect(?:ly)?|accurate(?:ly)?|inaccurate(?:ly)?|misleading|misinformation|myth|wrong|lies?|verdict|confirm\w*|fact[- ]?check\w*|debunk\w*)\b|\b(?:the|this|that|your)\s+(?:claim|statement|sentence)\s+(?:is|was|isn't|is not)\b|\bmatches\s+(?:the\s+)?(?:bill|claim|sentence)\b|\bbacks?\s+(?:this|that|it)\s+up\b|^\s*(?:yes|no),/;
+  /\b(?:untrue|incorrect(?:ly)?|inaccurate(?:ly)?|misleading|misinformation|myth|wrong|fact[- ]?check\w*|debunk\w*)\b|\b(?:the|this|that|your)\s+(?:claim|statement|sentence)\s+(?:is|was|isn't|is not)\b|\bmatches\s+(?:the\s+)?(?:bill|claim|sentence)\b|\bbacks?\s+(?:this|that|it)\s+up\b|^\s*(?:yes|no),|["“]\s*(?:true|false|correct|accurate|right)\s*["”]/;
+
+/**
+ * Verdict words that are also ordinary legal vocabulary, as whole-word families. A family is the
+ * word's inflections only: never a bare prefix, which would let "lien" vouch for "lies".
+ */
+const AMBIGUOUS_FAMILIES: readonly (readonly string[])[] = [
+  ['true'],
+  ['false', 'falsely'],
+  ['correct', 'corrects', 'corrected', 'correcting', 'correctly'],
+  ['accurate', 'accurately'],
+  ['lie', 'lies'],
+  ['verdict', 'verdicts'],
+  ['confirm', 'confirms', 'confirmed', 'confirming'],
+];
+const FAMILY_OF = new Map(
+  AMBIGUOUS_FAMILIES.flatMap((family) => family.map((w) => [w, family])),
+);
+
+/** Words too common to show how a word is used: every section has "is true" or "and correct". */
+const FUNCTION_WORDS = new Set(
+  (
+    'a an the and or nor but not no of to in on at by for with from about as if than then so ' +
+    'that this these those it its is are was were be been being am do does did has have had ' +
+    'will would can could should shall may might must i you your we our they their he his she her ' +
+    'there here which who whom what'
+  ).split(' '),
+);
+const contentWords = (folded: string): string[] =>
+  folded.split(' ').filter((w) => w !== '' && !FUNCTION_WORDS.has(w));
+
+/**
+ * An ambiguous word is legal vocabulary, not a verdict, only when the explanation uses it the
+ * way the section does: the word (any inflection) beside the same content word, function words
+ * skipped. "Confirm the nominee" passes on "shall confirm the nominee"; "This is true" fails even
+ * on "the certificate is true". A neighbour that is itself ambiguous never vouches ("true and
+ * correct").
+ */
+function usedAsInBill(
+  words: readonly string[],
+  i: number,
+  billContent: string,
+): boolean {
+  const family = FAMILY_OF.get(words[i] ?? '') ?? [];
+  const neighbour = (w: string | undefined): w is string =>
+    w !== undefined && !FAMILY_OF.has(w);
+  const before = words[i - 1];
+  const after = words[i + 1];
+  return family.some(
+    (form) =>
+      (neighbour(before) && billContent.includes(` ${before} ${form} `)) ||
+      (neighbour(after) && billContent.includes(` ${form} ${after} `)),
+  );
+}
 
 /** Look-alike letters that would hide a verdict word from the check. */
 const CONFUSABLES: Record<string, string> = Object.fromEntries(
@@ -261,7 +319,13 @@ export function hasVerdictLanguage(text: string, billText: string): boolean {
       return phrase.trim().includes(' ') && bill.includes(phrase) ? ' ' : whole;
     },
   );
-  return VERDICT.test(unquoted);
+  if (VERDICT.test(unquoted)) return true;
+  // An ambiguous word passes only when the section uses it with the same neighbour (#312).
+  const billContent = ` ${contentWords(bill).join(' ')} `;
+  const words = contentWords(wordsOf(unquoted));
+  return words.some(
+    (word, i) => FAMILY_OF.has(word) && !usedAsInBill(words, i, billContent),
+  );
 }
 
 export function verifySelection(
