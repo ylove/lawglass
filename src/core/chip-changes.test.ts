@@ -110,7 +110,7 @@ describe('what-changes chip (built from spans)', () => {
       'A person in a [-place in which-] the person [-lawfully-] has [-a right-] to [-be-] before using force.',
     );
     expect(ex[1]!.text).toBe(
-      'A person in a [+vehicle owned by a family member of+] the person [+, the person+] has [+no duty+] to [+retreat+] before using force.',
+      'A person in a [+vehicle owned by a family member of+] the person[+, the person+] has [+no duty+] to [+retreat+] before using force.',
     );
     // Sentences without a change are left out.
     expect(lastPrompt(provider)).not.toContain('unchanged first sentence');
@@ -128,6 +128,37 @@ describe('what-changes chip (built from spans)', () => {
     const [first] = excerptsOf(provider);
     expect(first!.heading).toBe('Sec. 2307.601 Duty to retreat &gt; (b)');
     expect(lastPrompt(provider)).not.toContain('Sec. (b)');
+  });
+
+  it('merges same-status runs across line breaks and whitespace, retaining citation locations', async () => {
+    const provider = new ScriptedProvider({ reply: 'x [S:sec-1].' });
+    const r = await run(
+      [
+        section('sec-1', [
+          same('A person has '),
+          struck('a\n', 2, 5),
+          struck('right', 2, 6),
+          added('no\n', 2, 7),
+          same('  '),
+          added('duty', 2, 8),
+          same(' to retreat '),
+          added(', unless required'),
+          same('.'),
+        ]),
+      ],
+      provider,
+    );
+    expect(excerptsOf(provider).map((e) => [e.status, e.text])).toEqual([
+      ['deleted', 'A person has [-a right-] to retreat.'],
+      ['inserted', 'A person has [+no duty+] to retreat[+, unless required+].'],
+    ]);
+    expect(r.answer.invalidCitations).toEqual([]);
+    expect(r.answer.citations[0]?.location).toMatchObject({
+      pageStart: 2,
+      pageEnd: 2,
+      lineStart: 5,
+      lineEnd: 8,
+    });
   });
 
   it('shows a pure insertion only as an AFTER sentence and a pure strike only as BEFORE', async () => {
@@ -216,8 +247,58 @@ describe('what-changes chip (built from spans)', () => {
     await run([tree], provider);
     expect(excerptsOf(provider).map((e) => e.text)).toEqual([
       'Old [+new+] text.',
-      "Newly enacted: all of this section's text is new. It begins: [+Whole new subsection.+]",
+      "Newly enacted: all of this division's text is new. It begins: [+Whole new subsection.+]",
     ]);
+  });
+
+  it('appends the outline of a new section whose opening only covers definitions', async () => {
+    const tree = section(
+      'sec-2923.27',
+      [added('Definitions. '.repeat(40), 1, 1)],
+      {
+        num: '2923.27',
+        heading: 'New offense',
+        children: [
+          section(
+            'sec-2923.27/a',
+            [added('Terms used in this section.', 1, 2)],
+            {
+              num: '(A)',
+              heading: 'Definitions',
+            },
+          ),
+          section(
+            'sec-2923.27/b',
+            [added('No person shall do the thing.', 2, 1)],
+            {
+              num: '(B)',
+              heading: 'Prohibited conduct',
+            },
+          ),
+          section(
+            'sec-2923.27/c',
+            [added('A violation is an offense.', 3, 1)],
+            {
+              num: '(C)',
+              heading: 'Penalties',
+            },
+          ),
+        ],
+      },
+    );
+    const provider = new ScriptedProvider({ reply: 'x [S:sec-2923.27].' });
+    const r = await run([tree], provider);
+    const ex = excerptsOf(provider);
+    expect(ex).toHaveLength(1);
+    expect(ex[0]!.text).toContain(
+      '\nOutline:\n2923.27 New offense\n  (A) Definitions\n  (B) Prohibited conduct\n  (C) Penalties',
+    );
+    expect(ex[0]!.text).not.toContain('No person shall');
+    expect(r.answer.invalidCitations).toEqual([]);
+    expect(r.answer.citations[0]?.location).toMatchObject({
+      pageStart: 1,
+      pageEnd: 3,
+    });
   });
 
   it('shares the budget round-robin across top-level sections and says how many more change', async () => {

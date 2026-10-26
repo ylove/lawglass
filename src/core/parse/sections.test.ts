@@ -49,6 +49,15 @@ describe('section heading patterns', () => {
     ['(3) "Gun show promoter" means a person who organizes or', undefined],
     ['(a) As used in this section:', undefined],
     ['(a) The board shall report.', undefined],
+    ['(a) The board shall report.--Further requirements follow.', undefined],
+    [
+      '(a) The board, after consultation with every participating school district and each county administrator, must prepare and publish a comprehensive annual report on all funded activities.--Further requirements follow.',
+      undefined,
+    ],
+    [
+      '(a) The annual review of all locally administered education assistance programs and the allocation of their available resources among eligible participating school districts.—Further requirements follow.',
+      undefined,
+    ],
     ['(a) Eligibility', undefined],
     ['(a)', undefined],
   ])('separates printed titles from subdivision prose: %s', (text, heading) => {
@@ -68,6 +77,12 @@ describe('section heading patterns', () => {
     'Sec. 3328.24. A college-preparatory boarding school',
     'Section 5747.01. The board shall report.',
     'Sec. 3314.03. a copy of every contract must be filed.',
+    'Sec. 3314.03. No person shall smoke.',
+    'Sec. 3314.03. Subject to the following requirements',
+    'Section 4.1. If the board approves',
+    'Section 4.1. The duties of the board and',
+    'Section 4.1. The board, subject to review',
+    'Section 4.1. Educational assistance programs for every eligible participating school district',
   ])('does not name a code section from body prose: %s', (text) => {
     const [section] = detectSections(lines(text, 'The next body line.'));
     expect(section!.heading).toBeUndefined();
@@ -81,6 +96,14 @@ describe('section heading patterns', () => {
     ['Sec. 3314.03. The board.—Duties follow.', false, 'The board.—'],
     ['Sec. 3314.03. THE BOARD.', false, 'THE BOARD.'],
     ['Sec. 3314.03. The board', true, 'The board'],
+    [
+      'Sec. 3314.03. Subject matter jurisdiction',
+      false,
+      'Subject matter jurisdiction',
+    ],
+    ['Sec. 3314.03. No smoking policy', false, 'No smoking policy'],
+    ['Sec. 3314.03. The Board of Education', false, 'The Board of Education'],
+    ['Section 4.1 A-1 Program', false, 'A-1 Program'],
   ])(
     'retains a printed code section title: %s',
     (text, printedHeading, heading) => {
@@ -716,6 +739,72 @@ describe('stack-based nesting', () => {
       'sec-1/i',
       'sec-1/j',
     ]);
+  });
+
+  it.each([undefined, 90])(
+    'uses the next (ii) to read Ohio SB 203 roman items under (h), x=%s',
+    (x) => {
+      const source = lines(
+        'Sec. 2923.27.',
+        '(F)',
+        '(2)',
+        '(h) For each firearm transfer that is completed at the gun',
+        'show, do all of the following:',
+        '(i) Report the transfer to the law enforcement agencies',
+        'with jurisdiction over the location of the show;',
+        '(ii) Record the transfer on a form prescribed by the',
+        'attorney general of this state pursuant to division (E) of this',
+        'section;',
+        '(iii) Redact the names of the unlicensed transferor and',
+        'unlicensed transferee;',
+        '(iv) Retain for at least ten years after the date of the',
+        'transfer the record;',
+        '(3) Next duty.',
+      ).map((line) => ({ ...line, ...(x === undefined ? {} : { x }) }));
+      const nodes = [...walkSections(detectSections(source))];
+      expect(nodes.map((s) => s.id)).toEqual([
+        'sec-2923.27',
+        'sec-2923.27/f',
+        'sec-2923.27/f/2',
+        'sec-2923.27/f/2/h',
+        ...['i', 'ii', 'iii', 'iv'].map((m) => `sec-2923.27/f/2/h/${m}`),
+        'sec-2923.27/f/3',
+      ]);
+      expect(
+        nodes.flatMap((s) => s.spans.map((span) => span.text)).join(''),
+      ).toBe(source.map((line) => line.text).join('\n'));
+    },
+  );
+
+  it('also disambiguates uppercase Roman items after (H)', () => {
+    expect(
+      ids(lines('Sec. 1.', '(H) Duties:', '(I) First.', '(II) Second.')),
+    ).toEqual(['sec-1', 'sec-1/h', 'sec-1/h/i', 'sec-1/h/ii']);
+  });
+
+  it('keeps letter i when (ii) is indented beneath it', () => {
+    expect(
+      ids([
+        { text: 'Sec. 1.' },
+        { text: '(h) First.', x: 10 },
+        { text: '(i) Next letter.', x: 10 },
+        { text: '(ii) Nested Roman item.', x: 30 },
+      ]),
+    ).toEqual(['sec-1', 'sec-1/h', 'sec-1/i', 'sec-1/i/ii']);
+  });
+
+  it('does not look past a new section or read a struck (ii) as disambiguation', () => {
+    const struck = '(ii) Removed item.';
+    expect(
+      ids([
+        ...lines('Sec. 1.', '(h) First.', '(i) Next letter.'),
+        {
+          text: struck,
+          statuses: Array<SpanStatus>(struck.length).fill('deleted'),
+        },
+        ...lines('Sec. 2.', '(ii) Another section.'),
+      ]),
+    ).toEqual(['sec-1', 'sec-1/h', 'sec-1/i', 'sec-2', 'sec-2/ii']);
   });
 
   it('uses peer indentation even across intervening children and nonconsecutive letters', () => {

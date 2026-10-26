@@ -57,7 +57,7 @@ export const NOTHING_LEFT_TEXT =
 
 /** Sent as the chip's `<task>`. It is trusted text from our code. */
 export const LEDE_INSTRUCTION =
-  'Each excerpt is one sentence quoted from the bill, tagged with the kind of item it is: "decided later", "depends on" or "takes effect when". Write a lede of one or two short sentences that tells the reader, in plain words, what the bill leaves to others to decide and what it depends on. Use only what these excerpts say. Do not add facts, dates or names that are not in them. Do not list every item and do not use a list; a longer list follows your lede. End each sentence with the section marker of an excerpt it relies on.';
+  'Each excerpt is quoted from the bill, tagged with the kind of item it is: "decided later", "depends on", "also cites" or "takes effect when". Write a lede of one or two short sentences that tells the reader, in plain words, what the bill leaves to others to decide and what it depends on. An "also cites" excerpt is only a citation, not an identified dependency. Use only what these excerpts say. Do not add facts, dates or names that are not in them. Do not list every item and do not use a list; a longer list follows your lede. End each sentence with the section marker of an excerpt it relies on.';
 
 const GROUP_TITLES = {
   decidedLater: 'Decided later by',
@@ -144,9 +144,19 @@ interface Shown {
 function renderList(shown: readonly Shown[]): string {
   return shown
     .map(({ group, items, more }) => {
-      const rows = items.map((item) => line(group, item));
+      const rows: string[] = [];
+      let title = '';
+      for (const item of items) {
+        const nextTitle =
+          item.lawRole === 'citation' ? 'Also cites' : GROUP_TITLES[group];
+        if (nextTitle !== title) {
+          rows.push(`${rows.length > 0 ? '\n' : ''}**${nextTitle}**`);
+          title = nextTitle;
+        }
+        rows.push(line(group, item));
+      }
       if (more > 0) rows.push(`- and ${String(more)} more`);
-      return `**${GROUP_TITLES[group]}**\n${rows.join('\n')}`;
+      return rows.join('\n');
     })
     .join('\n\n');
 }
@@ -164,7 +174,7 @@ function excerpts(
         key: `delegations:${group}:${String(i)}`,
         sectionId: item.sectionId,
         breadcrumb: path ? breadcrumb(path) : item.sectionId,
-        text: `(${GROUP_TAGS[group]}) ${item.quote}`,
+        text: `(${item.lawRole === 'citation' ? 'also cites' : GROUP_TAGS[group]}) ${item.quote}`,
         location: {
           ...(item.page !== undefined && {
             pageStart: item.page,
@@ -353,7 +363,7 @@ export async function runDelegationsChip(
  */
 export function unescapeDelegationList(text: string): string {
   const at = text.search(
-    /(?:^|\n\n)\*\*(?:Decided later by|Depends on|Takes effect when)\*\*\n/,
+    /(?:^|\n\n)\*\*(?:Decided later by|Depends on|Also cites|Takes effect when)\*\*\n/,
   );
   return at < 0 ? text : text.slice(0, at) + unescapeRecordText(text.slice(at));
 }

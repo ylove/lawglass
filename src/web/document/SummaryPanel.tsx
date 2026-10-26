@@ -4,6 +4,8 @@ import type { ApiClient } from '../api.js';
 import { linkifyGov } from '../linkify.js';
 import { AnswerText, type OpenCitation } from '../AnswerText.js';
 import { ReadingLevel } from './ReadingLevel.js';
+import { PicturePanels } from './PicturePanels.js';
+import { usePictures } from './use-pictures.js';
 import { ScenarioStrip } from './ScenarioStrip.js';
 
 /** The server starts the run on the first look, so this is how often we ask again. */
@@ -89,6 +91,15 @@ export function SummaryPanel({
   };
   const cached = state.kind === 'cached' ? state.answer : null;
   const chipHint = !publicMode;
+  // Pictures for the bullets arrive after the text, never before it, and only ever attach to the
+  // exact bullet they were drawn from.
+  const pictures = usePictures(
+    (signal) => api.getSummaryPictures(docId, signal),
+    cached !== null,
+    `${docId}:${cached?.text ?? ''}`,
+    pollMs,
+    maxWaitMs,
+  );
   return (
     <>
       <section
@@ -104,6 +115,12 @@ export function SummaryPanel({
               citations={cached.citations}
               onOpenCitation={onOpenSection}
               citationLabel="Summary source"
+              itemFigure={({ index, text }) => {
+                const entry = pictures.find(
+                  (p) => p.item === index && p.text === text,
+                );
+                return entry ? <PicturePanels entry={entry} /> : null;
+              }}
             />
           </div>
         ) : (
