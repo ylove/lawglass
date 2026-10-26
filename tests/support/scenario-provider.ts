@@ -8,6 +8,7 @@ import type {
   ObjectRequest,
   Scenario,
 } from '../../src/core/model/index.js';
+import { messageText } from '../../src/core/model/index.js';
 import { exampleScenario } from '../synth/scenario.js';
 
 export interface ScenarioProvider extends LlmProvider {
@@ -30,12 +31,14 @@ export function scenarioProvider(base: LlmProvider): ScenarioProvider {
     generateObject: <T>(req: ObjectRequest<T>) => {
       if (req.schemaName !== 'scenario') return base.generateObject(req);
       provider.scenarioCalls++;
-      provider.prompts.push(req.prompt);
+      provider.prompts.push(messageText(req.prompt));
       provider.onScenario?.();
       if (provider.behavior) return provider.behavior(req);
       const name =
-        /<persona>([^<]+)<\/persona>/.exec(req.prompt)?.[1] ?? 'Alex';
-      const section = /section="([^"]+)"/.exec(req.prompt)?.[1] ?? 'sec-1';
+        /<persona>([^<]+)<\/persona>/.exec(messageText(req.prompt))?.[1] ??
+        'Alex';
+      const section =
+        /section="([^"]+)"/.exec(messageText(req.prompt))?.[1] ?? 'sec-1';
       const scenario: Scenario = exampleScenario(name);
       for (const frame of scenario.frames)
         if (frame.kind !== 'setup') frame.citations = [section];
