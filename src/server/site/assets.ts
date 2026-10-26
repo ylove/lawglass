@@ -31,6 +31,8 @@ export const SITE_SHOTS = [
   '/site/sections.jpg',
   '/site/find.jpg',
   '/site/history.jpg',
+  '/site/changes.jpg',
+  '/site/decides.jpg',
 ] as const;
 
 export const PUBLIC_ASSETS: ReadonlySet<string> = new Set([

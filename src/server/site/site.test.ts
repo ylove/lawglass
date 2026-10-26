@@ -55,7 +55,7 @@ describe('landing page', () => {
   test('every image has alt text and a same-origin allowlisted source', async () => {
     const html = await gatePage(undefined, root);
     const images = html.match(/<img [^>]*>/g) ?? [];
-    expect(images.length).toBeGreaterThanOrEqual(4);
+    expect(images.length).toBeGreaterThanOrEqual(7);
     for (const tag of images) {
       expect(tag).toMatch(/alt="[^"]+"/);
       const src = /src="([^"]+)"/.exec(tag)?.[1] ?? '';

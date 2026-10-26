@@ -1055,3 +1055,41 @@ test('the quickstart is served in local mode even without a session cookie', asy
   expect(res.status).toBe(200);
   expect(await res.text()).toContain('on your computer');
 });
+
+describe('public site assets in local mode', () => {
+  let root: string;
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), 'local-site-'));
+    await writeFile(join(root, 'site.css'), 'body{}');
+    await writeFile(join(root, 'secret.js'), 'SECRET');
+  });
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  test('a signed-out visitor gets the allowlisted files, and nothing else', async () => {
+    const a = createRawApp(env.runtime, {
+      sessionToken: 'local-token',
+      webRoot: root,
+      localOnly: false,
+    });
+    const css = await a.request('/site.css');
+    expect(css.status).toBe(200);
+    expect(css.headers.get('content-type')).toContain('text/css');
+    expect((await a.request('/api/docs')).status).toBe(401);
+    expect(await (await a.request('/secret.js')).text()).not.toContain(
+      'SECRET',
+    );
+  });
+
+  test('a key in the query string still runs the session exchange first', async () => {
+    const a = createRawApp(env.runtime, {
+      sessionToken: 'local-token',
+      webRoot: root,
+      localOnly: false,
+    });
+    const exchange = await a.request('/site.css?k=local-token');
+    expect(exchange.status).toBe(302);
+    expect(exchange.headers.get('set-cookie')).toContain('=');
+  });
+});

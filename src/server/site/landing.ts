@@ -62,6 +62,17 @@ function features(): Feature[] {
       alt: `${BRAND.displayName}'s section-by-section view: a plain brief of one part of a bill, with a labelled example and a citation.`,
     },
     {
+      title: 'What changes',
+      body: `Most bills rewrite existing law. ${BRAND.displayName} reads which words a bill strikes and which it adds, and explains the change in plain words. Struck text is never presented as the law.`,
+      bullets: [
+        'Struck and added words marked, not just colored',
+        'Before and after wording shown for each change',
+        'Cited to the section that changes it',
+      ],
+      image: '/site/changes.jpg',
+      alt: `${BRAND.displayName}'s answer to "What does it change?": the words a bill strikes and adds, marked, with a plain-language explanation and citations.`,
+    },
+    {
       title: 'Find where it says that',
       body: `Heard a claim about a bill? Paste the sentence. ${BRAND.displayName} shows the passage that addresses it, copied word for word, with a receipt you can share. It never says who is right.`,
       bullets: [
@@ -76,13 +87,24 @@ function features(): Feature[] {
       title: 'How it got here',
       body: 'Versions, key actions, sponsors and the laws a bill refers to, from the official record, with links to the full history.',
       bullets: [
-        'Amendments grouped by sponsor',
-        'Every version linked',
+        'Amendments listed with their sponsors',
+        'Versions linked to the official record',
         'People named only when the record names them',
       ],
       image: '/site/history.jpg',
       frame: 'shot-narrow',
       alt: "The How did it get here card: a bill's versions, key actions and sponsors, each linked to the official record.",
+    },
+    {
+      title: 'Who decides later',
+      body: `Many bills leave the details to someone else: an agency writes rules, a vote must happen first, money must be found. ${BRAND.displayName} lists who decides what, and what has to happen first, read from the text itself.`,
+      bullets: [
+        'Agencies and officials named in the bill',
+        'Conditions and dependencies',
+        'Read from the text, not guessed',
+      ],
+      image: '/site/decides.jpg',
+      alt: `${BRAND.displayName}'s answer to "Who decides later?": the agencies and officials the bill names, and what must happen first, each with a citation.`,
     },
   ];
 }
@@ -104,9 +126,9 @@ ${image}
 }
 
 const PROOF: [string, string][] = [
-  [ICON.cite, 'Every sentence cites its section, page and line'],
-  [ICON.edit, 'Reads struck and inserted text correctly'],
-  [ICON.scale, 'Never tells you what to think'],
+  [ICON.cite, 'Answers cite the section, page and line they come from'],
+  [ICON.edit, 'Tells struck words from added words'],
+  [ICON.scale, 'Explains what a bill says, not whether it is good'],
   [ICON.code, 'Open source, MIT licensed'],
 ];
 
@@ -128,7 +150,7 @@ const STEPS: [string, string][] = [
 const TRUST: [string, string][] = [
   [
     'Citations are verified',
-    'Every citation is checked against the bill text before you see it. An answer that cannot be traced to the text is not shown.',
+    `Every citation is checked against the bill text before you see it. When part of an answer can't be traced to the text, ${BRAND.displayName} says so.`,
   ],
   [
     'Not legal advice',
@@ -176,7 +198,7 @@ export function landingPage(ctx: PageContext): string {
 <div class="hero-text">
 <p class="eyebrow">Open source · Federal, Ohio, New York and New Jersey bills</p>
 <h1>Know what a bill really says.</h1>
-<p class="lead">Paste a link to a bill. ${name} explains it in plain words and simple pictures, and points to the section, page and line behind every sentence.</p>
+<p class="lead">Paste a link to a bill. ${name} explains it in plain words and simple pictures, and points to the section, page and line behind each answer.</p>
 <div class="actions">
 ${externalLink(HOSTED_CTA, `Get hosted ${name}`, 'btn btn-primary')}
 <a class="btn btn-secondary" href="/quickstart">Run it yourself</a>

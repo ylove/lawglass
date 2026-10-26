@@ -209,6 +209,29 @@ try {
 
   const history = await need(page, 'history card', 'section.card.history');
   await shoot(history, join(out, 'history.jpg'));
+
+  // Chip answers stream; an answer is finished once its first citation button renders.
+  for (const [chip, file] of [
+    ['What does it change?', 'changes.jpg'],
+    ['Who decides later?', 'decides.jpg'],
+  ] as const) {
+    const button = page.getByRole('button', { name: chip, exact: true });
+    try {
+      await button.click({ timeout: 20_000 });
+    } catch {
+      throw new Error(`The "${chip}" chip was not found on the page.`);
+    }
+    const answer = page.getByRole('region', { name: 'Answer', exact: true });
+    try {
+      await answer
+        .getByRole('button', { name: 'Source 1', exact: true })
+        .first()
+        .waitFor({ timeout: 180_000 });
+    } catch {
+      throw new Error(`The answer to "${chip}" never showed a citation.`);
+    }
+    await shoot(answer, join(out, file));
+  }
 } catch (error) {
   // A picture of the page at the moment of failure saves guessing which selector drifted.
   const pages = browser.contexts().flatMap((c) => c.pages());
