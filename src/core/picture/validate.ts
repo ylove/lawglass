@@ -154,7 +154,10 @@ function panelReason(
   if (!shapeIsSound(panel)) return 'shape';
   for (const raw of labels(panel)) {
     if (markup(raw)) return 'label-markup';
-    if (!LABEL_CHARS.test(raw.normalize('NFKC'))) return 'label-chars';
+    // Plain characters only, and at least one letter or digit: "$" or "()" alone says nothing.
+    const plain = raw.normalize('NFKC');
+    if (!LABEL_CHARS.test(plain) || !/[\p{L}\p{Nd}]/u.test(plain))
+      return 'label-chars';
     const label = joinItemCompounds(raw, item.stems);
     if (evaluative(raw)) return 'label-judgment';
     if (!numbersFromItem(label, item.numbers)) return 'label-number';

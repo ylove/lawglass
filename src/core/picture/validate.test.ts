@@ -232,7 +232,7 @@ describe('validatePictures', () => {
         },
         items,
       ).dropped[0]?.reason;
-    for (const label of ['🚫', '✗', '≠', '!', 'Nо'])
+    for (const label of ['🚫', '✗', '≠', '!', 'Nо', '$', '-', '%', '()', '.'])
       expect(reason(0, label)).toBe('label-chars');
     expect(reason(0, 'X')).toBe('label-words');
     expect(reason(0, 'US')).toBe('label-words');

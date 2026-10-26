@@ -481,17 +481,18 @@ describe('pre-generation', () => {
     // A fresh process (as after a restart) has not drawn this document's examples yet.
     vi.stubEnv(envVar('PREGENERATE_EXAMPLES'), '1');
     const service = createBreakdownService(env.runtime, { publicMode: false });
+    const before = state.started.length;
     expect(
       (await service.get(docId, { wait: false, start: false })).status,
     ).toBe('cached');
     await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(state.started).toEqual([]);
+    expect(state.started).toHaveLength(before);
     // The same look without start:false does start them, so the check above can fail. Let
     // the pass finish, so no example is still writing when the test's directory is removed.
     await service.get(docId, { wait: false });
     await vi.waitFor(
       () => {
-        expect(state.started).toHaveLength(available);
+        expect(state.started).toHaveLength(before + available);
         expect(state.active).toBe(0);
       },
       { timeout: 10_000 },
