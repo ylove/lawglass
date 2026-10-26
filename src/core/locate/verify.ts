@@ -215,7 +215,7 @@ export function quoteLabel(
  * matched section itself uses it (#312); a strict phrase never is.
  */
 const VERDICT =
-  /\b(?:untrue|incorrect(?:ly)?|inaccurate(?:ly)?|misleading|misinformation|myth|wrong|fact[- ]?check\w*|debunk\w*)\b|\b(?:the|this|that|your)\s+(?:claim|statement|sentence)\s+(?:is|was|isn't|is not)\b|\bmatches\s+(?:the\s+)?(?:bill|claim|sentence)\b|\bbacks?\s+(?:this|that|it)\s+up\b|^\s*(?:yes|no),|["“]\s*(?:true|false|correct|accurate|right)\s*["”]/;
+  /\b(?:untrue|incorrect(?:ly)?|inaccurate(?:ly)?|misleading|misinformation|myth|wrong|fact[- ]?check\w*|debunk\w*)\b|\b(?:the|this|that|your)\s+(?:claim|statement|sentence)\s+(?:is|was|isn't|is not)\b|\bmatches\s+(?:the\s+)?(?:bill|claim|sentence)\b|\bbacks?\s+(?:this|that|it)\s+up\b|^\s*(?:yes|no),|\byou(?:['’]re|\s+are|\s+were)\s+(?:right|correct|mistaken)\b|["“]\s*(?:true|false|correct|accurate|right)\s*["”]/;
 
 /**
  * Verdict words that are also ordinary legal vocabulary, as whole-word families. A family is the
