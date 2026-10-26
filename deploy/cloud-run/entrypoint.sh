@@ -25,7 +25,7 @@ SAVED_MARK="$HOME/.snapshot-saved"
 QUIET_MARK="$HOME/.snapshot-quiet"
 START_MARK="$HOME/.snapshot-start"
 # What is saved, relative to $HOME. Models ship in the image and raw downloads are only a cache.
-STATE_PATHS=".lawglass/registry.json .lawglass/docs .lawglass/store .lawglass/history .lawglass/sponsors .lawglass/cache/answers"
+STATE_PATHS=".lawglass/registry.json .lawglass/docs .lawglass/store .lawglass/history .lawglass/sponsors .lawglass/cache/answers .lawglass/readers"
 
 log() {
   printf '{"level":"%s","event":"snapshot","message":"%s"}\n' "$1" "$2" >&2

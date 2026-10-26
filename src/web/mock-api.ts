@@ -379,6 +379,17 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
     scenariosEnabled: !publicMode,
     breakdownEnabled: false,
     locateEnabled: !publicMode,
+    examples: [
+      { label: 'Clean Water Infrastructure Act', url: SAMPLE_DOC.sourceUrl },
+      {
+        label: 'A second sample bill',
+        url: 'https://example.gov/bills/sb77.pdf',
+      },
+      {
+        label: 'A web page of links',
+        url: 'https://example.gov/bills/wrapper',
+      },
+    ],
   };
 
   const need = (docId: string): DocSummary => {

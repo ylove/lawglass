@@ -230,7 +230,7 @@ describe('caps', () => {
     expect(await res.json()).toMatchObject({
       error: { code: 'DOC_CAP_REACHED' },
     });
-    expect(eviction).toHaveBeenCalledWith(1);
+    expect(eviction).toHaveBeenCalledWith(1, expect.any(Set));
     expect(env.fetches).toEqual([]);
     expect((await env.registry.list()).map((e) => e.docId)).toEqual([first]);
   });
@@ -241,7 +241,7 @@ describe('caps', () => {
     const eviction = vi.spyOn(env.registry, 'evictionCandidates');
     const first = await ingestOk(a, 'https://govinfo.gov/a.txt');
     const second = await ingestOk(a, 'https://govinfo.gov/b.xml');
-    expect(eviction).toHaveBeenLastCalledWith(2);
+    expect(eviction).toHaveBeenLastCalledWith(2, expect.any(Set));
     expect((await env.registry.list()).map((e) => e.docId).sort()).toEqual(
       [first, second].sort(),
     );
@@ -366,11 +366,11 @@ describe('caps', () => {
 });
 
 describe('other public-mode rules', () => {
-  test('visitors cannot delete documents', async () => {
+  test('a visitor removing a document only changes their own list', async () => {
     const a = publicApp();
     const docId = await ingestOk(a, 'https://govinfo.gov/a.txt');
     const res = await a.request(`/api/docs/${docId}`, { method: 'DELETE' });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(204);
     expect(await env.registry.list()).toHaveLength(1);
   });
 

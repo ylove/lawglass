@@ -7,13 +7,23 @@ test('packed UI: document, streamed chip, citation, blocked address, removal', a
   packedApp,
 }) => {
   await page.goto('/');
+  // A visitor lands on the homepage, never inside a document.
+  await expect(page).toHaveURL(/\/$/);
+  await expect(
+    page.getByText('Understand any bill, line by line.'),
+  ).toBeVisible();
+  await page
+    .getByRole('region', { name: 'Your documents' })
+    .getByRole('link', { name: new RegExp(SAMPLE_LABEL) })
+    .click();
+  await expect(page).toHaveURL(/\/doc\/[a-f0-9]{64}$/);
   const sidebar = page.getByRole('navigation', { name: 'Loaded documents' });
   const document = sidebar.getByRole('button', {
     name: SAMPLE_LABEL,
     exact: true,
   });
   await expect(document).toBeVisible();
-  await document.click();
+  const docUrl = page.url();
 
   const responsePromise = page.waitForResponse(
     (response) =>
@@ -72,24 +82,34 @@ test('packed UI: document, streamed chip, citation, blocked address, removal', a
   );
   await drawer.getByRole('button', { name: 'Close', exact: true }).click();
 
+  // A reload on /doc/<id> opens the same document; the logo and "Add a bill" go home.
+  await page.reload();
+  await expect(document).toBeVisible();
+  await page.getByRole('link', { name: /home$/ }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await page.goBack();
+  await expect(page).toHaveURL(docUrl);
   await sidebar
     .getByRole('button', { name: 'Add a bill', exact: true })
     .click();
+  await expect(page).toHaveURL(/\/$/);
   await page.getByLabel('Web address of the bill').fill('http://127.0.0.1/x');
   await page
     .getByRole('button', { name: 'Read this bill', exact: true })
     .click();
   await expect(page.getByRole('alert')).toHaveText(ERROR_CODES.SSRF_BLOCKED);
 
+  await page.goto(docUrl);
   await sidebar
     .getByRole('button', { name: `Remove ${SAMPLE_LABEL}`, exact: true })
     .click();
   await sidebar
     .getByRole('button', { name: 'Yes, remove', exact: true })
     .click();
-  await expect(sidebar).toContainText('Nothing loaded yet.');
-  await expect(document).toHaveCount(0);
+  const yours = page.getByRole('region', { name: 'Your documents' });
+  await expect(yours).toContainText('Nothing here yet');
+  await expect(page).toHaveURL(/\/$/);
   await page.reload();
-  await expect(sidebar).toContainText('Nothing loaded yet.');
+  await expect(yours).toContainText('Nothing here yet');
   expect(await packedApp.cli('list')).toContain('No documents ingested yet.');
 });

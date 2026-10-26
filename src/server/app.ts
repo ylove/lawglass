@@ -6,6 +6,7 @@
 import { deleteIndexedDocument } from '../core/answer/context.js';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
+import { getCookie, setCookie } from 'hono/cookie';
 import { streamSSE } from 'hono/streaming';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
@@ -44,6 +45,14 @@ import {
   ingestHosts,
 } from './ingest-hosts.js';
 import { createLogger, type LogWriter } from './log.js';
+import { readExamples } from './examples.js';
+import {
+  isReaderId,
+  newReaderId,
+  READER_COOKIE,
+  READER_COOKIE_MAX_AGE_S,
+  ReaderLibrary,
+} from './readers.js';
 import { createSessionToken, localSession, readAccessKey } from './session.js';
 
 export interface PublicLimits {
@@ -85,6 +94,8 @@ export interface AppOptions {
   localOnly?: boolean;
   /** Launch token; generated when omitted. Ignored in public mode. */
   sessionToken?: string | undefined;
+  /** Example bills for the homepage; defaults to the examples environment variable. */
+  examples?: ClientConfig['examples'];
   now?: () => number;
 }
 
@@ -159,6 +170,16 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     });
 
   const app = new Hono();
+  const logLine =
+    options.logWriter ?? ((line: string) => process.stderr.write(line));
+  const examples = options.examples ?? readExamples(process.env, logLine, now);
+  // Hosted servers keep one document list per reader; local mode lists everything.
+  const readers = hosted
+    ? new ReaderLibrary(runtime.registry.configDir, {
+        now: () => new Date(now()),
+      })
+    : undefined;
+  const readerOf = new WeakMap<Request, string>();
 
   // First, so its headers also land on responses that later middleware returns early.
   app.use('*', securityHeaders({ publicMode, privateMode }));
@@ -259,6 +280,35 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     c.req.method === 'POST' ? limitPostBody(c, next) : next();
   app.use('/api/*', postBodyLimit);
 
+  if (hosted) {
+    // Runs after the session check, so a gated visitor never receives a reader id. The id only
+    // keys the list; it grants no access (see readers.ts).
+    const ensureReader: MiddlewareHandler = async (c, next) => {
+      // Health checks are not a reader; they must stay cookie-free.
+      if (c.req.path === '/api/health') return next();
+      const sent = getCookie(c, READER_COOKIE);
+      let id = isReaderId(sent) ? sent : undefined;
+      if (!id) {
+        id = newReaderId();
+        setCookie(c, READER_COOKIE, id, {
+          httpOnly: true,
+          secure: true,
+          sameSite: 'Strict',
+          path: '/',
+          maxAge: READER_COOKIE_MAX_AGE_S,
+        });
+      }
+      readerOf.set(c.req.raw, id);
+      await next();
+    };
+    app.use('/api/*', ensureReader);
+  }
+  const readerId = (c: Context): string => {
+    const id = readerOf.get(c.req.raw);
+    if (!id) throw new Error('Reader id missing.');
+    return id;
+  };
+
   app.onError((error, c) => {
     if (isAppError(error))
       return c.json(
@@ -293,6 +343,8 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       // Served once Section by section lands (#276).
       breakdownEnabled: false,
       locateEnabled: !publicMode,
+      library: hosted ? 'reader' : 'local',
+      ...(examples && examples.length > 0 ? { examples } : {}),
     };
     return c.json(config);
   });
@@ -304,7 +356,31 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       .map((e) => DocSummary.parse(e));
   };
 
-  app.get('/api/docs', async (c) => c.json(await summaries()));
+  app.get('/api/docs', async (c) => {
+    const all = await summaries();
+    if (!readers) return c.json(all);
+    // The reader's own list, newest use first. Documents evicted since simply drop out.
+    const byId = new Map(all.map((d) => [d.docId, d]));
+    return c.json(
+      (await readers.list(readerId(c))).flatMap((r) => {
+        const doc = byId.get(r.docId);
+        return doc ? [{ ...doc, lastUsedAt: r.lastUsedAt }] : [];
+      }),
+    );
+  });
+
+  /** The list is a convenience: failing to save it must not fail the request that triggered it. */
+  const rememberForReader = async (
+    c: Context,
+    docId: string,
+  ): Promise<void> => {
+    if (!readers) return;
+    try {
+      await readers.markUsed(readerId(c), docId);
+    } catch (error) {
+      log.error(c, error, 0);
+    }
+  };
 
   const entryFor = async (docId: string): Promise<RegistryEntry> => {
     const entry = (await runtime.registry.list()).find(
@@ -317,6 +393,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   app.get('/api/docs/:docId', async (c) => {
     const entry = await entryFor(c.req.param('docId'));
     const doc = await runtime.registry.getDocument(entry.docId);
+    await rememberForReader(c, entry.docId);
     return c.json(await buildDocDetail(runtime, DocSummary.parse(entry), doc));
   });
 
@@ -342,8 +419,12 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   });
 
   app.delete('/api/docs/:docId', async (c) => {
-    // Public servers share one library; visitors must not be able to wipe each other's documents.
-    if (publicMode) throw new AppError('PUBLIC_MODE_FORBIDDEN');
+    if (readers) {
+      // Hosted servers share one store, so removing only takes the document off this reader's
+      // list. Idempotent: an already evicted document is simply gone from the list too.
+      await readers.remove(readerId(c), c.req.param('docId'));
+      return c.body(null, 204);
+    }
     const entry = await entryFor(c.req.param('docId'));
     if (entry.backend === runtime.backend.kind) {
       await deleteIndexedDocument(runtime.backend, entry.docId);
@@ -542,6 +623,9 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
               now: runtime.now,
               // Public servers never evict: a visitor must not push out someone else's document.
               maxDocs: publicMode ? limits.maxDocs : runtime.maxDocs,
+              ...(readers
+                ? { listedDocIds: () => readers.listedDocIds() }
+                : {}),
               parseLimits: {
                 ...readParseLimits(publicMode),
                 ...(publicMode ? { maxPages: limits.maxPages } : {}),
@@ -557,6 +641,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
             },
           );
           signal.throwIfAborted();
+          await rememberForReader(c, result.doc.docId);
           finished = true;
           log.event(c, {
             level: 'info',

@@ -88,6 +88,11 @@ export interface IngestDeps {
   now: () => Date;
   /** LRU cap on indexed documents. Default 5. */
   maxDocs?: number | undefined;
+  /**
+   * Documents some reader still lists. Eviction prefers documents outside this set so one
+   * reader's ingest does not push out what others are using. Optional; failure is ignored.
+   */
+  listedDocIds?: (() => Promise<ReadonlySet<string>>) | undefined;
   parsePdf?: PdfParser | undefined;
 }
 
@@ -391,7 +396,10 @@ async function enforceCap(deps: IngestDeps, keep: string): Promise<void> {
   const { backend, registry } = deps;
   try {
     const cap = Math.max(1, deps.maxDocs ?? DEFAULT_MAX_DOCS);
-    for (const old of await registry.evictionCandidates(cap)) {
+    // The document just ingested is not on any list yet, but it must not be the first to go.
+    const listed = new Set(await deps.listedDocIds?.().catch(() => []));
+    listed.add(keep);
+    for (const old of await registry.evictionCandidates(cap, listed)) {
       if (old.docId === keep || old.backend !== backend.kind) continue;
       await deleteIndexedDocument(backend, old.docId);
       await registry.remove(old.docId);
