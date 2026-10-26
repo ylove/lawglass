@@ -19,6 +19,10 @@ updates:
       # TypeScript 7 fails `npm ci` with ERESOLVE. Remove this entry once typescript-eslint supports it.
       - dependency-name: typescript
         update-types: ['version-update:semver-major']
+      # tsup 9 needs Node >=22.18 to build, while engines.node (and the quickstart) promise
+      # 22.13. It brings nothing we need, so it waits for the next engines bump.
+      - dependency-name: tsup
+        update-types: ['version-update:semver-major']
   - package-ecosystem: github-actions
     directory: /
     schedule:
