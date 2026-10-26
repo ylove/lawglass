@@ -7,6 +7,38 @@
   letter-spacing: -0.03em;
   color: var(--band-ink);
 }
+/* Kind line above the title, and the "Amends:" line below it. Plain sans, no italics. */
+.doc-kind {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-style: normal;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--band-muted);
+}
+.doc-amends {
+  margin: 0 0 0.75rem;
+  font-style: normal;
+  color: var(--band-ink);
+}
+.doc-amends-label {
+  font-weight: 600;
+}
+.doc-amends-link {
+  all: unset;
+  cursor: pointer;
+  color: var(--band-ink);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+/* The ring color comes from `.masthead :focus-visible` (--band-ink), the only one with enough
+   contrast on the band in both themes; --focus on the band is 2.1:1 in light. */
+.doc-amends-link:focus-visible {
+  outline-style: solid;
+  outline-width: 3px;
+  outline-offset: 2px;
+}
 .doc-header dl {
   display: flex;
   flex-wrap: wrap;
@@ -95,4 +127,40 @@
 .ref-list small .link-btn {
   padding: 0;
   font-size: inherit;
+}
+
+/* The scan badge: status is a glyph plus words on every page, never color alone. */
+.scan-badge {
+  background: var(--warn-bg);
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 1rem;
+  margin: 0 0 1rem;
+  font-style: normal;
+}
+.scan-badge h3 {
+  margin: 0 0 0.25rem;
+  font-size: 1rem;
+}
+.scan-badge p {
+  margin: 0.25rem 0;
+  font-size: 0.95rem;
+}
+.scan-pages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.25rem;
+  list-style: none;
+  margin: 0.5rem 0;
+  padding: 0;
+  font-size: 0.95rem;
+}
+.scan-page {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.scan-not-read {
+  font-weight: 600;
 }
