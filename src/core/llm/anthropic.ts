@@ -17,6 +17,7 @@ import {
   requireKey,
   validateObject,
 } from './shared.js';
+import { anthropicSchema } from './anthropic-schema.js';
 
 /**
  * Parts become text blocks; a `cache` part ends a prompt-cache prefix (system + everything up to
@@ -96,7 +97,8 @@ export class AnthropicProvider implements LlmProvider {
   async generateObject<T>(req: ObjectRequest<T>) {
     try {
       const signal = requestSignal(req.signal, this.config.timeoutMs);
-      // Native structured output is available in SDK 0.133.0; no tool execution is needed.
+      // Native structured output is available in SDK 0.133.0; no tool execution is needed. The
+      // API accepts a subset of JSON Schema (#341); the reply is still checked with the full schema.
       const message = await this.client.messages.create(
         {
           model: this.model,
@@ -104,7 +106,10 @@ export class AnthropicProvider implements LlmProvider {
           messages: [anthropicMessage({ role: 'user', content: req.prompt })],
           max_tokens: req.maxTokens,
           output_config: {
-            format: { type: 'json_schema', schema: jsonSchema(req.schema) },
+            format: {
+              type: 'json_schema',
+              schema: anthropicSchema(jsonSchema(req.schema)),
+            },
             ...(req.effort ? { effort: req.effort } : {}),
           },
         },

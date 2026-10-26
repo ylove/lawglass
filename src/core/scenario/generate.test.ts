@@ -70,6 +70,7 @@ describe('scenario generation', () => {
       'status="deleted"',
       'good, bad',
       'Do not infer demographic',
+      'Do not write section ids in captions; put them in citations.',
     ])
       expect(SCENARIO_SYSTEM_PROMPT).toContain(rule);
   });

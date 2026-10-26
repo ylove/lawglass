@@ -1,6 +1,7 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import { routePath } from 'hono/route';
 import type { AnswerLogEvent } from '../core/answer/log.js';
+import { providerStatusOf } from '../core/llm/shared.js';
 import { isAppError } from '../core/model/index.js';
 
 export type LogWriter = (line: string) => void;
@@ -24,6 +25,8 @@ interface EventFields {
   chunks?: number;
   /** Sentences removed or reworded (excerpt_talk_dropped, excerpt_talk_reworded). */
   count?: number;
+  /** The provider's HTTP status when a model call failed (#341); a number, never its message. */
+  providerStatus?: number;
 }
 
 /** Only explicit fields cross this boundary. Error messages and request URLs never do. */
@@ -70,11 +73,13 @@ export function createLogger(
   }
   function error(c: Context, failure: unknown, ms: number): void {
     if (isAppError(failure)) {
+      const providerStatus = providerStatusOf(failure);
       event(c, {
         level: 'warn',
         event: 'refusal',
         status: c.res.status,
         code: failure.code,
+        ...(providerStatus === undefined ? {} : { providerStatus }),
         ms,
       });
     } else {
