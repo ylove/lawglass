@@ -23,8 +23,8 @@ In both forms PDF.js returns the OCR text, so `SCANNED_PDF` (which fires only wh
 
 **Detect OCR scans first** (#192). A page is an OCR scan when either holds:
 
-- its text is all drawn in invisible render modes (3 or 7), tracked through save and restore, whether or not a readable image operator is present, because PDF.js drops images over its size limit; or
-- visible text is drawn over an image that covers the page, and the producer names an OCR tool such as Paper Capture (the ClearScan form).
+- its text is almost all drawn in invisible render modes (3 or 7), at least 90% of its glyphs, tracked through save and restore, whether or not a readable image operator is present, because PDF.js drops images over its size limit. A footer, Bates number or "RECEIVED" stamp added in visible text afterward does not hide the scan. Any render-mode-3 text over an image that covers 85% or more of the page also counts (mode 7 does not: layout tools use it to fill a title with an image), whatever the producer, because scanner firmware does not name an OCR tool; or
+- visible text is drawn over an image that covers the page, and the producer names an OCR tool such as Paper Capture (the ClearScan form). The producer is read from the Info dictionary and the XMP packet, and "OCR" must start a word, so "Democracy Suite" and "Socrata" do not match.
 
 Text rotated by up to 2 degrees is scan skew, not a stamp: it is read as horizontal text in the line's own frame instead of being dropped. `SCANNED_PDF` keeps its rule on all characters, since counting only visible ones would refuse every OCR'd scan. Every document with an OCR-scan page gets a warning that the text comes from OCR and may contain errors. Until the raster step ships, the warning says marks were not read.
 
@@ -64,4 +64,8 @@ For a word that is uncertain, **apply the strike and do not apply the underline*
 - Raster marks may ship off for rc.3 if the gate fails. The detection and the warning ship either way.
 - The pixel functions and the synthetic scans (Flate and JPEG, skew, merged words, abstain cases, page strips) run in CI. Tests against real scans skip when the fixture is absent.
 - The tarball grows by the three WASM files. The package test asserts which files are present.
+- The producer is per document, so a packet in which only an exhibit went through Paper Capture flags every native page that has a full-page background image; and a re-saved ClearScan file whose Info and XMP were both overwritten loses ClearScan detection.
+- XMP written in attribute form (`<rdf:Description pdf:Producer="..."/>`) is not read, because PDF.js parses only child elements; the element form is.
+- Word breaks recorded by the text layer (empty text items) are honoured only on pages classified as OCR scans. In native PDFs they are layout filler, and trusting them splits `[word]` on New York bills.
+- `scan.pages` lists only scanned pages; a page not listed is native.
 - Known limits: axis-aligned pages only, and no handwriting. A hand-drawn strike is read only if it forms a clear horizontal run.

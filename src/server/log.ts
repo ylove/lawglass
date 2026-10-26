@@ -1,5 +1,6 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import { routePath } from 'hono/route';
+import type { AnswerLogEvent } from '../core/answer/log.js';
 import { isAppError } from '../core/model/index.js';
 
 export type LogWriter = (line: string) => void;
@@ -10,7 +11,9 @@ interface EventFields {
     | 'internal_error'
     | 'ingest_start'
     | 'ingest_finish'
-    | 'metadata_failed';
+    | 'metadata_failed'
+    | 'excerpt_talk_dropped'
+    | 'regeneration_refused';
   status: number;
   code?: string;
   ms: number;
@@ -18,6 +21,8 @@ interface EventFields {
   docId?: string;
   host?: string;
   chunks?: number;
+  /** Sentences removed (excerpt_talk_dropped). */
+  count?: number;
 }
 
 /** Only explicit fields cross this boundary. Error messages and request URLs never do. */
@@ -27,6 +32,31 @@ export function createLogger(
   },
   now: () => number = Date.now,
 ) {
+  /** Maps an answer-layer event to a log line. Codes and counts only, never model text. */
+  function answerEvent(c: Context, e: AnswerLogEvent, ms: number): void {
+    event(
+      c,
+      e.event === 'regeneration_refused'
+        ? { level: 'info', event: e.event, status: 200, code: e.reason, ms }
+        : { level: 'info', event: e.event, status: 200, count: e.count, ms },
+    );
+  }
+  /** Same, for background work (the cached summary) that has no request behind it. */
+  function backgroundAnswerEvent(e: AnswerLogEvent): void {
+    write(
+      JSON.stringify({
+        t: new Date(now()).toISOString(),
+        level: 'info',
+        status: 200,
+        ms: 0,
+        ...(e.event === 'regeneration_refused'
+          ? { event: e.event, code: e.reason }
+          : { event: e.event, count: e.count }),
+        route: '/api/docs/:docId/summary',
+        method: 'GET',
+      }) + '\n',
+    );
+  }
   function event(c: Context, fields: EventFields): void {
     write(
       JSON.stringify({
@@ -104,7 +134,14 @@ export function createLogger(
       }) + '\n',
     );
   }
-  return { event, error, middleware, referenceSkipped };
+  return {
+    event,
+    answerEvent,
+    backgroundAnswerEvent,
+    error,
+    middleware,
+    referenceSkipped,
+  };
 }
 
 function safeCode(payload: unknown): string | undefined {

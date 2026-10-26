@@ -103,6 +103,13 @@ All 119 golden questions, default mode, Claude Sonnet 5.5 through the `claude-cl
 - **Declines vary from run to run.** S. 202's unanswerable questions were declined 1, 2 and 3 times out of 3 in three runs. Asking each three more times gave six exact declines and three "soft declines" (_"The excerpts don't show any tax cuts. They describe a pilot program…"_, with citations). None invented an answer; the metric counts only the exact decline sentence (#109).
 - **Reading level** averages grade 8.5 to 10.2 against a target of about grade 7. Legal terms ("trier of fact", "affirmative defense") push the score up; the prompt asks for plain language but the measured result is above target.
 
+  **Enforcement (#285), not yet measured.** Rule 8 is now concrete (sentences under about 15 words, one idea each, everyday words, active voice). If an answer still grades too hard, the app asks the same model the same question over the same context once more, with a stricter 6th-grade instruction, and uses the new answer only if it is cited, not declined, cites every section the first answer validly cited (more is fine), has no new warning and grades lower. Two ceilings apply. Background and cached output (the on-arrival summary) is regenerated above grade 8 (`LAWGLASS_READING_GRADE_MAX`, 0 disables, 30 second limit). Interactive answers (questions and chip clicks) are regenerated only above grade 10 (`LAWGLASS_READING_GRADE_MAX_INTERACTIVE`, 0 disables, 20 second limit), because the reader waits with no sources while the second try runs and the text then changes under them. Because the new answer goes through the normal citation checks it is as grounded as any answer. Answers that cite struck or inserted text, answer a question about changes, were truncated, or come from a public-mode server are not regenerated. A live whole-bill summary of S. 5687 measured grade 11.1 before this. The eval harness does not turn regeneration on, so it measures the prompt change alone. To measure both effects with a real model:
+
+  1. Prompt effect: `npm run eval -- --provider claude-cli` on this branch and on `main`, and compare "Mean reading grade" per bill.
+  2. Regeneration effect: ask the same questions with the CLI, `ask <doc> "<question>" --json`, once with `LAWGLASS_READING_GRADE_MAX=0` (off) and once with the default. Compare `readingGrade`, and count how often `simplified` is true. A refused regeneration appears in the server log as a `regeneration_refused` event with a reason code (the CLI prints it on stderr).
+
+  Record the before and after grades here once run.
+
 ## Retrieval or the whole bill in the prompt?
 
 The NDAA was the test. Claude Sonnet 5.5 has a 1M-token context window.

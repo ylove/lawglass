@@ -151,6 +151,9 @@ async function runWholeChip(
     signal: options.signal,
     onToken: options.onToken,
     maxTokens: options.maxTokens,
+    log: options.log,
+    readingLevel: options.readingLevel,
+    exactWording: chip.id === 'what-changes',
   });
   return {
     answer: result,
@@ -287,6 +290,9 @@ async function runRetrieveChip(
     signal: options.signal,
     onToken: options.onToken,
     maxTokens: options.maxTokens,
+    log: options.log,
+    readingLevel: options.readingLevel,
+    exactWording: chip.id === 'what-changes',
   });
   return {
     answer: result,
@@ -375,6 +381,9 @@ async function runDefinitionsChip(
     signal: options.signal,
     onToken: options.onToken,
     maxTokens: options.maxTokens,
+    log: options.log,
+    readingLevel: options.readingLevel,
+    exactWording: chip.id === 'what-changes',
   });
   const note =
     hidden > 0

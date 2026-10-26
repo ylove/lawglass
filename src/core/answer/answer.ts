@@ -14,6 +14,12 @@ import {
 import { coveredSectionIds, validateCitations } from './citations.js';
 import { createEchoGuard, echoesSystemPrompt } from './echo.js';
 import { wholeBillEffort, type ContextMode } from './context.js';
+import type { AnswerLog } from './log.js';
+import { dropExcerptTalk } from './excerpt-filter.js';
+import {
+  regenerateForReadingLevel,
+  type ReadingLevelOptions,
+} from './regenerate.js';
 import { buildPrompt } from './prompt.js';
 import { referenceHeading, selectReferences } from './references.js';
 import { fleschKincaidGrade, stripCitations } from './readability.js';
@@ -42,17 +48,32 @@ export interface AnswerInput {
   /** Called with each streamed piece. The final text may differ (invalid markers stripped). */
   onToken?: ((text: string) => void) | undefined;
   maxTokens?: number | undefined;
+  /** Sink for the count of "the excerpts" sentences removed (#274). Not a reader warning. */
+  log?: AnswerLog | undefined;
+  /** Enforce the reading level by regenerating a too-hard answer once (#285). Off when unset. */
+  readingLevel?: ReadingLevelOptions | undefined;
+  /** The answer is about changes: never regenerate it, a plainer retelling could swap old and new. */
+  exactWording?: boolean | undefined;
 }
 
 /** Provider stop reasons meaning the reply was cut off: Anthropic, OpenAI ('length'), Google ('MAX_TOKENS'). */
-const TRUNCATION_STOP_REASONS = new Set([
+export const TRUNCATION_STOP_REASONS = new Set([
   'max_tokens',
   'model_context_window_exceeded',
   'length',
   'MAX_TOKENS',
 ]);
 
+/**
+ * One grounded answer, plus (when `readingLevel` is set) one regeneration if it reads above the
+ * ceiling. See `regenerate.ts`.
+ */
 export async function answer(input: AnswerInput): Promise<AnswerResult> {
+  const first = await answerOnce(input);
+  return regenerateForReadingLevel(first, input, answerOnce);
+}
+
+async function answerOnce(input: AnswerInput): Promise<AnswerResult> {
   input.signal?.throwIfAborted();
   const { provider, context, onToken } = input;
   const base = { provider: provider.id, model: provider.model };
@@ -161,15 +182,25 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
       usage,
     };
   }
+  // Rule 9 backstop. Only uncited sentences are dropped, so the citations stay as validated.
+  // An answer that was nothing but such sentences has nothing left to say: it is a decline.
+  const filtered = dropExcerptTalk(validated.text);
+  if (filtered.dropped.length > 0)
+    input.log?.({
+      event: 'excerpt_talk_dropped',
+      count: filtered.dropped.length,
+    });
+  const emptied = filtered.dropped.length > 0 && filtered.text === '';
+  const finalText = emptied ? DECLINE_TEXT : filtered.text;
   return {
-    text: validated.text,
+    text: finalText,
     citations: validated.citations,
     invalidCitations: validated.invalidCitations,
     warnings: truncated
       ? [...validated.warnings, 'TRUNCATED']
       : validated.warnings,
-    declined: validated.declined,
-    readingGrade: fleschKincaidGrade(stripCitations(validated.text)),
+    declined: validated.declined || emptied,
+    readingGrade: fleschKincaidGrade(stripCitations(finalText)),
     ...base,
     usage,
     context: context.mode ?? 'excerpts',

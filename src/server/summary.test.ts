@@ -7,6 +7,7 @@ import {
   makePipelineEnv,
   type PipelineEnv,
 } from '../../tests/support/pipeline-env.js';
+import { ScriptedProvider } from '../../tests/contracts/scripted-provider.js';
 import { scenarioProvider } from '../../tests/support/scenario-provider.js';
 import { makeSectionedText } from '../../tests/synth/index.js';
 import { IngestEvent, SummaryResponse } from '../core/model/index.js';
@@ -26,6 +27,7 @@ import {
   SUMMARY_CACHE_VERSION,
   waitForSummary,
 } from './summary.js';
+import { REGENERATION_VERSION } from '../core/answer/regenerate.js';
 import { forgetDocument } from '../core/answer/context.js';
 import { AnswerCache } from '../core/answer-cache.js';
 import { SUMMARY_PROMPT_VERSION } from '../core/chip-summary.js';
@@ -245,6 +247,65 @@ describe('GET /api/docs/:docId/summary', () => {
   test('an unknown document is a 404', async () => {
     const res = await app().request(`/api/docs/${'0'.repeat(64)}/summary`);
     expect(res.status).toBe(404);
+  });
+
+  /** Cites the first section in the prompt: hard first, easy once asked for a simpler try. */
+  function hardThenEasy(second?: string) {
+    return new ScriptedProvider({
+      reply: (req) => {
+        const text = JSON.stringify(req.messages);
+        const id = /section=\\"([^\\"]+)\\"/.exec(text)?.[1] ?? 'x';
+        return text.includes('6th-grade reader')
+          ? (second ?? `The agency must write rules for towns [S:${id}].`)
+          : `The Administrator shall promulgate regulations establishing eligibility requirements for participating municipalities, which must demonstrate substantial compliance with applicable environmental standards [S:${id}].`;
+      },
+    });
+  }
+
+  test('the summary is regenerated to the reading level before it is cached', async () => {
+    const provider = hardThenEasy();
+    Object.assign(env.runtime, { answerProvider: provider });
+    const a = app();
+    const docId = await ingestDoc(a);
+    await summary(a, docId);
+    const done = await vi.waitFor(
+      async () => {
+        const r = await summary(a, docId);
+        expect(r.status).toBe('cached');
+        return r;
+      },
+      { timeout: 5000 },
+    );
+    expect(done.answer?.simplified).toBe(true);
+    expect(done.answer?.text).toContain('The agency must write rules');
+    // The cached copy is already at reading level: a second poll makes no new call.
+    const calls = provider.calls.length;
+    await summary(a, docId);
+    expect(provider.calls).toHaveLength(calls);
+  });
+
+  test('a refused regeneration of the summary is logged by code only', async () => {
+    Object.assign(env.runtime, {
+      answerProvider: hardThenEasy('Towns get money.'),
+    });
+    const lines: string[] = [];
+    const a = app({ logWriter: (l) => lines.push(l) });
+    const docId = await ingestDoc(a);
+    await summary(a, docId);
+    await vi.waitFor(() => {
+      expect(lines.join('')).toContain('"event":"regeneration_refused"');
+    });
+    expect(lines.join('')).toContain('"code":"NO_CITATION"');
+    expect(lines.join('')).not.toContain('Towns get money');
+    await vi.waitFor(async () => {
+      expect((await summary(a, docId)).status).toBe('cached');
+    });
+  });
+
+  test('the cache version covers the regeneration rule', () => {
+    expect(SUMMARY_CACHE_VERSION.endsWith(`.${REGENERATION_VERSION}`)).toBe(
+      true,
+    );
   });
 
   test('a declined answer is never cached and is not retried on every poll', async () => {

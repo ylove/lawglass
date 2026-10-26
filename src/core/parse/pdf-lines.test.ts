@@ -491,3 +491,96 @@ it('exempts only the NY cover enacting clause from whole-line warnings, retainin
     layoutPages([content], { newYorkBill: true }).warnings.join(' '),
   ).toContain('one rule marks the whole line');
 });
+
+describe('skewed lines (scan skew, issue 192)', () => {
+  // A line whose baseline climbs 0.01pt per point: 5pt across 500pt, half an em at 10pt.
+  const slope = 0.01;
+  const skewed = (text: string, x: number, y0: number) =>
+    item(text, x, y0 + slope * x, { slope, width: 30 });
+
+  it('groups items along a rising baseline into one line, and the next line apart', () => {
+    const lines = groupLines([
+      skewed('left', 40, 700),
+      skewed('right', 540, 700),
+      skewed('below', 40, 684),
+    ]);
+    expect(lines.map((line) => line.map((i) => i.text))).toEqual([
+      ['left', 'right'],
+      ['below'],
+    ]);
+  });
+
+  it('compares baselines at the page middle, so a slope error does not scale with x', () => {
+    // Both words sit on a baseline that is at 700 at the page middle (x = 306), but their
+    // slopes disagree. Measured from x = 0 the disagreement is multiplied by up to 540pt and the
+    // line splits (4.9pt apart, over the 3pt tolerance); from the middle it stays one line.
+    const near = item('near', 72, 700 + 0.01 * (72 - 306), {
+      slope: 0.01,
+      width: 30,
+    });
+    const far = item('far', 540, 700 + 0.026 * (540 - 306), {
+      slope: 0.026,
+      width: 30,
+    });
+    expect(groupLines([near, far])).toHaveLength(1);
+  });
+
+  it('would split the same items if the slope were ignored', () => {
+    const lines = groupLines(
+      [skewed('left', 40, 700), skewed('right', 540, 700)].map(
+        ({ slope: _slope, ...rest }) => rest,
+      ),
+    );
+    expect(lines).toHaveLength(2);
+  });
+
+  it('puts a margin line number on the line it sits beside', () => {
+    const result = layoutPages([
+      page(1, [
+        skewed('1', 10, 700),
+        skewed('Section 1. A long enough', 40, 700),
+        skewed('2', 10, 684),
+        skewed('second line of text', 40, 684),
+        skewed('3', 10, 668),
+        skewed('third line of text', 40, 668),
+      ]),
+    ]);
+    expect(result.lines.map((line) => line.line)).toEqual([1, 2, 3]);
+  });
+});
+
+describe('spaces recorded by the text layer (word joining, issue 192)', () => {
+  const none = (text: string) => Array.from(text, () => 'unchanged' as const);
+
+  it('joins with a space when a whitespace item sat between, however narrow the gap', () => {
+    // OCR gives the space item under a point of width: 0.95pt is 0.08em here.
+    const items = [
+      item('electors of', 0, 0, { width: 60 }),
+      item('the district', 60.95, 0, { width: 60, spaceBefore: true }),
+    ];
+    expect(
+      joinLine(
+        items,
+        items.map((i) => none(i.text)),
+      ).text,
+    ).toBe('electors of the district');
+  });
+
+  it('still joins touching items without a space when no space item sat between', () => {
+    const items = [
+      item('inter', 0, 0, { width: 30 }),
+      item('national', 30.5, 0, { width: 48 }),
+    ];
+    expect(
+      joinLine(
+        items,
+        items.map((i) => none(i.text)),
+      ).text,
+    ).toBe('international');
+  });
+
+  it('ignores a space flag on the first item of a line', () => {
+    const items = [item('first', 0, 0, { width: 30, spaceBefore: true })];
+    expect(joinLine(items, [none('first')]).text).toBe('first');
+  });
+});

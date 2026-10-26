@@ -13,7 +13,13 @@ import { runCompareCommand, type CompareOptions } from '../eval/compare.js';
 import { unescapeDelegationList } from '../core/chip-delegations.js';
 import { unescapeRecordText } from '../core/chip-history.js';
 import { safeText } from './sanitize.js';
-import { formatAskFooter, formatIngest, formatList } from './format.js';
+import {
+  finalTextDiffers,
+  formatAnswerLog,
+  formatAskFooter,
+  formatIngest,
+  formatList,
+} from './format.js';
 import {
   createRuntime,
   type CliRuntime,
@@ -297,6 +303,7 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
               : chip.data === 'delegations'
                 ? unescapeDelegationList
                 : undefined;
+        let streamed = '';
         const result = await ask(
           entry.docId,
           chip?.success ? { chipId: chip.data } : { question: question ?? '' },
@@ -306,10 +313,16 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
             registry: runtime.registry,
             retrievalMode: runtime.retrievalMode,
             chips: runtime.chips,
+            readingLevel: {},
+            log: (e) => {
+              if (!options.json)
+                process.stderr.write(`${formatAnswerLog(e)}\n`);
+            },
           },
           {
             onToken: (text) => {
               if (options.json) return;
+              streamed += text;
               write(safeText(unescape ? unescape(text) : text));
             },
           },
@@ -318,6 +331,14 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
           write(`${JSON.stringify(result.answer, null, 2)}\n`);
           return;
         }
+        // The answer streamed above as the model wrote it. When the final text differs (a
+        // reading-level rewrite, or sentences about "the excerpts" removed), print it once
+        // more rather than buffer every answer, which would delay the first word of all of them.
+        // The history chip's own text is never changed after streaming.
+        if (!unescape && finalTextDiffers(streamed, result.answer.text))
+          write(
+            `\n\n${result.answer.simplified ? 'In simpler words' : 'Final answer'}:\n${safeText(result.answer.text)}\n`,
+          );
         const normalized = await runtime.registry.getDocument(entry.docId);
         write(`\n${formatAskFooter(result, normalized)}`);
       },

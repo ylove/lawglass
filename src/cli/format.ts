@@ -1,4 +1,6 @@
 /** Plain-text rendering of pipeline results for the terminal. */
+import type { AnswerLogEvent } from '../core/answer/log.js';
+import { stripCitations } from '../core/answer/readability.js';
 import { formatCitation } from '../core/pipeline/index.js';
 import type { AskResult, IngestResult } from '../core/pipeline/index.js';
 import { safeText } from './sanitize.js';
@@ -112,4 +114,25 @@ export function formatList(entries: readonly RegistryEntryLike[]): string {
       )
       .join('\n')}\n`,
   );
+}
+
+/** One stderr line for an answer-layer event: codes and counts only. */
+export function formatAnswerLog(event: AnswerLogEvent): string {
+  return event.event === 'regeneration_refused'
+    ? `note: kept the original wording (regeneration refused: ${event.reason})`
+    : `note: removed ${String(event.count)} sentence(s) about the excerpts`;
+}
+
+/**
+ * Whether the final answer text says something other than what was streamed. Citation markers
+ * and spacing are ignored: invalid markers are stripped from the final text, which is no reason
+ * to print the answer twice. A final text that the streamed text already ends with (the decline
+ * appended after a withheld recital) is the same too.
+ */
+export function finalTextDiffers(streamed: string, final: string): boolean {
+  const plain = (t: string): string =>
+    stripCitations(t).replace(/\s+/g, ' ').trim();
+  const a = plain(streamed);
+  const b = plain(final);
+  return a !== b && !a.endsWith(b);
 }

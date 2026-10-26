@@ -2,6 +2,8 @@
  * Shared types and small helpers for the chip executors (chip-runner.ts, chip-summary.ts,
  * chip-changes.ts).
  */
+import type { AnswerLog } from './answer/log.js';
+import type { ReadingLevelOptions } from './answer/regenerate.js';
 import type {
   AnswerResult,
   BackendUsage,
@@ -56,6 +58,10 @@ export interface RunChipOptions {
   /** Streamed pieces of the final answer (map-step text is not streamed). */
   onToken?: ((text: string) => void) | undefined;
   maxTokens?: number | undefined;
+  /** Operator log sink (#274). */
+  log?: AnswerLog | undefined;
+  /** Regenerate a too-hard answer once (#285). */
+  readingLevel?: ReadingLevelOptions | undefined;
 }
 
 export interface ChipRun {
