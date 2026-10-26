@@ -72,7 +72,9 @@ test('summary on arrival: preview, then summary, then cached on reload', async (
   await expect(panel).toContainText('Writing a plain-language summary');
   await expect(panel).toContainText('Written from the bill');
   await expect(panel).not.toContainText('Writing a plain-language summary');
-  const summaryText = await panel.locator('.summary-text').innerText();
+  // textContent, not innerText: the summary is a list, and innerText adds its rendering (markers).
+  const summaryText =
+    (await panel.locator('.summary-text').textContent()) ?? '';
   expect(summaryText.length).toBeGreaterThan(0);
 
   await page.unroute('**/summary');
