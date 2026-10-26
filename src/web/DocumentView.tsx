@@ -185,7 +185,11 @@ export function DocumentView({
   return (
     <div className="doc">
       <NoticeBar notice={notice} />
-      <MetadataHeader detail={detail} slot={mastheadSlot ?? null} />
+      <MetadataHeader
+        detail={detail}
+        slot={mastheadSlot ?? null}
+        onOpenSection={openSection}
+      />
       <div className="doc-grid">
         <div className="doc-main">
           <SummaryPanel

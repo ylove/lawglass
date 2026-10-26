@@ -449,4 +449,12 @@ describe('ordinary legal wording is not a verdict (#312)', () => {
       hasVerdictLanguage('The claim is misleading [S:s]', 'misleading'),
     ).toBe(true);
   });
+  it.each([
+    'This is a true copy, so you are right [S:s]',
+    'You’re correct about the deadline [S:s]',
+    "You're right [S:s]",
+    'You were mistaken [S:s]',
+  ])('telling the reader they are right is a verdict (#321): %s', (text) => {
+    expect(hasVerdictLanguage(text, 'the clerk sends a true copy')).toBe(true);
+  });
 });
