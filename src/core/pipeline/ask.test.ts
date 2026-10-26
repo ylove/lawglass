@@ -896,6 +896,29 @@ describe('budgets and question hygiene (LLM10)', () => {
     expect(stream).toHaveBeenCalledTimes(1); // refused before reaching the model
   });
 
+  test('the delegations lede is a metered model call, in whole-bill mode too', async () => {
+    const docId = await load(
+      'https://example.gov/s9001.xml',
+      makeCongressionalBillXml(),
+    );
+    const limits = new Limits(
+      { maxConcurrentIngest: 2, maxConcurrentAsk: 4, maxCallsPerMinute: 1 },
+      () => 0,
+    );
+    const stream = vi.spyOn(env.provider, 'streamText');
+    // A huge whole-bill budget must not matter: the lede reads only the extracted quotes.
+    const deps = askDeps({ limits, wholeBillMaxTokens: 1_000_000 });
+    const first = await ask(docId, { chipId: 'delegations' }, deps);
+    expect(first.answer.text.length).toBeGreaterThan(0);
+    const calls = stream.mock.calls.length;
+    expect(calls).toBe(1);
+    // Past the ceiling the lede is refused, but the list needs no model: it still answers.
+    const second = await ask(docId, { chipId: 'delegations' }, deps);
+    expect(second.answer.text).toContain('**');
+    expect(second.answer.provider).toBe('none');
+    expect(stream.mock.calls.length).toBe(calls);
+  });
+
   test('a multi-call summary is charged per provider call', async () => {
     const docId = await load(
       'https://example.gov/s9001.xml',
