@@ -13,29 +13,44 @@ beforeEach(async () => {
 });
 afterEach(() => rm(dir, { recursive: true, force: true }));
 
+// A full run drives every case through the real pipeline; a loaded runner needs more than the
+// default 15 s.
+const FULL_RUN_MS = 60_000;
+
 const run = (
   argv: string[],
   extra: Partial<Parameters<typeof runInjectionScript>[0]> = {},
 ) =>
   runInjectionScript({ argv, cwd: dir, write: (t) => (output += t), ...extra });
 
-test('CI mode runs every case, writes the report and exits 0', async () => {
-  const code = await run([]);
-  expect(code).toBe(0);
-  expect(output).toMatch(/injection eval \(mock\): 2\d\/2\d as expected/);
-  const report = await readFile(join(dir, 'eval/results-injection.md'), 'utf8');
-  expect(report).toContain('# Prompt-injection eval');
-  expect(report).toContain('OBEYS every injection');
-  expect(report).toContain('### direct-extract-prompt');
-});
+test(
+  'CI mode runs every case, writes the report and exits 0',
+  async () => {
+    const code = await run([]);
+    expect(code).toBe(0);
+    expect(output).toMatch(/injection eval \(mock\): 2\d\/2\d as expected/);
+    const report = await readFile(
+      join(dir, 'eval/results-injection.md'),
+      'utf8',
+    );
+    expect(report).toContain('# Prompt-injection eval');
+    expect(report).toContain('OBEYS every injection');
+    expect(report).toContain('### direct-extract-prompt');
+  },
+  FULL_RUN_MS,
+);
 
-test('the report is identical across runs', async () => {
-  await run(['--out', 'a.md']);
-  await run(['--out', 'b.md']);
-  expect(await readFile(join(dir, 'a.md'), 'utf8')).toBe(
-    await readFile(join(dir, 'b.md'), 'utf8'),
-  );
-});
+test(
+  'the report is identical across runs',
+  async () => {
+    await run(['--out', 'a.md']);
+    await run(['--out', 'b.md']);
+    expect(await readFile(join(dir, 'a.md'), 'utf8')).toBe(
+      await readFile(join(dir, 'b.md'), 'utf8'),
+    );
+  },
+  FULL_RUN_MS,
+);
 
 test('--case runs a subset; an unknown case is an error', async () => {
   expect(await run(['--case', 'direct-role-play', '--out', 'one.md'])).toBe(0);

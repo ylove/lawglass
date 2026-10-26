@@ -364,6 +364,22 @@ describe('document flow', () => {
     expect(chip.getAttribute('aria-disabled')).toBe('false');
   });
 
+  test('the delegations answer shows its groups as headings over lists', async () => {
+    render(<App api={mock()} />);
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Who decides later?' }));
+    for (const heading of [
+      'Decided later by',
+      'Depends on',
+      'Takes effect when',
+    ])
+      expect((await screen.findByText(heading)).tagName).toBe('STRONG');
+    expect(screen.getAllByRole('list').length).toBeGreaterThanOrEqual(1);
+    expect(
+      (await screen.findAllByRole('button', { name: /^Source \d+$/ })).length,
+    ).toBeGreaterThan(1);
+  });
+
   test('a TRUNCATED warning is explained in plain language', async () => {
     const api = mock();
     const real = api.ask.bind(api);
@@ -481,7 +497,7 @@ describe('document flow', () => {
     const chips = within(
       screen.getByRole('group', { name: 'What would you like to know?' }),
     ).getAllByRole('button');
-    expect(chips).toHaveLength(9);
+    expect(chips).toHaveLength(10);
     for (const c of chips) expect(c.tagName).toBe('BUTTON');
   });
 
@@ -847,5 +863,20 @@ describe('sidebar and shell', () => {
     await waitFor(() => {
       expect(links[1]!.getAttribute('aria-current')).toBe('page');
     });
+  });
+});
+
+describe('local measure demo document', () => {
+  test('a charter address ingests as a scanned charter amendment', async () => {
+    const api = mock();
+    let docId = '';
+    for await (const e of api.ingest({
+      url: 'https://example.gov/charter.pdf',
+    }))
+      if (e.type === 'done') docId = e.doc.docId;
+    const detail = await api.getDoc(docId);
+    expect(detail.metadata.docKind).toBe('charter_amendment');
+    expect(detail.metadata.amends?.sections).toContain('41-5');
+    expect(detail.scan?.pages.some((p) => p.marks === 'not-read')).toBe(true);
   });
 });

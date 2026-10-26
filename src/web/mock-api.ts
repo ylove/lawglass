@@ -18,6 +18,7 @@ import {
   type IngestRequest,
   type Scenario,
   type ScenarioRequest,
+  type ScanStatus,
   type ScenarioResponse,
   type SectionExcerpt,
   type SponsorProfile,
@@ -36,7 +37,7 @@ export interface MockApiOptions {
 }
 
 export const MOCK_HINT =
-  'Demo mode. Any web address works. Try one containing "wrapper" to see the file picker, "fail" to see an error, or ending in .xml for a document without page and line numbers.';
+  'Demo mode. Any web address works. Try one containing "wrapper" to see the file picker, "fail" to see an error, or ending in .xml for a document without page and line numbers. One containing "charter" gives a scanned city charter amendment.';
 
 const CHIPS: ClientConfig['chips'] = [
   { id: 'summary', label: 'Summarize this bill' },
@@ -45,6 +46,7 @@ const CHIPS: ClientConfig['chips'] = [
   { id: 'history', label: 'How did it get here?' },
   { id: 'penalties', label: 'Penalties and enforcement' },
   { id: 'effective-date', label: 'When does it take effect?' },
+  { id: 'delegations', label: 'Who decides later?' },
   { id: 'money', label: 'Taxes, fees, and spending' },
   { id: 'definitions', label: 'Key definitions' },
   { id: 'sponsors', label: 'Who sponsored it?' },
@@ -185,6 +187,10 @@ const SECTIONS: MockSection[] = [
   },
 ];
 
+/** The demo charter amendment's own summary, so it does not read as the water bill. */
+const CHARTER_SUMMARY =
+  'This charter amendment changes how the city council is elected [S:sec-1] and how vacancies are filled [S:sec-2]. It would take effect on January 1, 2027 if voters approve it.';
+
 const ANSWERS: Record<ChipId, string> = {
   summary:
     'This bill requires water utilities to replace lead pipes and sets fines for missing the deadline [S:sec-4/b]. It takes effect on July 1, 2027 [S:sec-7].\n\nIt also defines the key terms it uses, such as "public water system" and "utility" [S:sec-2/a].',
@@ -203,8 +209,8 @@ const ANSWERS: Record<ChipId, string> = {
     'Here is what the official record says about how this bill got here.\n\nKey actions:\n- 2026-02-03: Introduced in the House.\n- 2026-03-10: Reported by the House Water Committee.\n\nThe record lists no amendments to this bill.',
   sponsors:
     'Sponsored by Rep. A. Rivera, Rep. J. Chen. Cosponsors, if any, are not included.',
-  // Placeholder: the delegations chip is not in the served chip list until #202.
-  delegations: "This document doesn't address that question.",
+  delegations:
+    'The water department will write the detailed rules later, and the fine only works once the council sets the daily rate [S:sec-6].\n\n**Decided later by**\n- The water department: the rules for notifying households [S:sec-4/b]\n- The city council: the daily fine rate (not later than 90 days after enactment) [S:sec-6]\n\n**Depends on**\n- Funding set aside by the council in a later budget [S:sec-6]\n\n**Takes effect when**\n- July 1, 2027 [S:sec-7]',
 };
 
 /** Invented example for the `who-affected` demo. Every frame cites a section the answer cites. */
@@ -379,6 +385,16 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
       { once: true },
     );
   });
+
+/** A URL containing "charter" ingests as a scanned local charter amendment (demo only). */
+const CHARTER_URL = /charter/i;
+const CHARTER_SCAN: ScanStatus = {
+  pages: [
+    { page: 1, marks: 'read' },
+    { page: 2, marks: 'not-read' },
+    { page: 3, marks: 'uncertain' },
+  ],
+};
 
 const abortError = () => new DOMException('Aborted', 'AbortError');
 
@@ -573,31 +589,48 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
     async getDoc(docId) {
       const doc = need(docId);
       const sample = doc.docId === SAMPLE_ID;
+      const charter = CHARTER_URL.test(doc.sourceUrl);
       const detail: DocDetail = {
         doc,
-        metadata: sample
+        metadata: charter
           ? {
               title: doc.title,
-              billNumber: doc.billNumber,
-              jurisdiction: 'Example State',
-              session: '2025-2026 Regular Session',
-              version: 'As Introduced',
-              sponsors: ['Rep. A. Rivera', 'Rep. J. Chen'],
-              sponsorProfiles: structuredClone(SAMPLE_SPONSORS),
-              source: 'structured',
-            }
-          : {
-              title: doc.title,
-              billNumber: null,
-              jurisdiction: null,
+              billNumber: 'Issue 8',
+              jurisdiction: 'City of Columbus, Ohio',
               session: null,
               version: null,
               sponsors: null,
+              docKind: 'charter_amendment',
+              amends: {
+                name: 'Columbus City Charter',
+                sections: ['3', '4', '41-5', '46', '46-3'],
+              },
               source: 'extracted',
-            },
-        outline: SECTIONS.map((s) => ({
+            }
+          : sample
+            ? {
+                title: doc.title,
+                billNumber: doc.billNumber,
+                jurisdiction: 'Example State',
+                session: '2025-2026 Regular Session',
+                version: 'As Introduced',
+                sponsors: ['Rep. A. Rivera', 'Rep. J. Chen'],
+                sponsorProfiles: structuredClone(SAMPLE_SPONSORS),
+                source: 'structured',
+              }
+            : {
+                title: doc.title,
+                billNumber: null,
+                jurisdiction: null,
+                session: null,
+                version: null,
+                sponsors: null,
+                source: 'extracted',
+              },
+        outline: SECTIONS.map((s, i) => ({
           id: s.id,
-          num: s.num,
+          // The charter's first two sections stand in for charter sections 3 and 4.
+          num: charter && i < 2 ? String(i + 3) : s.num,
           heading: s.heading,
           level: 1,
         })),
@@ -615,11 +648,17 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
             sectionIds: ['sec-2/a', 'sec-6'],
           },
         ],
-        warnings: hasLines(doc)
-          ? []
-          : [
-              'This file has no printed line numbers, so citations point to a section only.',
-            ],
+        ...(charter ? { scan: structuredClone(CHARTER_SCAN) } : {}),
+        warnings: charter
+          ? [
+              'Page 2 of this scan could not be read, so changes marked there are missing.',
+              'Line numbers were not found on page 3; citations there use the page only.',
+            ]
+          : hasLines(doc)
+            ? []
+            : [
+                'This file has no printed line numbers, so citations point to a section only.',
+              ],
         hasLineNumbers: hasLines(doc),
         ...(sample ? { history: structuredClone(SAMPLE_HISTORY) } : {}),
         ...(sample ? { scenarioPersonas: [...SAMPLE_PERSONAS] } : {}),
@@ -643,7 +682,11 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
       const cached = (): SummaryResponse => ({
         status: 'cached',
         answer: {
-          ...buildAnswer(doc, ANSWERS.summary, false),
+          ...buildAnswer(
+            doc,
+            CHARTER_URL.test(doc.sourceUrl) ? CHARTER_SUMMARY : ANSWERS.summary,
+            false,
+          ),
           scenario: structuredClone(SAMPLE_SCENARIO),
         },
       });
@@ -805,7 +848,9 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
           req.label ?? new URL(url).pathname.split('/').pop() ?? 'Document',
         sourceUrl: url,
         format: formatFor(url),
-        title: 'Clean Water Infrastructure Act (copy)',
+        title: CHARTER_URL.test(url)
+          ? 'Issue 8: Charter amendments'
+          : 'Clean Water Infrastructure Act (copy)',
         billNumber: null,
         ingestedAt: NOW,
         lastUsedAt: NOW,
@@ -860,7 +905,11 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
           ? ANSWERS[req.chipId]
           : ANSWERS.penalties;
 
-      if (req.chipId !== 'sponsors' && req.chipId !== 'history') {
+      if (
+        req.chipId !== 'sponsors' &&
+        req.chipId !== 'history' &&
+        req.chipId !== 'delegations'
+      ) {
         await sleep(delay, signal);
         yield {
           type: 'retrieval',

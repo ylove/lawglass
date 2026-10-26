@@ -50,9 +50,10 @@ export type ChipRunner = (
     backend: RetrievalBackend;
     provider: LlmProvider;
     /** The full cached document: `definitions` lists document-wide definitions first. */
+    publicMode?: boolean | undefined;
     doc: Pick<
       NormalizedDoc,
-      'metadata' | 'sections' | 'definitions' | 'references'
+      'metadata' | 'sections' | 'definitions' | 'references' | 'externalRefs'
     > & {
       /** Only loaded for the history chip. */
       history?: BillHistory | undefined;
@@ -93,6 +94,8 @@ export interface AskDeps {
   scenario?: { enabled?: boolean; timeoutMs?: number } | undefined;
   /** Concurrency and per-minute budgets. Defaults to the process-wide limits from the environment. */
   limits?: Limits | undefined;
+  /** Public servers skip optional model steps, such as the delegations lede. */
+  publicMode?: boolean | undefined;
 }
 
 export type AskInput = { chipId: ChipId } | { question: string };
@@ -325,6 +328,7 @@ async function askWithinLimits(
       {
         backend: guard.backend,
         provider: deps.provider,
+        publicMode: deps.publicMode,
         doc: { ...doc, history },
       },
       {

@@ -11,6 +11,7 @@ export const CHIP_LABELS: ClientConfig['chips'] = [
   { id: 'history', label: 'How did it get here?' },
   { id: 'penalties', label: 'Penalties and enforcement' },
   { id: 'effective-date', label: 'When does it take effect?' },
+  { id: 'delegations', label: 'Who decides later?' },
   { id: 'money', label: 'Taxes, fees, and spending' },
   { id: 'definitions', label: 'Key definitions' },
   { id: 'sponsors', label: 'Who sponsored it?' },

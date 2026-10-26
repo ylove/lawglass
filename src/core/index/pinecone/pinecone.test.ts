@@ -1172,13 +1172,19 @@ describe('PineconeBackend', () => {
     ).rejects.toMatchObject({ name: 'AbortError' });
   });
   it('settles only when both namespaces match, including deletion and timeouts', async () => {
-    const { backend, sdk } = setup({ timeoutMs: 3 });
+    // A long deadline where the wait must succeed: under load, 3 ms can pass before the first
+    // poll returns, and the wait then rejects before its second poll.
+    const { backend, sdk } = setup({ timeoutMs: 60_000 });
     await backend.ensureReady();
     sdk.sparse.describeIndexStats.mockResolvedValueOnce({});
     await backend.upsertChunks(DOC_A, CHUNKS_A);
     await settle(backend, DOC_A, CHUNKS_A.length);
     expect(sdk.sparse.describeIndexStats).toHaveBeenCalledTimes(2);
-    await expect(settle(backend, DOC_A, 99)).rejects.toThrow('did not settle');
+    const hasty = setup({ timeoutMs: 3 });
+    await hasty.backend.ensureReady();
+    await expect(settle(hasty.backend, DOC_A, 99)).rejects.toThrow(
+      'did not settle',
+    );
     await backend.deleteDocument(DOC_A);
     await backend.settle();
     // A long timeout, so only the abort can end the wait: with 3 ms the deadline can win under
