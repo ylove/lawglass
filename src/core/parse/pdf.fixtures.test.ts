@@ -175,6 +175,26 @@ describeWithFixture('oh-sb203-133-in', () => {
   const doc = load('oh-sb203-133-in');
   checkSubdivisionChunks(doc);
 
+  it('nests roman (i)–(iv) under 2923.27(F)(2)(h), preserving printed locations', () => {
+    const h = section(doc(), 'sec-2923.27/f/2/h');
+    expect(h.children.map((s) => s.id)).toEqual(
+      ['i', 'ii', 'iii', 'iv'].map((m) => `${h.id}/${m}`),
+    );
+    expect(h.children[0]).toMatchObject({
+      pageStart: 9,
+      lineStart: 228,
+      lineEnd: 229,
+    });
+    expect(
+      normalize(sectionText(h.children[0]!, { includeDeleted: false })),
+    ).toBe(
+      '(i) Report the transfer to the law enforcement agencies with jurisdiction over the location of the show;',
+    );
+    expect(
+      section(doc(), 'sec-2923.27/f/2').children.map((s) => s.num),
+    ).toEqual(['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'].map((m) => `(${m})`));
+  });
+
   it('parses the bill: pages, numbering, structure, no struck text', () => {
     expectDocumentBasics(doc(), 21, 598, [
       'preamble',

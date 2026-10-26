@@ -182,14 +182,17 @@ async function answerOnce(input: AnswerInput): Promise<AnswerResult> {
       usage,
     };
   }
-  // Rule 9 backstop. Only uncited sentences are dropped, so the citations stay as validated.
-  // An answer that was nothing but such sentences has nothing left to say: it is a decline.
+  // Rule 9 backstop. Only uncited sentences are dropped, and a cited one is only reworded
+  // around its claim, so the citations stay as validated. An answer that was nothing but such
+  // sentences has nothing left to say: it is a decline.
   const filtered = dropExcerptTalk(validated.text);
   if (filtered.dropped.length > 0)
     input.log?.({
       event: 'excerpt_talk_dropped',
       count: filtered.dropped.length,
     });
+  if (filtered.reworded > 0)
+    input.log?.({ event: 'excerpt_talk_reworded', count: filtered.reworded });
   const emptied = filtered.dropped.length > 0 && filtered.text === '';
   const finalText = emptied ? DECLINE_TEXT : filtered.text;
   return {

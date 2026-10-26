@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { Scenario, SectionBrief } from '../../core/model/index.js';
 import { NO_EXAMPLE_NOTE } from '../../core/breakdown/notes.js';
 import type { ApiClient } from '../api.js';
 import { errorMessage } from '../errors.js';
+import { ApiError } from '../sse.js';
+import { SERVER_COOL_DOWN_MS } from './cool-down.js';
 import { ScenarioStrip } from './ScenarioStrip.js';
 
 /** The server long-polls, so this is only the pause between looks after a `pending`. */
@@ -16,6 +18,8 @@ type State =
   | { kind: 'ok'; scenario: Scenario; open: boolean }
   | { kind: 'none'; note: string }
   | { kind: 'disabled' }
+  /** The draw failed; one automatic try again is scheduled for after the server's cool-down. */
+  | { kind: 'cooling' }
   | { kind: 'error'; message: string };
 
 /**
@@ -32,6 +36,7 @@ export function SectionExample({
   onOpenSection,
   pollMs = EXAMPLE_POLL_MS,
   maxWaitMs = EXAMPLE_MAX_WAIT_MS,
+  coolDownMs = SERVER_COOL_DOWN_MS,
 }: {
   api: ApiClient;
   docId: string;
@@ -41,9 +46,11 @@ export function SectionExample({
   onOpenSection: (sectionId: string, trigger: HTMLElement) => void;
   pollMs?: number;
   maxWaitMs?: number;
+  coolDownMs?: number;
 }) {
   const [state, setState] = useState<State>({ kind: 'idle' });
   const [attempt, setAttempt] = useState(0);
+  const autoRetried = useRef(false);
   const regionId = `example-${brief.sectionId.replace(/[^A-Za-z0-9_-]/g, '-')}`;
 
   useEffect(() => {
@@ -58,8 +65,10 @@ export function SectionExample({
         .then((r) => {
           if (!live) return;
           if (r.status === 'ok' && r.scenario) {
+            autoRetried.current = false;
             setState({ kind: 'ok', scenario: r.scenario, open: true });
           } else if (r.status === 'none') {
+            autoRetried.current = false;
             setState({ kind: 'none', note: r.note ?? NO_EXAMPLE_NOTE });
           } else if (r.status === 'disabled') {
             setState({ kind: 'disabled' });
@@ -74,7 +83,18 @@ export function SectionExample({
         })
         .catch((e: unknown) => {
           if (!live) return;
-          setState({ kind: 'error', message: errorMessage(e) });
+          // A failed draw cools down on the server for a minute; try once more after it.
+          if (
+            e instanceof ApiError &&
+            e.code === 'PROVIDER_ERROR' &&
+            !autoRetried.current
+          ) {
+            autoRetried.current = true;
+            setState({ kind: 'cooling' });
+            timer = setTimeout(() => {
+              setAttempt((n) => n + 1);
+            }, coolDownMs);
+          } else setState({ kind: 'error', message: errorMessage(e) });
         });
     };
     look();
@@ -83,12 +103,13 @@ export function SectionExample({
       clearTimeout(timer);
       controller.abort();
     };
-  }, [api, docId, brief.sectionId, pollMs, maxWaitMs, attempt]);
+  }, [api, docId, brief.sectionId, pollMs, maxWaitMs, coolDownMs, attempt]);
 
   if (brief.example === 'none')
     return <p className="muted brief-note">{NO_EXAMPLE_NOTE}</p>;
 
   const ask = () => {
+    autoRetried.current = false;
     setState({ kind: 'loading' });
     setAttempt((n) => n + 1);
   };
@@ -135,6 +156,14 @@ export function SectionExample({
             scenario={state.scenario}
             onOpenSection={onOpenSection}
           />
+        )}
+        {state.kind === 'cooling' && (
+          <p className="example-loader muted">
+            <span className="spinner" aria-hidden="true" />
+            {
+              "Couldn't draw this example just now. Trying again in about a minute…"
+            }
+          </p>
         )}
         {state.kind === 'none' && (
           <p className="muted brief-note">{state.note}</p>

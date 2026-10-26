@@ -1,6 +1,7 @@
 // Renders answer text. While streaming, citation markers are hidden (they would flash as raw
 // `[S:...]` text); once the answer is final they become numbered superscript buttons.
 import type { ReactNode } from 'react';
+import { answerBlocks } from '../core/answer/list-items.js';
 import { CITATION_PATTERN, type Citation } from '../core/model/index.js';
 import { linkifyGov } from './linkify.js';
 
@@ -201,35 +202,25 @@ function inline(
   return root.children;
 }
 
-const LIST_ITEM = /^\s*(?:[-*]|(\d+)\.)\s+(?=\S)/;
-
-interface Block {
-  kind: 'p' | 'ul' | 'ol';
-  lines: string[];
-  start: number;
-  key: number;
-}
-
-function blocks(text: string): Block[] {
-  const result: Block[] = [];
-  let block: Block | undefined;
-  for (const [index, line] of text
-    .replace(/\r\n?/g, '\n')
-    .split('\n')
-    .entries()) {
-    if (!line.trim()) {
-      block = undefined;
-      continue;
-    }
-    const item = LIST_ITEM.exec(line);
-    const kind = item ? (item[1] === undefined ? 'ul' : 'ol') : 'p';
-    if (block?.kind !== kind) {
-      block = { kind, lines: [], start: Number(item?.[1] ?? 1), key: index };
-      result.push(block);
-    }
-    block.lines.push(item ? line.slice(item[0].length) : line);
-  }
-  return result;
+function withFigure(
+  itemFigure:
+    ((item: { index: number; text: string }) => ReactNode) | undefined,
+  index: number,
+  text: string,
+  children: ReactNode[],
+  key: number,
+): ReactNode {
+  const figure = itemFigure?.({ index, text });
+  if (figure === null || figure === undefined || figure === false)
+    return <li key={key}>{children}</li>;
+  return (
+    <li key={key} className="picture-item">
+      <figure>
+        {figure}
+        <figcaption>{children}</figcaption>
+      </figure>
+    </li>
+  );
 }
 
 export function AnswerText({
@@ -237,20 +228,37 @@ export function AnswerText({
   citations,
   onOpenCitation,
   citationLabel = 'Source',
+  itemFigure,
 }: {
   text: string;
   citations: readonly Citation[];
   onOpenCitation: OpenCitation;
   /** Accessible name prefix for the numbered buttons; a second block on a page needs its own. */
   citationLabel?: string;
+  /**
+   * A drawing for a list item (#345), or null. `index` and `text` are exactly listItems()'s, so
+   * the caller can match them to a picture made on the server. The item's own text becomes the
+   * figure's caption.
+   */
+  itemFigure?: (item: { index: number; text: string }) => ReactNode | null;
 }) {
   const numbers = numberCitations(text, citations);
+  const blocks = answerBlocks(text);
+  // Where each block's items start, counted over every list item of every list, empty ones
+  // included, the way listItems() counts.
+  const firstIndexes: number[] = [];
+  let counted = 0;
+  for (const block of blocks) {
+    firstIndexes.push(counted);
+    if (block.kind !== 'p') counted += block.lines.length;
+  }
   return (
     <>
-      {blocks(text).map((block) => {
+      {blocks.map((block, bi) => {
         const key = String(block.key);
         if (block.kind !== 'p') {
           const List = block.kind;
+          const firstIndex = firstIndexes[bi] ?? 0;
           const items = block.lines.map((line, li) =>
             inline(
               line,
@@ -261,11 +269,15 @@ export function AnswerText({
             ),
           );
           const nonempty = items.map((children, li) =>
-            children.some(
-              (child) => typeof child !== 'string' || child.trim(),
-            ) ? (
-              <li key={li}>{children}</li>
-            ) : null,
+            children.some((child) => typeof child !== 'string' || child.trim())
+              ? withFigure(
+                  itemFigure,
+                  firstIndex + li,
+                  block.lines[li] ?? '',
+                  children,
+                  li,
+                )
+              : null,
           );
           if (nonempty.every((item) => item === null)) return null;
           return (

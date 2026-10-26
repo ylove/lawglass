@@ -4,8 +4,7 @@ import type { MiddlewareHandler } from 'hono';
 import { BRAND } from '../core/brand.js';
 import { staticAssets } from './static.js';
 
-const DESCRIPTION =
-  'Plain-language answers about U.S. federal and Ohio bills, with citations to section, page and line.';
+const DESCRIPTION = BRAND.description;
 
 const ASSETS = new Set([
   '/favicon.svg',

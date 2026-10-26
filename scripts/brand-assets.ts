@@ -17,7 +17,7 @@ const fontDir = join(root, 'node_modules/@fontsource/instrument-sans/files');
 export const OG_COPY = {
   tagline: 'Understand any bill, line by line.',
   detail: 'Plain-language answers with citations to section, page and line.',
-  footer: 'U.S. federal and Ohio legislation',
+  footer: 'U.S. federal, Ohio, New York and New Jersey bills',
 } as const;
 
 export function escapeHtml(text: string): string {

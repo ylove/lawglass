@@ -17,6 +17,7 @@ import {
   type SpanStatus,
 } from '../model/index.js';
 import {
+  DEFAULT_SECTION_PATTERNS,
   detectSections,
   sectionHeading,
   subdivisionHeading,
@@ -617,11 +618,18 @@ function refineHeading(
   const before = section.num;
   const raw = line.map((c) => c.char).join('');
   const enumeration = section.num?.startsWith('(');
-  // Read the raw marker independently of the heading: headingless subdivisions still
-  // need their amended number refined, and a dash heading may have body text after it.
+  // Read the raw marker independently of the heading: prose can leave it headingless,
+  // and deleted body words must not then be mistaken for part of the printed number.
+  const marker = DEFAULT_SECTION_PATTERNS.filter(
+    ({ kind }) => kind !== 'enumeration',
+  )
+    .map(({ regex }) => regex.exec(raw.trimStart()))
+    .find((match) => match?.index === 0);
   const heading = enumeration
     ? raw.replace(/^\s*\([^)]+\)\s*/, '')
-    : (section.heading ?? '');
+    : marker
+      ? raw.trimStart().slice(marker[0].length).trimStart()
+      : (section.heading ?? '');
   if (!raw.endsWith(heading)) return false;
   const split = line.length - heading.length;
   const visible = (part: typeof line) =>
@@ -636,7 +644,16 @@ function refineHeading(
       .trim()
       .replace(/^[.:]\s*/, '');
     const title = enumeration
-      ? subdivisionHeading(cleaned, printedHeadings.has(raw))
+      ? subdivisionHeading(
+          heading.trim()
+            ? section.spans
+                .filter((span) => span.status !== 'deleted')
+                .map((span) => span.text)
+                .join('')
+                .replace(/^\s*\([^)]+\)\s*/, '')
+            : '',
+          printedHeadings.has(raw),
+        )
       : /(?:^|\/)sec-/.test(section.id)
         ? sectionHeading(cleaned, section.num, printedHeadings.has(raw))
         : cleaned;

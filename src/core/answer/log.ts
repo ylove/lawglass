@@ -4,6 +4,7 @@
  */
 export type AnswerLogEvent =
   | { event: 'excerpt_talk_dropped'; count: number }
+  | { event: 'excerpt_talk_reworded'; count: number }
   | { event: 'regeneration_refused'; reason: string };
 
 export type AnswerLog = (event: AnswerLogEvent) => void;
