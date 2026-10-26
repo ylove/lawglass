@@ -277,7 +277,7 @@ describe('sponsor byline', () => {
 });
 
 describe('history card', () => {
-  test('lists versions and actions oldest first, amendments, the note and the full-story chip', async () => {
+  test('lists versions and actions oldest first, amendments, and the note', async () => {
     render(<App api={mock()} />);
     await ready();
     const card = screen.getByRole('region', { name: 'How did it get here?' });
@@ -289,11 +289,7 @@ describe('history card', () => {
         'From the official record. People are named only when the record names them.',
       ),
     ).toBeTruthy();
-    fireEvent.click(
-      within(card).getByRole('button', { name: 'The full story' }),
-    );
-    const answer = screen.getByRole('region', { name: 'Answer' });
-    await within(answer).findByText(/official record says/);
+    expect(within(card).queryByRole('button')).toBeNull();
   });
 
   test('says plainly when no history is available', async () => {
