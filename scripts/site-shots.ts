@@ -130,22 +130,44 @@ async function cropFor(
   if (!box || box.height <= MAX_HEIGHT) return undefined;
   // The scripts project has no DOM types; this is all of the element API the callback touches.
   interface Measured {
-    getBoundingClientRect(): { bottom: number };
+    getBoundingClientRect(): { top: number; bottom: number };
   }
-  const items = await card
-    .locator('li, article')
-    .evaluateAll((nodes) =>
-      nodes.map(
-        (node) => (node as unknown as Measured).getBoundingClientRect().bottom,
-      ),
-    );
-  // The last item that ends inside the budget, plus a little of the card's padding below it.
-  const ends = items.filter((bottom) => bottom - box.y <= MAX_HEIGHT);
-  const height = ends.length > 0 ? Math.max(...ends) - box.y + 16 : MAX_HEIGHT;
-  const scrollY = await card
+  const items = await card.locator('li, article').evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const { top, bottom } = (
+        node as unknown as Measured
+      ).getBoundingClientRect();
+      return { top, bottom };
+    }),
+  );
+  // End after the last item that fits, with a little space below it but none of the next item.
+  const fits = items.filter((r) => r.bottom - box.y <= MAX_HEIGHT);
+  if (fits.length === 0)
+    return {
+      x: box.x,
+      y: box.y + (await scrollTop(card)),
+      width: box.width,
+      height: MAX_HEIGHT,
+    };
+  const end = Math.max(...fits.map((r) => r.bottom));
+  const nextTop = Math.min(
+    ...items.map((r) => r.top).filter((top) => top >= end),
+    end + 16,
+  );
+  const height = nextTop - box.y;
+  return {
+    x: box.x,
+    y: box.y + (await scrollTop(card)),
+    width: box.width,
+    height,
+  };
+}
+
+/** How far the page is scrolled: a clip is in page coordinates, a bounding box in the viewport's. */
+function scrollTop(card: Locator): Promise<number> {
+  return card
     .page()
     .evaluate(() => (globalThis as unknown as { scrollY: number }).scrollY);
-  return { x: box.x, y: box.y + scrollY, width: box.width, height };
 }
 
 async function shoot(card: Locator, file: string): Promise<void> {
