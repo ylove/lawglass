@@ -103,9 +103,11 @@ export interface IngestDeps {
   /**
    * Called once the document id is known and before any indexing, with whether the registry
    * already has it. A server uses it to protect the document while it is being ingested and
-   * to refuse a new document when it has no room (throw an AppError).
+   * to refuse a new document when it has no room (throw an AppError). It resolves to whether
+   * the registry has the document now: waiting for the server's lock can let another
+   * admission reclaim a document that was known a moment ago.
    */
-  admit?: ((docId: string, known: boolean) => Promise<void>) | undefined;
+  admit?: ((docId: string, known: boolean) => Promise<boolean>) | undefined;
   parsePdf?: PdfParser | undefined;
 }
 
@@ -526,16 +528,19 @@ async function ingestLocked(
   const { backend, registry } = deps;
   const { signal } = opts;
   const progress = (p: IngestProgress): void => opts.onProgress?.(p);
+  // Having waited for the document lock, a caller that already gave up does no work.
+  signal?.throwIfAborted();
 
   const entries = await registry.list();
-  const known = entries.find((e) => e.docId === docId);
+  let known = entries.find((e) => e.docId === docId);
   // Fail before spending anything (LLM, embeddings) when the label cannot be used.
   if (!known && opts.label && entries.some((e) => e.label === opts.label))
     throw new AppError('INVALID_INPUT', 'Label already in use.', {
       userMessage:
         'That document label is already in use. Choose a different label.',
     });
-  await deps.admit?.(docId, known !== undefined);
+  if (deps.admit && !(await deps.admit(docId, known !== undefined)))
+    known = undefined;
   const alreadyIndexed = await backend.hasDocument(docId);
 
   // Zero-token path: nothing to fetch-parse-embed.

@@ -584,20 +584,28 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
    * document for the length of the request. On a public server at the cap, documents no reader
    * lists are reclaimed oldest first; if there are not enough, the ingest is refused.
    */
-  function admitDocuments(held: Set<string>) {
-    return (docId: string, known: boolean): Promise<void> =>
+  function admitDocuments(held: Holds, signal: AbortSignal) {
+    // Resolves to whether the document is stored now, which can differ from what the caller
+    // saw before waiting for the lock (another admission may have reclaimed it meanwhile).
+    return (docId: string): Promise<boolean> =>
       withCapLock(async () => {
-        if (!held.has(docId)) {
-          held.add(docId);
+        // A request that gave up, or whose holds were already released, must not take a
+        // hold nobody would release.
+        signal.throwIfAborted();
+        if (held.closed)
+          throw new AppError('INVALID_INPUT', 'Request finished.');
+        if (!held.ids.has(docId)) {
+          held.ids.add(docId);
           holds.set(docId, (holds.get(docId) ?? 0) + 1);
         }
-        if (!publicMode || known) return;
         const entries = await runtime.registry.list();
         const stored = new Set(entries.map((e) => e.docId));
+        if (!publicMode) return stored.has(docId);
+        if (stored.has(docId)) return true;
         // Each document counts once: stored, or about to be (held but not stored yet).
         const unstored = [...holds.keys()].filter((id) => !stored.has(id));
         const excess = stored.size + unstored.length - limits.maxDocs;
-        if (excess <= 0) return;
+        if (excess <= 0) return false;
         const listed = readers
           ? await readers.listedDocIds()
           : new Set<string>();
@@ -621,16 +629,23 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
           await runtime.backend.deleteDocument(old.docId);
           await runtime.registry.remove(old.docId);
         }
+        return false;
       });
   }
 
-  const releaseDocuments = (held: Set<string>): void => {
-    for (const id of held) {
+  /** Holds taken by one ingest request; released when its pipeline run ends, not its stream. */
+  interface Holds {
+    ids: Set<string>;
+    closed: boolean;
+  }
+  const releaseDocuments = (held: Holds): void => {
+    held.closed = true;
+    for (const id of held.ids) {
       const left = (holds.get(id) ?? 1) - 1;
       if (left <= 0) holds.delete(id);
       else holds.set(id, left);
     }
-    held.clear();
+    held.ids.clear();
   };
 
   app.post('/api/ingest', async (c) => {
@@ -651,7 +666,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
 
     // Resource policy reaches both the default parser and runtime-injected parsers.
     const parsePdf = runtime.parsePdf ?? defaultParsePdf;
-    const held = new Set<string>();
+    const held: Holds = { ids: new Set<string>(), closed: false };
     const started = now();
     let finished = false;
     const sourceHost = new URL(body.url).hostname;
@@ -666,6 +681,9 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       c,
       async (emit, signal) => {
         try {
+          // The holds last as long as the pipeline run, which can outlive a closed stream
+          // (it may still be waiting on a lock). The reader's list is written first, so a
+          // finished document is never both unlisted and unprotected.
           const result = await ingest(
             body.url,
             {
@@ -697,7 +715,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
                       inFlight: () => new Set(holds.keys()),
                       neverEvictListed: publicMode,
                     },
-                    admit: admitDocuments(held),
+                    admit: admitDocuments(held, signal),
                   }
                 : {}),
               parseLimits: {
@@ -713,9 +731,15 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
                 emit({ type: 'progress', ...stripUndefined(p) });
               },
             },
-          );
+          )
+            .then(async (done) => {
+              if (!signal.aborted) await rememberForReader(c, done.doc.docId);
+              return done;
+            })
+            .finally(() => {
+              releaseDocuments(held);
+            });
           signal.throwIfAborted();
-          await rememberForReader(c, result.doc.docId);
           finished = true;
           log.event(c, {
             level: 'info',
@@ -747,7 +771,6 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       },
       (error) => ({ type: 'error', error }),
       () => {
-        releaseDocuments(held);
         if (!finished)
           log.event(c, {
             level: 'info',

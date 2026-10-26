@@ -399,6 +399,107 @@ describe('concurrent ingests at the cap', () => {
   });
 });
 
+describe('holds and stale knowledge under the public cap', () => {
+  const quiet = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  test.each([false, true])(
+    'a reader who leaves while waiting on the document lock leaks no hold (leaves: %s)',
+    async (leaves) => {
+      (env.runtime as { maxDocs: number }).maxDocs = 2;
+      const app = publicApp();
+      const [a, b, c] = [
+        browser(app, undefined, false),
+        browser(app, undefined, false),
+        browser(app, undefined, false),
+      ];
+      await a.ingest(urls.a);
+      // A ingests X and is held inside the document lock, after admission.
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const real = env.backend.hasDocument.bind(env.backend);
+      let calls = 0;
+      vi.spyOn(env.backend, 'hasDocument').mockImplementation(async (id) => {
+        if (calls++ === 0) await gate;
+        return real(id);
+      });
+      const aRun = a.ingest(urls.b);
+      await vi.waitFor(() => {
+        expect(calls).toBeGreaterThan(0);
+      });
+      // B asks for the same bill (waits on the lock), then maybe navigates away.
+      const controller = new AbortController();
+      const bRes = await b.request('/api/ingest', {
+        method: 'POST',
+        body: JSON.stringify({ url: urls.b }),
+        signal: controller.signal,
+      });
+      const bRun = ingestEvents(bRes).catch(() => []);
+      await quiet(100);
+      if (leaves) controller.abort();
+      await quiet(50);
+      release();
+      const x = await aRun;
+      await bRun;
+      await quiet(200);
+      // Everyone drops X, so it is reclaimable; a leaked hold would pin it and refuse C.
+      await a.request(`/api/docs/${x.doc.docId}`, { method: 'DELETE' });
+      await b.request(`/api/docs/${x.doc.docId}`, { method: 'DELETE' });
+      expect((await c.ingest(urls.c)).type).toBe('done');
+      expect(await env.registry.list()).toHaveLength(2);
+    },
+  );
+
+  test('a document reclaimed while its ingest waited for the lock is ingested afresh, not touched', async () => {
+    (env.runtime as { maxDocs: number }).maxDocs = 2;
+    const app = publicApp();
+    const [a, b, c] = [
+      browser(app, undefined, false),
+      browser(app, undefined, false),
+      browser(app, undefined, false),
+    ];
+    await a.ingest(urls.a);
+    const x = await a.ingest(urls.b);
+    await a.request(`/api/docs/${x.doc.docId}`, { method: 'DELETE' });
+    // B asks for X again; its view of the registry ("X is stored") goes stale before it is
+    // admitted.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let paused = false;
+    const list = env.registry.list.bind(env.registry);
+    vi.spyOn(env.registry, 'list').mockImplementation(async () => {
+      const entries = await list();
+      if (!paused && entries.some((e) => e.docId === x.doc.docId)) {
+        paused = true;
+        await gate;
+      }
+      return entries;
+    });
+    const bRes = await b.request('/api/ingest', {
+      method: 'POST',
+      body: JSON.stringify({ url: urls.b }),
+    });
+    const bRun = ingestEvents(bRes);
+    await vi.waitFor(() => {
+      expect(paused).toBe(true);
+    });
+    // C takes X's slot meanwhile.
+    expect((await c.ingest(urls.c)).type).toBe('done');
+    expect((await env.registry.list()).map((e) => e.docId)).not.toContain(
+      x.doc.docId,
+    );
+    release();
+    // B now needs a slot for a new document; there is none, and it says so plainly.
+    expect((await bRun).at(-1)).toMatchObject({
+      type: 'error',
+      error: { code: 'DOC_CAP_REACHED' },
+    });
+  });
+});
+
 describe('public reader files', () => {
   const readersDir = () => join(env.runtime.registry.configDir, 'readers');
 
