@@ -59,7 +59,15 @@ The server side exists: `POST /api/docs/:docId/scenario` and the suggested perso
 The hosted preview runs in private mode: anyone without an invite link gets the public site, and the API needs a session. An open public mode, where anyone can use the app, needs more than that.
 
 - **Already done:** trusted proxy hops, the ingest host allow-list and the model-call budgets.
-- **Left:** real Turnstile verification, failing closed at startup, a per-visitor daily budget, and a bounded library.
+- **Left:**
+  - real Turnstile verification;
+  - failing closed at startup;
+  - refusing the claude-cli and mock providers in `--public`;
+  - a bounded, per-/64 rate limiter in place of the unbounded per-address map;
+  - caps on open SSE streams;
+  - a per-visitor daily budget;
+  - a bounded library;
+  - security event logging.
 - **Required before:** any open public launch.
 
 ### Coordinate the local store across processes ([#222](https://github.com/ylove/lawglass/issues/222)), L
