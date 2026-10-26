@@ -21,6 +21,7 @@ import {
   type SearchIndex,
   type StoredChunk,
 } from '../model/index.js';
+import { findReferencedSections } from './references.js';
 import { findDefinitionsToInject } from './definitions.js';
 import { weightedFusion, weightedReciprocalRankFusion } from './fusion.js';
 
@@ -132,6 +133,11 @@ export interface RetrieveOptions {
    * search, so eval measuring raw modes (embed tokens, latency) should pass false.
    */
   injectDefinitions?: boolean | undefined;
+  /**
+   * Append the opening chunk of sections the hits refer to ("described in section 3"), one hop
+   * (#274). Defaults to `injectDefinitions`, so eval measuring raw modes stays raw.
+   */
+  followReferences?: boolean | undefined;
   /** Time source in milliseconds; injectable so tests can pin latency. */
   now?: (() => number) | undefined;
   signal?: AbortSignal | undefined;
@@ -256,11 +262,26 @@ export async function retrieve(
       (hit) => !rankedIds.has(hit.chunk.id),
     );
   }
+  let followed: SearchHit[] = [];
+  if (options.followReferences ?? options.injectDefinitions ?? true) {
+    const seen = new Set([...ranked, ...injected].map((hit) => hit.chunk.id));
+    followed = (
+      await findReferencedSections({
+        backend,
+        docId,
+        hits: ranked,
+        includeDeleted,
+        signal,
+      })
+    ).filter((hit) => !seen.has(hit.chunk.id));
+  }
 
   return {
     hits: [
       ...ranked.map((hit) => ({ ...hit, injected: false })),
       ...injected.map((hit) => ({ ...hit, injected: true })),
+      // Followed references are context too: like definitions, never scored as ranked hits.
+      ...followed.map((hit) => ({ ...hit, injected: true })),
     ],
     injectedDefinitions: injected.map((hit) => hit.chunk),
     mode,
