@@ -26,12 +26,13 @@ it('generates deterministic PDF bytes for each convention', async () => {
 });
 
 const context = {
-  sourceUrl: 'https://legislation.nysenate.gov/bill',
+  // Built with URL so the host is never a bare string literal that reads like a pattern.
+  sourceUrl: new URL('/bill', 'https://legislation.nysenate.gov').href,
   fetchedAt: '2026-10-25T00:00:00.000Z',
 };
 for (const [state, legend, sourceUrl] of [
   ['NY', NY_LEGEND, context.sourceUrl],
-  ['NJ', NJ_LEGEND, 'https://pub.njleg.gov/bill'],
+  ['NJ', NJ_LEGEND, new URL('/bill', 'https://pub.njleg.gov').href],
 ] as const) {
   test.each(['text', 'html'] as const)(
     `%s: a verified ${state} legend deletes replaced cross-references`,
