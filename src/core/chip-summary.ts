@@ -54,6 +54,14 @@ export const OUTLINE_CHAR_BUDGET = 2500;
 /** How many chunks (the unit's own, then its descendants') are tried for a unit's first chunk. */
 const FIRST_CHUNK_CANDIDATES = 6;
 
+/**
+ * The one-call whole-bill summary reads live text only: struck text is never in its prompt, so
+ * it must not be asked to describe removals (it could only guess, or present struck wording as
+ * current law). Change questions have their own marked path.
+ */
+export const SUMMARY_WHOLE_INSTRUCTION =
+  'Summarize the whole bill in a short paragraph, then a short list of its main parts, one line per part. Say what the bill does first.';
+
 export const SUMMARY_LABEL = 'Summarize this bill';
 export const SUMMARY_INSTRUCTION =
   'Summarize the whole bill in a short paragraph, then a short list of its main parts, one line per part. Say what the bill does first. Keep struck-out text out of the summary except to say what the bill removes.';
@@ -68,6 +76,7 @@ export const REDUCE_INSTRUCTION =
 export const SUMMARY_PROMPT_VERSION = promptVersion(
   SUMMARY_LABEL,
   SUMMARY_INSTRUCTION,
+  SUMMARY_WHOLE_INSTRUCTION,
   MAP_INSTRUCTION,
   REDUCE_INSTRUCTION,
 );
@@ -218,6 +227,41 @@ function partialSummaryHit(
   });
 }
 
+/**
+ * Run parallel calls under a child abort signal. On the first failure the siblings are aborted
+ * (they would otherwise keep spending tokens on a result nobody will use), and every one is
+ * awaited to settlement before the first error is rethrown, so no call outlives the failure.
+ */
+export async function allOrAbort<T>(
+  parent: AbortSignal | undefined,
+  start: (signal: AbortSignal) => Promise<T>[],
+): Promise<T[]> {
+  const child = new AbortController();
+  const onParentAbort = (): void => {
+    child.abort(parent?.reason);
+  };
+  if (parent?.aborted) onParentAbort();
+  else parent?.addEventListener('abort', onParentAbort, { once: true });
+  try {
+    let failure: { error: unknown } | undefined;
+    const tasks = start(child.signal).map((task) =>
+      task.catch((error: unknown) => {
+        // Capture before aborting: a sibling's cancellation must not replace the cause.
+        if (!failure) {
+          failure = { error };
+          child.abort(error);
+        }
+        throw error;
+      }),
+    );
+    const settled = await Promise.allSettled(tasks);
+    if (failure) throw failure.error;
+    return settled.map((r) => (r as PromiseFulfilledResult<T>).value);
+  } finally {
+    parent?.removeEventListener('abort', onParentAbort);
+  }
+}
+
 export async function runOutlineChip(
   chip: ChipDefinition,
   docId: string,
@@ -274,10 +318,11 @@ export async function runOutlineChip(
     });
   } else {
     // Map: summarize each batch of units. The cap on units bounds the number of calls.
-    const partials = await Promise.all(
+    const partials = await allOrAbort(options.signal, (signal) =>
       chunkArray(unitHits, MAP_UNITS_PER_CALL).map((batch) =>
         answer({
           ...common,
+          signal,
           question: chip.label,
           context: context(batch.flat()),
           chipInstruction: MAP_INSTRUCTION,
@@ -318,6 +363,8 @@ export async function runOutlineChip(
       : final.warnings;
   const finished: AnswerResult = {
     ...final,
+    // Map calls still read excerpts even if every partial is declined before reduction.
+    ...(allHits.length > 0 ? { context: 'excerpts' as const } : {}),
     warnings,
     citations: final.citations.map((c) =>
       c.valid ? (real.get(c.sectionId) ?? withoutSyntheticChunks(c, docId)) : c,

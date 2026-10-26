@@ -3,6 +3,7 @@
  * (ingest, ask, excerpts) is delegated to core/pipeline; this layer only does HTTP, SSE framing,
  * public-mode policy and error mapping.
  */
+import { deleteIndexedDocument } from '../core/answer/context.js';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { streamSSE } from 'hono/streaming';
@@ -30,6 +31,7 @@ import type { RegistryEntry } from '../core/registry.js';
 import { buildDocDetail } from './doc-detail.js';
 import { CHIP_LABELS } from './chips.js';
 import { SlidingWindowLimiter } from './rate-limit.js';
+import { registerLocateRoute } from './locate-route.js';
 import { registerScenarioRoute } from './scenario-route.js';
 import { createSummaryService } from './summary.js';
 import { securityHeaders } from './security-headers.js';
@@ -288,6 +290,9 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       model,
       chips: CHIP_LABELS,
       scenariosEnabled: !publicMode,
+      // Served once Section by section lands (#276).
+      breakdownEnabled: false,
+      locateEnabled: !publicMode,
     };
     return c.json(config);
   });
@@ -341,7 +346,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     if (publicMode) throw new AppError('PUBLIC_MODE_FORBIDDEN');
     const entry = await entryFor(c.req.param('docId'));
     if (entry.backend === runtime.backend.kind) {
-      await runtime.backend.deleteDocument(entry.docId);
+      await deleteIndexedDocument(runtime.backend, entry.docId);
     }
     await runtime.registry.remove(entry.docId);
     return c.body(null, 204);
@@ -653,6 +658,15 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   });
 
   registerScenarioRoute(app, runtime, { publicMode, now });
+  registerLocateRoute(app, runtime, {
+    publicMode,
+    rateLimit: (c) => questions.take(clientIp(c)),
+    validateUrl: hosted
+      ? (url) => {
+          checkIngestFetchHost(url, hosts);
+        }
+      : undefined,
+  });
 
   app.all('/api/*', (c) =>
     c.json(

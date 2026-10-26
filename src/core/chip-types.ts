@@ -38,6 +38,8 @@ export interface ChipDeps {
 }
 
 export interface RunChipOptions {
+  /** 0 forces the retrieval path (used by the retrieval eval). */
+  wholeBillMaxTokens?: number | undefined;
   signal?: AbortSignal | undefined;
   /** Streamed pieces of the final answer (map-step text is not streamed). */
   onToken?: ((text: string) => void) | undefined;
@@ -49,7 +51,7 @@ export interface ChipRun {
   /** The excerpts the model was shown, best first. Empty for `sponsors`. */
   hits: SearchHit[];
   /** The retrieval mode actually used; `none` for chips that do not search (summary, what-changes, sponsors). */
-  mode: RetrievalMode | 'none';
+  mode: RetrievalMode | 'none' | 'whole';
   /** Embedding and rerank usage for retrieval (LLM usage is inside `answer.usage`). */
   backendUsage: BackendUsage;
 }

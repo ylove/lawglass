@@ -414,9 +414,15 @@ test.each(['PINECONE_DEBUG', 'PINECONE_DEBUG_CURL'])(
   },
 );
 
-test.each(['remove', 'server delete'])(
-  'ingest, ask, serve, list and %s use Pinecone across fresh runtimes',
-  async (removal) => {
+test.each([
+  ['remove', '0'],
+  ['server delete', '0'],
+  ['remove', '100000'],
+  ['server delete', '100000'],
+])(
+  'ingest, ask, serve, list and %s use Pinecone across fresh runtimes (budget %s)',
+  async (removal, budget) => {
+    vi.stubEnv(envVar('WHOLE_BILL_MAX_TOKENS'), budget);
     const sdk = fakePineconeClient();
     const factory = vi.fn(() => sdk.client);
     const file = join(home, 'bill.xml');
@@ -450,8 +456,13 @@ test.each(['remove', 'server delete'])(
     expect(output).toContain('Ingested: bill');
     await run(['ask', 'bill', 'What are the grants?', '--backend', 'pinecone']);
     expect(output).toContain('Citations:');
-    expect(sdk.dense.search).toHaveBeenCalled();
-    expect(sdk.rerank).toHaveBeenCalled();
+    if (budget === '0') {
+      expect(sdk.dense.search).toHaveBeenCalled();
+      expect(sdk.rerank).toHaveBeenCalled();
+    } else {
+      expect(sdk.dense.search).not.toHaveBeenCalled();
+      expect(sdk.rerank).not.toHaveBeenCalled();
+    }
     const callsBeforeList = sdk.create.mock.calls.length;
     await run(['list', '--backend', 'pinecone'], false);
     expect(output).toContain('bill  |');

@@ -42,3 +42,39 @@ The rc.3 round grows the contracts again. Every change is additive and every new
 - **`doc.ts`:** `BillMetadata.docKind?` (`DocKind`) and `BillMetadata.amends?` (`AmendsTarget`: name, optional jurisdiction, sections). `ExternalRef.kind` is unchanged so an rc.2 binary sharing `~/.lawglass` still parses; charter refs use `kind: 'other'` plus the new optional `category` (`charter | local_code | general_law`). `NormalizedDoc.scan?` (`ScanStatus`: per-page `read | uncertain | not-read`).
 - **`api.ts`:** `DocDetail.scan?` and `DocDetail.scenarioPersonas?`, `ClientConfig.scenariosEnabled` (required) and `ClientConfig.turnstileSiteKey?` (for #180), and `ScenarioRequest` / `ScenarioResponse` for `POST /api/docs/:docId/scenario`, reusing `Scenario`.
 - **Not touched:** `Span`, `ChunkType`, `ERROR_CODES`, `DocSummary` / `RegistryEntry` (strict), `ConfigSettings` (strict).
+
+## Amendment 2026-10-26 (#272)
+
+The v1.1 round (milestone M13) grows the contracts once, up front, so its parallel tracks share one set of shapes. Every change is additive, and every new field is optional or has a default. v1.0 documents, answers and configs still parse (pinned by `src/core/model/v11.test.ts`).
+
+- **`ports.ts`:**
+  - `LlmMessage.content` may be ordered `LlmTextPart`s. A part with `cache: true` ends a prefix that repeats across requests (the rules plus a whole bill). Anthropic maps it to `cache_control`; the other providers join the parts (`messageText`).
+  - `TextRequest.effort` is a reasoning-effort hint.
+  - `LlmUsage` reports cache reads and writes when the provider does.
+- **`answer.ts`:**
+  - `AnswerResult.context` (`whole` or `excerpts`) records what the model read.
+  - `simplified` marks a reading-level rewrite.
+  - `usage` keeps the cache counts.
+- **`doc.ts`:**
+  - `ReferenceText` is another law's text, read from an official source and cited as `[S:ref:…]`. The reserved `ref:` prefix means a reference can never collide with a bill section id.
+  - `NormalizedDoc.references` holds them, and `ExternalRef.referenceId` points at the one that was read.
+- **`api.ts`:**
+  - `ClientConfig.library` (`local` or `reader`).
+  - `ClientConfig.examples` (at most 6).
+  - `ClientConfig.breakdownEnabled`, default off.
+  - `SectionExcerpt.reference`, for the drawer.
+  - `ScenarioResponse` gains `pending` and a `note`, for per-section examples.
+  - `SectionBrief` and `BreakdownResponse`, for "Section by section" (`GET /api/docs/:docId/breakdown`).
+
+## Amendment 2026-10-26 (#297)
+
+"Find where it says that" (#295) needs its own shapes. They are additive, and `ClientConfig.locateEnabled` defaults to off.
+
+- **`LocateRequest`:** one sentence, 3 to 500 characters.
+- **`LocateMatch`:** the exact quoted words as `Span`s copied from the section, so the model cannot write them; a `LocateLabel` computed from span status (`added | removed | changed | existing | in-bill`), so the model cannot choose it; one cited plain sentence; optional `conditions` and `amends`.
+- **`LocateResponse`:** `found | not-found | disabled` and at most 3 matches. `not-found` is never a verdict.
+- **`LocateVersionsResponse`:** plain text overlap across the official versions, with no model call.
+
+## Amendment 2026-10-26 (#304)
+
+`ObjectRequest.prompt` may now be ordered `LlmTextPart`s, like a `TextRequest` message, and `ObjectRequest` gains the same `effort` hint. Structured calls that read a whole bill, such as the "Section by section" briefs (#276), can then reuse the cached bill prefix. Anthropic maps the parts to text blocks with `cache_control`; the other providers join them. The change is additive: a string prompt behaves as before.

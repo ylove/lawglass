@@ -6,6 +6,8 @@ import {
   type ObjectRequest,
   type ProviderConfig,
   type TextRequest,
+  type LlmUsage,
+  messageText,
 } from '../model/index.js';
 import {
   jsonSchema,
@@ -17,12 +19,15 @@ import {
   ZERO_LLM_USAGE,
 } from './shared.js';
 
-function usageOf(result: GenerateContentResponse) {
+function usageOf(result: GenerateContentResponse): LlmUsage {
+  // Gemini caches repeated prefixes implicitly and reports the reused part.
+  const cached = result.usageMetadata?.cachedContentTokenCount ?? 0;
   return {
     inputTokens: result.usageMetadata?.promptTokenCount ?? 0,
     outputTokens:
       (result.usageMetadata?.candidatesTokenCount ?? 0) +
       (result.usageMetadata?.thoughtsTokenCount ?? 0),
+    ...(cached > 0 ? { cacheReadTokens: cached } : {}),
   };
 }
 
@@ -56,7 +61,7 @@ export class GoogleProvider implements LlmProvider {
         model: this.model,
         contents: req.messages.map((m) => ({
           role: m.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: m.content }],
+          parts: [{ text: messageText(m.content) }],
         })),
         config: {
           systemInstruction: req.system,
@@ -90,7 +95,7 @@ export class GoogleProvider implements LlmProvider {
       const signal = requestSignal(req.signal, this.config.timeoutMs);
       const result = await this.client.models.generateContent({
         model: this.model,
-        contents: req.prompt,
+        contents: messageText(req.prompt),
         config: {
           systemInstruction: req.system,
           maxOutputTokens: req.maxTokens,

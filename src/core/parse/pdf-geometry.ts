@@ -14,6 +14,8 @@ export type OperatorCodes = typeof OPS;
 
 /** One PDF.js text item, horizontal, in user space. */
 export interface PdfTextItem {
+  /** Set only when a verified legend makes italic type an insertion. */
+  italic?: boolean;
   text: string;
   /** Left edge of the first glyph. */
   x: number;

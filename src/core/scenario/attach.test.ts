@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { MockProvider } from '../llm/mock.js';
-import { AppError } from '../model/index.js';
+import {
+  type LlmProvider,
+  type ObjectRequest,
+  type Scenario,
+  AppError,
+} from '../model/index.js';
 import { scenarioProvider } from '../../../tests/support/scenario-provider.js';
 import { scenarioExcerpts } from '../../../tests/synth/scenario.js';
 import { addScenarioUsage, attachScenario } from './attach.js';
@@ -138,6 +143,33 @@ describe('excerpt choice', () => {
     expect(sections[0]).toBe('sec-1');
   });
 
+  it.each(['sec-10', 'missing'])(
+    'whole mode supplies deep sections and still validates citations (%s)',
+    async (sectionId) => {
+      const p = provider();
+      const deep: LlmProvider = {
+        ...p,
+        generateObject: async <T>(request: ObjectRequest<T>) => {
+          const result = await p.generateObject(request);
+          const scenario = result.object as Scenario;
+          for (const frame of scenario.frames) {
+            if (frame.kind !== 'setup') frame.citations = [sectionId];
+          }
+          return result;
+        },
+      };
+      const result = await attachScenario({
+        provider: deep,
+        hits: many(),
+        whole: true,
+      });
+      expect([...p.prompts[0]!.matchAll(/section="([^"]+)"/g)]).toHaveLength(
+        10,
+      );
+      expect(result.scenario !== undefined).toBe(sectionId === 'sec-10');
+    },
+  );
+
   it('matches a cited section covered by a synthetic excerpt', async () => {
     const p = provider();
     const hits = many();
@@ -152,10 +184,22 @@ describe('excerpt choice', () => {
 });
 
 it('adds usage without mutating', () => {
-  const a = { inputTokens: 1, outputTokens: 2 };
+  const a = {
+    inputTokens: 1,
+    outputTokens: 2,
+    cacheReadTokens: 4,
+    cacheWriteTokens: 2,
+  };
   expect(addScenarioUsage(a, { inputTokens: 3, outputTokens: 4 })).toEqual({
     inputTokens: 4,
     outputTokens: 6,
+    cacheReadTokens: 4,
+    cacheWriteTokens: 2,
   });
-  expect(a).toEqual({ inputTokens: 1, outputTokens: 2 });
+  expect(a).toEqual({
+    inputTokens: 1,
+    outputTokens: 2,
+    cacheReadTokens: 4,
+    cacheWriteTokens: 2,
+  });
 });

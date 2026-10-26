@@ -7,6 +7,7 @@
  * answer is never touched. This function therefore never throws.
  */
 import {
+  type LlmUsage,
   type LlmProvider,
   type ObjectRequest,
   type Scenario,
@@ -21,6 +22,8 @@ export const MAX_SCENARIO_EXCERPTS = 8;
 
 export interface AttachScenarioInput {
   provider: LlmProvider;
+  /** Whole mode grounds against every live section, without the excerpt cap. */
+  whole?: boolean | undefined;
   /** The excerpts the answer was written from, best first. */
   hits: readonly SearchHit[];
   /**
@@ -69,10 +72,11 @@ export async function attachScenario(
       cited.has(id),
     );
   // Cited excerpts first, then the rest in their original (best-first) order, up to the cap.
-  const hits = [
+  const ranked = [
     ...live.filter(isCited),
     ...live.filter((hit) => !isCited(hit)),
-  ].slice(0, MAX_SCENARIO_EXCERPTS);
+  ];
+  const hits = input.whole ? live : ranked.slice(0, MAX_SCENARIO_EXCERPTS);
   if (hits.length === 0) return { usage };
 
   const timeout = AbortSignal.timeout(input.timeoutMs ?? SCENARIO_TIMEOUT_MS);
@@ -98,10 +102,11 @@ export async function attachScenario(
 
 /** Adds scenario tokens to an answer's usage without mutating either. */
 export function addScenarioUsage(
-  answerUsage: { inputTokens: number; outputTokens: number },
+  answerUsage: LlmUsage,
   scenarioUsage: { inputTokens: number; outputTokens: number },
-): { inputTokens: number; outputTokens: number } {
+): LlmUsage {
   return {
+    ...answerUsage,
     inputTokens: answerUsage.inputTokens + scenarioUsage.inputTokens,
     outputTokens: answerUsage.outputTokens + scenarioUsage.outputTokens,
   };

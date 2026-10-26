@@ -8,7 +8,15 @@
  */
 import { join } from 'node:path';
 import {
+  documentContext,
+  type ContextMode,
+  type DocumentContext,
+} from '../answer/context.js';
+import { WHOLE_PROMPT_VERSION } from '../answer/prompt.js';
+import {
   AppError,
+  ZERO_USAGE,
+  type BackendUsage,
   type LlmProvider,
   type RetrievalBackend,
   type RetrievalMode,
@@ -24,6 +32,7 @@ import {
   type ScenarioCacheKey,
 } from '../scenario/scenario-cache.js';
 import { checkScenarioSubject } from '../scenario/subject.js';
+import { sharedLimits, type Limits } from './limits.js';
 
 /** Hits for the subject itself, then up to this many from the summary's cited sections. */
 const SUBJECT_HITS = 5;
@@ -41,13 +50,8 @@ export interface RunScenarioDeps {
   /** Defaults to a cache in the registry's answer-cache directory. */
   cache?: ScenarioCache | undefined;
   now?: (() => number) | undefined;
-  /**
-   * INTEGRATION POINT for the shared core limiter (concurrency and per-minute budget shared with
-   * ask, spec amendment 19; PR #229 / #181). It wraps ONLY the cache-miss computation, so hits and
-   * cool-down `none` results cost no budget, and must release on every exit. Absent: no-op.
-   * Not wired yet: the server passes nothing until #229 merges.
-   */
-  limits?: (<T>(run: () => Promise<T>) => Promise<T>) | undefined;
+  /** Concurrency and per-minute budgets, shared with asks. Defaults to the process-wide limits. */
+  limits?: Limits | undefined;
   signal?: AbortSignal | undefined;
   timeoutMs?: number | undefined;
 }
@@ -66,7 +70,7 @@ export async function runScenario(
   const { subject } = checked;
   const { registry, backend } = deps;
   // Also proves the document exists (DOC_NOT_FOUND).
-  await registry.getDocument(docId);
+  const doc = await registry.getDocument(docId);
   const cache =
     deps.cache ??
     new ScenarioCache({
@@ -74,56 +78,83 @@ export async function runScenario(
       ...(deps.now ? { now: deps.now } : {}),
       isStillRegistered: (id) => registry.isRegistered(id).catch(() => false),
     });
-  const key: ScenarioCacheKey = {
+  const keyFor = (mode: ContextMode): ScenarioCacheKey => ({
     docId,
     subject,
     provider: deps.provider.id,
     model: deps.provider.model,
-    promptVersion: SCENARIO_SUBJECT_PROMPT_VERSION,
-  };
+    promptVersion: `${SCENARIO_SUBJECT_PROMPT_VERSION}.${mode}.${mode === 'whole' ? WHOLE_PROMPT_VERSION : ''}`,
+  });
+  let context: DocumentContext;
+  try {
+    context = await documentContext(backend, docId, doc.sections, {
+      signal: deps.signal,
+    });
+  } catch (error) {
+    // The scan only picks the cache key. If it failed, a cached example under either key is
+    // still valid to serve; with none, the error stands (generating needs the backend anyway).
+    if (deps.signal?.aborted) throw error;
+    for (const mode of ['whole', 'excerpts'] as const) {
+      const cached = await cache.get(keyFor(mode));
+      if (cached)
+        return cached.status === 'ok'
+          ? { status: 'ok', scenario: cached.scenario }
+          : { status: 'none' };
+    }
+    throw error;
+  }
+  const key = keyFor(context.mode);
 
-  const limited = deps.limits ?? (<T>(run: () => Promise<T>) => run());
-  const result = await cache.getOrCompute(key, () =>
-    limited(async () => {
+  const result = await cache.getOrCompute(key, async () => {
+    // Cache hits (including cool-down none results) consume neither a permit nor model budget.
+    const limits = deps.limits ?? sharedLimits();
+    const release = await limits.acquire('ask', deps.signal);
+    try {
       if (!(await backend.hasDocument(docId)))
         throw new AppError('DOC_NOT_FOUND', 'The document has no index.', {
           userMessage:
             "This document's search index is missing. Run ingest again for its URL.",
         });
-      await backend.ensureReady(deps.signal);
-      const retrieved = await retrieve(backend, {
-        docId,
-        query: subject,
-        mode: deps.retrievalMode ?? 'hybrid_rerank',
-        includeDeleted: false,
-        signal: deps.signal,
-      });
-      const subjectHits = retrieved.hits
-        .filter((hit) => hit.chunk.amendmentStatus !== 'deleted')
-        .slice(0, SUBJECT_HITS);
-      const have = new Set(subjectHits.map((hit) => hit.chunk.id));
-      const summaryIds = ((await deps.summaryChunkIds?.()) ?? []).filter(
-        (id) => !have.has(id),
-      );
-      const summaryHits: SearchHit[] = (
-        summaryIds.length ? await backend.getChunks(docId, summaryIds) : []
-      )
-        .slice(0, SUMMARY_HITS)
-        .map((chunk) => ({ chunk, score: 0 }));
-      // The subject's own passages come first: they are what the example is about.
-      const hits = [...subjectHits, ...summaryHits];
+      let hits = context.hits;
+      let backendUsage: BackendUsage = ZERO_USAGE;
+      if (context.mode === 'excerpts') {
+        await backend.ensureReady(deps.signal);
+        const retrieved = await retrieve(backend, {
+          docId,
+          query: subject,
+          mode: deps.retrievalMode ?? 'hybrid_rerank',
+          includeDeleted: false,
+          signal: deps.signal,
+        });
+        backendUsage = retrieved.usage;
+        const subjectHits = retrieved.hits
+          .filter((hit) => hit.chunk.amendmentStatus !== 'deleted')
+          .slice(0, SUBJECT_HITS);
+        const have = new Set(subjectHits.map((hit) => hit.chunk.id));
+        const summaryIds = ((await deps.summaryChunkIds?.()) ?? []).filter(
+          (id) => !have.has(id),
+        );
+        const summaryHits: SearchHit[] = (
+          summaryIds.length ? await backend.getChunks(docId, summaryIds) : []
+        )
+          .slice(0, SUMMARY_HITS)
+          .map((chunk) => ({ chunk, score: 0 }));
+        // The subject's own passages come first: they are what the example is about.
+        hits = [...subjectHits, ...summaryHits];
+      }
 
       const attached = await attachScenario({
-        provider: deps.provider,
+        provider: limits.meter(deps.provider),
         hits,
+        whole: context.mode === 'whole',
         subject,
         docId,
         signal: deps.signal,
         timeoutMs: deps.timeoutMs,
       });
       await registry.touch(docId, {
-        embedTokens: retrieved.usage.embedTokens,
-        rerankUnits: retrieved.usage.rerankUnits,
+        embedTokens: backendUsage.embedTokens,
+        rerankUnits: backendUsage.rerankUnits,
         llmInputTokens: attached.usage.inputTokens,
         llmOutputTokens: attached.usage.outputTokens,
       });
@@ -140,8 +171,10 @@ export async function runScenario(
         status: 'ok' as const,
         scenario: { ...attached.scenario, frames },
       };
-    }),
-  );
+    } finally {
+      release();
+    }
+  });
   return result.status === 'ok'
     ? { status: 'ok', scenario: result.scenario }
     : { status: 'none' };

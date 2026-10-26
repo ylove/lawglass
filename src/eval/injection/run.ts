@@ -10,6 +10,7 @@ import type {
   ObjectRequest,
   TextRequest,
 } from '../../core/model/index.js';
+import { messageText } from '../../core/model/index.js';
 import {
   citationProblems,
   type Waived,
@@ -90,7 +91,7 @@ function capturing(provider: LlmProvider): {
       req: TextRequest,
     ): AsyncIterable<LlmStreamEvent> {
       capture.system = req.system;
-      capture.user = req.messages.map((m) => m.content).join('\n');
+      capture.user = req.messages.map((m) => messageText(m.content)).join('\n');
       capture.raw = '';
       for await (const event of provider.streamText(req)) {
         if (event.type === 'text') capture.raw += event.text;
@@ -118,6 +119,7 @@ export async function runInjectionCase(
     { question: c.question },
     {
       ...harness.deps(provider),
+      wholeBillMaxTokens: 0,
       scenario: { enabled: c.scenario === true },
     },
   );

@@ -57,9 +57,21 @@ export const AnswerResult = z.object({
   readingGrade: z.number().nullable(),
   provider: z.string(),
   model: z.string(),
-  usage: z.object({ inputTokens: z.number(), outputTokens: z.number() }),
+  usage: z.object({
+    inputTokens: z.number(),
+    outputTokens: z.number(),
+    cacheReadTokens: z.number().optional(),
+    cacheWriteTokens: z.number().optional(),
+  }),
   /** Optional illustrated example; every frame cites sections of the bill. */
   scenario: Scenario.optional(),
+  /**
+   * What the model read: the whole bill, or retrieved excerpts (bills over the whole-bill
+   * budget). Absent on answers that made no model call and on answers cached before v1.1.
+   */
+  context: z.enum(['whole', 'excerpts']).optional(),
+  /** True when the text was rewritten to meet the reading-level ceiling (markers kept). */
+  simplified: z.boolean().optional(),
 });
 export type AnswerResult = z.infer<typeof AnswerResult>;
 

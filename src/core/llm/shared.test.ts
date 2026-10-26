@@ -118,7 +118,12 @@ describe('provider boundary helpers', () => {
         cache_read_input_tokens: 5,
         cache_creation_input_tokens: 7,
       }),
-    ).toEqual({ inputTokens: 14, outputTokens: 3 });
+    ).toEqual({
+      inputTokens: 14,
+      outputTokens: 3,
+      cacheReadTokens: 5,
+      cacheWriteTokens: 7,
+    });
     expect(anthropicUsage({})).toEqual({ inputTokens: 0, outputTokens: 0 });
   });
 });

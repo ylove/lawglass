@@ -51,6 +51,64 @@ export function describeHttpProvider(
     }),
   );
   describe(`${name} recorded HTTP`, () => {
+    it('sends every structured-prompt part, in order, as text', async () => {
+      const replay = httpReplay([{ body: asset(`${name}-object.json`) }]);
+      await make(replay.fetch).generateObject({
+        ...objectRequest,
+        prompt: [
+          { text: 'PART-ONE the bill. ', cache: true },
+          { text: 'PART-TWO the task.' },
+        ],
+      });
+      const sent = await replay.requests[0]!.text();
+      expect(sent.indexOf('PART-ONE')).toBeGreaterThanOrEqual(0);
+      expect(sent.indexOf('PART-ONE')).toBeLessThan(sent.indexOf('PART-TWO'));
+      expect(sent).not.toContain('[object Object]');
+    });
+
+    it('sends every message part, in order, and reports cached input when the provider does', async () => {
+      const cachedUsage = {
+        anthropic: (sse: string) =>
+          sse.replace(
+            '"input_tokens":10',
+            '"input_tokens":2,"cache_read_input_tokens":8',
+          ),
+        openai: (sse: string) =>
+          sse.replace(
+            '"prompt_tokens":10,',
+            '"prompt_tokens":10,"prompt_tokens_details":{"cached_tokens":8},',
+          ),
+        google: (sse: string) =>
+          sse.replace(
+            '"promptTokenCount":10,',
+            '"promptTokenCount":10,"cachedContentTokenCount":8,',
+          ),
+      }[name];
+      const body = cachedUsage(asset(`${name}-stream.sse`));
+      expect(body).toContain('8'); // the replay edit applied
+      const replay = httpReplay([{ body, stream: true }]);
+      const events = await drain(make(replay.fetch), {
+        ...textRequest,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { text: 'PART-ONE the bill. ', cache: true },
+              { text: 'PART-TWO the question.' },
+            ],
+          },
+        ],
+      });
+      const sent = await replay.requests[0]!.text();
+      expect(sent.indexOf('PART-ONE')).toBeGreaterThanOrEqual(0);
+      expect(sent.indexOf('PART-ONE')).toBeLessThan(sent.indexOf('PART-TWO'));
+      expect(sent).not.toContain('[object Object]');
+      expect(events.at(-1)).toMatchObject({
+        type: 'done',
+        usage: { inputTokens: 10, cacheReadTokens: 8 },
+      });
+    });
+
     it('parses fragmented SSE and reports usage with a single terminal event', async () => {
       const replay = httpReplay([
         { body: asset(`${name}-stream.sse`), stream: true },

@@ -1,3 +1,4 @@
+import { assertNewYorkFetch } from '../fetch/new-york.js';
 import { BRAND } from '../brand.js';
 import { readParseLimits } from '../parse/limits.js';
 import { MemoryBackend } from '../../../tests/contracts/memory-backend.js';
@@ -20,8 +21,10 @@ import {
   stubPdfParser,
   type PipelineEnv,
 } from '../../../tests/support/pipeline-env.js';
-import { AppError, type AnswerResult } from '../model/index.js';
+import { documentContext } from '../answer/context.js';
+import { AppError, messageText, type AnswerResult } from '../model/index.js';
 import { ingest, type IngestDeps, type IngestProgress } from './ingest.js';
+import { Limits } from './limits.js';
 
 let env: PipelineEnv;
 afterEach(async () => {
@@ -178,6 +181,21 @@ test('a registry entry whose index vanished is re-indexed', async () => {
   expect(again.stats.reused).toBe(false);
   expect(await env.backend.hasDocument(first.doc.docId)).toBe(true);
   expect(await env.registry.list()).toHaveLength(1);
+});
+
+test('ingest forgets any earlier whole-bill scan of the document', async () => {
+  env.serve('https://example.gov/s9001.xml', makeCongressionalBillXml());
+  const first = await ingest('https://example.gov/s9001.xml', deps());
+  const { sections } = await env.registry.getDocument(first.doc.docId);
+  const budget = { budget: 1_000_000 };
+  await documentContext(env.backend, first.doc.docId, sections, budget);
+  const get = vi.spyOn(env.backend, 'getChunks');
+  await documentContext(env.backend, first.doc.docId, sections, budget);
+  expect(get).not.toHaveBeenCalled();
+  await env.backend.deleteDocument(first.doc.docId);
+  await ingest('https://example.gov/s9001.xml', deps());
+  await documentContext(env.backend, first.doc.docId, sections, budget);
+  expect(get).toHaveBeenCalled();
 });
 
 test('uses the requested label, and default labels never collide', async () => {
@@ -538,7 +556,7 @@ test('metadata text does not repeat header lines that the body already starts wi
   const seen: string[] = [];
   const real = env.provider.generateObject.bind(env.provider);
   vi.spyOn(env.provider, 'generateObject').mockImplementation((req) => {
-    seen.push(req.prompt);
+    seen.push(messageText(req.prompt));
     return real(req);
   });
   env.serve(
@@ -736,4 +754,143 @@ test('evicting the oldest document at the cap deletes its download and keeps the
   expect(
     JSON.parse(await readFile(join(cacheDir, 'index.json'), 'utf8')),
   ).toEqual({ [urlB]: b.doc.docId });
+});
+
+test('ingest queues beyond its concurrency limit', async () => {
+  env.serve('https://example.gov/s9001.xml', makeCongressionalBillXml());
+  let running = 0;
+  let peak = 0;
+  const releases: (() => void)[] = [];
+  const realFetch = env.runtime.fetcher;
+  const fetcher: IngestDeps['fetcher'] = async (url, options) => {
+    running += 1;
+    peak = Math.max(peak, running);
+    await new Promise<void>((r) => releases.push(r));
+    running -= 1;
+    return realFetch(url, options);
+  };
+  const limits = new Limits(
+    { maxConcurrentIngest: 1, maxConcurrentAsk: 4, maxCallsPerMinute: 100 },
+    () => 0,
+  );
+  const runs = [1, 2].map(() =>
+    ingest('https://example.gov/s9001.xml', deps({ fetcher, limits })),
+  );
+  await vi.waitFor(() => {
+    expect(running).toBe(1);
+  });
+  const state = { settled: false };
+  const all = Promise.allSettled(runs).then((r) => {
+    state.settled = true;
+    return r;
+  });
+  while (!state.settled) {
+    releases.shift()?.();
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  expect((await all).map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
+  expect(peak).toBe(1);
+});
+
+test('ingest charges the per-minute ceiling for its metadata model call', async () => {
+  env.serve('https://example.gov/a.txt', textSample('One.'), 'text/plain');
+  env.serve('https://example.gov/b.txt', textSample('Two.'), 'text/plain');
+  const limits = new Limits(
+    { maxConcurrentIngest: 2, maxConcurrentAsk: 4, maxCallsPerMinute: 1 },
+    () => 0,
+  );
+  const extract = vi.spyOn(env.provider, 'generateObject');
+  await ingest('https://example.gov/a.txt', deps({ limits }));
+  expect(extract).toHaveBeenCalledTimes(1);
+  // Metadata extraction is best-effort, so the ingest still succeeds, but the second model
+  // call is refused by the ceiling before it reaches the provider.
+  await ingest('https://example.gov/b.txt', deps({ limits }));
+  expect(extract).toHaveBeenCalledTimes(1);
+  expect(limits.pool('ingest').inFlight).toBe(0);
+});
+
+test('an already-aborted ingest does nothing', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const fetcher = vi.fn();
+  await expect(
+    ingest('https://example.gov/s9001.xml', deps({ fetcher }), {
+      signal: controller.signal,
+    }),
+  ).rejects.toBeDefined();
+  expect(fetcher).not.toHaveBeenCalled();
+});
+
+test('NY latest pages fetch current Assembly full text, never the blocked Senate landing page', async () => {
+  const { bracketHtml } = await import('../../../tests/synth/brackets.js');
+  const textUrl = 'https://nyassembly.gov/leg/?bn=S04321&term=2025&Text=Y';
+  env.serve(
+    textUrl,
+    { bytes: Buffer.from(`<h3 id="jump_to_Text">Text</h3>${bracketHtml()}`) },
+    'text/html',
+  );
+  const fetcher = vi.fn(env.runtime.fetcher);
+  const result = await ingest(
+    'https://www.nysenate.gov/legislation/bills/2025/S4321',
+    deps({ fetcher }),
+  );
+  expect(env.fetches).toEqual([textUrl]);
+  expect(fetcher).toHaveBeenCalledWith(
+    textUrl,
+    expect.objectContaining({
+      refresh: true,
+      validateUrl: assertNewYorkFetch,
+    }),
+  );
+  expect(result.normalized.metadata).toMatchObject({
+    jurisdiction: 'New York',
+    version: 'Amended (A)',
+    billNumber: 'S. 4321A',
+  });
+  expect(result.stats.deletedSpanCount).toBeGreaterThan(0);
+  const stored = await env.registry.getDocument(result.doc.docId);
+  expect(stored.metadata.version).toBe('Amended (A)');
+});
+
+test.each([
+  'https://www.nysenate.gov/legislation/bills/2025/S4321A',
+  'https://www.nysenate.gov/legislation/bills/2025/S4321/amendment/A',
+  'https://nyassembly.gov/leg/?bn=S04321A&term=2025&Summary=Y',
+  'https://legislation.nysenate.gov/pdf/bills/2025/S4321A',
+])('NY named version uses its PDF for %s', async (url) => {
+  const { bracketPdf } = await import('../../../tests/synth/brackets.js');
+  const textUrl = 'https://legislation.nysenate.gov/pdf/bills/2025/S4321A';
+  env.serve(textUrl, { bytes: await bracketPdf() }, 'application/pdf');
+  const result = await ingest(url, deps());
+  expect(env.fetches).toEqual([textUrl]);
+  expect(result.normalized.metadata).toMatchObject({
+    billNumber: 'S. 4321A',
+    version: 'Amended (A)',
+  });
+  expect(result.stats.deletedSpanCount).toBeGreaterThan(0);
+});
+
+test('NY source errors do not fall back to a different version', async () => {
+  await expect(
+    ingest('https://www.nysenate.gov/legislation/bills/2025/S4321A', deps()),
+  ).rejects.toMatchObject({ code: 'FETCH_FAILED' });
+  expect(env.fetches).toEqual([
+    'https://legislation.nysenate.gov/pdf/bills/2025/S4321A',
+  ]);
+});
+
+test('NY fetched final URLs are revalidated even with an injected fetcher', async () => {
+  const { bracketHtml } = await import('../../../tests/synth/brackets.js');
+  const textUrl = 'https://nyassembly.gov/leg/?bn=S04321&term=2025&Text=Y';
+  env.serve(textUrl, { bytes: Buffer.from(bracketHtml()) }, 'text/html');
+  const fetcher: IngestDeps['fetcher'] = async (url, options) => ({
+    ...(await env.runtime.fetcher(url, options)),
+    finalUrl: 'https://evil.example/bill',
+  });
+  await expect(
+    ingest(
+      'https://www.nysenate.gov/legislation/bills/2025/S4321',
+      deps({ fetcher }),
+    ),
+  ).rejects.toMatchObject({ code: 'SSRF_BLOCKED' });
 });

@@ -1,12 +1,15 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { ParseBudget, type ParseControl } from './limits.js';
-import { AppError, EMPTY_METADATA, NormalizedDoc } from '../model/index.js';
+import { AppError, NormalizedDoc } from '../model/index.js';
+import { applyChangeMarks } from './change-marks.js';
+import { jurisdictionSections, newYorkMetadata } from './new-york.js';
 import { detectSections, type SectionDetectionOptions } from './sections.js';
 
 export interface TextParseOptions
   extends SectionDetectionOptions, ParseControl {
   sourceUrl: string;
+  jurisdiction?: string;
   /** Supplied by the fetch step so parsing is deterministic. */
   fetchedAt: string;
 }
@@ -56,16 +59,17 @@ export function parseText(
   }
   lines.push({ text: text.slice(start) });
   budget.check();
+  const marked = applyChangeMarks(lines, options);
   const doc = NormalizedDoc.parse({
     docId: createHash('sha256').update(bytes).digest('hex'),
     sourceUrl: options.sourceUrl,
     fetchedAt: options.fetchedAt,
     format: 'text',
-    metadata: { ...EMPTY_METADATA },
-    sections: detectSections(lines, options),
+    metadata: newYorkMetadata(text, options),
+    sections: detectSections(marked.lines, jurisdictionSections(options)),
     definitions: [],
     externalRefs: [],
-    warnings: [],
+    warnings: marked.warnings,
   });
   budget.check();
   return doc;

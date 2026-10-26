@@ -100,7 +100,7 @@ export const WHAT_CHANGES_BY_INSTRUCTION = defineChip({
     includeDeleted: false,
   },
   answerInstruction:
-    'The excerpts are the bill\'s instructions for changing existing law. Group your answer by the bill\'s section, ordered by section number. For each change, name the law being changed (the Act, or the section of the United States Code, that the excerpt names) and say in plain words what the change does: what wording is removed, what is added, and what new rule results. Quoted text after "striking" is old wording being removed; never describe it as something the law will now say. If an excerpt creates a new rule or program instead of amending a law, say that. Do not guess at existing-law wording the excerpts do not quote.',
+    'The bill contains instructions for changing existing law. Group your answer by the bill\'s section, ordered by section number. For each change, name the law being changed (the Act, or the section of the United States Code, that the bill names) and say in plain words what the change does: what wording is removed, what is added, and what new rule results. Quoted text after "striking" is old wording being removed; never describe it as something the law will now say. If the bill creates a new rule or program instead of amending a law, say that. Do not guess at existing-law wording the bill does not quote.',
 });
 
 /**
@@ -140,7 +140,7 @@ const penalties = defineChip({
   ],
   retrieval: { mode: 'hybrid', sparseWeight: 0.75, topK: 8 },
   answerInstruction:
-    'List the penalties and who enforces them. For each, say who can be penalized, for what, and the amount or punishment, using the numbers exactly as written. If the excerpts show no penalties, say so.',
+    'List the penalties and who enforces them. For each, say who can be penalized, for what, and the amount or punishment, using the numbers exactly as written. If the bill states no penalties, say so.',
 });
 
 /**

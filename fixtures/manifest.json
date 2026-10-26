@@ -88,6 +88,50 @@
       "retrievedAt": "2026-10-14",
       "jurisdiction": "Ohio",
       "notes": "Two pages: a typed cover page, then an Adobe Paper Capture (ClearScan) scan of the redline. Visible OCR text over a washed-out background image; long underlines are vector paths, strike-throughs survive only as dashes in the image. Hand labels: src/eval/golden/marks/."
+    },
+    {
+      "name": "ny-s1234-2025-introduced",
+      "description": "Amending the SUNY board: four bracketed deletion runs; underlined additions.",
+      "format": "pdf",
+      "url": "https://legislation.nysenate.gov/pdf/bills/2025/S1234",
+      "sha256": "d4ed4d410c3c1d700f1c2308c9598e906927fdc5bf1e809e1c78576d513c46ac",
+      "bytes": 4263,
+      "retrievedAt": "2026-10-26",
+      "jurisdiction": "New York",
+      "notes": "Amending the SUNY board: four bracketed deletion runs; underlined additions. Manually checked against rendered pages for #281/#282. The server regenerates PDF trailer IDs per request, so future downloads may have a different raw hash despite identical bill content; the strict fixture downloader saves those as .mismatch for review."
+    },
+    {
+      "name": "ny-s8102-2025-introduced",
+      "description": "New law: adds a device-level age assurance article, no bracketed deletions.",
+      "format": "pdf",
+      "url": "https://legislation.nysenate.gov/pdf/bills/2025/S8102",
+      "sha256": "416874e60fbc2e8eea1266b2e70187280aa983a906ec147fb85516a337a0b4fc",
+      "bytes": 9905,
+      "retrievedAt": "2026-10-26",
+      "jurisdiction": "New York",
+      "notes": "New law: adds a device-level age assurance article, no bracketed deletions. Manually checked against rendered pages for #281/#282. The server regenerates PDF trailer IDs per request, so future downloads may have a different raw hash despite identical bill content; the strict fixture downloader saves those as .mismatch for review."
+    },
+    {
+      "name": "nj-s1446-2024-r2",
+      "description": "Second reprint: 12 bracketed deletion runs, including committee superscripts; underlined insertions.",
+      "format": "pdf",
+      "url": "https://pub.njleg.gov/Bills/2024/S1500/1446_R2.PDF",
+      "sha256": "cd3f3a1b588ef8c21784f3038a740647d297f6523a24ab9ea3c2e5a3428dc7f7",
+      "bytes": 175022,
+      "retrievedAt": "2026-10-25",
+      "jurisdiction": "New Jersey",
+      "notes": "Second reprint: 12 bracketed deletion runs, including committee superscripts; underlined insertions. Manually checked against rendered pages for #281/#282."
+    },
+    {
+      "name": "ny-s1234-2025-assembly",
+      "description": "Assembly full-text HTML, introduced S1234 as of retrieval. Four bracketed deletions; bold strike and underline tags.",
+      "format": "html",
+      "url": "https://nyassembly.gov/leg/?default_fld=&leg_video=&bn=S01234&term=2025&Summary=Y&Text=Y",
+      "sha256": "1d11845d1a2785eac74c4f3b1c440c23e6f3972dc5ef51d913a1fdfa9ac0ccc4",
+      "bytes": 18639,
+      "retrievedAt": "2026-10-26",
+      "jurisdiction": "New York",
+      "notes": "Assembly full-text HTML, introduced S1234 as of retrieval. Four bracketed deletions; bold strike and underline tags. Manually checked against rendered pages for #281/#282. Assembly randomizes CSS/JS cache-buster parameters on each response, so future raw hashes may differ; the strict downloader saves .mismatch for review."
     }
   ]
 }

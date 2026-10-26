@@ -13,3 +13,5 @@ export { parseXml } from './xml.js';
 export type { XmlParseOptions } from './xml.js';
 export { parsePdf } from './pdf.js';
 export type { PdfParseOptions } from './pdf.js';
+
+export type { ChangeMarkConvention } from './change-marks.js';

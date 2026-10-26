@@ -6,6 +6,7 @@ import {
   type LlmStreamEvent,
   type ObjectRequest,
   type TextRequest,
+  messageText,
 } from '../model/index.js';
 import { jsonSchema, validateObject } from './shared.js';
 import { trimEndWhile } from '../trim.js';
@@ -30,12 +31,14 @@ function checkAbort(signal?: AbortSignal): void {
 function parseExcerpts(prompt: string) {
   const excerpts: { attributes: string; text: string }[] = [];
   const question: string[] = [];
+  // Whole-bill prompts (the user text escapes any `<` in a question) call their blocks <part>.
+  const tag = prompt.includes('<bill>') ? 'part' : 'excerpt';
   let searchFrom = 0;
   let plainFrom = 0;
   while (searchFrom < prompt.length) {
-    const start = prompt.indexOf('<excerpt', searchFrom);
+    const start = prompt.indexOf(`<${tag}`, searchFrom);
     if (start === -1) break;
-    const attributesFrom = start + '<excerpt'.length;
+    const attributesFrom = start + `<${tag}`.length;
     searchFrom = attributesFrom;
     const boundary = prompt[attributesFrom];
     if (boundary !== '>' && !boundary?.match(/\s/)) continue;
@@ -43,14 +46,14 @@ function parseExcerpts(prompt: string) {
     if (openingEnd === -1) break;
     const attributes = prompt.slice(attributesFrom, openingEnd);
     if (attributes.includes('<')) continue;
-    const closingStart = prompt.indexOf('</excerpt>', openingEnd + 1);
+    const closingStart = prompt.indexOf(`</${tag}>`, openingEnd + 1);
     if (closingStart === -1) break;
     question.push(prompt.slice(plainFrom, start));
     excerpts.push({
       attributes,
       text: prompt.slice(openingEnd + 1, closingStart),
     });
-    searchFrom = closingStart + '</excerpt>'.length;
+    searchFrom = closingStart + `</${tag}>`.length;
     plainFrom = searchFrom;
   }
   question.push(prompt.slice(plainFrom));
@@ -60,7 +63,7 @@ function parseExcerpts(prompt: string) {
 function answer(req: TextRequest): string {
   const prompt = req.messages
     .filter((m) => m.role === 'user')
-    .map((m) => m.content)
+    .map((m) => messageText(m.content))
     .join('\n');
   const parsed = parseExcerpts(prompt);
   const question = words(parsed.question);

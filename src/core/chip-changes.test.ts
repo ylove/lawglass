@@ -15,6 +15,7 @@ import {
   type Section,
   type Span,
   type TextRequest,
+  messageText,
 } from './model/index.js';
 
 const DOC = 'e'.repeat(64);
@@ -37,7 +38,8 @@ const same = mark('unchanged');
 const struck = mark('deleted');
 const added = mark('inserted');
 
-const userOf = (req: TextRequest): string => req.messages[0]!.content;
+const userOf = (req: TextRequest): string =>
+  messageText(req.messages[0]!.content);
 const lastPrompt = (p: ScriptedProvider): string =>
   userOf(p.calls.at(-1) as TextRequest);
 
@@ -336,7 +338,9 @@ describe('what-changes chip (built from spans)', () => {
 
   it('falls back to instruction retrieval when nothing is marked up, and declines without a model call if that finds nothing', async () => {
     const provider = new ScriptedProvider();
-    const r = await run([section('sec-1', [same('Plain.')])], provider);
+    const r = await run([section('sec-1', [same('Plain.')])], provider, {
+      wholeBillMaxTokens: 0,
+    });
     expect(r.answer.declined).toBe(true);
     expect(provider.calls).toHaveLength(0);
     expect(r.mode).toBe('hybrid');
