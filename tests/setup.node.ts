@@ -4,9 +4,14 @@ import net from 'node:net';
 import tls from 'node:tls';
 import { syncBuiltinESMExports } from 'node:module';
 import { afterAll } from 'vitest';
+import { envVar } from '../src/core/brand.js';
 import './setup.fetch.js';
 import ipaddr from 'ipaddr.js';
 import { isIP } from 'node:net';
+
+// Suites run many asks and ingests in one process; the real 30/min default would trip them.
+// The budget itself is tested with explicit `Limits` instances (src/core/pipeline/limits.test.ts).
+process.env[envVar('MAX_CALLS_PER_MINUTE')] ??= '1000000';
 
 function assertLoopback(host: string): void {
   const address = host.replace(/^\[|\]$/g, '');

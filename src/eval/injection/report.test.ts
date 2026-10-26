@@ -35,7 +35,9 @@ test('mock report says what a pass means and lists the known gaps', () => {
   });
   expect(md).toContain('OBEYS every injection');
   expect(md).toContain('## Known gaps');
-  expect(md).toContain('| direct-extract-prompt | no-prompt-leak |');
+  expect(md).toContain('| direct-markdown-link | no-hazard-text |');
+  // The echo filter (#181) closed the prompt-leak gap, so it is no longer listed.
+  expect(md).not.toContain('| no-prompt-leak |');
   expect(md.endsWith('\n')).toBe(true);
 });
 

@@ -1,12 +1,13 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { inspect } from 'node:util';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { describeProviderContract } from '../../../tests/contracts/provider.contract.js';
 import { fakeCli, objectTranscript } from '../../../tests/llm/cli.js';
 import { asset, drain, textRequest } from '../../../tests/llm/http.js';
 import { objectRequest } from '../../../tests/llm/provider-tests.js';
 import { envVar } from '../brand.js';
+import { resetClaudeCliPool } from '../pipeline/limits.js';
 import { ClaudeCliProvider } from './claude-cli.js';
 
 const config = { provider: 'claude-cli', model: 'claude-sonnet-5-5' } as const;
@@ -417,5 +418,138 @@ describe('Claude CLI isolation and lifecycle', () => {
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+});
+
+describe('claude subprocess budget', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    resetClaudeCliPool();
+  });
+  const settle = () => new Promise((r) => setTimeout(r, 50));
+
+  it('runs at most 2 claude processes at once; the rest queue until a slot frees', async () => {
+    resetClaudeCliPool();
+    const fake = fakeCli({ stall: true });
+    const provider = new ClaudeCliProvider(config, fake);
+    const ctls = [0, 1, 2].map(() => new AbortController());
+    const runs = ctls.map((ctl) =>
+      drain(provider, { ...textRequest, signal: ctl.signal }).catch(
+        () => 'aborted',
+      ),
+    );
+    await settle();
+    expect(fake.calls).toHaveLength(2); // the third is queued, not spawned
+    ctls[0]!.abort();
+    await settle();
+    expect(fake.calls).toHaveLength(3); // the freed slot went to the queued call
+    ctls[1]!.abort();
+    ctls[2]!.abort();
+    await Promise.all(runs);
+  });
+
+  it('frees the slot when a call fails, and an aborted waiter never spawns', async () => {
+    resetClaudeCliPool();
+    vi.stubEnv(envVar('MAX_CONCURRENT_CLAUDE_CLI'), '1');
+    resetClaudeCliPool();
+    const failing = fakeCli({ code: 1, transcript: '' });
+    const provider = new ClaudeCliProvider(config, failing);
+    await expect(drain(provider)).rejects.toThrow();
+    await expect(drain(provider)).rejects.toThrow(); // would hang if the slot leaked
+    expect(failing.calls).toHaveLength(2);
+
+    const stalled = fakeCli({ stall: true });
+    const holder = new ClaudeCliProvider(config, stalled);
+    const hold = new AbortController();
+    const first = drain(holder, { ...textRequest, signal: hold.signal }).catch(
+      () => 'aborted',
+    );
+    await settle();
+    const wait = new AbortController();
+    const second = drain(holder, { ...textRequest, signal: wait.signal }).catch(
+      () => 'aborted',
+    );
+    await settle();
+    wait.abort();
+    await second;
+    expect(stalled.calls).toHaveLength(1);
+    hold.abort();
+    await first;
+  });
+
+  it('starts the provider timeout only after the pool slot is granted', async () => {
+    vi.stubEnv(envVar('MAX_CONCURRENT_CLAUDE_CLI'), '1');
+    resetClaudeCliPool();
+    const timeoutSignal = vi.fn((ms: number) => AbortSignal.timeout(ms));
+    const fake = fakeCli({ stall: true });
+    const provider = new ClaudeCliProvider(config, { ...fake, timeoutSignal });
+    const first = new AbortController();
+    const second = new AbortController();
+    const run1 = drain(provider, {
+      ...textRequest,
+      signal: first.signal,
+    }).catch(() => 'aborted');
+    await settle();
+    const run2 = drain(provider, {
+      ...textRequest,
+      signal: second.signal,
+    }).catch(() => 'aborted');
+    await settle();
+    // The second call is queued: its clock must not be running yet.
+    expect(timeoutSignal).toHaveBeenCalledTimes(1);
+    expect(fake.calls).toHaveLength(1);
+    first.abort();
+    await settle();
+    expect(timeoutSignal).toHaveBeenCalledTimes(2);
+    expect(fake.calls).toHaveLength(2);
+    second.abort();
+    await Promise.all([run1, run2]);
+  });
+
+  it('a queued call that would finish in time is not timed out by waiting', async () => {
+    vi.stubEnv(envVar('MAX_CONCURRENT_CLAUDE_CLI'), '1');
+    resetClaudeCliPool();
+    // Real timers: the first call holds the slot for longer than the provider timeout.
+    const fake = fakeCli({ stall: true });
+    const quick = fakeCli();
+    const holder = new ClaudeCliProvider({ ...config, timeoutMs: 5000 }, fake);
+    const waiter = new ClaudeCliProvider({ ...config, timeoutMs: 150 }, quick);
+    const hold = new AbortController();
+    const held = drain(holder, { ...textRequest, signal: hold.signal }).catch(
+      () => 'aborted',
+    );
+    await settle();
+    const queued = drain(waiter);
+    await new Promise((r) => setTimeout(r, 300)); // > the waiter's 150 ms timeout
+    hold.abort();
+    await held;
+    await expect(queued).resolves.toBeDefined();
+  });
+
+  it('releases the permit even when temp-directory cleanup throws', async () => {
+    vi.stubEnv(envVar('MAX_CONCURRENT_CLAUDE_CLI'), '1');
+    resetClaudeCliPool();
+    const { rm: realRm } = await import('node:fs/promises');
+    const failingRm: typeof realRm = async (path, options) => {
+      await realRm(path, options); // do not leak the temp dir from the test itself
+      throw new Error('EACCES: permission denied');
+    };
+    const broken = new ClaudeCliProvider(config, {
+      ...fakeCli(),
+      rm: failingRm,
+    });
+    await expect(drain(broken)).rejects.toThrow('EACCES');
+    // With a pool of one, this would queue forever if the permit had leaked.
+    const healthy = new ClaudeCliProvider(config, fakeCli());
+    await expect(
+      Promise.race([
+        drain(healthy),
+        new Promise((_, reject) =>
+          setTimeout(() => {
+            reject(new Error('permit leaked: next call is stuck in the queue'));
+          }, 2000),
+        ),
+      ]),
+    ).resolves.toBeDefined();
   });
 });

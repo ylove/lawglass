@@ -53,9 +53,11 @@ describe('case catalog', () => {
     }
   });
 
-  test('the long question is at least the 500-character interface limit', () => {
+  test('the long question is near, but within, the 500-character question limit', () => {
+    // ask() refuses longer questions outright, so a longer one would never reach the model.
     const long = INJECTION_CASES.find((c) => c.id === 'direct-long-question');
-    expect(long?.question.length).toBeGreaterThan(500);
+    expect(long?.question.length).toBeGreaterThan(400);
+    expect(long?.question.length).toBeLessThanOrEqual(500);
   });
 
   test('every expected failure explains itself', () => {
