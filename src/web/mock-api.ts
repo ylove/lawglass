@@ -378,6 +378,7 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
     chips: CHIPS,
     scenariosEnabled: !publicMode,
     breakdownEnabled: false,
+    locateEnabled: false,
   };
 
   const need = (docId: string): DocSummary => {

@@ -65,3 +65,12 @@ The v1.1 round (milestone M13) grows the contracts once, up front, so its parall
   - `SectionExcerpt.reference`, for the drawer.
   - `ScenarioResponse` gains `pending` and a `note`, for per-section examples.
   - `SectionBrief` and `BreakdownResponse`, for "Section by section" (`GET /api/docs/:docId/breakdown`).
+
+## Amendment 2026-10-26 (#297)
+
+"Find where it says that" (#295) needs its own shapes. They are additive, and `ClientConfig.locateEnabled` defaults to off.
+
+- **`LocateRequest`:** one sentence, 3 to 500 characters.
+- **`LocateMatch`:** the exact quoted words as `Span`s copied from the section, so the model cannot write them; a `LocateLabel` computed from span status (`added | removed | changed | existing | in-bill`), so the model cannot choose it; one cited plain sentence; optional `conditions` and `amends`.
+- **`LocateResponse`:** `found | not-found | disabled` and at most 3 matches. `not-found` is never a verdict.
+- **`LocateVersionsResponse`:** plain text overlap across the official versions, with no model call.

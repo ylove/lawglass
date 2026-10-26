@@ -6,6 +6,10 @@ import {
   BreakdownResponse,
   ClientConfig,
   ExternalRef,
+  LocateMatch,
+  LocateRequest,
+  LocateResponse,
+  LocateVersionsResponse,
   messageText,
   NormalizedDoc,
   ReferenceText,
@@ -168,5 +172,74 @@ describe('v1.1 contracts', () => {
   it('joins message parts in order', () => {
     expect(messageText('plain')).toBe('plain');
     expect(messageText([{ text: 'a', cache: true }, { text: 'b' }])).toBe('ab');
+  });
+});
+
+describe('v1.1 locate contracts (#295)', () => {
+  const match = {
+    sectionId: 'sec-4/b',
+    breadcrumb: 'Sec. 4 > (b) Reserves',
+    quote: [
+      { text: 'shall maintain reserves ', status: 'unchanged' },
+      { text: 'of at least 1 to 1', status: 'inserted' },
+    ],
+    label: 'changed',
+    explanation:
+      'Issuers must hold reserves at least equal to the coins [S:sec-4/b].',
+    citations: [{ sectionId: 'sec-4/b', valid: true, chunkIds: ['c'] }],
+    conditions: 'Unless the regulator allows otherwise.',
+    location: {},
+  };
+  it('parses a found response and defaults the feature off for older configs', () => {
+    const r = LocateResponse.parse({
+      status: 'found',
+      matches: [match],
+      readingGrade: 6.1,
+      provider: 'anthropic',
+      model: 'claude-haiku-5-5',
+    });
+    expect(r.matches[0]?.label).toBe('changed');
+    expect(ClientConfig.parse(v10Config).locateEnabled).toBe(false);
+  });
+  it('requires quoted words, caps matches at 3 and bounds the request', () => {
+    expect(LocateMatch.safeParse({ ...match, quote: [] }).success).toBe(false);
+    expect(
+      LocateResponse.safeParse({
+        status: 'found',
+        matches: [match, match, match, match],
+        provider: 'p',
+        model: 'm',
+      }).success,
+    ).toBe(false);
+    expect(LocateRequest.safeParse({ text: 'ok' }).success).toBe(false);
+    expect(LocateRequest.safeParse({ text: 'x'.repeat(501) }).success).toBe(
+      false,
+    );
+    expect(LocateRequest.parse({ text: '  The bill bans forks.  ' }).text).toBe(
+      'The bill bans forks.',
+    );
+  });
+  it('describes version overlap between 0 and 1', () => {
+    expect(
+      LocateVersionsResponse.parse({
+        status: 'ok',
+        versions: [
+          {
+            label: 'Introduced in Senate',
+            date: '2025-05-01',
+            url: 'https://www.govinfo.gov/x',
+            overlap: 0.8,
+          },
+        ],
+      }).versions[0]?.overlap,
+    ).toBe(0.8);
+    expect(
+      LocateVersionsResponse.safeParse({
+        status: 'ok',
+        versions: [
+          { label: 'x', url: 'https://www.govinfo.gov/x', overlap: 2 },
+        ],
+      }).success,
+    ).toBe(false);
   });
 });
