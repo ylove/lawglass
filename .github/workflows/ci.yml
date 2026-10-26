@@ -254,7 +254,8 @@ jobs:
   e2e:
     name: e2e
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    # The tests take about 2 minutes; the apt step of the browser install has stalled past 6.
+    timeout-minutes: 12
     permissions:
       contents: read
     steps:
@@ -274,7 +275,13 @@ jobs:
         run: |
           node --import tsx --input-type=module -e 'import { envVar } from "./src/core/brand.ts"; console.log(`${envVar("CONFIG_DIR")}=${process.cwd()}/.cache/local-backend`)' >> "$GITHUB_ENV"
       - run: npm run models:fetch
+      - name: Cache the Playwright browser
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
       - run: npx playwright install --with-deps chromium
+        timeout-minutes: 8
       - run: npm run test:e2e
       - name: Upload failure traces
         if: ${{ failure() }}
