@@ -18,7 +18,7 @@ import { readSseEvents } from '../web/sse.js';
 import { createApp, type AppOptions } from './app.js';
 import { envVar } from '../core/brand.js';
 import { privateCookieValue, SESSION_COOKIE } from './session.js';
-import { READER_COOKIE, readerKey } from './readers.js';
+import { READER_COOKIE, ReaderLibrary, readerKey } from './readers.js';
 
 const accessKey = 'k'.repeat(40);
 const session = `${SESSION_COOKIE}=${privateCookieValue(accessKey)}`;
@@ -26,6 +26,7 @@ const urls = {
   a: 'https://govinfo.gov/a.txt',
   b: 'https://govinfo.gov/b.xml',
   c: 'https://govinfo.gov/c.txt',
+  d: 'https://govinfo.gov/d.txt',
 };
 let env: PipelineEnv;
 let root: string;
@@ -36,12 +37,19 @@ beforeEach(async () => {
   env.serve(urls.a, makeSectionedText(), 'text/plain');
   env.serve(urls.b, makeCongressionalBillXml());
   env.serve(urls.c, makeInjectionText(0), 'text/plain');
+  env.serve(urls.d, makeInjectionText(1), 'text/plain');
   root = await mkdtemp(join(tmpdir(), 'reader-web-'));
 });
 afterEach(async () => {
   await env.cleanup();
   await rm(root, { recursive: true, force: true });
 });
+
+async function ingestEvents(res: Response) {
+  const events = [];
+  for await (const e of readSseEvents(res, IngestEvent)) events.push(e);
+  return events;
+}
 
 const privateApp = (options: AppOptions = {}): Hono =>
   createApp(env.runtime, {
@@ -135,6 +143,12 @@ describe.each([
     const b = open(app);
     // A shared /doc/<id> link works for anyone and adds the document to their list.
     expect((await b.request(`/api/docs/${one.doc.docId}`)).status).toBe(200);
+    if (mode === 'public') {
+      // A public server writes nothing for a first-time visitor who only follows a link...
+      expect(await b.list()).toEqual([]);
+      // ...and lists the document once that reader comes back with their cookie.
+      expect((await b.request(`/api/docs/${one.doc.docId}`)).status).toBe(200);
+    }
     expect((await b.list()).map((d) => d.docId)).toEqual([one.doc.docId]);
     await new Promise((r) => setTimeout(r, 5));
     await a.request(`/api/docs/${one.doc.docId}`);
@@ -240,8 +254,8 @@ describe('public mode at the document cap', () => {
       method: 'POST',
       body: JSON.stringify({ url: urls.c }),
     });
-    expect(refused.status).toBe(403);
-    expect(await refused.json()).toMatchObject({
+    expect((await ingestEvents(refused)).at(-1)).toMatchObject({
+      type: 'error',
       error: { code: 'DOC_CAP_REACHED' },
     });
     // ...but an address already in the store is not.
@@ -256,6 +270,151 @@ describe('public mode at the document cap', () => {
     expect(left).not.toContain(one.doc.docId);
     expect(left).toContain(two.doc.docId);
     expect(left).toHaveLength(2);
+  });
+});
+
+describe('concurrent ingests at the cap', () => {
+  /** Both ingests register before either enforces the cap, which is the worst interleaving. */
+  function bothRegisterFirst() {
+    let adds = 0;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const add = env.registry.add.bind(env.registry);
+    vi.spyOn(env.registry, 'add').mockImplementation(async (...args) => {
+      const entry = await add(...args);
+      if (++adds === 2) open();
+      return entry;
+    });
+    const candidates = env.registry.evictionCandidates.bind(env.registry);
+    vi.spyOn(env.registry, 'evictionCandidates').mockImplementation(
+      async (...args) => {
+        await gate;
+        return candidates(...args);
+      },
+    );
+  }
+
+  test('private: two new documents do not evict each other', async () => {
+    const app = privateApp();
+    const [a, b, c] = [browser(app), browser(app), browser(app)];
+    await a.ingest(urls.a);
+    await a.ingest(urls.b);
+    bothRegisterFirst();
+    const [rb, rc] = await Promise.all([b.ingest(urls.c), c.ingest(urls.d)]);
+    const left = (await env.registry.list()).map((e) => e.docId);
+    expect(left).toContain(rb.doc.docId);
+    expect(left).toContain(rc.doc.docId);
+    expect((await b.request(`/api/docs/${rb.doc.docId}`)).status).toBe(200);
+    expect((await c.request(`/api/docs/${rc.doc.docId}`)).status).toBe(200);
+  });
+
+  test('public: racing for the last slot admits one and never evicts a listed document', async () => {
+    const app = publicApp();
+    const [a, b, c] = [open(), open(), open()];
+    function open() {
+      return browser(app, undefined, false);
+    }
+    const listed = await a.ingest(urls.a);
+    const unlisted = await a.ingest(urls.b);
+    await a.request(`/api/docs/${unlisted.doc.docId}`, { method: 'DELETE' });
+    const results = await Promise.all([
+      b.request('/api/ingest', {
+        method: 'POST',
+        body: JSON.stringify({ url: urls.c }),
+      }),
+      c.request('/api/ingest', {
+        method: 'POST',
+        body: JSON.stringify({ url: urls.d }),
+      }),
+    ]);
+    const last = (await Promise.all(results.map(ingestEvents))).map(
+      (e) => e.at(-1)?.type,
+    );
+    expect(last.sort()).toEqual(['done', 'error']);
+    const left = (await env.registry.list()).map((e) => e.docId);
+    expect(left).toContain(listed.doc.docId);
+    expect(left).not.toContain(unlisted.doc.docId);
+    expect(left).toHaveLength(2);
+  });
+
+  test('public: a document registered but not yet listed is not reclaimed by another ingest', async () => {
+    (env.runtime as { maxDocs: number }).maxDocs = 3;
+    const app = publicApp();
+    const [a, b] = [
+      browser(app, undefined, false),
+      browser(app, undefined, false),
+    ];
+    await a.ingest(urls.a);
+    const u = await a.ingest(urls.b);
+    await a.request(`/api/docs/${u.doc.docId}`, { method: 'DELETE' });
+    // Hold A's next listing until B's ingest has made room.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reached!: () => void;
+    const held = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- called with an explicit this
+    const markUsed = ReaderLibrary.prototype.markUsed;
+    let calls = 0;
+    vi.spyOn(ReaderLibrary.prototype, 'markUsed').mockImplementation(
+      async function (this: ReaderLibrary, id: string, docId: string) {
+        if (calls++ === 0) {
+          reached();
+          await gate;
+        }
+        return markUsed.call(this, id, docId);
+      },
+    );
+    const aIngest = a.ingest(urls.c);
+    await held;
+    expect((await b.ingest(urls.d)).type).toBe('done');
+    release();
+    const done = await aIngest;
+    expect(done.type).toBe('done');
+    expect((await a.request(`/api/docs/${done.doc.docId}`)).status).toBe(200);
+  });
+
+  test('public: an already loaded bill is reused at the cap even when fetched through another address', async () => {
+    env.serve(
+      'https://govinfo.gov/a-mirror.txt',
+      makeSectionedText(),
+      'text/plain',
+    );
+    const app = publicApp();
+    const [a, b] = [
+      browser(app, undefined, false),
+      browser(app, undefined, false),
+    ];
+    await a.ingest(urls.a);
+    await a.ingest(urls.b);
+    const again = await b.ingest('https://govinfo.gov/a-mirror.txt');
+    expect(again.type).toBe('done');
+    expect(again.stats.reused).toBe(true);
+    expect(await env.registry.list()).toHaveLength(2);
+  });
+});
+
+describe('public reader files', () => {
+  const readersDir = () => join(env.runtime.registry.configDir, 'readers');
+
+  test('a first-time visitor following a link writes no reader file; an ingest does', async () => {
+    const app = publicApp();
+    const a = browser(app, undefined, false);
+    const { doc } = await a.ingest(urls.a);
+    const before = await readdir(readersDir());
+    for (let i = 0; i < 5; i++)
+      expect(
+        (await browser(app, undefined, false).request(`/api/docs/${doc.docId}`))
+          .status,
+      ).toBe(200);
+    expect(await readdir(readersDir())).toEqual(before);
+    await browser(app, undefined, false).ingest(urls.b);
+    expect(await readdir(readersDir())).toHaveLength(before.length + 1);
   });
 });
 

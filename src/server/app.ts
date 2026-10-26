@@ -149,7 +149,17 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     now,
   );
   const ingests = new SlidingWindowLimiter(limits.ingestsPerHour, HOUR_MS, now);
-  let ingestsInFlight = 0;
+  // Documents with an ingest under way, with a count per document. They are never evicted or
+  // reclaimed, and they count toward the public document cap exactly once.
+  const holds = new Map<string, number>();
+  // Capacity decisions (check, reclaim, reserve) run one at a time; the hosted server is a
+  // single process, so a promise chain is enough.
+  let capTail: Promise<unknown> = Promise.resolve();
+  const withCapLock = <T>(task: () => Promise<T>): Promise<T> => {
+    const run = capTail.then(task);
+    capTail = run.catch(() => undefined);
+    return run;
+  };
 
   const clientIp =
     options.clientIp ??
@@ -180,6 +190,8 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       })
     : undefined;
   const readerOf = new WeakMap<Request, string>();
+  // Requests that arrived without a valid cookie, so their reader id was minted just now.
+  const freshReader = new WeakSet<Request>();
 
   // First, so its headers also land on responses that later middleware returns early.
   app.use('*', securityHeaders({ publicMode, privateMode }));
@@ -290,6 +302,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       let id = isReaderId(sent) ? sent : undefined;
       if (!id) {
         id = newReaderId();
+        freshReader.add(c.req.raw);
         setCookie(c, READER_COOKIE, id, {
           httpOnly: true,
           secure: true,
@@ -373,8 +386,12 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   const rememberForReader = async (
     c: Context,
     docId: string,
+    /** Opening a shared link is not worth a file on a public server: wait for a returning reader. */
+    options: { skipFreshPublic?: boolean } = {},
   ): Promise<void> => {
     if (!readers) return;
+    if (options.skipFreshPublic && publicMode && freshReader.has(c.req.raw))
+      return;
     try {
       await readers.markUsed(readerId(c), docId);
     } catch (error) {
@@ -393,7 +410,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   app.get('/api/docs/:docId', async (c) => {
     const entry = await entryFor(c.req.param('docId'));
     const doc = await runtime.registry.getDocument(entry.docId);
-    await rememberForReader(c, entry.docId);
+    await rememberForReader(c, entry.docId, { skipFreshPublic: true });
     return c.json(await buildDocDetail(runtime, DocSummary.parse(entry), doc));
   });
 
@@ -562,33 +579,59 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   }
 
   /**
-   * Public servers never evict a document someone still lists, but a full store must not stay
-   * full forever: removing from a list leaves the shared copy. So at the cap, an address that is
-   * already loaded is always allowed (it adds nothing), documents no reader lists are reclaimed
-   * oldest first, and only when every document is listed is the ingest refused.
+   * Admission for one ingest, called by the pipeline once the document id is known (so an
+   * address that turns out to be a document we already hold is never refused). It protects the
+   * document for the length of the request. On a public server at the cap, documents no reader
+   * lists are reclaimed oldest first; if there are not enough, the ingest is refused.
    */
-  async function makeRoomForIngest(url: string): Promise<boolean> {
-    const entries = await runtime.registry.list();
-    const excess = entries.length + ingestsInFlight - limits.maxDocs + 1;
-    if (excess <= 0 || entries.some((e) => e.sourceUrl === url)) return true;
-    const listed = readers ? await readers.listedDocIds() : new Set<string>();
-    // Other backends' entries are left alone: only their own backend can delete the index.
-    const reclaimable = entries
-      .filter((e) => !listed.has(e.docId) && e.backend === runtime.backend.kind)
-      .sort(
-        (a, b) =>
-          a.lastUsedAt.localeCompare(b.lastUsedAt) ||
-          a.ingestedAt.localeCompare(b.ingestedAt) ||
-          a.docId.localeCompare(b.docId),
-      )
-      .slice(0, excess);
-    if (reclaimable.length < excess) return false;
-    for (const old of reclaimable) {
-      await runtime.backend.deleteDocument(old.docId);
-      await runtime.registry.remove(old.docId);
-    }
-    return true;
+  function admitDocuments(held: Set<string>) {
+    return (docId: string, known: boolean): Promise<void> =>
+      withCapLock(async () => {
+        if (!held.has(docId)) {
+          held.add(docId);
+          holds.set(docId, (holds.get(docId) ?? 0) + 1);
+        }
+        if (!publicMode || known) return;
+        const entries = await runtime.registry.list();
+        const stored = new Set(entries.map((e) => e.docId));
+        // Each document counts once: stored, or about to be (held but not stored yet).
+        const unstored = [...holds.keys()].filter((id) => !stored.has(id));
+        const excess = stored.size + unstored.length - limits.maxDocs;
+        if (excess <= 0) return;
+        const listed = readers
+          ? await readers.listedDocIds()
+          : new Set<string>();
+        // Other backends' entries are left alone: only their own backend can delete the index.
+        const reclaimable = entries
+          .filter(
+            (e) =>
+              !listed.has(e.docId) &&
+              !holds.has(e.docId) &&
+              e.backend === runtime.backend.kind,
+          )
+          .sort(
+            (a, b) =>
+              a.lastUsedAt.localeCompare(b.lastUsedAt) ||
+              a.ingestedAt.localeCompare(b.ingestedAt) ||
+              a.docId.localeCompare(b.docId),
+          )
+          .slice(0, excess);
+        if (reclaimable.length < excess) throw new AppError('DOC_CAP_REACHED');
+        for (const old of reclaimable) {
+          await runtime.backend.deleteDocument(old.docId);
+          await runtime.registry.remove(old.docId);
+        }
+      });
   }
+
+  const releaseDocuments = (held: Set<string>): void => {
+    for (const id of held) {
+      const left = (holds.get(id) ?? 1) - 1;
+      if (left <= 0) holds.delete(id);
+      else holds.set(id, left);
+    }
+    held.clear();
+  };
 
   app.post('/api/ingest', async (c) => {
     const body = await parseBody(
@@ -605,12 +648,10 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       });
     if (hosted) checkIngestHost(body.url, hosts);
     await guardPublic(c, ingests, body.turnstileToken);
-    if (publicMode && !(await makeRoomForIngest(body.url)))
-      throw new AppError('DOC_CAP_REACHED');
 
     // Resource policy reaches both the default parser and runtime-injected parsers.
     const parsePdf = runtime.parsePdf ?? defaultParsePdf;
-    ingestsInFlight++;
+    const held = new Set<string>();
     const started = now();
     let finished = false;
     const sourceHost = new URL(body.url).hostname;
@@ -650,7 +691,14 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
               // Public servers never evict: a visitor must not push out someone else's document.
               maxDocs: publicMode ? limits.maxDocs : runtime.maxDocs,
               ...(readers
-                ? { listedDocIds: () => readers.listedDocIds() }
+                ? {
+                    evictionGuard: {
+                      listed: () => readers.listedDocIds(),
+                      inFlight: () => new Set(holds.keys()),
+                      neverEvictListed: publicMode,
+                    },
+                    admit: admitDocuments(held),
+                  }
                 : {}),
               parseLimits: {
                 ...readParseLimits(publicMode),
@@ -699,7 +747,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       },
       (error) => ({ type: 'error', error }),
       () => {
-        ingestsInFlight--;
+        releaseDocuments(held);
         if (!finished)
           log.event(c, {
             level: 'info',

@@ -91,7 +91,7 @@ export async function startServer(
   const urlHost = isIP(boundHost) === 6 ? `[${boundHost}]` : boundHost;
   return {
     port,
-    url: `http://${urlHost}:${String(port)}${sessionToken ? `${options.openPath ?? '/'}?k=${sessionToken}` : ''}`,
+    url: `http://${urlHost}:${String(port)}${options.openPath ?? '/'}${sessionToken ? `?k=${sessionToken}` : ''}`,
     close: () =>
       new Promise((resolve) => {
         server.closeAllConnections();

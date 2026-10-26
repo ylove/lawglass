@@ -11,7 +11,7 @@
  * leaked snapshot does not hold the cookie values themselves.
  */
 import { createHash, randomBytes } from 'node:crypto';
-import { readdir } from 'node:fs/promises';
+import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { BRAND } from '../core/brand.js';
@@ -54,9 +54,21 @@ const ReaderDoc = z
 export type ReaderDoc = z.infer<typeof ReaderDoc>;
 const ReaderFile = z.object({ docs: z.array(ReaderDoc) }).strict();
 
+/** A reader file untouched this long is deleted when the server starts. */
+export const READER_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+/** Most reader files kept; creating one more deletes the least recently used. */
+export const READER_MAX_FILES = 10_000;
+
 export interface ReaderLibraryOptions {
   fs?: ConfigFileSystem;
   now?: () => Date;
+  maxAgeMs?: number;
+  maxFiles?: number;
+}
+
+interface IndexEntry {
+  docs: Set<string>;
+  touchedAt: number;
 }
 
 // The server process is the only writer of these files, so an in-process queue per file is
@@ -68,11 +80,73 @@ export class ReaderLibrary {
   private readonly dir: string;
   private readonly fs: ConfigFileSystem;
   private readonly now: () => Date;
+  private readonly maxAgeMs: number;
+  private readonly maxFiles: number;
+  // Which documents each reader lists, by file key. Built once from the directory (expired
+  // files are deleted then) and kept current by every write, so an ingest never rereads the
+  // directory.
+  private index: Promise<Map<string, IndexEntry>> | undefined;
 
   constructor(configDir: string, options: ReaderLibraryOptions = {}) {
     this.dir = join(configDir, 'readers');
     this.fs = options.fs ?? configFileSystem;
     this.now = options.now ?? (() => new Date());
+    this.maxAgeMs = options.maxAgeMs ?? READER_MAX_AGE_MS;
+    this.maxFiles = options.maxFiles ?? READER_MAX_FILES;
+  }
+
+  private loaded(): Promise<Map<string, IndexEntry>> {
+    this.index ??= this.load();
+    return this.index;
+  }
+
+  private async load(): Promise<Map<string, IndexEntry>> {
+    const index = new Map<string, IndexEntry>();
+    let names: string[];
+    try {
+      names = await readdir(this.dir);
+    } catch (error) {
+      if (isMissingFile(error)) return index;
+      throw error;
+    }
+    const cutoff = this.now().getTime() - this.maxAgeMs;
+    for (const name of names) {
+      const match = /^([a-f0-9]{64})\.json$/.exec(name);
+      if (!match?.[1]) continue;
+      const path = join(this.dir, name);
+      try {
+        const { mtimeMs } = await stat(path);
+        if (mtimeMs < cutoff) {
+          await this.fs.unlink(path);
+          continue;
+        }
+        index.set(match[1], {
+          docs: new Set((await this.read(path)).map((d) => d.docId)),
+          touchedAt: mtimeMs,
+        });
+      } catch {
+        // An unreadable file is skipped; it will be replaced on the reader's next write.
+      }
+    }
+    return index;
+  }
+
+  /** Make room for one more reader file by deleting the least recently used. */
+  private async trim(
+    index: Map<string, IndexEntry>,
+    keep: string,
+  ): Promise<void> {
+    while (index.size >= this.maxFiles) {
+      let oldest: [string, number] | undefined;
+      for (const [key, entry] of index)
+        if (key !== keep && (!oldest || entry.touchedAt < oldest[1]))
+          oldest = [key, entry.touchedAt];
+      if (!oldest) return;
+      index.delete(oldest[0]);
+      await this.fs
+        .unlink(join(this.dir, `${oldest[0]}.json`))
+        .catch(() => undefined);
+    }
   }
 
   private pathFor(readerId: string): string {
@@ -111,43 +185,50 @@ export class ReaderLibrary {
   /** Add the document, or mark it used now when it is already listed. */
   async markUsed(readerId: string, docId: string): Promise<void> {
     const path = this.pathFor(readerId);
+    const key = readerKey(readerId);
+    const index = await this.loaded();
     await this.serialized(path, async () => {
       const docs = await this.read(path);
       const at = this.now().toISOString();
       const existing = docs.find((d) => d.docId === docId);
       if (existing) existing.lastUsedAt = at;
       else docs.push({ docId, addedAt: at, lastUsedAt: at });
+      if (!index.has(key)) await this.trim(index, key);
       await writePrivateJson(path, { docs }, this.fs);
+      index.set(key, {
+        docs: new Set(docs.map((d) => d.docId)),
+        touchedAt: this.now().getTime(),
+      });
     });
   }
 
   /** Take the document off this reader's list only. Unknown documents are a no-op. */
   async remove(readerId: string, docId: string): Promise<void> {
     const path = this.pathFor(readerId);
+    const key = readerKey(readerId);
+    const index = await this.loaded();
     await this.serialized(path, async () => {
       const docs = await this.read(path);
       const rest = docs.filter((d) => d.docId !== docId);
-      if (rest.length !== docs.length)
-        await writePrivateJson(path, { docs: rest }, this.fs);
+      if (rest.length === docs.length) return;
+      await writePrivateJson(path, { docs: rest }, this.fs);
+      index.set(key, {
+        docs: new Set(rest.map((d) => d.docId)),
+        touchedAt: this.now().getTime(),
+      });
     });
   }
 
-  /** Every document any reader lists. Eviction spares these while it can. */
+  /** Every document any reader lists. Served from memory after the first call. */
   async listedDocIds(): Promise<Set<string>> {
-    let names: string[];
-    try {
-      names = await readdir(this.dir);
-    } catch (error) {
-      if (isMissingFile(error)) return new Set();
-      throw error;
-    }
     const listed = new Set<string>();
-    for (const name of names) {
-      if (!/^[a-f0-9]{64}\.json$/.test(name)) continue;
-      const path = join(this.dir, name);
-      for (const d of await this.serialized(path, () => this.read(path)))
-        listed.add(d.docId);
-    }
+    for (const entry of (await this.loaded()).values())
+      for (const docId of entry.docs) listed.add(docId);
     return listed;
+  }
+
+  /** Number of reader files, for tests and logs. */
+  async size(): Promise<number> {
+    return (await this.loaded()).size;
   }
 }

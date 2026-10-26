@@ -415,13 +415,26 @@ describe('launch boundary', () => {
     expect(response.status).toBe(401);
     await response.arrayBuffer();
   });
+  test('a public launch link names the document to open, without a key', async () => {
+    const docId = 'c'.repeat(64);
+    server = await startServer(env.runtime, {
+      host: '0.0.0.0',
+      publicMode: true,
+      port: 0,
+      openPath: `/doc/${docId}`,
+    });
+    expect(server.url).toBe(
+      `http://0.0.0.0:${String(server.port)}/doc/${docId}`,
+    );
+  });
   test('public bind works without a token or cookie, including matching non-loopback Host and Origin', async () => {
     server = await startServer(env.runtime, {
       host: '0.0.0.0',
       publicMode: true,
       port: 0,
     });
-    expect(server.url).toBe(`http://0.0.0.0:${String(server.port)}`);
+    // The public launch link has no key, but still names the page to open.
+    expect(server.url).toBe(`http://0.0.0.0:${String(server.port)}/`);
     const response = await new Promise<{
       status: number;
       cookie: string[] | undefined;

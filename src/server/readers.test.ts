@@ -1,4 +1,11 @@
-import { mkdtemp, readdir, rm, stat } from 'node:fs/promises';
+import {
+  mkdtemp,
+  readdir,
+  rm,
+  stat,
+  utimes,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test } from 'vitest';
@@ -101,5 +108,58 @@ describe('ReaderLibrary', () => {
       ['a', 'b', 'c', 'd'].map((ch) => lib.markUsed(id, doc(ch))),
     );
     expect(await lib.list(id)).toHaveLength(4);
+  });
+});
+
+describe('ReaderLibrary housekeeping', () => {
+  test('files untouched for the maximum age are deleted when the library loads', async () => {
+    const first = new ReaderLibrary(dir);
+    const [old, fresh] = [newReaderId(), newReaderId()];
+    await first.markUsed(old, doc('a'));
+    await first.markUsed(fresh, doc('b'));
+    const longAgo = new Date(Date.now() - 100 * 24 * 60 * 60 * 1000);
+    await utimes(
+      join(dir, 'readers', `${readerKey(old)}.json`),
+      longAgo,
+      longAgo,
+    );
+    // A new instance, like a restart, builds its index and prunes.
+    const restarted = new ReaderLibrary(dir);
+    expect([...(await restarted.listedDocIds())]).toEqual([doc('b')]);
+    expect(await readdir(join(dir, 'readers'))).toEqual([
+      `${readerKey(fresh)}.json`,
+    ]);
+  });
+
+  test('creating a file past the maximum deletes the least recently used one', async () => {
+    let time = Date.parse('2026-01-01T00:00:00Z');
+    const lib = new ReaderLibrary(dir, {
+      maxFiles: 2,
+      now: () => new Date((time += 1000)),
+    });
+    const [r1, r2, r3] = [newReaderId(), newReaderId(), newReaderId()];
+    await lib.markUsed(r1, doc('a'));
+    await lib.markUsed(r2, doc('b'));
+    await lib.markUsed(r1, doc('c')); // r1 is now more recent than r2
+    await lib.markUsed(r3, doc('d'));
+    expect(await lib.size()).toBe(2);
+    expect(await readdir(join(dir, 'readers'))).toHaveLength(2);
+    expect([...(await lib.listedDocIds())].sort()).toEqual(
+      [doc('a'), doc('c'), doc('d')].sort(),
+    );
+  });
+
+  test('the listed set comes from memory after the first load', async () => {
+    const lib = new ReaderLibrary(dir);
+    const id = newReaderId();
+    await lib.markUsed(id, doc('a'));
+    // A stray file written behind its back is not read again.
+    await writeFile(
+      join(dir, 'readers', `${'f'.repeat(64)}.json`),
+      JSON.stringify({ docs: [] }),
+    );
+    expect(await lib.size()).toBe(1);
+    await lib.remove(id, doc('a'));
+    expect((await lib.listedDocIds()).size).toBe(0);
   });
 });

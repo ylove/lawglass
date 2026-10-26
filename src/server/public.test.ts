@@ -216,22 +216,27 @@ describe('rate limits', () => {
   });
 });
 
+/** The cap is decided once the document is known, so a refusal arrives as a stream error. */
+async function expectCapRefusal(res: Response): Promise<void> {
+  expect(res.status).toBe(200);
+  expect((await events(res, IngestEvent)).at(-1)).toMatchObject({
+    type: 'error',
+    error: { code: 'DOC_CAP_REACHED' },
+  });
+}
+
 describe('caps', () => {
   test('defaults the public cap to the configured document cap for admission and enforcement', async () => {
     env.runtime.maxDocs = 1;
     const a = publicApp();
     const eviction = vi.spyOn(env.registry, 'evictionCandidates');
     const first = await ingestOk(a, 'https://govinfo.gov/a.txt');
-    env.fetches.length = 0;
     const res = await post(a, '/api/ingest', {
       url: 'https://govinfo.gov/b.xml',
     });
-    expect(res.status).toBe(403);
-    expect(await res.json()).toMatchObject({
-      error: { code: 'DOC_CAP_REACHED' },
-    });
-    expect(eviction).toHaveBeenCalledWith(1, expect.any(Set));
-    expect(env.fetches).toEqual([]);
+    await expectCapRefusal(res);
+    // Refused at admission, before anything is stored or evicted.
+    expect(eviction).toHaveBeenCalledTimes(1);
     expect((await env.registry.list()).map((e) => e.docId)).toEqual([first]);
   });
 
@@ -261,39 +266,43 @@ describe('caps', () => {
     const res = await post(a, '/api/ingest', {
       url: 'https://govinfo.gov/b.xml',
     });
-    expect(res.status).toBe(403);
-    expect(await res.json()).toMatchObject({
-      error: { code: 'DOC_CAP_REACHED' },
-    });
+    await expectCapRefusal(res);
     expect((await env.registry.list()).map((e) => e.docId)).toEqual([first]);
   });
 
-  test('concurrent ingests count toward the cap', async () => {
+  test('concurrent ingests count toward the cap, each document once', async () => {
     const a = publicApp({ limits: { maxDocs: 1 } });
+    // Hold the first ingest right after it was admitted.
     let release: () => void = () => undefined;
-    const real = env.runtime.fetcher;
-    env.runtime.fetcher = async (url, opts) => {
-      await new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      return real(url, opts);
-    };
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const real = env.backend.hasDocument.bind(env.backend);
+    let held = false;
+    vi.spyOn(env.backend, 'hasDocument').mockImplementation(async (id) => {
+      if (!held) {
+        held = true;
+        await gate;
+      }
+      return real(id);
+    });
     const running = await post(a, '/api/ingest', {
       url: 'https://govinfo.gov/a.txt',
     });
-    const second = await post(a, '/api/ingest', {
-      url: 'https://govinfo.gov/b.xml',
-    });
-    expect(second.status).toBe(403);
     await vi.waitFor(() => {
-      release();
+      expect(held).toBe(true);
     });
-    await events(running, IngestEvent);
+    await expectCapRefusal(
+      await post(a, '/api/ingest', { url: 'https://govinfo.gov/b.xml' }),
+    );
+    release();
+    expect((await events(running, IngestEvent)).at(-1)).toMatchObject({
+      type: 'done',
+    });
     // Once the first finished, its slot is a real document, so the cap still holds.
-    const third = await post(a, '/api/ingest', {
-      url: 'https://govinfo.gov/b.xml',
-    });
-    expect(third.status).toBe(403);
+    await expectCapRefusal(
+      await post(a, '/api/ingest', { url: 'https://govinfo.gov/b.xml' }),
+    );
   });
 
   test('PDFs over 200 pages are refused with a plain message before indexing', async () => {

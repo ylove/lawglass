@@ -76,6 +76,16 @@ export type PdfParser = (
   context: ParseContext,
 ) => NormalizedDoc | Promise<NormalizedDoc>;
 
+/** Keeps eviction away from documents other people are using or ingesting right now. */
+export interface EvictionGuard {
+  /** Documents some reader still lists; they go last. */
+  listed(): Promise<ReadonlySet<string>>;
+  /** Documents with an ingest under way: never evicted, so concurrent ingests cannot undo each other. */
+  inFlight(): ReadonlySet<string>;
+  /** Never evict a listed document (public servers refuse a new one instead). */
+  neverEvictListed?: boolean;
+}
+
 export interface IngestDeps {
   parseLimits?: ParseLimits | undefined;
   backend: RetrievalBackend;
@@ -88,11 +98,14 @@ export interface IngestDeps {
   now: () => Date;
   /** LRU cap on indexed documents. Default 5. */
   maxDocs?: number | undefined;
+  /** Who may be evicted when the cap is enforced; see `EvictionGuard`. */
+  evictionGuard?: EvictionGuard | undefined;
   /**
-   * Documents some reader still lists. Eviction prefers documents outside this set so one
-   * reader's ingest does not push out what others are using. Optional; failure is ignored.
+   * Called once the document id is known and before any indexing, with whether the registry
+   * already has it. A server uses it to protect the document while it is being ingested and
+   * to refuse a new document when it has no room (throw an AppError).
    */
-  listedDocIds?: (() => Promise<ReadonlySet<string>>) | undefined;
+  admit?: ((docId: string, known: boolean) => Promise<void>) | undefined;
   parsePdf?: PdfParser | undefined;
 }
 
@@ -394,13 +407,24 @@ async function withDocLock<T>(
  */
 async function enforceCap(deps: IngestDeps, keep: string): Promise<void> {
   const { backend, registry } = deps;
+  const guard = deps.evictionGuard;
   try {
     const cap = Math.max(1, deps.maxDocs ?? DEFAULT_MAX_DOCS);
-    // The document just ingested is not on any list yet, but it must not be the first to go.
-    const listed = new Set(await deps.listedDocIds?.().catch(() => []));
-    listed.add(keep);
-    for (const old of await registry.evictionCandidates(cap, listed)) {
-      if (old.docId === keep || old.backend !== backend.kind) continue;
+    let listed: ReadonlySet<string> = new Set();
+    try {
+      listed = (await guard?.listed()) ?? listed;
+    } catch {
+      // Without the lists nothing can be called unlisted; a server that never evicts listed
+      // documents must then evict nothing.
+      if (guard?.neverEvictListed) return;
+    }
+    // The document just ingested and any other being ingested right now must not be the first
+    // to go, even though they are on no list yet.
+    const protectedIds = new Set([keep, ...(guard?.inFlight() ?? [])]);
+    const spared = new Set([...listed, ...protectedIds]);
+    for (const old of await registry.evictionCandidates(cap, spared)) {
+      if (protectedIds.has(old.docId) || old.backend !== backend.kind) continue;
+      if (guard?.neverEvictListed && listed.has(old.docId)) continue;
       await deleteIndexedDocument(backend, old.docId);
       await registry.remove(old.docId);
     }
@@ -511,6 +535,7 @@ async function ingestLocked(
       userMessage:
         'That document label is already in use. Choose a different label.',
     });
+  await deps.admit?.(docId, known !== undefined);
   const alreadyIndexed = await backend.hasDocument(docId);
 
   // Zero-token path: nothing to fetch-parse-embed.
