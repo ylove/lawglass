@@ -11,6 +11,7 @@
  * background, one at a time, so a reader usually sees them instantly. Large bills draw an
  * example only when asked.
  */
+import type { BreakdownLog } from '../core/breakdown/generate.js';
 import type { CliRuntime } from '../cli/runtime.js';
 import { envVar } from '../core/brand.js';
 import { documentContext } from '../core/answer/context.js';
@@ -70,6 +71,7 @@ export interface BreakdownService {
 }
 
 export interface BreakdownServiceOptions {
+  log?: BreakdownLog | undefined;
   publicMode: boolean;
   now?: () => number;
   waitMs?: number | undefined;
@@ -158,6 +160,7 @@ export function createBreakdownService(
         endpoint: runtime.answerEndpoint,
         context,
         cache: breakdowns,
+        log: options.log,
         onProgress: (briefs) => {
           partial.set(name, briefs);
         },

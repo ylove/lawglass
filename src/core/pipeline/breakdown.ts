@@ -16,7 +16,8 @@ import {
 } from '../breakdown/cache.js';
 import { buildUnitContext, unitExcerpts } from '../breakdown/context.js';
 import {
-  BREAKDOWN_PROMPT_VERSION,
+  breakdownPromptVersion,
+  type BreakdownLog,
   generateBreakdown,
 } from '../breakdown/generate.js';
 import { EXAMPLE_FAILED_NOTE } from '../breakdown/notes.js';
@@ -39,6 +40,7 @@ import { sharedLimits, type Limits } from './limits.js';
 import { scenarioOutcome } from './scenario.js';
 
 export interface BreakdownDeps {
+  log?: BreakdownLog | undefined;
   backend: RetrievalBackend;
   provider: LlmProvider;
   registry: Registry;
@@ -65,7 +67,7 @@ export function breakdownCacheKey(
     provider: provider.id,
     model: provider.model,
     endpoint,
-    promptVersion: BREAKDOWN_PROMPT_VERSION,
+    promptVersion: breakdownPromptVersion(),
     context,
   };
 }
@@ -121,6 +123,7 @@ export async function runBreakdown(
       units,
       signal: deps.signal,
       onProgress: deps.onProgress,
+      log: deps.log,
     });
     await registry.touch(docId, {
       embedTokens: made.backendUsage.embedTokens,
