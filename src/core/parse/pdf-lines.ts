@@ -62,7 +62,7 @@ export const LAYOUT = {
   /** The same string within this many points of itself is overprinted (fake bold). */
   overprintTolerance: 1,
   /** A gap wider than this many ems between items on a line may be a column gutter... */
-  gutterEm: 4,
+  gutterEm: 1.2,
   /** ...when gaps at the same x (within this many points) recur on enough lines. */
   gutterTolerance: 12,
   minGutterLines: 3,
@@ -359,7 +359,7 @@ const ISSUE_WARNINGS: Record<MarkIssue, string> = {
 };
 
 /**
- * Remove overprinted duplicates: generators fake bold by drawing the same string twice a
+ * Remove overprinted duplicates: generators fake bold by drawing the same string repeatedly a
  * fraction of a point apart, which would otherwise read "SectionSection".
  */
 export function withoutOverprint(items: readonly PdfTextItem[]): PdfTextItem[] {
@@ -416,7 +416,9 @@ function commonStarts(lines: readonly TextLine[], share: number): number[] {
     [...counts]
       .filter(([other]) => Math.abs(other - x) <= LAYOUT.bandTolerance)
       .reduce((total, [, count]) => total + count, 0);
-  return [...counts.keys()].filter((x) => near(x) >= share * lines.length);
+  // A lone line cannot establish a body indent: its underline may be a table border.
+  const needed = Math.max(2, share * lines.length);
+  return [...counts.keys()].filter((x) => near(x) >= needed);
 }
 
 /**

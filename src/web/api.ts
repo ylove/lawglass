@@ -12,6 +12,7 @@ import {
   DocDetail,
   DocSummary,
   IngestEvent,
+  PicturesResponse,
   ScenarioResponse,
   SectionExcerpt,
   SummaryResponse,
@@ -41,6 +42,16 @@ export interface ApiClient {
   getSummary(docId: string): Promise<SummaryResponse>;
   /** "Section by section": cached briefs, a run in progress (poll again, maybe with partial briefs), or off. */
   getBreakdown(docId: string): Promise<BreakdownResponse>;
+  /** Pictures for the summary's list items (#345): `pending` while drawn, `none`/`disabled` otherwise. */
+  getSummaryPictures(
+    docId: string,
+    signal?: AbortSignal,
+  ): Promise<PicturesResponse>;
+  /** Pictures for the section briefs (#345), matched by section id and text. */
+  getBreakdownPictures(
+    docId: string,
+    signal?: AbortSignal,
+  ): Promise<PicturesResponse>;
   /** An example for one part of the bill: `pending` while it is drawn, then `ok` or `none` with a note. */
   getSectionExample(
     docId: string,
@@ -239,6 +250,20 @@ export function createHttpApi(options: HttpApiOptions = {}): ApiClient {
         `${docPath(docId)}/breakdown`,
         BreakdownResponse,
         undefined,
+        Math.max(defaultTimeout, SUMMARY_TIMEOUT_MS),
+      ),
+    getSummaryPictures: (docId, signal) =>
+      request(
+        `${docPath(docId)}/summary/pictures`,
+        PicturesResponse,
+        signal ? { signal } : undefined,
+        Math.max(defaultTimeout, SUMMARY_TIMEOUT_MS),
+      ),
+    getBreakdownPictures: (docId, signal) =>
+      request(
+        `${docPath(docId)}/breakdown/pictures`,
+        PicturesResponse,
+        signal ? { signal } : undefined,
         Math.max(defaultTimeout, SUMMARY_TIMEOUT_MS),
       ),
     getSectionExample: (docId, sectionId, signal) =>

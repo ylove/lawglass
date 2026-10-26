@@ -1,9 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
-import type { SectionBrief } from '../../core/model/index.js';
+import type { PictureEntry, SectionBrief } from '../../core/model/index.js';
 import type { ApiClient } from '../api.js';
 import { AnswerText, type OpenCitation } from '../AnswerText.js';
 import { ApiError } from '../sse.js';
 import { SERVER_COOL_DOWN_MS } from './cool-down.js';
+import { PicturePanels } from './PicturePanels.js';
+import { usePictures } from './use-pictures.js';
 import { SectionExample } from './SectionExample.js';
 
 /** How often to ask again while the server is still reading the sections. */
@@ -35,6 +37,7 @@ function BriefCard({
   api,
   docId,
   brief,
+  picture,
   onOpenSection,
   examplePollMs,
   exampleMaxWaitMs,
@@ -43,6 +46,8 @@ function BriefCard({
   api: ApiClient;
   docId: string;
   brief: SectionBrief;
+  /** The drawing for this brief's text, when the server has one that matches it exactly. */
+  picture: PictureEntry | undefined;
   onOpenSection: OpenCitation;
   examplePollMs?: number | undefined;
   exampleMaxWaitMs?: number | undefined;
@@ -59,6 +64,11 @@ function BriefCard({
             <span className="brief-heading">{brief.heading}</span>
           )}
         </h4>
+        {picture && (
+          <div className="brief-picture">
+            <PicturePanels entry={picture} />
+          </div>
+        )}
         <div className="brief-text">
           <AnswerText
             text={brief.text}
@@ -151,6 +161,7 @@ export function BreakdownPanel({
             shown.current = r.briefs ?? [];
           }
           if (r.status === 'cached' && r.briefs && r.briefs.length > 0) {
+            autoRetried.current = false;
             setState({
               kind: 'cached',
               briefs: r.briefs,
@@ -194,6 +205,15 @@ export function BreakdownPanel({
     };
   }, [api, docId, enabled, pollMs, maxWaitMs, coolDownMs, attempt]);
 
+  // Pictures wait for the finished briefs, so a half-read breakdown does not redraw as it grows.
+  const pictures = usePictures(
+    (signal) => api.getBreakdownPictures(docId, signal),
+    enabled && state.kind === 'cached',
+    docId,
+    pollMs,
+    maxWaitMs,
+  );
+
   if (!enabled || state.kind === 'disabled') return null;
 
   const retry = () => {
@@ -234,6 +254,9 @@ export function BreakdownPanel({
               api={api}
               docId={docId}
               brief={brief}
+              picture={pictures.find(
+                (p) => p.sectionId === brief.sectionId && p.text === brief.text,
+              )}
               onOpenSection={onOpenSection}
               examplePollMs={examplePollMs}
               exampleMaxWaitMs={exampleMaxWaitMs}

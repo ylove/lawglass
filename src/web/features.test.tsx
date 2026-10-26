@@ -42,6 +42,76 @@ async function sampleDetail(api: ApiClient) {
   return { doc: doc!, detail: await api.getDoc(doc!.docId) };
 }
 
+describe('summary pictures (#345)', () => {
+  const panelProps = (api: ApiClient, docId: string, preview: never) => ({
+    api,
+    docId,
+    preview,
+    officialSummary: undefined,
+    publicMode: false,
+    onOpenSection: () => undefined,
+    pollMs: 5,
+  });
+
+  test('pictures attach to the bullets they were drawn from, after the pending poll', async () => {
+    const api = mock();
+    const { doc, detail } = await sampleDetail(api);
+    const { container } = render(
+      <SummaryPanel {...panelProps(api, doc.docId, detail.preview as never)} />,
+    );
+    await screen.findByRole('button', { name: 'Summary source 1' });
+    await waitFor(() => {
+      expect(container.querySelectorAll('figure .picture-panels')).toHaveLength(
+        3,
+      );
+    });
+    // The fourth bullet has no picture and stays a plain item.
+    expect(container.querySelectorAll('.summary-text li')).toHaveLength(4);
+    expect(
+      container.querySelectorAll('.summary-text li:not(.picture-item)'),
+    ).toHaveLength(1);
+    expect(container.querySelector('figcaption')?.textContent).toMatch(
+      /^Who does the work/,
+    );
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  test('a picture drawn from different text is not attached', async () => {
+    const api = mock();
+    const real = api.getSummaryPictures.bind(api);
+    api.getSummaryPictures = async (docId, signal) => {
+      const r = await real(docId, signal);
+      return r.entries
+        ? {
+            ...r,
+            entries: r.entries.map((e) => ({ ...e, text: `${e.text} (old)` })),
+          }
+        : r;
+    };
+    const { doc, detail } = await sampleDetail(api);
+    const { container } = render(
+      <SummaryPanel {...panelProps(api, doc.docId, detail.preview as never)} />,
+    );
+    await screen.findByRole('button', { name: 'Summary source 1' });
+    await new Promise((r) => setTimeout(r, 60));
+    expect(container.querySelector('.picture-panels')).toBeNull();
+  });
+
+  test('a failed picture request leaves the summary alone: no picture, no alert', async () => {
+    const api = mock();
+    api.getSummaryPictures = () => Promise.reject(new ApiError('X', 'boom'));
+    const { doc, detail } = await sampleDetail(api);
+    const { container } = render(
+      <SummaryPanel {...panelProps(api, doc.docId, detail.preview as never)} />,
+    );
+    await screen.findByRole('button', { name: 'Summary source 1' });
+    await new Promise((r) => setTimeout(r, 30));
+    expect(container.querySelector('.picture-panels')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText(/could not be loaded/)).toBeNull();
+  });
+});
+
 describe('summary on arrival', () => {
   test('shows the preview, then the cached summary once polling finds it', async () => {
     const api = mock();

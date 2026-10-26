@@ -248,6 +248,31 @@ describe('HTTP client', () => {
     );
   });
 
+  test('getSummaryPictures and getBreakdownPictures read their endpoints and validate the replies', async () => {
+    const urls: string[] = [];
+    const fetchImpl = ((url: string) => {
+      urls.push(url);
+      return Promise.resolve(Response.json({ status: 'none' }));
+    }) as typeof fetch;
+    const api = createHttpApi({ fetchImpl });
+    expect(await api.getSummaryPictures('a/b')).toEqual({ status: 'none' });
+    expect(await api.getBreakdownPictures('d')).toEqual({ status: 'none' });
+    expect(urls).toEqual([
+      '/api/docs/a%2Fb/summary/pictures',
+      '/api/docs/d/breakdown/pictures',
+    ]);
+    const bad = createHttpApi({
+      fetchImpl: () =>
+        Promise.resolve(
+          Response.json({
+            status: 'cached',
+            entries: [{ item: 0, text: 't', panels: [] }],
+          }),
+        ),
+    });
+    await expect(bad.getSummaryPictures('a')).rejects.toBeInstanceOf(ApiError);
+  });
+
   test('getSection encodes the section id', async () => {
     const urls: string[] = [];
     const fetchImpl = ((url: string) => {

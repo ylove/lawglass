@@ -9,6 +9,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import type {
   BreakdownResponse,
   ScenarioResponse,
+  PicturePanel,
   SectionBrief,
 } from '../../core/model/index.js';
 import { NO_EXAMPLE_NOTE } from '../../core/breakdown/notes.js';
@@ -54,8 +55,17 @@ function scripted(
   });
   api.getBreakdown = getBreakdown;
   api.getSectionExample = getSectionExample;
+  // Pictures are scripted separately; by default there are none.
+  const getBreakdownPictures = vi.fn<ApiClient['getBreakdownPictures']>(() =>
+    Promise.resolve({ status: 'none' as const }),
+  );
+  api.getBreakdownPictures = getBreakdownPictures;
   return Object.assign(api, {
-    spy: { breakdown: getBreakdown, example: getSectionExample },
+    spy: {
+      breakdown: getBreakdown,
+      example: getSectionExample,
+      pictures: getBreakdownPictures,
+    },
   });
 }
 
@@ -478,5 +488,105 @@ describe('the example control', () => {
     const calls = api.spy.example.mock.calls.length;
     await new Promise((resolve) => setTimeout(resolve, 40));
     expect(api.spy.example.mock.calls.length).toBe(calls);
+  });
+});
+
+describe('pictures above the briefs (#345)', () => {
+  const drawing: PicturePanel[] = [
+    {
+      left: { glyphs: ['bank'], label: 'Late utility' },
+      link: 'to',
+      right: { glyphs: ['person'] },
+    },
+  ];
+
+  test('a picture shows above the brief whose section and text match, and no other', async () => {
+    const a = brief('sec-2');
+    const b = brief('sec-3');
+    const api = scripted([{ status: 'cached', briefs: [a, b], omitted: 0 }]);
+    api.spy.pictures
+      .mockResolvedValueOnce({ status: 'pending' })
+      .mockResolvedValue({
+        status: 'cached',
+        entries: [
+          { item: 0, text: a.text, sectionId: 'sec-2', panels: drawing },
+          // Right section, but drawn from different text: must not attach.
+          {
+            item: 1,
+            text: 'Something else.',
+            sectionId: 'sec-3',
+            panels: drawing,
+          },
+        ],
+      });
+    const { container } = panel(api);
+    await screen.findByText(/This part does sec-2/);
+    await waitFor(() => {
+      expect(container.querySelectorAll('.brief-picture')).toHaveLength(1);
+    });
+    const [first] = screen.getAllByRole('article');
+    expect(first?.querySelector('.brief-picture')).toBeTruthy();
+    expect(
+      screen.getAllByRole('article')[1]?.querySelector('.brief-picture'),
+    ).toBeNull();
+    expect(api.spy.pictures.mock.calls.length).toBeGreaterThan(1);
+  });
+
+  test('a failed picture request shows no picture and no alert', async () => {
+    const api = scripted([
+      { status: 'cached', briefs: [brief('sec-2')], omitted: 0 },
+    ]);
+    api.spy.pictures.mockRejectedValue(new ApiError('PROVIDER_ERROR', 'x'));
+    const { container } = panel(api);
+    await screen.findByText(/This part does sec-2/);
+    await waitFor(() => {
+      expect(api.spy.pictures).toHaveBeenCalled();
+    });
+    expect(container.querySelector('.brief-picture')).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  test('pictures are only asked for once the briefs are finished', async () => {
+    const api = scripted([
+      { status: 'pending', briefs: [brief('sec-2')] },
+      { status: 'pending', briefs: [brief('sec-2')] },
+    ]);
+    panel(api, { maxWaitMs: 10_000 });
+    await screen.findByText(/This part does sec-2/);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(api.spy.pictures).not.toHaveBeenCalled();
+  });
+});
+
+describe('the automatic retry is re-armed after a success (#345 review)', () => {
+  test('a failure in a later document is still retried once on its own', async () => {
+    const api = scripted([
+      new ApiError('PROVIDER_ERROR', 'x'),
+      { status: 'cached', briefs: [brief('sec-2')], omitted: 0 },
+    ]);
+    const view = panel(api, { coolDownMs: 5 });
+    await screen.findByText(/This part does sec-2/);
+    api.spy.breakdown
+      .mockReset()
+      .mockRejectedValueOnce(new ApiError('PROVIDER_ERROR', 'x'))
+      .mockResolvedValue({
+        status: 'cached',
+        briefs: [brief('sec-9')],
+        omitted: 0,
+      });
+    view.rerender(
+      <BreakdownPanel
+        api={api}
+        docId={'b'.repeat(64)}
+        enabled
+        onOpenSection={() => undefined}
+        pollMs={5}
+        maxWaitMs={60}
+        coolDownMs={5}
+      />,
+    );
+    // Without the reset the second failure would go straight to the error message.
+    await screen.findByText(/This part does sec-9/);
+    expect(screen.queryByText(/could not be loaded right now/)).toBeNull();
   });
 });
