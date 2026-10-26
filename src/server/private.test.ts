@@ -12,10 +12,10 @@ import { makeSectionedText } from '../../tests/synth/index.js';
 import { safeFetch } from '../core/fetch/index.js';
 import { writeCache } from '../core/fetch/cache.js';
 import { createApp, type AppOptions } from './app.js';
-import { privateCookieValue, SESSION_COOKIE } from './session.js';
+import { privateCookieValue, sessionCookieName } from './session.js';
 
 const accessKey = 'k'.repeat(40);
-const cookie = `${SESSION_COOKIE}=${privateCookieValue(accessKey)}`;
+const cookie = `${sessionCookieName(4317)}=${privateCookieValue(accessKey)}`;
 const sourceUrl = 'https://govinfo.gov/a.txt';
 let env: PipelineEnv;
 let root: string;
@@ -49,6 +49,19 @@ const post = (url = sourceUrl, headers: Record<string, string> = {}) => ({
   method: 'POST',
   headers: { cookie, 'content-type': 'application/json', ...headers },
   body: JSON.stringify({ url }),
+});
+
+test('private sessions use the listener port behind a proxy with a different public port', async () => {
+  const a = app({ sessionPort: () => 8080 });
+  const exchange = await a.request(`https://preview.example/?k=${accessKey}`);
+  const cookie = exchange.headers.get('set-cookie')?.split(';')[0] ?? '';
+  expect(cookie).toBe(
+    `${sessionCookieName(8080)}=${privateCookieValue(accessKey)}`,
+  );
+  const response = await a.request('https://preview.example/api/docs', {
+    headers: { cookie },
+  });
+  expect(response.status).toBe(200);
 });
 
 test('gate and only brand assets are accessible without a session; the full app works with an invite', async () => {
@@ -308,7 +321,7 @@ test('local ingest has no hosted deadline', async () => {
   });
   const response = await local.request(
     '/api/ingest',
-    post(sourceUrl, { cookie: `${SESSION_COOKIE}=${accessKey}` }),
+    post(sourceUrl, { cookie: `${sessionCookieName(4317)}=${accessKey}` }),
   );
   expect(await response.text()).toContain('"type":"done"');
 });

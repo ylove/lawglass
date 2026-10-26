@@ -1,14 +1,14 @@
 import { describe, expect, test } from 'vitest';
-import { SESSION_COOKIE } from '../src/server/session.js';
+import { sessionCookieName } from '../src/server/session.js';
 import { sessionCookie, sseEvents } from './container-smoke.js';
 
 describe('sessionCookie', () => {
   test('returns the name=value pair of the session cookie', () => {
     expect(
       sessionCookie(
-        `${SESSION_COOKIE}=abc123; Path=/; HttpOnly; Secure; SameSite=Strict`,
+        `${sessionCookieName(8080)}=abc123; Path=/; HttpOnly; Secure; SameSite=Strict`,
       ),
-    ).toBe(`${SESSION_COOKIE}=abc123`);
+    ).toBe(`${sessionCookieName(8080)}=abc123`);
   });
 
   test('ignores other cookies and a missing header', () => {

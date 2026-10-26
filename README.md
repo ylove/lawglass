@@ -219,6 +219,11 @@ Caveats: 21 to 28 questions per bill means one question moves recall@5 by about 
 - **Bring your own keys.** `init` writes the config file with mode 0600. A config file that other users can read is refused: commands skip it with a warning, and `init` stops unless `--force` replaces it. Keys are read from the environment first, then that file, then a masked prompt on a TTY. Keys go only to their own provider, are not inferred from another provider's variables, and are never logged or put in error messages; SDK diagnostic logging is off: before the Pinecone SDK is constructed, `PINECONE_DEBUG` (request and response bodies) and `PINECONE_DEBUG_CURL` (the `Api-Key` header) are cleared from the process environment, in both the CLI runtime and the adapter. `.env` and fixtures are ignored by git, and CI runs Gitleaks over the full history.
 - **`claude-cli` sandboxing.** Each call runs in a fresh temporary directory holding only the system prompt file, with built-in tools disabled (`--tools ""`), all MCP servers disabled, one turn, slash commands, hooks and settings sources off, no session persistence, and no permission-bypass flag. The child sees only basic process variables plus `CLAUDE_*` and `ANTHROPIC_*`, so other providers' keys and app settings are excluded. `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are withheld too, so the CLI bills your Claude login, unless you set `LAWGLASS_CLAUDE_CLI_USE_API_KEY=1`. The model name must match `^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$`, so it cannot be read as a flag. It refuses to run for real in CI.
 
+Session cookie names include the server port so local instances do not overwrite each other’s
+sessions. Cookies are scoped by host, not port: other services on the same host (including
+`127.0.0.1`) can receive them. The name separates instances; it does not isolate the cookie.
+Behind a proxy, the name uses the server’s listening port (for example, `8080`).
+
 ### Hosting a private preview
 
 Invite holders get the full app, including free-form questions, scenarios and live summaries.

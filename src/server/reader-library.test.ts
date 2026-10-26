@@ -17,11 +17,11 @@ import { IngestEvent, type DocSummary } from '../core/model/index.js';
 import { readSseEvents } from '../web/sse.js';
 import { createApp, type AppOptions } from './app.js';
 import { envVar } from '../core/brand.js';
-import { privateCookieValue, SESSION_COOKIE } from './session.js';
+import { privateCookieValue, sessionCookieName } from './session.js';
 import { READER_COOKIE, ReaderLibrary, readerKey } from './readers.js';
 
 const accessKey = 'k'.repeat(40);
-const session = `${SESSION_COOKIE}=${privateCookieValue(accessKey)}`;
+const session = `${sessionCookieName(4317)}=${privateCookieValue(accessKey)}`;
 const urls = {
   a: 'https://govinfo.gov/a.txt',
   b: 'https://govinfo.gov/b.xml',

@@ -5,7 +5,9 @@ import { BRAND, envVar } from '../core/brand.js';
 import { AppError } from '../core/model/index.js';
 import { gatePage, gateAssets } from './gate.js';
 
-export const SESSION_COOKIE = `${BRAND.name}_session`;
+export function sessionCookieName(port: number): string {
+  return `${BRAND.name}_session_${String(port)}`;
+}
 
 export function createSessionToken(): string {
   return randomBytes(32).toString('base64url');
@@ -40,6 +42,8 @@ export function privateCookieValue(accessKey: string): string {
 }
 
 export interface SessionOptions {
+  /** A callback supplies the actual bound port when the server starts with port 0. */
+  port: number | (() => number);
   privateMode?: boolean;
   webRoot?: string;
   publicOrigin?: string;
@@ -47,7 +51,7 @@ export interface SessionOptions {
 
 export function localSession(
   token: string,
-  options: SessionOptions = {},
+  options: SessionOptions,
 ): MiddlewareHandler {
   const privateMode = options.privateMode ?? false;
   const cookieValue = privateMode ? privateCookieValue(token) : token;
@@ -57,8 +61,11 @@ export function localSession(
     c.header('Referrer-Policy', 'no-referrer');
     c.header('Cache-Control', 'no-store');
     const url = new URL(c.req.url);
+    const port =
+      typeof options.port === 'function' ? options.port() : options.port;
+    const cookieName = sessionCookieName(port);
     if (matchesSessionToken(url.searchParams.get('k') ?? undefined, token)) {
-      setCookie(c, SESSION_COOKIE, cookieValue, {
+      setCookie(c, cookieName, cookieValue, {
         httpOnly: true,
         sameSite: 'Strict',
         path: '/',
@@ -74,7 +81,7 @@ export function localSession(
         302,
       );
     }
-    if (!matchesSessionToken(getCookie(c, SESSION_COOKIE), cookieValue)) {
+    if (!matchesSessionToken(getCookie(c, cookieName), cookieValue)) {
       if (c.req.path.startsWith('/api/'))
         return c.json(
           {

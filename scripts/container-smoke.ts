@@ -18,7 +18,7 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { BRAND, envVar } from '../src/core/brand.js';
-import { SESSION_COOKIE } from '../src/server/session.js';
+import { sessionCookieName } from '../src/server/session.js';
 
 const PORT = 18_080;
 const BASE = `http://127.0.0.1:${String(PORT)}`;
@@ -30,7 +30,7 @@ const OUT_OF_SCOPE_BILL = 'https://pub.njleg.gov/Bills/2024/S0500/1_I1.HTM';
 export function sessionCookie(setCookie: string | null): string | undefined {
   if (!setCookie) return undefined;
   const pair = setCookie.split(';')[0]?.trim();
-  return pair?.startsWith(`${SESSION_COOKIE}=`) ? pair : undefined;
+  return pair?.startsWith(`${sessionCookieName(8080)}=`) ? pair : undefined;
 }
 
 /** The JSON payloads of every `data:` line in a server-sent event stream. */
