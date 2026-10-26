@@ -52,13 +52,15 @@ async function allCites(doc: string): Promise<string[]> {
 const NY_URL = 'https://www.nyassembly.gov/leg/?bn=S04321&term=2025';
 const NY_TEXT_URL = 'https://nyassembly.gov/leg/?bn=S04321&term=2025&Text=Y';
 const NJ_URL = 'https://pub.njleg.gov/bills/2024/S1000/1000_I1.HTM';
+// Every New Jersey version is read from its PDF twin, which carries the change legend.
+const NJ_TEXT_URL = 'https://pub.njleg.gov/Bills/2024/S1000/1000_I1.PDF';
 
 test.each([
   ['New York', NY_URL, NY_TEXT_URL, bracketText],
   [
     'New Jersey',
     NJ_URL,
-    NJ_URL,
+    NJ_TEXT_URL,
     (legend: string) =>
       bracketText(legend).replace('STATE OF NEW YORK', 'STATE OF NEW JERSEY'),
   ],
@@ -194,7 +196,7 @@ test('a bracketed deletion spanning three subsections leaves none of them "uncha
     '(c) the late fee is one dollar] ten dollars.',
     '2. Effective date.',
   ].join('\n');
-  const { doc } = await ingest(NJ_URL, bytes(text), 'text/plain');
+  const { doc } = await ingest(NJ_URL, bytes(text), 'text/plain', NJ_TEXT_URL);
   const sections = await allSections(doc);
   const b = sections.find((got) =>
     String(got.current_text).includes('renewal fee'),
