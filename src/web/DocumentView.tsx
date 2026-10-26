@@ -236,7 +236,10 @@ export function DocumentView({
         <aside aria-label="About this bill" className="doc-aside">
           <FactsCard detail={detail} />
           <HistoryCard history={detail.history} />
-          <ReferencedCard externalRefs={detail.externalRefs} />
+          <ReferencedCard
+            externalRefs={detail.externalRefs}
+            onOpenReference={openSection}
+          />
         </aside>
       </div>
       {open && (

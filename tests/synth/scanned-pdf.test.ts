@@ -127,7 +127,8 @@ describe('makeScannedRedlinePdf', () => {
     expect(Buffer.from(a.bytes).equals(Buffer.from(b.bytes))).toBe(true);
     expect(a.truth).toEqual(b.truth);
     expect(Buffer.from(a.bytes).equals(Buffer.from(c.bytes))).toBe(false);
-  });
+    // Three full PDF renders; a loaded CI runner has taken over 15 s.
+  }, 60_000);
 
   it('returns words in text-item order with exact statuses and mark geometry', async () => {
     const { bytes, truth } = await makeScannedRedlinePdf({

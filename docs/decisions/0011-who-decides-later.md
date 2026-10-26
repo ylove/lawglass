@@ -32,16 +32,16 @@ Each group is capped, with a "more" count.
 
 **The chip.** `delegations` is a new chip with the `extract` strategy. Its answer is a markdown list grouped "Decided later by", "Depends on" and "Takes effect when", with a citation marker on each item. A short plain-language lede comes first.
 
-**The lede is grounded only in the extracted list.** The model sees the list, not the document, and is told to summarize only what the list says. The lede and the list are then validated together through `validateCitations` with synthetic chunks, as scenarios are (see [ADR 0009](0009-scenario-grounding.md)), so the numbering covers both. A lede sentence with an invalid citation is dropped.
+**The lede is grounded only in the extracted list.** The model sees the list, not the document, and is told to summarize only what the list says. The lede and the list are then validated together through `validateCitations` with synthetic chunks, as scenarios are (see [ADR 0009](0009-scenario-grounding.md)), so the numbering covers both. Drop is whole and never a rewrite: a lede with any sentence that lacks a valid citation, or with any invalid citation, is dropped, and the list stands alone.
 
-**No provider, no lede.** With no usable provider (a missing key), or in public mode, the chip returns the list alone. The list needs no model, so it always works. The provider is passed lazily, because resolving it throws when the key is missing.
+**No provider, no lede.** With no usable provider (a missing key), or in public mode, the chip returns the list alone. The list needs no model, so it always works: the same holds when the lede call is refused by the rate limit (aborts and other errors still surface). The provider is passed lazily, because resolving it throws when the key is missing.
 
 ## Failure modes this guards against
 
 - **Invented delegates.** A model asked "who decides?" will name a plausible agency. The extractor only reports what the text says, and the lede cannot add to it.
 - **Duties passed off as delegations.** The verb list excludes plain duties.
 - **Repealed text counted.** The extractor reads struck-free text.
-- **Unsupported lede claims.** Joint citation validation drops any lede sentence that does not cite a listed item.
+- **Unsupported lede claims.** Joint citation validation drops the whole lede if any sentence does not cite a listed item.
 
 ## Consequences
 

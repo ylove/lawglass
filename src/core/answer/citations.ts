@@ -85,7 +85,18 @@ function stripMarker(text: string, id: string): string {
   return parts.join('');
 }
 
-function buildCitation(sectionId: string, chunks: StoredChunk[]): Citation {
+/** A reference text the prompt held: cited like a section, but with no stored chunk behind it. */
+export interface CitableReference {
+  sectionId: string;
+  /** Same words as the prompt heading, so the drawer and the answer agree. */
+  breadcrumb: string;
+}
+
+function buildCitation(
+  sectionId: string,
+  chunks: StoredChunk[],
+  references: readonly CitableReference[],
+): Citation {
   const own = chunks.filter((c) => coveredSectionIds(c).includes(sectionId));
   const citation: Citation = {
     sectionId,
@@ -94,6 +105,10 @@ function buildCitation(sectionId: string, chunks: StoredChunk[]): Citation {
   };
   const first = own[0];
   if (first) citation.breadcrumb = first.breadcrumb;
+  else {
+    const reference = references.find((r) => r.sectionId === sectionId);
+    if (reference) citation.breadcrumb = reference.breadcrumb;
+  }
   // Mirror the chunker's location(): the first line comes from chunks on the first page,
   // the last line from chunks on the last page.
   const pageStarts = own.flatMap((c) =>
@@ -131,18 +146,24 @@ function buildCitation(sectionId: string, chunks: StoredChunk[]): Citation {
  * @param text the model's full answer
  * @param retrievedSectionIds sections that were placed in the prompt
  * @param chunks the retrieved chunks, used for chunk ids, breadcrumbs and locations
+ * @param references reference texts placed in the prompt after the chunks; their ids must also
+ *   be in `retrievedSectionIds` to validate
  */
 export function validateCitations(
   rawText: string,
   retrievedSectionIds: Iterable<string>,
   chunks: readonly StoredChunk[] = [],
+  references: readonly CitableReference[] = [],
 ): ValidatedAnswer {
   const allowed = new Set(retrievedSectionIds);
   // A cited value that is exactly a prompt chunk id means that chunk's section.
   const byChunkId = new Map(chunks.map((c) => [c.id, c.sectionId]));
   // A bare ordinal ("1") means the Nth excerpt in the prompt, which is the Nth chunk.
   const ordinals = new Map(
-    chunks.map((c, i) => [String(i + 1), c.sectionId] as const),
+    [
+      ...chunks.map((c) => c.sectionId),
+      ...references.map((r) => r.sectionId),
+    ].map((id, i) => [String(i + 1), id] as const),
   );
   const text = splitMultiMarkers(rawText, allowed).replace(
     new RegExp(CITATION_PATTERN.source, 'g'),
@@ -164,7 +185,7 @@ export function validateCitations(
   const chunkList = [...chunks];
   const citations: Citation[] = cited.map((id) =>
     allowed.has(id)
-      ? buildCitation(id, chunkList)
+      ? buildCitation(id, chunkList, references)
       : { sectionId: id, valid: false, chunkIds: [] },
   );
 

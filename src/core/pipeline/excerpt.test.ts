@@ -147,3 +147,33 @@ test('without span positions the section own location is used', () => {
   });
   expect(excerpt.breadcrumb).toBe('sec-1');
 });
+
+test('serves reference text under its ref: id as one unchanged span, with no page or lines', () => {
+  const reference = {
+    sectionId: 'ref:usc/15/6809',
+    citation: '15 U.S.C. 6809',
+    heading: '§6809. Definitions',
+    sourceUrl: 'https://www.govinfo.gov/link/uscode/15/6809?link-type=html',
+    text: 'The term "financial institution" means any institution.',
+    terms: ['financial institution'],
+    fetchedAt: '2026-10-26T00:00:00.000Z',
+  };
+  const excerpt = sectionExcerpt(
+    { sections, references: [reference] },
+    reference.sectionId,
+  );
+  expect(excerpt).toEqual({
+    sectionId: 'ref:usc/15/6809',
+    breadcrumb: "15 U.S.C. 6809 (U.S. Code, read for 'financial institution')",
+    heading: '§6809. Definitions',
+    spans: [{ text: reference.text, status: 'unchanged' }],
+    location: {},
+    reference: { citation: '15 U.S.C. 6809', url: reference.sourceUrl },
+  });
+  expect(() =>
+    sectionExcerpt({ sections, references: [reference] }, 'ref:usc/1/1'),
+  ).toThrow(AppError);
+  expect(() => sectionExcerpt({ sections }, 'ref:usc/15/6809')).toThrow(
+    AppError,
+  );
+});

@@ -90,7 +90,21 @@ export function createLogger(
       });
     }
   };
-  return { event, error, middleware };
+  /** A U.S. Code reference that could not be read at ingest. Only a citation and a code. */
+  function referenceSkipped(citation: string, code: string): void {
+    write(
+      JSON.stringify({
+        t: new Date(now()).toISOString(),
+        level: 'warn',
+        event: 'reference_skipped',
+        citation: /^\d{1,2} U\.S\.C\. [\w-]{1,20}$/.test(citation)
+          ? citation
+          : 'unknown',
+        code: /^[A-Z_]{1,40}$/.test(code) ? code : 'ERROR',
+      }) + '\n',
+    );
+  }
+  return { event, error, middleware, referenceSkipped };
 }
 
 function safeCode(payload: unknown): string | undefined {

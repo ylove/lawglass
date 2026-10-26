@@ -132,6 +132,17 @@
       "retrievedAt": "2026-10-26",
       "jurisdiction": "New York",
       "notes": "Assembly full-text HTML, introduced S1234 as of retrieval. Four bracketed deletions; bold strike and underline tags. Manually checked against rendered pages for #281/#282. Assembly randomizes CSS/JS cache-buster parameters on each response, so future raw hashes may differ; the strict downloader saves .mismatch for review."
+    },
+    {
+      "name": "us-code-42-1395x",
+      "description": "42 U.S.C. 1395x (Medicare definitions), GovInfo U.S. Code HTML, 2024 edition.",
+      "format": "html",
+      "url": "https://www.govinfo.gov/content/pkg/USCODE-2024-title42/html/USCODE-2024-title42-chap7-subchapXVIII-partE-sec1395x.htm",
+      "sha256": "85e7f9b8bbe867753089ae9fffe0a94dc70cf72f6f706e5999a246490a8a1c3f",
+      "bytes": 558650,
+      "retrievedAt": "2026-10-26",
+      "jurisdiction": "US Congress",
+      "notes": "Large definitions section with lettered subsections (a)-(ggg) and nested lowercase-roman clauses such as (v) inside (e). Used by the #275 subsection lookup test."
     }
   ]
 }

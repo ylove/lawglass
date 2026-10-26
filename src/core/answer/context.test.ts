@@ -76,6 +76,22 @@ describe('whole-bill policy', () => {
     vi.stubEnv(envVar('EFFORT'), 'max');
     expect(wholeBillEffort()).toBe('medium');
   });
+  it('leaves room for reference text beside the bill', async () => {
+    const backend = new MemoryBackend();
+    await backend.upsertChunks(DOC, [chunk('sec-1', 0)]);
+    const sections = [section('sec-1')];
+    const mode = async (reservedTokens: number) =>
+      (
+        await documentContext(backend, DOC, sections, {
+          budget: 15,
+          reservedTokens,
+        })
+      ).mode;
+    expect(await mode(0)).toBe('whole');
+    expect(await mode(5)).toBe('whole');
+    expect(await mode(6)).toBe('excerpts');
+    expect(await mode(99)).toBe('excerpts');
+  });
   it('counts only shown chunks and never fetches when disabled', async () => {
     const backend = new MemoryBackend();
     await backend.upsertChunks(DOC, [

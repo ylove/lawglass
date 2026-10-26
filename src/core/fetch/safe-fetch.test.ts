@@ -495,6 +495,16 @@ describe('safeFetch', () => {
     agent.assertNoPendingInterceptors();
     expect(await readdir(cacheDir)).toEqual([]);
   });
+  it('accepts a link-heavy statute page when the caller vouches for it', async () => {
+    const page =
+      '<html><body><p>§9. Definitions</p><a href="/bill.pdf">PDF</a></body></html>';
+    agent.get(origin).intercept({ path: '/statute' }).reply(200, page);
+    const result = await safeFetch(`${origin}/statute`, {
+      ...opts,
+      skipWrapperCheck: true,
+    });
+    expect(new TextDecoder().decode(result.bytes)).toBe(page);
+  });
   it.each([404, 500, 300])('maps HTTP %s to FETCH_FAILED', async (status) => {
     agent.get(origin).intercept({ path: '/' }).reply(status, 'error');
     await expect(safeFetch(origin, opts)).rejects.toBeInstanceOf(AppError);

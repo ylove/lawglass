@@ -127,7 +127,7 @@ const optionsOf = (call: number): Record<string, unknown> =>
 
 describe('chip definitions', () => {
   it('serves the history chip right after who-affected, labeled "How did it get here?"', () => {
-    expect(CHIPS).toHaveLength(9);
+    expect(CHIPS).toHaveLength(10);
     const at = CHIPS.findIndex((c) => c.id === 'who-affected');
     expect(CHIPS[at + 1]).toMatchObject({
       id: 'history',
@@ -137,11 +137,8 @@ describe('chip definitions', () => {
     expect(getChip('history')).toBe(CHIPS[at + 1]);
   });
 
-  it('defines exactly the nine served chips of the ChipId contract, each valid', () => {
-    // `delegations` is in the contract but not served until #202.
-    expect(CHIPS.map((c) => c.id).sort()).toEqual(
-      ChipId.options.filter((id) => id !== 'delegations').sort(),
-    );
+  it('defines exactly the ten served chips of the ChipId contract, each valid', () => {
+    expect(CHIPS.map((c) => c.id).sort()).toEqual([...ChipId.options].sort());
     for (const c of CHIPS) {
       expect(ChipDefinition.safeParse(c).success).toBe(true);
       expect(getChip(c.id)).toBe(c);
@@ -178,6 +175,7 @@ describe('chip definitions', () => {
       definitions: 'definitions',
       sponsors: 'metadata',
       history: 'metadata',
+      delegations: 'extract',
     });
   });
 
