@@ -13,13 +13,20 @@ _The demo shows a real federal bill, S. 202 of the 119th Congress, answered by C
 ## What it does
 
 - **A summary the moment you open a bill.** You never start with a blank page. You see the official title first, then a plain-language summary of what the bill does, with citations.
-- **"What it could mean for one person."** Short illustrated stories show how a bill might land on one made-up person. Numbers about that person, such as an income, are invented, and each one is labeled as an example. Every claim about what the bill does is cited to its text, and any rate or amount comes from the bill itself.
+- **It reads the whole bill.** Most bills fit in one prompt, so Lawglass gives the model the entire text, not a handful of excerpts. Very large bills, such as a defense authorization act, use search over the text, plus the sections the matching passages refer to.
+- **Section by section.** Each part of the bill gets one to three plain sentences with citations, and a "Show an example" button.
+- **"What it could mean for one person."** Short illustrated stories show how a bill, or one section of it, might land on one made-up person. Numbers about that person, such as an income, are invented, and each one is labeled as an example. Every claim about what the bill does is cited to its text, and any rate or amount comes from the bill itself.
 - **What the bill changes.** Many bills work by editing existing law. Lawglass tells struck-out (removed) text from newly added text, shows a before and after, and never reads removed words as current law.
 - **Who it affects, and when.** Ask who is covered, what the penalties are, when it takes effect, how much money is involved, and what its terms mean.
+- **"Who decides later?"** Many bills leave the details to an agency or official: "the Secretary shall prescribe regulations". Lawglass lists who decides what, what the bill depends on, and what has to happen before it takes effect. The list is read from the text itself, without a model. A one-line summary above it is written by the model and dropped whole if any sentence lacks a valid citation.
+- **The laws it refers to, as official links.** Citations such as "15 U.S.C. 6809", a Public Law or an Ohio Revised Code section become links to the official source, with a note like "Federal law · mentioned in 3 sections". When the bill borrows a definition from the U.S. Code, Lawglass reads that definition, so answers can use it and cite it.
 - **"How did it get here?"** For federal bills (from GovInfo) and Ohio bills (from the legislature's own API), see the stages, the committees and the versions, drawn from official records. A person or committee is named only when the record names them, never guessed. Strike-through in an introduced bill is the bill rewriting current law, and Lawglass does not call it an amendment by a legislator.
 - **Sponsors, with links to their official pages** where the evidence supports the link. Otherwise you get clearly labeled search links.
 - **“Find where it says that.”** Paste a sentence from a headline, press release or post. Get verified source words, a label showing whether they are added, removed or unchanged, plain context and a copyable receipt with the section, version and official link. Check wording in earlier official versions without a model call.
 - **Questions in your own words.** Ask "Does this raise my taxes?" or "What does the bill cross out?" and get an answer with citations.
+- **Plain language, measured.** Every answer shows its reading grade. When the summary reads above 8th grade, Lawglass asks again for simpler wording and keeps the new answer only if it still cites everything the first one did. Answers about struck or added text, declines and exact-wording answers are left as they are.
+- **Federal, Ohio, New York and New Jersey bills.** Paste a bill's page on congress.gov, the Ohio legislature's site, the New York Senate or Assembly site, or the New Jersey legislature's site. New York and New Jersey mark removed words with brackets, and Lawglass reads them as removed. [Adding the other 47 states](docs/jurisdictions.md) is planned state by state.
+- **A home for your documents.** The homepage takes a new link and lists the bills you have opened. On a shared server, each visitor sees only their own list.
 
 ## How to check an answer
 
@@ -33,7 +40,7 @@ Lawglass is built so you do not have to take its word for anything.
 
 Requires Node.js 22.13 or newer.
 
-> Not on npm yet (publishing waits on [#7](https://github.com/ylove/lawglass/issues/7)). Until then, download the tarball attached to the [`v1.0.1` release](https://github.com/ylove/lawglass/releases/tag/v1.0.1) (or build your own with `npm pack`) and replace `npx lawglass` below with `npx --package ./lawglass-1.0.1.tgz lawglass`.
+> Not on npm yet (publishing waits on [#7](https://github.com/ylove/lawglass/issues/7)). Until then, download the tarball attached to the [latest release](https://github.com/ylove/lawglass/releases/latest) (or build your own with `npm pack`) and replace `npx lawglass` below with `npx --package ./lawglass-<version>.tgz lawglass`.
 
 ```sh
 npx lawglass init                       # save provider keys (file mode 0600)
@@ -43,22 +50,27 @@ npx lawglass ingest <url> --name hb62   # ingest only, with a label
 npx lawglass ingest ./bill.pdf          # a local file works too (CLI only)
 npx lawglass ask hb62 "When does this take effect?"
 npx lawglass ask hb62 --chip what-changes
+npx lawglass search hb62 "fees"          # cited passages as JSON, no model call
+npx lawglass get-section hb62 sec-3     # one section, with struck and added words marked
 npx lawglass list
 npx lawglass remove hb62
 npx lawglass cache clear               # delete cached downloads (documents and answers stay)
 npx lawglass serve --port 4317          # local web UI; --public allows chips only; --no-open skips the browser
+npx lawglass mcp                        # Model Context Protocol server on stdio, for AI agents (prototype)
 ```
 
 Paste a bill's own page, for example:
 
 - A federal bill on congress.gov: `https://www.congress.gov/bill/119th-congress/senate-bill/202`
 - An Ohio bill: `https://www.legislature.ohio.gov/legislation/136/sb113`
+- A New York bill: `https://www.nysenate.gov/legislation/bills/2025/S1234`
+- A New Jersey bill: `https://www.njleg.state.nj.us/bill-search/2024/S1000`
 
 If the link does not name a text version, Lawglass reads the latest one in the official record and tells you which version it read. You can also paste a PDF, XML, HTML or plain-text link, or a local file.
 
 `init` asks for the key of an AI provider (Anthropic, OpenAI or Google, or any OpenAI-compatible endpoint). Your keys stay on your machine and go only to their own provider. Your question and the passages needed to answer it are what get sent to the provider. Provider details are in the engineers' section below. `<doc>` above is a label or a document-id prefix, and every flag is defined in [`src/cli/program.ts`](src/cli/program.ts).
 
-`--chip <id>` is one of `summary`, `what-changes`, `history`, `who-affected`, `penalties`, `effective-date`, `money`, `definitions`, `sponsors`.
+`--chip <id>` is one of `summary`, `what-changes`, `history`, `who-affected`, `penalties`, `effective-date`, `money`, `definitions`, `sponsors`, `delegations`.
 
 Coming from the earlier `legislation-summary` name? Move `~/.legislation-summary` to `~/.lawglass` to keep your saved keys and documents, and rename any `LEGSUM_*` environment variables to `LAWGLASS_*`.
 
@@ -66,19 +78,19 @@ Coming from the earlier `legislation-summary` name? Move `~/.legislation-summary
 
 Lawglass explains what a bill's text says. It is not a lawyer, and it does not tell you what a bill means for your situation. For a decision that matters, read the cited text and talk to a qualified attorney. Know its limits:
 
-- **US first.** It was built and tested on U.S. federal and Ohio bills. Other jurisdictions may work if you give it the bill's text, but you get no history view.
+- **US first.** It was built and tested on U.S. federal, Ohio, New York and New Jersey bills. Other jurisdictions may work if you give it the bill's text, but their change marks may not be read, and you get no history view.
 - **History covers federal and Ohio only,** and only what those official records contain.
-- **Scanned PDFs are not supported.** A PDF needs a text layer. A scan stops with a clear message.
-- **Plain language is a goal, not a promise.** The target reading level is 7th grade. Answers often read higher: in our evaluation, measured grades averaged 8.5 to 10.2, mostly because legal terms push the score up ([results](docs/eval-analysis.md)).
+- **Scans are read with care, not trusted.** A PDF needs a text layer: a scan with none stops with a clear message. A scan that was run through OCR is read, but each scanned page is flagged, because struck and added words cannot be detected on it.
+- **Plain language is a goal, not a promise.** The target reading level is 7th grade. Before v1.1, measured grades averaged 8.5 to 10.2, mostly because legal terms push the score up ([results](docs/eval-analysis.md)). Since v1.1 every answer shows its grade. The summary is rewritten once from the bill when it reads above grade 8, and answers to your questions when they read above grade 10. A rewrite is kept only if it reads lower, cites every section the first answer did, and gains no citation or truncation warning. Declines, answers about struck or added text, and metadata answers are never rewritten.
 - **It can be wrong.** In testing, every citation pointed at a passage the model was shown, but a citation shows where an answer came from, not that the answer is right. Check the cited text.
 - **Scenarios are illustrations.** The people in them are made up, and the dollar figures about them are examples.
 
-> **Status: release candidate.** Everything described here is on `main` and tested.
+> **Status: v1.1.** Everything described here is on `main` and tested.
 
 <details>
 <summary>For engineers and recruiters: how it works, retrieval quality, cost and security</summary>
 
-Lawglass is a production-style RAG pipeline: structure-aware parsing, hybrid retrieval (dense, sparse, rerank), validated citations, and a measured eval. This section holds the architecture, the cost case against stuffing the whole bill into the prompt, the eval results (including the misses), security notes, and development setup.
+Lawglass is a production-style document pipeline: structure-aware parsing, whole-bill prompts with caching when the bill fits and hybrid retrieval (dense, sparse, rerank) when it does not, validated citations, and a measured eval. This section holds the architecture, when the whole bill goes into the prompt and when it does not, the eval results (including the misses), security notes, and development setup.
 
 ### Architecture
 
@@ -94,7 +106,9 @@ flowchart LR
   C --> SP[("sparse index")]
   D --> R["retrieve<br/>dense / sparse / hybrid RRF / rerank"]
   SP --> R
-  R --> A["answer<br/>citations validated"]
+  C --> W["whole bill<br/>rebuilt from stored chunks,<br/>up to 100k tokens, cached"]
+  W --> A
+  R --> A["answer<br/>citations validated,<br/>reading level checked"]
   A --> CLI[CLI]
   A --> SRV[server]
   SRV --> UI[web UI]
@@ -107,16 +121,19 @@ flowchart LR
 Everything below `NormalizedDoc` is format-agnostic. The CLI, server and eval all call the same functions in [`src/core/pipeline/`](src/core/pipeline/).
 
 - **Fetch** ([`src/core/fetch/`](src/core/fetch/)). `http`/`https` only, ports 80, 443, 8080 and 8443, 30 s timeout, 50 MB cap, at most 5 redirects. Every hop is re-validated and connected by pinned IP. Format is sniffed from the bytes first (`%PDF`, XML prolog or root, `<html`), then Content-Type, then extension. Raw bytes are cached by SHA-256.
-- **Parse** ([`src/core/parse/`](src/core/parse/)). XML (`saxes`), HTML (`cheerio`), PDF (`pdfjs-dist`) and plain text all produce a `NormalizedDoc`: a section tree whose text is a list of `unchanged | inserted | deleted` spans. PDF also recovers printed line numbers and strips running headers. A scanned PDF stops with a clear OCR-not-supported error.
-- **Enrich** ([`src/core/enrich/`](src/core/enrich/)). Definitions (each becomes its own chunk), internal cross-references, external references listed as "referenced, not loaded", and bill metadata. Metadata comes from structured fields when present. Otherwise an LLM extracts it under a strict zod schema where every field is nullable and guards reject values not found in the text.
+- **Parse** ([`src/core/parse/`](src/core/parse/)). XML (`saxes`), HTML (`cheerio`), PDF (`pdfjs-dist`) and plain text all produce a `NormalizedDoc`: a section tree whose text is a list of `unchanged | inserted | deleted` spans. PDF also recovers printed line numbers and strips running headers. New York and New Jersey bills mark deletions with brackets; a bracket counts as a deletion only once the bill's own legend (New York: "matter in brackets [ ] is old law to be omitted") is found ([`change-marks.ts`](src/core/parse/change-marks.ts)). A PDF with no text layer stops with a clear error; an OCR'd scan is read, and each scanned page is flagged because its strike and underline marks cannot be seen.
+- **Enrich** ([`src/core/enrich/`](src/core/enrich/)). Definitions (each becomes its own chunk), internal cross-references, external references, and bill metadata. External references get official links built by rule (GovInfo U.S. Code, Public Law and Statutes at Large, eCFR, Ohio Revised Code, and the New York consolidated laws Lawglass can map), never by search. When a definition points at the U.S. Code, ingest reads that section from GovInfo (exact host, capped, at most 8 per bill) and keeps it as citable reference text (`[S:ref:usc/15/6809]`). Metadata comes from structured fields when present. Otherwise an LLM extracts it under a strict zod schema where every field is nullable and guards reject values not found in the text.
 - **Chunk** ([`src/core/chunk/`](src/core/chunk/)). Never crosses a section boundary. Targets 300 to 450 tokens, hard maximum 480, with 50 tokens of overlap. Each chunk is embedded with its breadcrumb prefix (`Sec. 4 > (b) Eligibility: ...`); the raw text is stored separately for display. Chunk ids are deterministic, so re-ingest is an idempotent upsert.
 - **Index** ([`src/core/index/`](src/core/index/)). One dense and one sparse index per document, with a `RetrievalBackend` port ([`src/core/model/`](src/core/model/), frozen by [decision 0005](docs/decisions/0005-frozen-contracts.md)) in front of Pinecone and the local store.
-- **Retrieve** ([`src/core/retrieve/`](src/core/retrieve/)). Four modes: `dense`, `sparse`, `hybrid` (40 candidates from each index, merged by Reciprocal Rank Fusion with k=60) and `hybrid_rerank` (the default: fuse, rerank at most 64 candidates, keep 8). Then up to 5 definitions of terms used in the hits are injected.
-- **Answer** ([`src/core/answer/`](src/core/answer/)). Excerpts go to the model as escaped `<excerpt>` data. The system prompt demands citations, a verbatim decline sentence when the excerpts do not answer, and about a 7th-grade reading level. Citations are validated after generation (see [Security](#security-notes)).
-- **Chips** ([`src/core/chips.ts`](src/core/chips.ts)). Eight one-click questions, each with an explicit strategy: sparse-heavy (`effective-date`, `penalties`), filtered by chunk type (`money`, `definitions`), reranked (`who-affected`), outline map-reduce (`summary`), exact amendment spans (`what-changes`), and metadata only (`sponsors`).
+- **Retrieve** ([`src/core/retrieve/`](src/core/retrieve/)). Used for bills too large to send whole. Four modes: `dense`, `sparse`, `hybrid` (40 candidates from each index, merged by Reciprocal Rank Fusion with k=60) and `hybrid_rerank` (the default: fuse, rerank at most 64 candidates, keep 8). Then up to 5 definitions of terms used in the hits are injected, and up to 3 sections the hits themselves refer to ("as described in section 4") are added as context.
+- **Answer** ([`src/core/answer/`](src/core/answer/)). A bill up to 100,000 tokens goes to the model whole, as escaped `<part>` data inside a cached prefix (system prompt plus bill), with the question last, so follow-up questions reuse the cache ([decision 0015](docs/decisions/0015-whole-bill-context.md)). Larger bills send the retrieved excerpts instead. The system prompt demands citations, a verbatim decline sentence when the bill does not answer, and about a 7th-grade reading level. Citations are validated after generation (see [Security](#security-notes)). Sentences about "the excerpts" or "the provided text" are removed. An answer above the grade ceiling gets one more call with a stricter instruction; the new answer replaces the first only if it reads lower, cites every section the first cited, and gains no citation or truncation warning. Declines, truncated answers, metadata chips and answers about changes are never regenerated ([spec amendment 25](docs/spec.md)).
+- **Chips** ([`src/core/chips.ts`](src/core/chips.ts)). Ten one-click questions, each with an explicit strategy: sparse-heavy (`effective-date`, `penalties`), filtered by chunk type (`money`, `definitions`), reranked (`who-affected`), outline map-reduce (`summary`), exact amendment spans (`what-changes`), official records (`history`), metadata only (`sponsors`), and a deterministic extractor with an optional cited lede (`delegations`). In whole-bill mode the retrieval chips read the whole bill.
+- **Section by section** ([`src/core/breakdown/`](src/core/breakdown/)). Structured calls, in batches, write one to three cited sentences for each substantive part (boilerplate such as the short title and severability is skipped). The run starts in the background after the summary and is cached. Each part can draw its own example; a whole-bill-mode bill with at most 8 such parts draws them in advance, one at a time.
 - **Surfaces.** CLI in [`src/cli/`](src/cli/), server in [`src/server/`](src/server/), React UI in [`src/web/`](src/web/).
 
-### Why retrieval instead of stuffing the context window
+### Whole bill or retrieval
+
+Since v1.1, a bill that fits in 100,000 tokens is sent whole. Many bills do: S. 1582 (the GENIUS Act) is about 33,000 tokens and S. 5687 about 5,500. The model then sees every definition and cross-reference, and never writes about what "the excerpts" leave out. With Anthropic models the bill sits in a cached prompt prefix, so later questions on the same bill read it at about a tenth of the normal input price. The first call pays a little more to write the cache, and an idle cache expires, so the saving is for questions asked close together ([decision 0015](docs/decisions/0015-whole-bill-context.md)). Bills above the limit use retrieval, for the reasons measured below.
 
 Measured on the largest fixture, the FY2025 NDAA (8,618 sections), against Claude Sonnet 5.5's 1M-token window ([full write-up](docs/eval-analysis.md#retrieval-or-the-whole-bill-in-the-prompt)):
 
@@ -193,10 +210,12 @@ Caveats: 21 to 28 questions per bill means one question moves recall@5 by about 
   - Each redirect is re-resolved and re-validated, up to 5. An `https` address that redirects to `http` is refused; plain `http` is followed only when you typed an `http` address. Credentials in URLs are refused, as are ports outside 80, 443, 8080 and 8443.
   - Bodies are capped at 50 MB, with a 30 s timeout.
   - Downloaded bytes are cached under `~/.lawglass/cache` only after they parse, removed with their document, and trimmed to 500 MB (least recently used first; set `LAWGLASS_CACHE_MAX_MB` to change). `lawglass cache clear` deletes them all.
-- **Prompt injection** ([`src/core/answer/`](src/core/answer/)). Bill text is hostile data. Excerpt text and the user's question are XML-escaped, so neither can close an excerpt tag or forge a new source. The system prompt states that excerpts are data, not instructions. Citations are validated: every `[S:id]` must be a section that was in the prompt; invalid markers are stripped and reported, and an answer with no valid citation (other than the exact decline sentence) carries a warning. Synthetic injection samples live in [`tests/synth/injection.ts`](tests/synth/injection.ts). Citation validation is held to 90% line coverage along with the fetch layer.
+- **Prompt injection** ([`src/core/answer/`](src/core/answer/)). Bill text is hostile data. Bill text (whole or excerpts), reference text read from the U.S. Code and the user's question are XML-escaped and citation markers in them are neutralized, so none of them can close a tag or forge a source. The system prompt states that this text is data, not instructions. Citations are validated: every `[S:id]` must be a section that was in the prompt; invalid markers are stripped and reported, and an answer with no valid citation (other than the exact decline sentence) carries a warning. Synthetic injection samples live in [`tests/synth/injection.ts`](tests/synth/injection.ts). Citation validation is held to 90% line coverage along with the fetch layer.
 - **Local server** (`serve`). Binds to `127.0.0.1` by default. In local mode, a request whose `Host` is not a loopback name is refused, which blocks DNS-rebinding attacks from web pages you visit; in every mode, an API request whose `Origin` does not match its `Host` is refused. Cancelling a question or an ingest in the UI aborts the work, including the download.
-- **Public mode** (`serve --public`). Chips only (no free-form questions), per-IP limits of 20 questions and 3 ingests per hour, a 200-page ingest cap, a global document cap that refuses new documents instead of evicting someone else's, and a Cloudflare Turnstile stub.
+- **Budgets** ([`src/core/pipeline/`](src/core/pipeline/), [decision 0012](docs/decisions/0012-security-posture.md)). At most 2 ingests and 4 answers run at once, model-backed calls have a per-minute ceiling, and a question is at most 500 characters. These live in core, so the CLI, the server and the MCP server are all covered. Background work (section briefs, pre-drawn examples) yields to a person waiting.
+- **Public mode** (`serve --public`). Chips only (no free-form questions), per-IP limits of 20 questions and 3 ingests per hour, a 200-page ingest cap, and a global document cap that refuses new documents instead of evicting a listed one. The Cloudflare Turnstile check is still a stub, so public mode is not ready for an open deployment until [#180](https://github.com/ylove/lawglass/issues/180) lands.
 - **Hosted private preview** ([`deploy/cloud-run/`](deploy/cloud-run/README.md)). One Cloud Run instance runs `serve --private` for people with an invite link. Keys live in Secret Manager and reach the container only at runtime, never the image, the repository or CI. The image runs as a non-root user, and its service account can read two secrets and write one private bucket. State is saved to that bucket as a tarball. See [decision 0014](docs/decisions/0014-hosted-private-preview.md) and the [threat model](docs/security/threat-model.md).
+- **MCP server** (`lawglass mcp`, a prototype). Stdio only, local backend, no model calls and no keys. Document text comes back inside a per-response wrapper labelled as untrusted data, struck and inserted words carry markers with a per-response id, and citation fields are checked against strict shapes so document words cannot leak outside the wrapper. When change marks could not be read (an unread scan, or a missing bracket legend) the text is reported as `unknown`, never as current law. See [decision 0013](docs/decisions/0013-agent-access.md).
 - **Bring your own keys.** `init` writes the config file with mode 0600. A config file that other users can read is refused: commands skip it with a warning, and `init` stops unless `--force` replaces it. Keys are read from the environment first, then that file, then a masked prompt on a TTY. Keys go only to their own provider, are not inferred from another provider's variables, and are never logged or put in error messages; SDK diagnostic logging is off: before the Pinecone SDK is constructed, `PINECONE_DEBUG` (request and response bodies) and `PINECONE_DEBUG_CURL` (the `Api-Key` header) are cleared from the process environment, in both the CLI runtime and the adapter. `.env` and fixtures are ignored by git, and CI runs Gitleaks over the full history.
 - **`claude-cli` sandboxing.** Each call runs in a fresh temporary directory holding only the system prompt file, with built-in tools disabled (`--tools ""`), all MCP servers disabled, one turn, slash commands, hooks and settings sources off, no session persistence, and no permission-bypass flag. The child sees only basic process variables plus `CLAUDE_*` and `ANTHROPIC_*`, so other providers' keys and app settings are excluded. `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are withheld too, so the CLI bills your Claude login, unless you set `LAWGLASS_CLAUDE_CLI_USE_API_KEY=1`. The model name must match `^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$`, so it cannot be read as a flag. It refuses to run for real in CI.
 
@@ -220,9 +239,14 @@ refuse `claude-cli` and the test-only `mock` provider. `--private` and `--public
 exclusive. `--trust-proxy` defaults to `0`; set it to the number of proxies you trust, counted
 from the right of `X-Forwarded-For`.
 
-Both hosted modes read federal and Ohio bill hosts by default. `LAWGLASS_INGEST_HOSTS` can
-replace that list with comma-separated exact hostnames. Each hosted ingest has a 15-minute
-processing deadline.
+Both hosted modes read federal, Ohio, New York and New Jersey bill hosts by default.
+`LAWGLASS_INGEST_HOSTS` can replace that list with comma-separated exact hostnames. Each hosted
+ingest has a 15-minute processing deadline.
+
+Each visitor gets a random reader cookie, and "Your documents" shows only the bills that visitor
+added or opened. The documents themselves are shared, so a bill is ingested once for everyone,
+and documents nobody lists are evicted first ([decision 0016](docs/decisions/0016-per-reader-library.md)).
+`LAWGLASS_EXAMPLES` sets the example links on the homepage.
 
 ### Providers, keys and backends
 
@@ -259,14 +283,16 @@ Pinecone ingest handles rate limits for you. It retries 429 responses with jitte
 
 ### Status
 
-| Piece                                                                   | State on `main`                                                                             |
-| ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| Fetch, parse, enrich, chunk, local backend, retrieval, answer, chips    | Implemented and tested                                                                      |
-| CLI `init`, `ingest`, `ask`, `list`, `remove`, `serve`, `eval`, `<url>` | Implemented and tested; e2e and package smoke run in CI                                     |
-| Server: REST, SSE, public mode, web UI                                  | Implemented and tested                                                                      |
-| Eval harness and golden sets                                            | Implemented; results in [`eval/results.md`](eval/results.md)                                |
-| Pinecone adapter and CLI runtime                                        | Wired into all commands; live contract suite and five-bill eval run on Starter (2026-10-14) |
-| Hosted private preview (Cloud Run)                                      | Deployment files and runbook in [`deploy/cloud-run/`](deploy/cloud-run/README.md)           |
+| Piece                                                                                            | State on `main`                                                                                                                                                                          |
+| ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fetch, parse, enrich, chunk, local backend, retrieval, answer, chips                             | Implemented and tested                                                                                                                                                                   |
+| CLI `init`, `ingest`, `ask`, `search`, `get-section`, `list`, `remove`, `serve`, `eval`, `<url>` | Implemented and tested; e2e and package smoke run in CI                                                                                                                                  |
+| Server: REST, SSE, public mode, web UI                                                           | Implemented and tested                                                                                                                                                                   |
+| Eval harness and golden sets                                                                     | Implemented; results in [`eval/results.md`](eval/results.md)                                                                                                                             |
+| Pinecone adapter and CLI runtime                                                                 | Wired into all commands; live contract suite and five-bill eval run on Starter (2026-10-14)                                                                                              |
+| Hosted private preview (Cloud Run)                                                               | Deployment files and runbook in [`deploy/cloud-run/`](deploy/cloud-run/README.md)                                                                                                        |
+| Jurisdictions                                                                                    | Federal, Ohio, New York and New Jersey; the plan for the other states is in [`docs/jurisdictions.md`](docs/jurisdictions.md) ([decision 0017](docs/decisions/0017-jurisdictions.md))     |
+| MCP server (`lawglass mcp`)                                                                      | A prototype and measurement harness. No claim that it beats pasting a bill into a chat until its pre-registered evaluation passes ([decision 0013](docs/decisions/0013-agent-access.md)) |
 
 ### Development
 
@@ -277,7 +303,7 @@ npm run build            # dist/cli.js, dist/server.js, dist/web/
 node dist/cli.js --help
 ```
 
-- `npm run fixtures:fetch` downloads the six public documents in [`fixtures/manifest.json`](fixtures/manifest.json) into the gitignored `fixtures/downloads/`, checking SHA-256 and size. Fixtures are never committed; local fixture tests skip when the files are absent, and CI uses generated samples from [`tests/synth/`](tests/synth/). See [`fixtures/README.md`](fixtures/README.md).
+- `npm run fixtures:fetch` downloads the public documents listed in [`fixtures/manifest.json`](fixtures/manifest.json) into the gitignored `fixtures/downloads/`, checking SHA-256 and size. Fixtures are never committed; local fixture tests skip when the files are absent, and CI uses generated samples from [`tests/synth/`](tests/synth/). See [`fixtures/README.md`](fixtures/README.md).
 - Pinecone Starter includes 500 BGE rerank requests per month. `eval --backend pinecone` estimates the rerank calls before starting and warns above 100; the default run reranks answerable questions in `hybrid_rerank`, and `--answers` adds a rerank call for every question in that mode. Narrow the run with `--fixture` or choose `--mode dense`, `sparse` or `hybrid` to avoid rerank calls.
 - `node dist/cli.js eval --backend local` reruns the eval on the downloaded fixtures and writes `eval/results.md` (add `--answers` to score answers with your configured provider; it makes one model call per question and mode).
 - `npm run models:fetch` pre-downloads the local models. `npm run test:models` runs the offline suite against the real models (not part of `check`, which uses fakes).
@@ -288,19 +314,22 @@ node dist/cli.js --help
 
 CI ([`ci.yml`](.github/workflows/ci.yml)) runs these jobs:
 
-| Job                 | What it checks                                                                                                      |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `lint-type`         | ESLint, both typechecks, Prettier, `npm audit` for production deps                                                  |
-| `test`              | Coverage-gated tests on Node 22 and 24 (Ubuntu) and Node 22 (macOS)                                                 |
-| `build`             | Production build and a `--help` smoke check                                                                         |
-| `no-fixtures-guard` | Fails if real legislation files are committed                                                                       |
-| `secrets`           | Gitleaks over full history                                                                                          |
-| `dependency-review` | Blocks high-severity vulnerabilities and GPL-3.0/AGPL-3.0 licences on pull requests                                 |
-| `eval-smoke`        | Synthetic golden set end to end (fails if `hybrid_rerank` < `dense`), then the prompt-injection eval                |
-| `package-smoke`     | Packs the tarball (allowlisted contents), installs it in a clean dir, runs `init`, `ingest`, `ask`, `list`, `serve` |
-| `e2e`               | Chromium against the packed build: chip streaming, citation drawer, SSRF block, remove                              |
+| Job                  | What it checks                                                                                                      |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `lint-type`          | ESLint, both typechecks, Prettier, `npm audit` for production deps                                                  |
+| `audit-full`         | `npm audit` over the full tree, since pdfjs-dist is a dev dependency bundled into the CLI                           |
+| `lockfile-integrity` | Registry-only sources with integrity hashes, and `npm audit signatures`                                             |
+| `zizmor`             | Static analysis of the workflows themselves (injection, permissions, unpinned actions)                              |
+| `test`               | Coverage-gated tests on Node 22 and 24 (Ubuntu) and Node 22 (macOS)                                                 |
+| `build`              | Production build and a `--help` smoke check                                                                         |
+| `no-fixtures-guard`  | Fails if real legislation files are committed                                                                       |
+| `secrets`            | Gitleaks over full history                                                                                          |
+| `dependency-review`  | Blocks high-severity vulnerabilities and GPL-3.0/AGPL-3.0 licences on pull requests                                 |
+| `eval-smoke`         | Synthetic golden set end to end (fails if `hybrid_rerank` < `dense`), then the prompt-injection eval                |
+| `package-smoke`      | Packs the tarball (allowlisted contents), installs it in a clean dir, runs `init`, `ingest`, `ask`, `list`, `serve` |
+| `e2e`                | Chromium against the packed build: chip streaming, citation drawer, SSRF block, remove                              |
 
-CodeQL, a nightly Pinecone contract check (only with a key) and a local-model offline suite run in their own workflows.
+CodeQL, OSV-Scanner, OpenSSF Scorecard, a nightly Pinecone contract check (only with a key) and a local-model offline suite run in their own workflows. Pushing a `v*` tag runs the release workflow, which attaches the tarball, checksums and an SBOM to the GitHub release.
 
 Conventions are in [`AGENTS.md`](AGENTS.md): the frozen contracts in `src/core/model/`, the product name only in `brand.ts`, tests beside code, and no network in unit tests. The [spec](docs/spec.md) is the source of truth and its Amendments override the rest. Design choices and their reasons are recorded in [`docs/decisions/`](docs/decisions/).
 
@@ -311,10 +340,12 @@ Conventions are in [`AGENTS.md`](AGENTS.md): the frozen contracts in `src/core/m
 - **v1.5:** resolve a bill from number plus jurisdiction to a URL, then run the same pipeline.
 - **v2:** natural-language discovery search across bills.
 - **v2:** official secondary sources only (fiscal notes, nonpartisan analyses). News articles are never used.
-- Fetch statutes that a bill references, which are listed as "referenced, not loaded" today.
+- Read more of the law a bill refers to. Today only U.S. Code definitions the bill borrows are read; everything else is an official link.
 - Akoma Ntoso export of the normalized document.
-- **Known gaps from the eval:** the forks/flatware miss on large bills; a sturdier signal for "is this question about what changed" ([#104](https://github.com/ylove/lawglass/issues/104)); before-and-after excerpts for one-word strikes in free-form questions ([#102](https://github.com/ylove/lawglass/issues/102)); consistent declines ([#109](https://github.com/ylove/lawglass/issues/109)); answers closer to a 7th-grade reading level.
-- An open public site (the hosted preview is invite-only until public mode's bot check and limits land, [#180](https://github.com/ylove/lawglass/issues/180)), and more states, starting with New Jersey and Pennsylvania.
+- **Known gaps from the eval:** the forks/flatware miss on large bills; a sturdier signal for "is this question about what changed" ([#104](https://github.com/ylove/lawglass/issues/104)); before-and-after excerpts for one-word strikes in free-form questions ([#102](https://github.com/ylove/lawglass/issues/102)); consistent declines ([#109](https://github.com/ylove/lawglass/issues/109)); answers closer to a 7th-grade reading level, including the section-by-section briefs ([#320](https://github.com/ylove/lawglass/issues/320)).
+- **More states**, family by family: the 20 states that mark changes with strike-through and underline, like Ohio, come first ([plan](docs/jurisdictions.md)).
+- **Agent access:** run the pre-registered MCP evaluation (Lawglass tools against the same bills pasted into a model with citations and caching) before making any claim about it.
+- An open public site. The hosted preview stays invite-only until public mode has had its own review ([#180](https://github.com/ylove/lawglass/issues/180)).
 
 ## License
 
