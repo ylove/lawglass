@@ -224,6 +224,30 @@ describe('HTTP client', () => {
     ).rejects.toBeInstanceOf(ApiError);
   });
 
+  test('getBreakdown and getSectionExample read their endpoints and validate the replies', async () => {
+    const urls: string[] = [];
+    const fetchImpl = ((url: string) => {
+      urls.push(url);
+      return Promise.resolve(Response.json({ status: 'pending' }));
+    }) as typeof fetch;
+    const api = createHttpApi({ fetchImpl });
+    expect(await api.getBreakdown('a/b')).toEqual({ status: 'pending' });
+    expect(await api.getSectionExample('d', 'sec-4/b')).toEqual({
+      status: 'pending',
+    });
+    expect(urls).toEqual([
+      '/api/docs/a%2Fb/breakdown',
+      '/api/docs/d/sections/sec-4%2Fb/example',
+    ]);
+    const bad = createHttpApi({
+      fetchImpl: () => Promise.resolve(Response.json({ status: 'nope' })),
+    });
+    await expect(bad.getBreakdown('a')).rejects.toBeInstanceOf(ApiError);
+    await expect(bad.getSectionExample('a', 'b')).rejects.toBeInstanceOf(
+      ApiError,
+    );
+  });
+
   test('getSection encodes the section id', async () => {
     const urls: string[] = [];
     const fetchImpl = ((url: string) => {

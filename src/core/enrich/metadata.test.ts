@@ -264,6 +264,40 @@ BE IT ENACTED BY THE GENERAL ASSEMBLY OF THE STATE OF OHIO:`;
     expect(r.warnings[0]).toMatch(/could not be read automatically/);
   });
 
+  it('reports the failure code for the operator, never in the reader warning (#270)', async () => {
+    const provider = new ScriptedProvider({});
+    provider.generateObject = () =>
+      Promise.reject(new AppError('RATE_LIMITED'));
+    const coded = await extractMetadata(
+      { metadata: EMPTY_METADATA },
+      { provider, text: TEXT },
+    );
+    expect(coded.failureCode).toBe('RATE_LIMITED');
+    expect(coded.warnings.join(' ')).not.toMatch(/RATE_LIMITED/);
+    provider.generateObject = () =>
+      Promise.reject(new Error('secret upstream detail'));
+    const plain = await extractMetadata(
+      { metadata: EMPTY_METADATA },
+      { provider, text: TEXT },
+    );
+    expect(plain.failureCode).toBe('INTERNAL');
+    const ok = await extractMetadata(
+      {
+        metadata: {
+          ...EMPTY_METADATA,
+          title: 't',
+          billNumber: 'b',
+          jurisdiction: 'j',
+          session: 's',
+          version: 'v',
+          sponsors: [],
+        },
+      },
+      { provider, text: TEXT },
+    );
+    expect(ok.failureCode).toBeUndefined();
+  });
+
   it('turns provider errors and unexpected throws into warnings', async () => {
     for (const err of [
       new AppError('PROVIDER_ERROR'),

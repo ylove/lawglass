@@ -89,6 +89,14 @@ export class RateCeiling {
     private readonly windowMs: number = MINUTE_MS,
   ) {}
 
+  /** Calls admitted in the current window. */
+  used(): number {
+    const t = this.now();
+    while (this.stamps.length > 0 && t - (this.stamps[0] ?? t) >= this.windowMs)
+      this.stamps.shift();
+    return this.stamps.length;
+  }
+
   /** Records one call, or throws `RATE_LIMITED` saying how long to wait. */
   admit(): void {
     const t = this.now();
@@ -119,18 +127,107 @@ export interface LimitsConfig {
   maxConcurrentIngest: number;
   maxConcurrentAsk: number;
   maxCallsPerMinute: number;
+  /** How long background work waits for per-minute headroom before giving up. Default 65 s. */
+  backgroundWaitMs?: number;
+  /** How often it looks again. Default 1 s. */
+  backgroundPollMs?: number;
 }
+
+/**
+ * Background work (a breakdown nobody asked a question for, examples drawn ahead of time) may use
+ * at most this share of the per-minute ceiling and, at most, half of the ask slots. Readers'
+ * own questions always find headroom.
+ */
+export const BACKGROUND_SHARE = 0.5;
 
 export class Limits {
   private readonly pools: Record<WorkKind, Semaphore>;
+  private readonly background: Semaphore;
   private readonly ceiling: RateCeiling;
+  private readonly backgroundWaitMs: number;
+  private readonly backgroundPollMs: number;
 
   constructor(config: LimitsConfig, now: () => number = Date.now) {
     this.pools = {
       ingest: new Semaphore(config.maxConcurrentIngest),
       ask: new Semaphore(config.maxConcurrentAsk),
     };
+    this.background = new Semaphore(
+      Math.max(1, Math.floor(config.maxConcurrentAsk * BACKGROUND_SHARE)),
+    );
     this.ceiling = new RateCeiling(config.maxCallsPerMinute, now);
+    this.backgroundWaitMs = config.backgroundWaitMs ?? 65_000;
+    this.backgroundPollMs = config.backgroundPollMs ?? 1000;
+  }
+
+  /** In-flight and queued background calls, for tests. */
+  backgroundPool(): Semaphore {
+    return this.background;
+  }
+
+  /**
+   * A provider for a multi-call job that holds a shared `ask` slot only DURING each model call,
+   * so a reader's question waits at most one call, never a whole run. With `background`, the job
+   * also yields to readers: it takes at most half the ask slots, and a call that would push the
+   * per-minute ceiling past `BACKGROUND_SHARE` of it is refused with `RATE_LIMITED` before any
+   * model call is made. Every call is still charged to the ceiling by `meter`.
+   */
+  paced(
+    provider: LlmProvider,
+    options: { background?: boolean; signal?: AbortSignal | undefined } = {},
+  ): LlmProvider {
+    const metered = this.meter(provider);
+    const background = options.background === true;
+    const share = Math.max(1, Math.floor(this.ceiling.max * BACKGROUND_SHARE));
+    return {
+      get id() {
+        return provider.id;
+      },
+      get model() {
+        return provider.model;
+      },
+      streamText: (req) => metered.streamText(req),
+      generateObject: async (req) => {
+        // Either the job's own signal or the request's ends the wait for a slot.
+        const signals = [options.signal, req.signal].filter(
+          (s): s is AbortSignal => s !== undefined,
+        );
+        const signal =
+          signals.length > 0 ? AbortSignal.any(signals) : undefined;
+        const releaseBackground = background
+          ? await this.background.acquire(signal)
+          : undefined;
+        let releaseAsk: (() => void) | undefined;
+        try {
+          // Nobody is waiting on background work, so it waits for headroom (the window frees
+          // as old calls age out) instead of failing a run that has already paid for batches.
+          if (background) await this.waitForHeadroom(share, signal);
+          releaseAsk = await this.acquire('ask', signal);
+          if (background && this.ceiling.used() >= share)
+            throw new AppError(
+              'RATE_LIMITED',
+              'Background work yields to readers near the per-minute ceiling.',
+            );
+          return await metered.generateObject(req);
+        } finally {
+          releaseAsk?.();
+          releaseBackground?.();
+        }
+      },
+    };
+  }
+
+  private async waitForHeadroom(
+    share: number,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    const deadline = Date.now() + this.backgroundWaitMs;
+    while (this.ceiling.used() >= share && Date.now() < deadline) {
+      signal?.throwIfAborted();
+      await new Promise((resolve) =>
+        setTimeout(resolve, this.backgroundPollMs),
+      );
+    }
   }
 
   pool(kind: WorkKind): Semaphore {

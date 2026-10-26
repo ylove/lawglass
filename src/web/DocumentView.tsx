@@ -12,6 +12,7 @@ import { CitationDrawer } from './CitationDrawer.js';
 import { AnswerCard } from './document/AnswerCard.js';
 import { LocateCard } from './document/LocateCard.js';
 import { AskForm } from './document/AskForm.js';
+import { BreakdownPanel } from './document/BreakdownPanel.js';
 import { ChipRow } from './document/ChipRow.js';
 import { MetadataHeader } from './document/MetadataHeader.js';
 import { NoticeBar } from './document/NoticeBar.js';
@@ -193,6 +194,12 @@ export function DocumentView({
             preview={detail.preview}
             officialSummary={detail.history?.officialSummary}
             publicMode={config.publicMode}
+            onOpenSection={openSection}
+          />
+          <BreakdownPanel
+            api={api}
+            docId={docId}
+            enabled={config.breakdownEnabled}
             onOpenSection={openSection}
           />
           <ChipRow
