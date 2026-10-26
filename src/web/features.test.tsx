@@ -470,6 +470,42 @@ describe('history card', () => {
     expect(within(card).queryByRole('link', { name: /See all/ })).toBeNull();
   });
 
+  test('an event both chambers filed shows once; the count stays the record’s', async () => {
+    const api = mock();
+    const real = api.getDoc.bind(api);
+    api.getDoc = async (id) => {
+      const detail = await real(id);
+      const base = detail.history!.actions[0]!;
+      const signed = {
+        ...base,
+        date: '2026-03-09',
+        text: 'Signed by President.',
+      };
+      return {
+        ...detail,
+        history: {
+          ...detail.history!,
+          actions: [
+            ...Array.from({ length: 7 }, (_, i) => ({
+              ...base,
+              date: `2026-03-0${String(i + 1)}`,
+              text: `Action ${String(i)}`,
+            })),
+            { ...signed, chamber: 'House' },
+            { ...signed, chamber: 'Senate' },
+          ],
+        },
+      };
+    };
+    render(<App api={api} />);
+    await ready();
+    const card = screen.getByRole('region', { name: 'How did it get here?' });
+    expect(within(card).getAllByText('Signed by President.')).toHaveLength(1);
+    expect(
+      within(card).getByText(/Showing 4 of 9 recorded actions\./),
+    ).toBeTruthy();
+  });
+
   test('says plainly when no history is available', async () => {
     const api = mock();
     const real = api.getDoc.bind(api);
