@@ -22,6 +22,7 @@
 import { answer } from './answer/index.js';
 import { fleschKincaidGrade } from './answer/readability.js';
 import { breadcrumb } from './chunk/index.js';
+import { buildOutline } from './chip-summary.js';
 import {
   appendNote,
   realHits,
@@ -98,8 +99,10 @@ function render(sentence: readonly Piece[], status: 'deleted' | 'inserted') {
       )
       .join('')
       .replace(/\s+/g, ' ')
+      .replace(status === 'deleted' ? /-\]\s*\[-/g : /\+\]\s*\[\+/g, ' ')
       // No space between a marked run and punctuation that follows it.
       .replace(/(-\]|\+\])\s+(?=[.,;:])/g, '$1')
+      .replace(/ (?=[.,;:]|\[(?:\+|-)[.,;:])/g, '')
       .trim()
   );
 }
@@ -203,11 +206,14 @@ function newSectionHit(
     subdivisions === 0
       ? ''
       : ` (${String(subdivisions)} ${subdivisions === 1 ? 'subdivision' : 'subdivisions'})`;
+  const kind = path.length === 1 ? 'section' : 'division';
+  const outline =
+    subdivisions > 0 ? `\nOutline:\n${buildOutline(section).text}` : '';
   return syntheticHit(docId, {
     key: `changes:${key}:inserted`,
     sectionId: section.id,
     breadcrumb: breadcrumb(path),
-    text: `Newly enacted: all of this section's text is new${size}. It begins: [+${opening}+]`,
+    text: `Newly enacted: all of this ${kind}'s text is new${size}. It begins: [+${opening}+]${outline}`,
     amendmentStatus: 'inserted',
     location: locationOf(pieces, section),
   });

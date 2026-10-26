@@ -65,8 +65,10 @@ export function SectionExample({
         .then((r) => {
           if (!live) return;
           if (r.status === 'ok' && r.scenario) {
+            autoRetried.current = false;
             setState({ kind: 'ok', scenario: r.scenario, open: true });
           } else if (r.status === 'none') {
+            autoRetried.current = false;
             setState({ kind: 'none', note: r.note ?? NO_EXAMPLE_NOTE });
           } else if (r.status === 'disabled') {
             setState({ kind: 'disabled' });

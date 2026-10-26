@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import {
   AskEvent,
   BreakdownResponse,
@@ -16,7 +16,28 @@ async function collect<T>(iter: AsyncIterable<T>): Promise<T[]> {
 
 const api = () => createMockApi({ delayMs: 0 });
 
+afterEach(() => vi.useRealTimers());
+
 describe('mock API', () => {
+  test('a zero-delay delegation stream completes without advancing timers', async () => {
+    vi.useFakeTimers();
+    const m = api();
+    const [doc] = await m.listDocs();
+    const events = await collect(m.ask(doc!.docId, { chipId: 'delegations' }));
+    expect(events.at(-1)?.type).toBe('done');
+    expect(events.some((event) => event.type === 'token')).toBe(true);
+  });
+
+  test('an already-aborted zero-delay stream still rejects', async () => {
+    const m = api();
+    const [doc] = await m.listDocs();
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      collect(m.ask(doc!.docId, { chipId: 'delegations' }, controller.signal)),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   test('ingest streams stages in order and ends with done', async () => {
     const events = await collect(
       api().ingest({ url: 'https://e.gov/new.pdf' }),

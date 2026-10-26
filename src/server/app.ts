@@ -98,6 +98,8 @@ export interface AppOptions {
   localOnly?: boolean;
   /** Launch token; generated when omitted. Ignored in public mode. */
   sessionToken?: string | undefined;
+  /** Bound listener port; defaults to the runtime port when no listener is attached. */
+  sessionPort?: () => number;
   /** Example bills for the homepage; defaults to the examples environment variable. */
   examples?: ClientConfig['examples'];
   now?: () => number;
@@ -280,6 +282,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     app.use(
       '*',
       localSession(token, {
+        port: options.sessionPort ?? runtime.port,
         privateMode,
         ...(options.webRoot ? { webRoot: options.webRoot } : {}),
         ...(publicOrigin ? { publicOrigin } : {}),

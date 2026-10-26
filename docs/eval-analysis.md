@@ -23,6 +23,8 @@ By question kind, pooled over all bills (share with a relevant section in the to
 | definition | 19  | 0.79     | 0.79   | 0.79         | 0.79              | **0.84**      |
 | removed    | 11  | **1.00** | 0.82   | **1.00**     | **1.00**          | 0.91          |
 
+These kinds overlap: hb62-03 and sb203-08 name their section numbers; hr5009-09, hr5009-12, sb113-13/14 and s202-18 reuse rare source tokens. Removal questions outside HB 62 concern repeal wording rather than struck spans.
+
 This is roughly the expected shape: lexical signal helps exact lookups, embeddings help paraphrases. Definition questions move only with the reranker, and by one question (0.79 to 0.84).
 
 ### Dense misses, the reranked hybrid finds it
@@ -137,4 +139,4 @@ So on this sample the whole bill was as accurate or more, and retrieval's case r
 - **Removal acknowledged** is the share of "removed" questions whose answers use removal language ("removes", "strikes", "no longer"...). It is n/a for a set with no such questions.
 - **Declined** means the answer is exactly the decline sentence; a correct "the bill doesn't cover this" in other words counts as answered.
 - **Ranks are chunk ranks**: the first chunk whose section, or an ancestor, descendant or merged child of it, is expected.
-- Two questions name their section numbers (hb62-03, sb203-08), and some paraphrases reuse rare words from the text, which makes them easier for BM25.
+- Two questions name their section numbers (hb62-03, sb203-08), and some paraphrases reuse rare source tokens (hr5009-09, hr5009-12, sb113-13/14, s202-18), which makes them easier for BM25. Removal questions outside HB 62 ask about repeal wording rather than struck spans.

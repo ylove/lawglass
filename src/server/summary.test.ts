@@ -219,11 +219,13 @@ describe('GET /api/docs/:docId/summary', () => {
         r.json(),
       ),
     ]);
-    expect([x.status, y.status, (z as SummaryResponse).status]).toEqual([
-      'pending',
-      'cached',
-      'pending',
-    ]);
+    // Which request starts the run and which one waits for it depends on scheduling (reads
+    // take no registry lock); what matters is that every answer is pending or the cached
+    // summary, and that the three share one run.
+    const statuses = [x.status, y.status, (z as SummaryResponse).status];
+    expect(statuses).toContain('pending');
+    for (const status of statuses)
+      expect(['pending', 'cached']).toContain(status);
     await settled(a, docId);
     expect(chips).toHaveBeenCalledTimes(1);
   });
