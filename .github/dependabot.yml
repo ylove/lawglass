@@ -15,6 +15,14 @@ updates:
       # engines.node is >=22: types must track the oldest supported runtime, not the newest.
       - dependency-name: '@types/node'
         update-types: ['version-update:semver-major']
+      # Blocked upstream: typescript-eslint's peer range is typescript <6.1.0 (as of 8.72.1), so
+      # TypeScript 7 fails `npm ci` with ERESOLVE. Remove this entry once typescript-eslint supports it.
+      - dependency-name: typescript
+        update-types: ['version-update:semver-major']
+      # tsup 9 needs Node >=22.18 to build, while engines.node (and the quickstart) promise
+      # 22.13. It brings nothing we need, so it waits for the next engines bump.
+      - dependency-name: tsup
+        update-types: ['version-update:semver-major']
   - package-ecosystem: github-actions
     directory: /
     schedule:
