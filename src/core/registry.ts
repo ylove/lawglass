@@ -232,8 +232,9 @@ export class Registry {
     return parsed.data;
   }
 
+  /** Atomic replacement lets readers use a complete snapshot without creating a lock. */
   list(): Promise<RegistryEntry[]> {
-    return this.exclusive(() => this.readEntries());
+    return this.readEntries();
   }
 
   /**
@@ -371,36 +372,34 @@ export class Registry {
    * Resolve a label or a docId prefix. Hex input of six or more characters that matches a docId is
    * a prefix; if it also equals a different entry's label we refuse to guess.
    */
-  findByLabelOrPrefix(query: string): Promise<RegistryEntry> {
-    return this.exclusive(async () => {
-      const parsed = z.string().trim().min(1).max(80).safeParse(query);
-      if (!parsed.success)
-        throw storageError(
-          'Enter a document label or a document id prefix of at least six characters.',
-        );
-      const entries = await this.readEntries();
-      const label = entries.find((entry) => entry.label === parsed.data);
-      const hex = parsed.data.toLowerCase();
-      const prefixMatches = /^[a-f0-9]{6,64}$/.test(hex)
-        ? entries.filter((entry) => entry.docId.startsWith(hex))
-        : [];
-      if (label && prefixMatches.some((entry) => entry !== label)) {
-        const ids = prefixMatches
-          .map((entry) => `${entry.docId.slice(0, 12)} (${entry.label})`)
-          .join(', ');
-        throw storageError(
-          `"${parsed.data}" is both a document label (${label.label}) and a document id prefix (${ids}). Use the full document id to choose.`,
-        );
-      }
-      if (label) return label;
-      if (prefixMatches.length > 1)
-        throw storageError(
-          'That document id prefix is ambiguous. Use more characters or an exact label.',
-        );
-      const match = prefixMatches[0];
-      if (!match) throw new AppError('DOC_NOT_FOUND');
-      return match;
-    });
+  async findByLabelOrPrefix(query: string): Promise<RegistryEntry> {
+    const parsed = z.string().trim().min(1).max(80).safeParse(query);
+    if (!parsed.success)
+      throw storageError(
+        'Enter a document label or a document id prefix of at least six characters.',
+      );
+    const entries = await this.readEntries();
+    const label = entries.find((entry) => entry.label === parsed.data);
+    const hex = parsed.data.toLowerCase();
+    const prefixMatches = /^[a-f0-9]{6,64}$/.test(hex)
+      ? entries.filter((entry) => entry.docId.startsWith(hex))
+      : [];
+    if (label && prefixMatches.some((entry) => entry !== label)) {
+      const ids = prefixMatches
+        .map((entry) => `${entry.docId.slice(0, 12)} (${entry.label})`)
+        .join(', ');
+      throw storageError(
+        `"${parsed.data}" is both a document label (${label.label}) and a document id prefix (${ids}). Use the full document id to choose.`,
+      );
+    }
+    if (label) return label;
+    if (prefixMatches.length > 1)
+      throw storageError(
+        'That document id prefix is ambiguous. Use more characters or an exact label.',
+      );
+    const match = prefixMatches[0];
+    if (!match) throw new AppError('DOC_NOT_FOUND');
+    return match;
   }
 
   /**
@@ -408,40 +407,36 @@ export class Registry {
    * in `listed` (some reader still has them on their list) go last; within each group the
    * oldest go first.
    */
-  evictionCandidates(
+  async evictionCandidates(
     maxDocs: number,
     listed: ReadonlySet<string> = new Set(),
   ): Promise<RegistryEntry[]> {
-    return this.exclusive(async () => {
-      if (!z.number().int().nonnegative().safeParse(maxDocs).success) {
-        throw storageError('The document cap must be a nonnegative integer.');
-      }
-      const entries = await this.readEntries();
-      return entries
-        .sort(
-          (a, b) =>
-            Number(listed.has(a.docId)) - Number(listed.has(b.docId)) ||
-            a.lastUsedAt.localeCompare(b.lastUsedAt) ||
-            a.ingestedAt.localeCompare(b.ingestedAt) ||
-            a.docId.localeCompare(b.docId),
-        )
-        .slice(0, Math.max(0, entries.length - maxDocs));
-    });
+    if (!z.number().int().nonnegative().safeParse(maxDocs).success) {
+      throw storageError('The document cap must be a nonnegative integer.');
+    }
+    const entries = await this.readEntries();
+    return entries
+      .sort(
+        (a, b) =>
+          Number(listed.has(a.docId)) - Number(listed.has(b.docId)) ||
+          a.lastUsedAt.localeCompare(b.lastUsedAt) ||
+          a.ingestedAt.localeCompare(b.ingestedAt) ||
+          a.docId.localeCompare(b.docId),
+      )
+      .slice(0, Math.max(0, entries.length - maxDocs));
   }
 
   /** Return the complete section tree, including amendment spans, for citations and excerpts. */
-  getDocument(docId: string): Promise<NormalizedDoc> {
-    return this.exclusive(async () => {
-      const path = this.documentPath(docId);
-      const entries = await this.readEntries();
-      if (!entries.some((entry) => entry.docId === docId))
-        throw new AppError('DOC_NOT_FOUND');
-      const value = await readPrivateJson(path, this.fs);
-      if (value === undefined) throw new AppError('DOC_NOT_FOUND');
-      const parsed = NormalizedDoc.safeParse(value);
-      if (!parsed.success || parsed.data.docId !== docId)
-        throw storageError('The cached normalized document is invalid.');
-      return parsed.data;
-    });
+  async getDocument(docId: string): Promise<NormalizedDoc> {
+    const path = this.documentPath(docId);
+    const entries = await this.readEntries();
+    if (!entries.some((entry) => entry.docId === docId))
+      throw new AppError('DOC_NOT_FOUND');
+    const value = await readPrivateJson(path, this.fs);
+    if (value === undefined) throw new AppError('DOC_NOT_FOUND');
+    const parsed = NormalizedDoc.safeParse(value);
+    if (!parsed.success || parsed.data.docId !== docId)
+      throw storageError('The cached normalized document is invalid.');
+    return parsed.data;
   }
 }
