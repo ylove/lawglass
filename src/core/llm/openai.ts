@@ -200,7 +200,7 @@ export class OpenAIProvider implements LlmProvider {
                   role: 'system',
                   content: `${req.system}\nReturn only JSON matching this schema: ${JSON.stringify(schema)}`,
                 },
-                { role: 'user', content: req.prompt },
+                { role: 'user', content: messageText(req.prompt) },
               ],
             },
             { signal },

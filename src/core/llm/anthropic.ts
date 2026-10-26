@@ -101,10 +101,11 @@ export class AnthropicProvider implements LlmProvider {
         {
           model: this.model,
           system: req.system,
-          messages: [{ role: 'user', content: req.prompt }],
+          messages: [anthropicMessage({ role: 'user', content: req.prompt })],
           max_tokens: req.maxTokens,
           output_config: {
             format: { type: 'json_schema', schema: jsonSchema(req.schema) },
+            ...(req.effort ? { effort: req.effort } : {}),
           },
         },
         { signal },
