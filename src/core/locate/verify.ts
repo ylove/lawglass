@@ -234,23 +234,39 @@ const FAMILY_OF = new Map(
   AMBIGUOUS_FAMILIES.flatMap((family) => family.map((w) => [w, family])),
 );
 
+/** Words too common to show how a word is used: every section has "is true" or "and correct". */
+const FUNCTION_WORDS = new Set(
+  (
+    'a an the and or nor but not no of to in on at by for with from about as if than then so ' +
+    'that this these those it its is are was were be been being am do does did has have had ' +
+    'will would can could should shall may might must i you your we our they their he his she her ' +
+    'there here which who whom what'
+  ).split(' '),
+);
+const contentWords = (folded: string): string[] =>
+  folded.split(' ').filter((w) => w !== '' && !FUNCTION_WORDS.has(w));
+
 /**
  * An ambiguous word is legal vocabulary, not a verdict, only when the explanation uses it the
- * way the section does: the word (any inflection) next to the same neighbouring word. "Confirm
- * the nominee" passes on "shall confirm the nominee"; "This is true" fails even on "a true copy".
+ * way the section does: the word (any inflection) beside the same content word, function words
+ * skipped. "Confirm the nominee" passes on "shall confirm the nominee"; "This is true" fails even
+ * on "the certificate is true". A neighbour that is itself ambiguous never vouches ("true and
+ * correct").
  */
 function usedAsInBill(
   words: readonly string[],
   i: number,
-  bill: string,
+  billContent: string,
 ): boolean {
   const family = FAMILY_OF.get(words[i] ?? '') ?? [];
+  const neighbour = (w: string | undefined): w is string =>
+    w !== undefined && !FAMILY_OF.has(w);
   const before = words[i - 1];
   const after = words[i + 1];
   return family.some(
     (form) =>
-      (before !== undefined && bill.includes(` ${before} ${form} `)) ||
-      (after !== undefined && bill.includes(` ${form} ${after} `)),
+      (neighbour(before) && billContent.includes(` ${before} ${form} `)) ||
+      (neighbour(after) && billContent.includes(` ${form} ${after} `)),
   );
 }
 
@@ -305,9 +321,10 @@ export function hasVerdictLanguage(text: string, billText: string): boolean {
   );
   if (VERDICT.test(unquoted)) return true;
   // An ambiguous word passes only when the section uses it with the same neighbour (#312).
-  const words = wordsOf(unquoted).trim().split(' ');
+  const billContent = ` ${contentWords(bill).join(' ')} `;
+  const words = contentWords(wordsOf(unquoted));
   return words.some(
-    (word, i) => FAMILY_OF.has(word) && !usedAsInBill(words, i, bill),
+    (word, i) => FAMILY_OF.has(word) && !usedAsInBill(words, i, billContent),
   );
 }
 

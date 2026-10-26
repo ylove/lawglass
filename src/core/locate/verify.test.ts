@@ -429,6 +429,14 @@ describe('ordinary legal wording is not a verdict (#312)', () => {
     ['The sponsor lies about this [S:s]', 'a lien on the property'],
     ['This is false [S:s]', 'whoever falsely represents a fact'],
     ['This is accurate [S:s]', 'keep accurate records'],
+    ['This is true. [S:s]', 'the certificate is true'],
+    ['Your reading is correct. [S:s]', 'the amount is correct'],
+    ['This is accurate. [S:s]', 'if the report is accurate'],
+    ['That is true. [S:s]', 'that is true of each member'],
+    [
+      'This is true and correct. [S:s]',
+      'a true and correct copy of the record',
+    ],
   ])(
     'a verdict is caught when the section uses the word another way: %s',
     (text, bill) => {
