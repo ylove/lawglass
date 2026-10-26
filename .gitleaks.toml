@@ -2,3 +2,13 @@ title = "Repository secret scanning"
 
 [extend]
 useDefault = true
+
+# Insurance: the lock stores each model file's SHA-256 as a list of {path, sha256} objects, which
+# the default rules do not flag today. Should one match, this keeps the digests (and only the
+# digests, in this one file) from failing the scan.
+[[allowlists]]
+description = "SHA-256 digests of the pinned model files"
+condition = "AND"
+paths = ['''^models\.lock\.json$''']
+regexTarget = "match"
+regexes = ['''"[0-9a-f]{64}"''']
