@@ -438,11 +438,17 @@ describe('claude subprocess budget', () => {
         () => 'aborted',
       ),
     );
+    // Spawning writes a temp file first, so under load it can take longer than any fixed sleep:
+    // wait for the condition instead, then give a third spawn time to (wrongly) happen.
+    await vi.waitFor(() => {
+      expect(fake.calls).toHaveLength(2);
+    });
     await settle();
     expect(fake.calls).toHaveLength(2); // the third is queued, not spawned
     ctls[0]!.abort();
-    await settle();
-    expect(fake.calls).toHaveLength(3); // the freed slot went to the queued call
+    await vi.waitFor(() => {
+      expect(fake.calls).toHaveLength(3); // the freed slot went to the queued call
+    });
     ctls[1]!.abort();
     ctls[2]!.abort();
     await Promise.all(runs);
@@ -464,7 +470,9 @@ describe('claude subprocess budget', () => {
     const first = drain(holder, { ...textRequest, signal: hold.signal }).catch(
       () => 'aborted',
     );
-    await settle();
+    await vi.waitFor(() => {
+      expect(stalled.calls).toHaveLength(1);
+    });
     const wait = new AbortController();
     const second = drain(holder, { ...textRequest, signal: wait.signal }).catch(
       () => 'aborted',

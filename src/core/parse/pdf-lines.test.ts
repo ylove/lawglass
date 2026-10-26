@@ -470,3 +470,24 @@ describe('heavy, hairline and whole-line rules in the layout', () => {
     ]);
   });
 });
+
+it('exempts only the NY cover enacting clause from whole-line warnings, retaining an unrelated table warning', () => {
+  const content = numberedPage(1, ['Section 1. Body.', 'body', 'body']);
+  content.items.push(item('The People of the State of New York,', 72, 710));
+  content.items.push(
+    item('represented in Senate and Assembly, do enact as follows:', 72, 692),
+  );
+  content.segments = [
+    { x0: 72, x1: 288, y: 708.6, thickness: 0.6 },
+    { x0: 72, x1: 408, y: 690.6, thickness: 0.6 },
+  ];
+  expect(layoutPages([content], { newYorkBill: true }).warnings).toEqual([]);
+  expect(layoutPages([content]).warnings.join(' ')).toContain(
+    'one rule marks the whole line',
+  );
+  content.items.push(item('Fee table', 300, 500));
+  content.segments.push({ x0: 300, x1: 354, y: 497, thickness: 0.5 });
+  expect(
+    layoutPages([content], { newYorkBill: true }).warnings.join(' '),
+  ).toContain('one rule marks the whole line');
+});

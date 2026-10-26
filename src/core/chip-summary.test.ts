@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { envVar } from './brand.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryBackend } from '../../tests/contracts/memory-backend.js';
 import { ScriptedProvider } from '../../tests/contracts/scripted-provider.js';
 import { getChip, runChip } from './chips.js';
@@ -11,6 +12,7 @@ import {
   OUTLINE_CHAR_BUDGET,
   REDUCE_INSTRUCTION,
   SUMMARY_PROMPT_VERSION,
+  SUMMARY_WHOLE_INSTRUCTION,
   allOrAbort,
   buildOutline,
   chooseMapUnits,
@@ -38,6 +40,7 @@ it('derives the summary cache version from the question, single-call, map and re
     promptVersion(
       chip.label,
       chip.answerInstruction!,
+      SUMMARY_WHOLE_INSTRUCTION,
       MAP_INSTRUCTION,
       REDUCE_INSTRUCTION,
     ),
@@ -631,3 +634,6 @@ describe('allOrAbort', () => {
     expect(siblingSettled).toBe(true);
   });
 });
+// These tests pin the retained retrieval/outline strategies.
+beforeEach(() => vi.stubEnv(envVar('WHOLE_BILL_MAX_TOKENS'), '0'));
+afterEach(() => vi.unstubAllEnvs());

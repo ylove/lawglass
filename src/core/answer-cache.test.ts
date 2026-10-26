@@ -67,7 +67,7 @@ describe('AnswerCache', () => {
     expect(answerCacheKey(key)).toBe(
       createHash('sha256')
         .update(
-          `${DOC_A}|summary|mock|scripted|mock:local|${SUMMARY_PROMPT_VERSION}`,
+          `${DOC_A}|summary|mock|scripted|mock:local|${SUMMARY_PROMPT_VERSION}|excerpts`,
         )
         .digest('hex'),
     );

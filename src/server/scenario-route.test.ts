@@ -1,3 +1,4 @@
+import { messageText } from '../core/model/index.js';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Hono } from 'hono';
@@ -169,7 +170,8 @@ describe('POST /api/docs/:docId/scenario', () => {
     // Citing a section that was never retrieved fails validation on every attempt.
     provider.behavior = (req) => {
       const name =
-        /<persona>([^<]+)<\/persona>/.exec(req.prompt)?.[1] ?? 'Alex';
+        /<persona>([^<]+)<\/persona>/.exec(messageText(req.prompt))?.[1] ??
+        'Alex';
       const bad = exampleScenario(name);
       for (const frame of bad.frames)
         if (frame.kind !== 'setup') frame.citations = ['sec-999'];

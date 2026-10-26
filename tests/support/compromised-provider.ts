@@ -47,8 +47,10 @@ export function compromisedProvider(
       if (req.schemaName !== 'scenario') return base.generateObject(req);
       provider.scenarioCalls++;
       const persona =
-        /<persona>([^<]+)<\/persona>/.exec(req.prompt)?.[1] ?? 'Alex';
-      const section = /section="([^"]+)"/.exec(req.prompt)?.[1] ?? 'sec-1';
+        /<persona>([^<]+)<\/persona>/.exec(messageText(req.prompt))?.[1] ??
+        'Alex';
+      const section =
+        /section="([^"]+)"/.exec(messageText(req.prompt))?.[1] ?? 'sec-1';
       const scenario: Scenario = scenarioFor(scenarioMode, persona, section);
       return Promise.resolve({
         object: scenario as T,

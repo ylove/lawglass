@@ -94,6 +94,9 @@ export async function generateScenario(
     subject === undefined
       ? personaName(excerpts)
       : subjectPersonaName(input.docId ?? '', subject);
+  // TODO(#305): in whole mode the bill is the large, repeated part of this prompt. Once
+  // ObjectRequest.prompt accepts parts (string | LlmTextPart[]), send the bill block first with
+  // `cache: true` and the persona, subject and question after it. Until then it goes uncached.
   const result = await input.provider.generateObject({
     system:
       subject === undefined

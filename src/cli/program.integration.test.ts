@@ -481,3 +481,13 @@ test.each([
     port: undefined,
   });
 });
+
+test('ask --json emits the answer with its context mode and no streamed prose or footer', async () => {
+  await run(['ingest', 'https://example.gov/s9001.xml', '--name', 'garden']);
+  output = '';
+  await run(['ask', 'garden', 'What are the garden grants?', '--json']);
+  const value = JSON.parse(output) as { context: string; text: string };
+  expect(value.context).toBe('whole');
+  expect(value.text).toContain('[S:sec-');
+  expect(output).not.toContain('Citations:');
+});

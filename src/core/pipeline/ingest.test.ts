@@ -1,3 +1,4 @@
+import { assertNewYorkFetch } from '../fetch/new-york.js';
 import { BRAND } from '../brand.js';
 import { readParseLimits } from '../parse/limits.js';
 import { MemoryBackend } from '../../../tests/contracts/memory-backend.js';
@@ -20,7 +21,8 @@ import {
   stubPdfParser,
   type PipelineEnv,
 } from '../../../tests/support/pipeline-env.js';
-import { AppError, type AnswerResult } from '../model/index.js';
+import { documentContext } from '../answer/context.js';
+import { AppError, messageText, type AnswerResult } from '../model/index.js';
 import { ingest, type IngestDeps, type IngestProgress } from './ingest.js';
 import { Limits } from './limits.js';
 
@@ -179,6 +181,21 @@ test('a registry entry whose index vanished is re-indexed', async () => {
   expect(again.stats.reused).toBe(false);
   expect(await env.backend.hasDocument(first.doc.docId)).toBe(true);
   expect(await env.registry.list()).toHaveLength(1);
+});
+
+test('ingest forgets any earlier whole-bill scan of the document', async () => {
+  env.serve('https://example.gov/s9001.xml', makeCongressionalBillXml());
+  const first = await ingest('https://example.gov/s9001.xml', deps());
+  const { sections } = await env.registry.getDocument(first.doc.docId);
+  const budget = { budget: 1_000_000 };
+  await documentContext(env.backend, first.doc.docId, sections, budget);
+  const get = vi.spyOn(env.backend, 'getChunks');
+  await documentContext(env.backend, first.doc.docId, sections, budget);
+  expect(get).not.toHaveBeenCalled();
+  await env.backend.deleteDocument(first.doc.docId);
+  await ingest('https://example.gov/s9001.xml', deps());
+  await documentContext(env.backend, first.doc.docId, sections, budget);
+  expect(get).toHaveBeenCalled();
 });
 
 test('uses the requested label, and default labels never collide', async () => {
@@ -539,7 +556,7 @@ test('metadata text does not repeat header lines that the body already starts wi
   const seen: string[] = [];
   const real = env.provider.generateObject.bind(env.provider);
   vi.spyOn(env.provider, 'generateObject').mockImplementation((req) => {
-    seen.push(req.prompt);
+    seen.push(messageText(req.prompt));
     return real(req);
   });
   env.serve(
@@ -802,4 +819,78 @@ test('an already-aborted ingest does nothing', async () => {
     }),
   ).rejects.toBeDefined();
   expect(fetcher).not.toHaveBeenCalled();
+});
+
+test('NY latest pages fetch current Assembly full text, never the blocked Senate landing page', async () => {
+  const { bracketHtml } = await import('../../../tests/synth/brackets.js');
+  const textUrl = 'https://nyassembly.gov/leg/?bn=S04321&term=2025&Text=Y';
+  env.serve(
+    textUrl,
+    { bytes: Buffer.from(`<h3 id="jump_to_Text">Text</h3>${bracketHtml()}`) },
+    'text/html',
+  );
+  const fetcher = vi.fn(env.runtime.fetcher);
+  const result = await ingest(
+    'https://www.nysenate.gov/legislation/bills/2025/S4321',
+    deps({ fetcher }),
+  );
+  expect(env.fetches).toEqual([textUrl]);
+  expect(fetcher).toHaveBeenCalledWith(
+    textUrl,
+    expect.objectContaining({
+      refresh: true,
+      validateUrl: assertNewYorkFetch,
+    }),
+  );
+  expect(result.normalized.metadata).toMatchObject({
+    jurisdiction: 'New York',
+    version: 'Amended (A)',
+    billNumber: 'S. 4321A',
+  });
+  expect(result.stats.deletedSpanCount).toBeGreaterThan(0);
+  const stored = await env.registry.getDocument(result.doc.docId);
+  expect(stored.metadata.version).toBe('Amended (A)');
+});
+
+test.each([
+  'https://www.nysenate.gov/legislation/bills/2025/S4321A',
+  'https://www.nysenate.gov/legislation/bills/2025/S4321/amendment/A',
+  'https://nyassembly.gov/leg/?bn=S04321A&term=2025&Summary=Y',
+  'https://legislation.nysenate.gov/pdf/bills/2025/S4321A',
+])('NY named version uses its PDF for %s', async (url) => {
+  const { bracketPdf } = await import('../../../tests/synth/brackets.js');
+  const textUrl = 'https://legislation.nysenate.gov/pdf/bills/2025/S4321A';
+  env.serve(textUrl, { bytes: await bracketPdf() }, 'application/pdf');
+  const result = await ingest(url, deps());
+  expect(env.fetches).toEqual([textUrl]);
+  expect(result.normalized.metadata).toMatchObject({
+    billNumber: 'S. 4321A',
+    version: 'Amended (A)',
+  });
+  expect(result.stats.deletedSpanCount).toBeGreaterThan(0);
+});
+
+test('NY source errors do not fall back to a different version', async () => {
+  await expect(
+    ingest('https://www.nysenate.gov/legislation/bills/2025/S4321A', deps()),
+  ).rejects.toMatchObject({ code: 'FETCH_FAILED' });
+  expect(env.fetches).toEqual([
+    'https://legislation.nysenate.gov/pdf/bills/2025/S4321A',
+  ]);
+});
+
+test('NY fetched final URLs are revalidated even with an injected fetcher', async () => {
+  const { bracketHtml } = await import('../../../tests/synth/brackets.js');
+  const textUrl = 'https://nyassembly.gov/leg/?bn=S04321&term=2025&Text=Y';
+  env.serve(textUrl, { bytes: Buffer.from(bracketHtml()) }, 'text/html');
+  const fetcher: IngestDeps['fetcher'] = async (url, options) => ({
+    ...(await env.runtime.fetcher(url, options)),
+    finalUrl: 'https://evil.example/bill',
+  });
+  await expect(
+    ingest(
+      'https://www.nysenate.gov/legislation/bills/2025/S4321',
+      deps({ fetcher }),
+    ),
+  ).rejects.toMatchObject({ code: 'SSRF_BLOCKED' });
 });

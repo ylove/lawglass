@@ -1,9 +1,11 @@
+import { resolveNewYork, assertNewYorkFetch } from '../fetch/new-york.js';
 /**
  * The shared ingest pipeline: fetch -> parse -> metadata -> chunk -> enrich -> index.
  * The CLI, the server (#29) and eval (#32) all call this, so none of them re-implements
  * dedupe, eviction or cleanup-on-failure.
  */
 import { createHash } from 'node:crypto';
+import { deleteIndexedDocument, forgetDocument } from '../answer/context.js';
 import {
   assertChunkLimit,
   assertPageLimit,
@@ -53,6 +55,7 @@ export type Fetcher = (
     signal?: AbortSignal | undefined;
     validateUrl?: ((url: URL) => void) | undefined;
     refresh?: boolean | undefined;
+    maxBytes?: number | undefined;
     parseLimits?: ParseLimits | undefined;
   },
 ) => Promise<SafeFetchResult>;
@@ -390,7 +393,7 @@ async function enforceCap(deps: IngestDeps, keep: string): Promise<void> {
     const cap = Math.max(1, deps.maxDocs ?? DEFAULT_MAX_DOCS);
     for (const old of await registry.evictionCandidates(cap)) {
       if (old.docId === keep || old.backend !== backend.kind) continue;
-      await backend.deleteDocument(old.docId);
+      await deleteIndexedDocument(backend, old.docId);
       await registry.remove(old.docId);
     }
   } catch {
@@ -425,10 +428,13 @@ async function ingestWithinLimits(
   deps = { ...deps, parseLimits: deps.parseLimits ?? readParseLimits() };
   opts.onProgress?.({ stage: 'fetching', detail: url });
   // WRAPPER_PAGE (with candidate links in `details`) propagates untouched for callers to offer.
-  const plan = resolveHistory(url);
+  const newYork = resolveNewYork(url);
+  const plan = newYork ? undefined : resolveHistory(url);
   let attachment: HistoryAttachment | undefined;
-  let fetchUrl = url;
-  let validateUrl: (url: URL) => void = assertNoCongressFetch;
+  let fetchUrl = newYork?.textUrl ?? url;
+  let validateUrl: (url: URL) => void = newYork
+    ? assertNewYorkFetch
+    : assertNoCongressFetch;
   if (plan) {
     const source = historySource(plan.source);
     validateUrl = (url) => {
@@ -463,6 +469,7 @@ async function ingestWithinLimits(
     signal,
     validateUrl,
     parseLimits: deps.parseLimits,
+    ...(newYork?.latest ? { refresh: true } : {}),
   });
   validateUrl(new URL(fetched.finalUrl));
   signal?.throwIfAborted();
@@ -585,6 +592,8 @@ async function ingestLocked(
       progress({ stage: 'embedding', done: p.done, total: p.total });
     });
     embedTokens = usage.embedTokens;
+    // Chunks changed (or just became visible): no earlier whole-bill scan may be trusted.
+    forgetDocument(backend, docId);
     signal?.throwIfAborted();
     await saveHistory(doc, deps, attachment);
     const spent = {
@@ -612,7 +621,7 @@ async function ingestLocked(
         !known &&
         (await registry.list().catch(() => [])).some((e) => e.docId === docId);
       if (!registeredMeanwhile) {
-        await backend.deleteDocument(docId).catch(() => undefined);
+        await deleteIndexedDocument(backend, docId).catch(() => undefined);
         if (!known)
           await deleteHistory(registry.configDir, docId).catch(() => undefined);
       }

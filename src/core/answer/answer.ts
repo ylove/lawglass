@@ -12,10 +12,12 @@ import {
 } from '../model/index.js';
 import { coveredSectionIds, validateCitations } from './citations.js';
 import { createEchoGuard, echoesSystemPrompt } from './echo.js';
+import { wholeBillEffort, type ContextMode } from './context.js';
 import { buildPrompt } from './prompt.js';
 import { fleschKincaidGrade, stripCitations } from './readability.js';
 
 export interface AnswerContext {
+  mode?: ContextMode | undefined;
   /** Retrieved hits, best first. */
   hits: readonly SearchHit[];
   /** Definition chunks injected for defined terms used in the hits. */
@@ -49,13 +51,15 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
 
   const prompt = buildPrompt({
     question: input.question,
+    mode: context.mode,
     hits: context.hits,
     definitions: context.definitions,
     metadata: context.metadata,
     chipInstruction: input.chipInstruction,
   });
 
-  // Nothing to ground an answer in: decline without spending a model call.
+  // Nothing to ground an answer in (in either mode, e.g. a bill with no live text): decline
+  // without spending a model call.
   if (prompt.hits.length === 0) {
     onToken?.(DECLINE_TEXT);
     return {
@@ -79,7 +83,8 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
   for await (const event of provider.streamText({
     system: prompt.system,
     messages: [{ role: 'user', content: prompt.user }],
-    maxTokens: input.maxTokens ?? 8192,
+    maxTokens: input.maxTokens ?? (context.mode === 'whole' ? 16_000 : 8192),
+    ...(context.mode === 'whole' ? { effort: wholeBillEffort() } : {}),
     signal: input.signal,
   })) {
     if (event.type === 'text') {
@@ -149,5 +154,6 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
     readingGrade: fleschKincaidGrade(stripCitations(validated.text)),
     ...base,
     usage,
+    context: context.mode ?? 'excerpts',
   };
 }

@@ -1,3 +1,4 @@
+import { envVar } from '../brand.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
@@ -1012,3 +1013,6 @@ describe('budgets and question hygiene (LLM10)', () => {
     expect(limits.pool('ask').inFlight).toBe(0);
   });
 });
+// These tests pin the retained retrieval/outline strategies.
+beforeEach(() => vi.stubEnv(envVar('WHOLE_BILL_MAX_TOKENS'), '0'));
+afterEach(() => vi.unstubAllEnvs());

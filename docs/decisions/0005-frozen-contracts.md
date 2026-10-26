@@ -74,3 +74,7 @@ The v1.1 round (milestone M13) grows the contracts once, up front, so its parall
 - **`LocateMatch`:** the exact quoted words as `Span`s copied from the section, so the model cannot write them; a `LocateLabel` computed from span status (`added | removed | changed | existing | in-bill`), so the model cannot choose it; one cited plain sentence; optional `conditions` and `amends`.
 - **`LocateResponse`:** `found | not-found | disabled` and at most 3 matches. `not-found` is never a verdict.
 - **`LocateVersionsResponse`:** plain text overlap across the official versions, with no model call.
+
+## Amendment 2026-10-26 (#304)
+
+`ObjectRequest.prompt` may now be ordered `LlmTextPart`s, like a `TextRequest` message, and `ObjectRequest` gains the same `effort` hint. Structured calls that read a whole bill, such as the "Section by section" briefs (#276), can then reuse the cached bill prefix. Anthropic maps the parts to text blocks with `cache_control`; the other providers join them. The change is additive: a string prompt behaves as before.

@@ -63,7 +63,7 @@ test.each([
   }).toThrow(
     expect.objectContaining({
       code: 'INVALID_INPUT',
-      userMessage: `${BRAND.displayName} currently reads U.S. federal bills (congress.gov, govinfo.gov) and Ohio legislation (legislature.ohio.gov). Other states are on the roadmap.`,
+      userMessage: `${BRAND.displayName} currently reads U.S. federal bills (congress.gov, govinfo.gov) Ohio legislation (legislature.ohio.gov), and New York bills (nysenate.gov, nyassembly.gov). Other states are on the roadmap.`,
     }),
   );
 });
@@ -86,3 +86,25 @@ test('compares case-insensitively and overrides rather than extends defaults', (
     ingestHosts({}),
   );
 });
+
+test.each(['nysenate.gov', 'www.nysenate.gov'])(
+  'accepts %s when pasted but never fetches it',
+  (host) => {
+    const url = new URL(`https://${host}/legislation/bills/2025/S1234`);
+    expect(() => {
+      checkIngestHost(url.href, ingestHosts({}));
+    }).not.toThrow();
+    expect(() => {
+      checkIngestFetchHost(url, ingestHosts({}));
+    }).toThrow(expect.objectContaining({ code: 'INVALID_INPUT' }));
+  },
+);
+
+test.each(['nyassembly.gov', 'www.nyassembly.gov', 'legislation.nysenate.gov'])(
+  'keeps official NY text fetch host %s',
+  (host) => {
+    expect(() => {
+      checkIngestFetchHost(new URL(`https://${host}/bill`), ingestHosts({}));
+    }).not.toThrow();
+  },
+);

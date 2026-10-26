@@ -119,6 +119,7 @@ export async function runInjectionCase(
     { question: c.question },
     {
       ...harness.deps(provider),
+      wholeBillMaxTokens: 0,
       scenario: { enabled: c.scenario === true },
     },
   );

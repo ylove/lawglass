@@ -146,6 +146,9 @@ export const createRuntimeFrom =
           validateUrl: options?.validateUrl,
           refresh: options?.refresh,
           parseLimits: options?.parseLimits,
+          ...(options?.maxBytes === undefined
+            ? {}
+            : { maxBytes: options.maxBytes }),
         }),
       now: () => new Date(),
       maxDocs: config.maxDocs,
