@@ -126,6 +126,34 @@ describe('delegations chip: lede plus list', () => {
     expect(answer.usage.outputTokens).toBeGreaterThan(0);
   });
 
+  it('never regenerates the lede for reading level, so its token cap and metering hold', async () => {
+    // A lede hard enough to trip any ceiling; the reading-level option is passed as for any chip.
+    const hard =
+      'Notwithstanding other law, the Secretary shall promulgate regulations establishing comprehensive implementation requirements [S:sec-2].';
+    const provider = new ScriptedProvider({ reply: hard });
+    const { answer } = await runDelegationsChip(chip, DOC, deps(provider), {
+      readingLevel: { maxGrade: 1 },
+    });
+    // One model call only, whatever the grade: the lede is capped at LEDE_MAX_TOKENS and the
+    // call is the one the caller already metered.
+    expect(provider.calls).toHaveLength(1);
+    expect(answer.simplified).toBeUndefined();
+    expect(answer.text.startsWith('Notwithstanding other law')).toBe(true);
+    const request = provider.calls[0] as unknown as { maxTokens: number };
+    expect(request.maxTokens).toBeLessThanOrEqual(300);
+  });
+
+  it('checks the lede citations on the final text: a lede citing outside the list is still dropped', async () => {
+    const provider = new ScriptedProvider({
+      reply: 'Hard hard regulations promulgation [S:sec-99].',
+    });
+    const { answer } = await runDelegationsChip(chip, DOC, deps(provider), {
+      readingLevel: { maxGrade: 1 },
+    });
+    expect(provider.calls).toHaveLength(1);
+    expect(answer.text.startsWith('**Decided later by**')).toBe(true);
+  });
+
   it('shows the model only the extracted quotes, tagged by group', async () => {
     const provider = new ScriptedProvider({
       reply: 'Rules come later [S:sec-2].',

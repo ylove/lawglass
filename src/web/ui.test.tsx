@@ -285,6 +285,15 @@ describe('document flow', () => {
     ).toBeTruthy();
   });
 
+  test('an answer shows its measured reading level', async () => {
+    render(<App api={mock()} />);
+    await ready();
+    fireEvent.click(
+      screen.getByRole('button', { name: 'Who does it affect?' }),
+    );
+    expect(await screen.findByText('Reading level: grade 7')).toBeTruthy();
+  });
+
   test('a declined answer shows the decline sentence without sources', async () => {
     render(<App api={mock()} />);
     await ready();

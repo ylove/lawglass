@@ -423,6 +423,9 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   });
 
   const summary = createSummaryService(runtime, {
+    log: (e) => {
+      log.backgroundAnswerEvent(e);
+    },
     publicMode,
     now,
     waitMs: options.summaryWaitMs,
@@ -835,6 +838,11 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
             registry: runtime.registry,
             retrievalMode: runtime.retrievalMode,
             chips: runtime.chips,
+            // A public visitor's question costs one model call, not two: no rewrite there.
+            readingLevel: publicMode ? undefined : {},
+            log: (e) => {
+              log.answerEvent(c, e, 0);
+            },
             // Public servers make no extra model call for a visitor's story.
             scenario: { enabled: !publicMode },
             publicMode,

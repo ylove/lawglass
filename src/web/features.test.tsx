@@ -66,6 +66,35 @@ describe('summary on arrival', () => {
     expect(screen.queryByRole('status')).toBeNull();
   });
 
+  test('the summary shows its reading level, and says when it was simplified', async () => {
+    const api = mock();
+    const original = api.getSummary.bind(api);
+    api.getSummary = async (...args) => {
+      const r = await original(...args);
+      return r.answer
+        ? {
+            ...r,
+            answer: { ...r.answer, readingGrade: 6.6, simplified: true },
+          }
+        : r;
+    };
+    const { doc, detail } = await sampleDetail(api);
+    render(
+      <SummaryPanel
+        api={api}
+        docId={doc.docId}
+        preview={detail.preview}
+        officialSummary={undefined}
+        publicMode={false}
+        onOpenSection={() => undefined}
+        pollMs={5}
+      />,
+    );
+    expect(
+      await screen.findByText('Reading level: grade 7 (simplified)'),
+    ).toBeTruthy();
+  });
+
   test('the whole page keeps a single role=status while the summary arrives', async () => {
     render(<App api={mock()} />);
     await ready();

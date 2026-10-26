@@ -3,6 +3,8 @@
  * the answer cache makes sure it is generated at most once per provider, model and prompt
  * version, and public mode never starts a generation.
  */
+import type { AnswerLog } from '../core/answer/log.js';
+import { REGENERATION_VERSION } from '../core/answer/regenerate.js';
 import { join } from 'node:path';
 import { documentContext, type ContextMode } from '../core/answer/context.js';
 import { referenceTokens } from '../core/answer/references.js';
@@ -19,9 +21,10 @@ import { ask } from '../core/pipeline/index.js';
 
 /**
  * The scenario rides inside the cached summary, so its prompt is part of the key: editing it
- * must not serve summaries whose scenarios were made the old way.
+ * must not serve summaries whose scenarios were made the old way. Likewise the regeneration rule:
+ * the cached text is the regenerated text.
  */
-export const SUMMARY_CACHE_VERSION = `${SUMMARY_PROMPT_VERSION}.${SCENARIO_PROMPT_VERSION}`;
+export const SUMMARY_CACHE_VERSION = `${SUMMARY_PROMPT_VERSION}.${SCENARIO_PROMPT_VERSION}.${REGENERATION_VERSION}`;
 
 function summaryKeyFor(
   runtime: CliRuntime,
@@ -117,6 +120,7 @@ export function createSummaryService(
     publicMode: boolean;
     now?: () => number;
     waitMs?: number | undefined;
+    log?: AnswerLog | undefined;
   },
 ): SummaryService {
   const now = options.now ?? Date.now;
@@ -159,6 +163,10 @@ export function createSummaryService(
             registry,
             retrievalMode: runtime.retrievalMode,
             chips: runtime.chips,
+            // Rewritten before it is cached, so a cache hit is already at reading level.
+            // Cached for every reader and nobody is waiting: the normal ceiling.
+            readingLevel: { background: true },
+            log: options.log,
             // Not deferred: a single-subject bill's cached summary carries its scenario.
             scenario: { enabled: true },
           },

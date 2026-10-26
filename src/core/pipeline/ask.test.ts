@@ -1039,3 +1039,168 @@ describe('budgets and question hygiene (LLM10)', () => {
 // These tests pin the retained retrieval/outline strategies.
 beforeEach(() => vi.stubEnv(envVar('WHOLE_BILL_MAX_TOKENS'), '0'));
 afterEach(() => vi.unstubAllEnvs());
+
+// ---------------------------------------------------------------------------------------------
+// Reading level (#285)
+// ---------------------------------------------------------------------------------------------
+
+describe('reading level', () => {
+  const hardFor = (id: string) =>
+    `The Administrator shall promulgate regulations establishing eligibility requirements for participating municipalities, which must demonstrate substantial compliance with applicable environmental standards [S:${id}]. Each qualifying municipality receives $50,000 annually for 3 years [S:${id}].`;
+  const easyFor = (id: string) =>
+    `The agency must write rules. Towns must follow them to take part [S:${id}]. Each town gets $50,000 each year for 3 years [S:${id}].`;
+
+  /** Hard on the first try, easy once the plain-language instruction is in the prompt. */
+  function hardThenEasy(id: string, second?: string) {
+    return new ScriptedProvider({
+      reply: (req) =>
+        JSON.stringify(req.messages).includes('6th-grade reader')
+          ? (second ?? easyFor(id))
+          : hardFor(id),
+    });
+  }
+
+  async function setup() {
+    const docId = await load(
+      'https://example.gov/s9001.xml',
+      makeCongressionalBillXml(),
+    );
+    const question = 'What are the garden grants?';
+    const probe = await ask(docId, { question }, askDeps());
+    const id = probe.answer.citations[0]?.sectionId ?? '';
+    expect(id).not.toBe('');
+    return { docId, question, id };
+  }
+
+  test('a freeform answer above the ceiling is regenerated, and the usage is added and recorded', async () => {
+    const { docId, question, id } = await setup();
+    const [before] = await env.registry.list();
+    const provider = hardThenEasy(id);
+    const result = await ask(
+      docId,
+      { question },
+      askDeps({ provider, readingLevel: { maxGrade: 8 } }),
+    );
+    expect(result.answer.text).toBe(easyFor(id));
+    expect(result.answer.simplified).toBe(true);
+    expect(result.answer.readingGrade).toBeLessThan(8);
+    expect(result.answer.citations.map((c) => c.sectionId)).toEqual([id]);
+    expect(provider.calls).toHaveLength(2);
+    expect(result.answer.usage.inputTokens).toBe(2);
+    const [after] = await env.registry.list();
+    expect(after?.usage.llmInputTokens).toBeGreaterThan(
+      before?.usage.llmInputTokens ?? 0,
+    );
+  });
+
+  test('no second call when readingLevel is unset, the ceiling is 0, or the answer is easy enough', async () => {
+    const { docId, question, id } = await setup();
+    for (const readingLevel of [undefined, { maxGrade: 0 }, { maxGrade: 99 }]) {
+      const provider = hardThenEasy(id);
+      const r = await ask(
+        docId,
+        { question },
+        askDeps({ provider, readingLevel }),
+      );
+      expect(r.answer.simplified).toBeUndefined();
+      expect(provider.calls).toHaveLength(1);
+    }
+  });
+
+  test('the second call is metered: past the per-minute ceiling the first answer is kept', async () => {
+    const { docId, question, id } = await setup();
+    const limits = (max: number) =>
+      new Limits({
+        maxConcurrentIngest: 1,
+        maxConcurrentAsk: 1,
+        maxCallsPerMinute: max,
+      });
+    const lines: unknown[] = [];
+    const refused = hardThenEasy(id);
+    const r1 = await ask(
+      docId,
+      { question },
+      askDeps({
+        provider: refused,
+        readingLevel: { maxGrade: 8 },
+        limits: limits(1),
+        log: (l) => lines.push(l),
+      }),
+    );
+    expect(r1.answer.text).toBe(hardFor(id));
+    expect(refused.calls).toHaveLength(1);
+    expect(lines).toContainEqual({
+      event: 'regeneration_refused',
+      reason: 'ERROR',
+    });
+
+    const r2 = await ask(
+      docId,
+      { question },
+      askDeps({
+        provider: hardThenEasy(id),
+        readingLevel: { maxGrade: 8 },
+        limits: limits(2),
+      }),
+    );
+    expect(r2.answer.simplified).toBe(true);
+  });
+
+  test('a refused regeneration is logged and the first answer stands', async () => {
+    const { docId, question, id } = await setup();
+    const lines: unknown[] = [];
+    const r = await ask(
+      docId,
+      { question },
+      askDeps({
+        provider: hardThenEasy(id, 'Towns get money.'),
+        readingLevel: { maxGrade: 8 },
+        log: (l) => lines.push(l),
+      }),
+    );
+    expect(r.answer.text).toBe(hardFor(id));
+    expect(lines).toEqual([
+      { event: 'regeneration_refused', reason: 'NO_CITATION' },
+    ]);
+  });
+
+  test('a question about changes is not regenerated', async () => {
+    const { docId, id } = await setup();
+    const provider = hardThenEasy(id);
+    const r = await ask(
+      docId,
+      { question: 'What does this bill strike or remove?' },
+      askDeps({ provider, readingLevel: { maxGrade: 8 } }),
+    );
+    expect(r.answer.simplified).toBeUndefined();
+    expect(provider.calls).toHaveLength(1);
+  });
+
+  test('chips are regenerated; the changes chip and a chip with no model call are not', async () => {
+    const { docId, id } = await setup();
+    const summary = hardThenEasy(id);
+    const s = await ask(
+      docId,
+      { chipId: 'summary' },
+      askDeps({ provider: summary, readingLevel: { maxGrade: 8 } }),
+    );
+    expect(s.answer.simplified).toBe(true);
+    expect(summary.calls).toHaveLength(2);
+
+    const changes = hardThenEasy(id);
+    const c = await ask(
+      docId,
+      { chipId: 'what-changes' },
+      askDeps({ provider: changes, readingLevel: { maxGrade: 8 } }),
+    );
+    expect(c.answer.simplified).toBeUndefined();
+
+    const sponsors = hardThenEasy(id);
+    await ask(
+      docId,
+      { chipId: 'sponsors' },
+      askDeps({ provider: sponsors, readingLevel: { maxGrade: 8 } }),
+    );
+    expect(sponsors.calls).toHaveLength(0);
+  });
+});

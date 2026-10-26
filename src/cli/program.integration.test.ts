@@ -336,6 +336,114 @@ test('ask prints text from other chips and the model unchanged (no unescaping)',
   expect(output).toContain('Saved to C:\\*.txt');
 });
 
+test('ask prints "In simpler words:" and the final text when the answer was rewritten', async () => {
+  await run(['ingest', 'https://example.gov/gardens.txt', '--name', 'g']);
+  const streamed = 'A very long and tangled first draft [S:sec-1].';
+  const rewritten = 'A short plain version [S:sec-1].';
+  const result = (simplified: boolean) => ({
+    answer: {
+      text: simplified ? rewritten : streamed,
+      citations: [],
+      invalidCitations: [],
+      warnings: [],
+      declined: false,
+      readingGrade: 5,
+      provider: 'mock' as const,
+      model: 'm',
+      usage: { inputTokens: 0, outputTokens: 0 },
+      ...(simplified && { simplified: true }),
+    },
+    hits: [],
+    backendUsage: {
+      embedTokens: 0,
+      rerankUnits: 0,
+      readUnits: 0,
+      writeUnits: 0,
+    },
+    mode: 'whole' as const,
+  });
+  for (const simplified of [true, false]) {
+    const runtime = {
+      ...env.runtime,
+      chips: (
+        _c: unknown,
+        _d: unknown,
+        _x: unknown,
+        opts: { onToken?: ((t: string) => void) | undefined },
+      ) => {
+        opts.onToken?.(streamed);
+        return Promise.resolve(result(simplified));
+      },
+    };
+    output = '';
+    await createProgram({
+      runtime: () => Promise.resolve(runtime),
+      write: (t) => {
+        output += t;
+      },
+    }).parseAsync(['ask', 'g', '--chip', 'summary'], { from: 'user' });
+    expect(output).toContain(streamed);
+    if (simplified) expect(output).toContain(`In simpler words:\n${rewritten}`);
+    else expect(output).not.toContain('In simpler words:');
+  }
+});
+
+test('ask prints the final text when sentences about the excerpts were removed, and ignores marker-only differences', async () => {
+  await run(['ingest', 'https://example.gov/gardens.txt', '--name', 'g']);
+  const make = (streamed: string, final: string) => ({
+    ...env.runtime,
+    chips: (
+      _c: unknown,
+      _d: unknown,
+      _x: unknown,
+      opts: { onToken?: ((t: string) => void) | undefined },
+    ) => {
+      opts.onToken?.(streamed);
+      return Promise.resolve({
+        answer: {
+          text: final,
+          citations: [],
+          invalidCitations: [],
+          warnings: [],
+          declined: false,
+          readingGrade: 5,
+          provider: 'mock' as const,
+          model: 'm',
+          usage: { inputTokens: 0, outputTokens: 0 },
+        },
+        hits: [],
+        backendUsage: {
+          embedTokens: 0,
+          rerankUnits: 0,
+          readUnits: 0,
+          writeUnits: 0,
+        },
+        mode: 'whole' as const,
+      });
+    },
+  });
+  const runWith = async (streamed: string, final: string) => {
+    output = '';
+    await createProgram({
+      runtime: () => Promise.resolve(make(streamed, final)),
+      write: (t) => {
+        output += t;
+      },
+    }).parseAsync(['ask', 'g', '--chip', 'summary'], { from: 'user' });
+  };
+  await runWith(
+    "Grants go to towns [S:a]. The excerpts don't show more.",
+    'Grants go to towns [S:a].',
+  );
+  expect(output).toContain('Final answer:\nGrants go to towns [S:a].');
+  // An invalid marker stripped from the final text is not worth printing twice.
+  await runWith(
+    'Grants go to towns [S:a] [S:bad].',
+    'Grants go to towns [S:a].',
+  );
+  expect(output).not.toContain('Final answer:');
+});
+
 test('ask --chip does not require an LLM key until a model call is made', async () => {
   await run(['ingest', 'https://example.gov/gardens.txt', '--name', 'g']);
   const needs: boolean[] = [];
