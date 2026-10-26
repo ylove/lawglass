@@ -265,3 +265,16 @@ describe('U.S. Code sections written with a typographic dash', () => {
     expect(cites('see 42 U.S.C. 1395w-4')).toEqual(['42 U.S.C. 1395w-4']);
   });
 });
+
+it('New Jersey statute citations are external state_code refs only for NJ bills', () => {
+  const text =
+    'R.S.37:1-13 and N.J.S.A. 2C:12-1 and section 1 of P.L.2023, c.78 (C.55:14K-104 et al.)';
+  const hits = findExternalMatches(text, { jurisdiction: 'New Jersey' });
+  expect(hits.map((h) => [h.kind, h.citation])).toEqual([
+    ['state_code', 'N.J. R.S. 37:1-13'],
+    ['state_code', 'N.J.S.A. 2C:12-1'],
+    ['state_code', 'N.J. P.L.2023, c.78'],
+    ['state_code', 'N.J.S.A. 55:14K-104'],
+  ]);
+  expect(findExternalMatches(text)).toEqual([]);
+});

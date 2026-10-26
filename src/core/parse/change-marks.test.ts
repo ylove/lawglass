@@ -275,7 +275,7 @@ it.each(['NY', 'NJ'] as const)(
   '%s: keeps only editorial labels literal; doubtful brackets are deleted',
   (state) => {
     const doc = parseText(
-      `${state === 'NY' ? NY_LEGEND : NJ_LEGEND}\nSection 1. [Reserved] [sic] [First Reprint] [Second Reprint] [citation 12] [1R].`,
+      `${state === 'NY' ? NY_LEGEND : NJ_LEGEND}\nSection 1. [Reserved] [sic] [First Reprint] [Second Reprint] [citation 12] [1R].\nS1000 [1R] SPONSOR`,
       {
         ...options,
         sourceUrl:
@@ -284,6 +284,7 @@ it.each(['NY', 'NJ'] as const)(
     );
     expect(removed(doc)).toContain('[citation 12]');
     expect(removed(doc)).toContain('[1R]');
+    expect(removed(doc)).not.toMatch(/S1000 \[1R\]/);
     expect(removed(doc)).not.toMatch(/Reserved|sic|Reprint/);
   },
 );

@@ -143,6 +143,105 @@
       "retrievedAt": "2026-10-26",
       "jurisdiction": "US Congress",
       "notes": "Large definitions section with lettered subsections (a)-(ggg) and nested lowercase-roman clauses such as (v) inside (e). Used by the #275 subsection lookup test."
+    },
+    {
+      "name": "nj-s1000-2024-r1",
+      "description": "First reprint: 2 bracketed deletions (one in the title), 5 underlined insertion runs, [1R] running header.",
+      "format": "pdf",
+      "url": "https://pub.njleg.gov/Bills/2024/S1000/1000_R1.PDF",
+      "sha256": "9af8e59d67784f651a5dddd5bec46a3de881d18ba4c59ebcc357e0a475db86aa",
+      "bytes": 260231,
+      "retrievedAt": "2026-10-26",
+      "jurisdiction": "New Jersey",
+      "notes": "Manually counted against the official HTML twin (bold brackets and <u> runs) for #283."
+    },
+    {
+      "name": "nj-s1000-2026-i1",
+      "description": "Introduced: amends R.S.37:1-13 with one underlined insertion run and no brackets.",
+      "format": "pdf",
+      "url": "https://pub.njleg.gov/Bills/2026/S1000/1000_I1.PDF",
+      "sha256": "3b97c52e82a8c1add80b8e629664a92fda9ecc4bbc786d721724304580d58367",
+      "bytes": 203925,
+      "retrievedAt": "2026-10-26",
+      "jurisdiction": "New Jersey",
+      "notes": "Manually counted against the official HTML twin for #283."
+    },
+    {
+      "name": "nj-a3000-2026-i1",
+      "description": "Introduced: new law with no change marks (zero deletions, zero insertions).",
+      "format": "pdf",
+      "url": "https://pub.njleg.gov/Bills/2026/A3000/3000_I1.PDF",
+      "sha256": "1f222a7ab9ee24c4f8d482a07d452019a61c12ad1c5635bd2dd5bdfb3e8df4f0",
+      "bytes": 196088,
+      "retrievedAt": "2026-10-26",
+      "jurisdiction": "New Jersey",
+      "notes": "New-law bill; its HTML twin has no brackets or underlines. Checked for #283."
+    },
+    {
+      "name": "ny-a5000-2025-assembly",
+      "description": "Assembly full-text HTML for A5000: wrapped \"chapter 397 of the laws of 2021\" lines inside amended sections.",
+      "format": "html",
+      "url": "https://nyassembly.gov/leg/?default_fld=&leg_video=&bn=A5000&term=2025&Summary=Y&Text=Y",
+      "sha256": "7763a7f07f05ccddd5c01d669d612caca94e457a6d9902eac396d1eb8b9e7973",
+      "bytes": 20774,
+      "retrievedAt": "2026-10-26",
+      "jurisdiction": "New York",
+      "notes": "Regression for the NY structure fix (#283): prose chapter lines must not become containers. Assembly randomizes cache-buster parameters, so raw hashes may drift."
+    },
+    {
+      "name": "nj-a4-2024-r2",
+      "description": "Second reprint of the 2024 affordable-housing bill: 39 bill sections that quote amended statute sections with colliding numbers.",
+      "format": "pdf",
+      "url": "https://pub.njleg.gov/Bills/2024/A0500/4_R2.PDF",
+      "sha256": "3c716c48274dc5ea2c6dc5f37301e68020aa6c4936e7808c0fd1e9c675973d4e",
+      "bytes": 680638,
+      "retrievedAt": "2026-10-26",
+      "jurisdiction": "New Jersey",
+      "notes": "Structure regression for #283 review: quoted '2.' and '4.' must not replace bill sections 2-4. Superscript footnotes fall mid-sentence."
+    },
+    {
+      "name": "ny-a07601-2025-assembly",
+      "description": "Assembly full-text HTML for A7601: a sunset extender whose quoted law has its own '§ 3. This act shall take effect ... [2025] 2030'.",
+      "format": "html",
+      "url": "https://nyassembly.gov/leg/?default_fld=&leg_video=&bn=A07601&term=2025&Summary=Y&Text=Y",
+      "sha256": "46f2cf542bfd34cef7f1fb673d7d048e16cceef6f9f1b50a3f415f697152ace9",
+      "bytes": 15184,
+      "retrievedAt": "2026-10-26",
+      "jurisdiction": "New York",
+      "notes": "Regression for #306 review: the quoted take-effect section must not become top-level sec-3; the bill's own sections are sec-1 and sec-2. Assembly randomizes cache-buster parameters, so raw hashes may drift."
+    },
+    {
+      "name": "ny-s07334-2025-assembly",
+      "description": "Assembly full-text HTML for S7334: 'Sections 3, 4, 5, 6, 7, 8 and 9 of chapter 18 ... read as follows' reaches the verb on the 4th line.",
+      "format": "html",
+      "url": "https://nyassembly.gov/leg/?default_fld=&leg_video=&bn=S07334&term=2025&Summary=Y&Text=Y",
+      "sha256": "57a0413fa6ea785bc631897f7ee7ea90c8a6b0e9738dd9a04d0d8bf22fc79afd",
+      "bytes": 42099,
+      "retrievedAt": "2026-10-26",
+      "jurisdiction": "New York",
+      "notes": "Regression for #306 review: quoted sections 3-9 stay inside bill section 1; the bill's own sections are sec-1 to sec-3. Assembly randomizes cache-buster parameters, so raw hashes may drift."
+    },
+    {
+      "name": "ny-a06137-2025-assembly",
+      "description": "Assembly full-text HTML for A6137: bill section 10 amends 'section 11-2204' of the administrative code.",
+      "format": "html",
+      "url": "https://nyassembly.gov/leg/?default_fld=&leg_video=&bn=A06137&term=2025&Summary=Y&Text=Y",
+      "sha256": "826d49300a6ae578e683fb66fe67c254c83e7f820284e0c503378429d8a07531",
+      "bytes": 87893,
+      "retrievedAt": "2026-10-26",
+      "jurisdiction": "New York",
+      "notes": "Regression for #306 review: 11-2204 is not bill section 11; sec-1 to sec-27 are consecutive. Assembly randomizes cache-buster parameters, so raw hashes may drift."
+    },
+    {
+      "name": "nj-a170-2024-i1",
+      "description": "Introduced 2024 emergency-management aid bill: bill section 7 opens the first line of page 6.",
+      "format": "pdf",
+      "url": "https://pub.njleg.gov/Bills/2024/A0500/170_I1.PDF",
+      "sha256": "4f9251fe4518e369d2e0e456b179e8c017eed9e153922d5c8842663f94f09c4d",
+      "bytes": 281975,
+      "retrievedAt": "2026-10-26",
+      "jurisdiction": "New Jersey",
+      "notes": "Regression for #306 review: '7. This act shall take effect immediately.' follows '(cf: ...)' at a page break and must open sec-7."
     }
   ]
 }

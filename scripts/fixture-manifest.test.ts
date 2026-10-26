@@ -11,8 +11,8 @@ const manifest = readManifest();
 const fixture = manifest.fixtures[0];
 if (!fixture) throw new Error('The manifest needs at least one fixture');
 
-test('the committed manifest contains thirteen validated public sources', () => {
-  expect(manifest.fixtures).toHaveLength(13);
+test('the committed manifest contains twenty-two validated public sources', () => {
+  expect(manifest.fixtures).toHaveLength(22);
   expect(manifest.fixtures.map(({ name }) => name)).toEqual([
     'us-s202-119-is',
     'us-s202-119-is-html',
@@ -27,6 +27,15 @@ test('the committed manifest contains thirteen validated public sources', () => 
     'nj-s1446-2024-r2',
     'ny-s1234-2025-assembly',
     'us-code-42-1395x',
+    'nj-s1000-2024-r1',
+    'nj-s1000-2026-i1',
+    'nj-a3000-2026-i1',
+    'ny-a5000-2025-assembly',
+    'nj-a4-2024-r2',
+    'ny-a07601-2025-assembly',
+    'ny-s07334-2025-assembly',
+    'ny-a06137-2025-assembly',
+    'nj-a170-2024-i1',
   ]);
   expect(
     manifest.fixtures.every(({ retrievedAt }) =>

@@ -148,3 +148,21 @@ separately exercise pasted and fetched Senate URLs. These tests use no network
 or downloaded legislation. The local fixture tests still assert every deletion
 run against the manual list above; the recount after the fixes remains 4/4, 4/4,
 0/0 and 12/12, with zero deletion false positives.
+
+## Structure fix (#283)
+
+A live A5000 ingest read a wrapped line starting `chapter 397 of the laws of 2021` as a
+Chapter heading and nested the following bill sections under it. NY (and NJ) bills now
+use only the bill's own section markers as containers: `Section 1.` / `§ N.` with a plain
+integer that continues the sequence (a quoted `§ 424-c.` or `§ 1200.` stays text), `1.`
+and `(a)` as subdivisions. `article`/`chapter` patterns are never used, and a section
+heading is kept only as a short leading phrase ending in a period (`Short Title.`),
+never the rest of the first line. Subdivision numbers inside quoted statutes are limited
+to one or two digits. Regressions: `src/core/parse/new-york.test.ts` and the local
+`ny-a5000-2025-assembly` fixture.
+
+The same quoted-section rules as New Jersey apply to NY: after "Section 3 of the ... law is
+amended to read as follows:", the quoted `§ 3.` is a container inside the bill section, `§ 1-a.`
+follows `§ 1`, and numbering restarts at each `PART`. On S8102 the quoted new-article sections
+are `sec-1/1509`..`sec-1/1514` with their subdivisions beneath (`sec-1/1514/4`), not a deepening
+`sec-1/8/3/3/4` chain.

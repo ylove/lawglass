@@ -28,7 +28,8 @@ import {
   changeMarkJurisdiction,
   type ChangeMarkConvention,
 } from './change-marks.js';
-import { jurisdictionSections, newYorkMetadata } from './new-york.js';
+import { jurisdictionSections } from './new-york.js';
+import { stateBillMetadata } from './bill-metadata.js';
 import { trimEndWhile } from '../trim.js';
 
 export type HtmlParseOptions = TextParseOptions & {
@@ -651,7 +652,11 @@ function refineHeading(
           text,
         )?.[1];
     if (found)
-      section.num = section.num?.startsWith('(') ? `(${found})` : found;
+      section.num = section.num?.startsWith('(')
+        ? `(${found})`
+        : section.num?.startsWith('§')
+          ? `§ ${found}`
+          : found;
     else delete section.num;
   }
   return section.num !== before && section.num !== undefined;
@@ -683,7 +688,10 @@ function refineIds(
       const old = section.id;
       const segment = old.slice(old.lastIndexOf('/') + 1).replace(/~\d+$/, '');
       const kind = /^(sec|chapter|article)-/.exec(segment)?.[1];
-      const marker = section.num.replace(/^\((.*)\)$/, '$1').toLowerCase();
+      const marker = section.num
+        .replace(/^\((.*)\)$/, '$1')
+        .replace(/^§\s*/, '')
+        .toLowerCase();
       const base = `${parentId ? `${parentId}/` : ''}${kind ? `${kind}-` : ''}${marker}`;
       used.delete(old);
       let id = base;
@@ -930,7 +938,7 @@ function parseHtmlDocument(
     sourceUrl: options.sourceUrl,
     fetchedAt: options.fetchedAt,
     format: 'html',
-    metadata: newYorkMetadata(
+    metadata: stateBillMetadata(
       sourceLines.map((line) => line.text).join('\n'),
       options,
     ),

@@ -909,3 +909,100 @@ test('NY fetched final URLs are revalidated even with an injected fetcher', asyn
     ),
   ).rejects.toMatchObject({ code: 'SSRF_BLOCKED' });
 });
+
+const njApi = (bill: string, session: number) =>
+  `https://www.njleg.state.nj.us/api/billDetailHist/billText/${bill}/${String(session)}`;
+const njListing = (rows: [string, string][]) =>
+  Buffer.from(
+    JSON.stringify(
+      rows.map(([Description, file]) => ({
+        Description,
+        HTML_Link: `/Bills/2024/S1000/${file}.HTM`,
+        PDFLink: `/Bills/2024/S1000/${file}.PDF`,
+      })),
+    ),
+  );
+
+test('NJ bill page asks the legislature JSON, then reads the newest reprint PDF', async () => {
+  const { bracketPdf } = await import('../../../tests/synth/brackets.js');
+  const pdf = 'https://pub.njleg.gov/Bills/2024/S1000/1000_R2.PDF';
+  env.serve(
+    njApi('S1000', 2024),
+    {
+      bytes: njListing([
+        ['Introduced', '1000_I1'],
+        ['Statement', '1000_S1'],
+        ['Reprint', '1000_R1'],
+        ['Fiscal Estimate', '1000_E1'],
+        ['Reprint', '1000_R2'],
+      ]),
+    },
+    'application/json',
+  );
+  env.serve(pdf, { bytes: await bracketPdf('NJ') }, 'application/pdf');
+  const fetcher = vi.fn(env.runtime.fetcher);
+  const result = await ingest(
+    'https://www.njleg.state.nj.us/bill-search/2025/S1000',
+    deps({ fetcher }),
+  );
+  expect(env.fetches).toEqual([njApi('S1000', 2024), pdf]);
+  expect(fetcher).toHaveBeenCalledWith(
+    njApi('S1000', 2024),
+    expect.objectContaining({ refresh: true }),
+  );
+  expect(result.stats.deletedSpanCount).toBeGreaterThan(0);
+});
+
+test('NJ named version goes straight to its PDF without the JSON', async () => {
+  const { bracketPdf } = await import('../../../tests/synth/brackets.js');
+  const pdf = 'https://pub.njleg.gov/Bills/2024/S1000/1000_R1.PDF';
+  env.serve(pdf, { bytes: await bracketPdf('NJ') }, 'application/pdf');
+  await ingest('https://pub.njleg.gov/Bills/2024/S1000/1000_R1.HTM', deps());
+  expect(env.fetches).toEqual([pdf]);
+});
+
+test('NJ bill without published text fails before any text fetch', async () => {
+  env.serve(
+    njApi('S1000', 2024),
+    { bytes: Buffer.from('[]') },
+    'application/json',
+  );
+  await expect(
+    ingest('https://www.njleg.state.nj.us/bill-search/2024/S1000', deps()),
+  ).rejects.toMatchObject({ code: 'INVALID_INPUT' });
+  expect(env.fetches).toEqual([njApi('S1000', 2024)]);
+});
+
+test('NJ fetched final URLs are revalidated even with an injected fetcher', async () => {
+  env.serve(
+    njApi('S1000', 2024),
+    { bytes: Buffer.from('[]') },
+    'application/json',
+  );
+  const fetcher: IngestDeps['fetcher'] = async (url, options) => ({
+    ...(await env.runtime.fetcher(url, options)),
+    finalUrl: 'https://evil.example/api',
+  });
+  await expect(
+    ingest(
+      'https://www.njleg.state.nj.us/bill-search/2024/S1000',
+      deps({ fetcher }),
+    ),
+  ).rejects.toMatchObject({ code: 'SSRF_BLOCKED' });
+});
+
+test('NJ lookup that returns an HTML page is FETCH_FAILED, never WRAPPER_PAGE with scraped links', async () => {
+  env.serve(
+    njApi('S1000', 2024),
+    {
+      bytes: Buffer.from(
+        '<html><body><h1>Service unavailable</h1><a href="https://example.gov/x.pdf">bill</a></body></html>',
+      ),
+    },
+    'text/html',
+  );
+  await expect(
+    ingest('https://www.njleg.state.nj.us/bill-search/2024/S1000', deps()),
+  ).rejects.toMatchObject({ code: 'FETCH_FAILED' });
+  expect(env.fetches).toEqual([njApi('S1000', 2024)]);
+});

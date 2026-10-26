@@ -54,10 +54,18 @@ export function pathLabel(path: readonly Section[]): string {
   const [first, ...rest] = path.slice(start);
   if (!first) return '';
   let text = numLabel(first) || first.id;
+  // Numbering restarts at each PART of an omnibus bill; the parser leads the heading with it.
+  const part = /^(Part [A-Z]{1,3})(?:\.|$)/.exec(first.heading ?? '')?.[1];
+  if (part && text) text += ` of ${part}`;
   for (const section of rest) {
     const num = section.num;
     if (!num) continue;
-    text += num.startsWith('(') ? num : ` > ${numLabel(section)}`;
+    // A quoted statute section ("§ 1509") sits inside the bill section that quotes it.
+    text += num.startsWith('(')
+      ? num
+      : num.startsWith('§')
+        ? `, quoted ${num}`
+        : ` > ${numLabel(section)}`;
   }
   return text;
 }

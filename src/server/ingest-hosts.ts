@@ -1,4 +1,8 @@
 import { NEW_YORK_HOSTS } from '../core/fetch/new-york.js';
+import {
+  NEW_JERSEY_HOSTS,
+  assertNewJerseyFetch,
+} from '../core/fetch/new-jersey.js';
 import { BRAND, envVar } from '../core/brand.js';
 import { assertHistoryUrl } from '../core/history/allowlist.js';
 import { HISTORY_SOURCES } from '../core/history/resolve.js';
@@ -7,6 +11,7 @@ import { AppError } from '../core/model/index.js';
 
 export const DEFAULT_INGEST_HOSTS = [
   ...NEW_YORK_HOSTS,
+  ...NEW_JERSEY_HOSTS,
   'congress.gov',
   'www.congress.gov',
   'govinfo.gov',
@@ -29,7 +34,7 @@ export function ingestHosts(
 
 export function checkIngestHost(url: string, hosts: ReadonlySet<string>): void {
   if (hosts.has(new URL(url).hostname.toLowerCase())) return;
-  const message = `${BRAND.displayName} currently reads U.S. federal bills (congress.gov, govinfo.gov) Ohio legislation (legislature.ohio.gov), and New York bills (nysenate.gov, nyassembly.gov). Other states are on the roadmap.`;
+  const message = `${BRAND.displayName} currently reads U.S. federal bills (congress.gov, govinfo.gov) Ohio legislation (legislature.ohio.gov), New York bills (nysenate.gov, nyassembly.gov), and New Jersey bills (njleg.state.nj.us, pub.njleg.gov). Other states are on the roadmap.`;
   throw new AppError('INVALID_INPUT', message, { userMessage: message });
 }
 
@@ -44,6 +49,8 @@ export function checkIngestFetchHost(
       'INVALID_INPUT',
       'The New York Senate landing page must be resolved to an official full-text source before fetching.',
     );
+  // New Jersey landing hosts are allowed only for the bill-text JSON the resolver reads.
+  if (NEW_JERSEY_HOSTS.includes(url.hostname)) assertNewJerseyFetch(url);
   if (hosts.has(url.hostname)) return;
   // Sponsor enrichment permits these exact published directory files, never arbitrary paths.
   if ((Object.values(LEGISLATORS_URLS) as string[]).includes(url.href)) return;

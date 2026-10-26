@@ -117,7 +117,7 @@ test.each([true, false])(
   async (privateMode) => {
     const a = app({ privateMode, publicMode: !privateMode });
     for (const host of [
-      'pub.njleg.gov',
+      'www.leg.state.nv.us',
       'www.palegis.us',
       '127.0.0.1',
       'evil.govinfo.gov',

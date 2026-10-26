@@ -32,7 +32,8 @@ import {
   changeMarkConvention,
   changeMarkJurisdiction,
 } from './change-marks.js';
-import { jurisdictionSections, newYorkMetadata } from './new-york.js';
+import { jurisdictionSections } from './new-york.js';
+import { stateBillMetadata } from './bill-metadata.js';
 import {
   layoutPages,
   groupLines,
@@ -503,13 +504,14 @@ export async function parsePdf(
   const marked = applyChangeMarks(layout.lines, options, rawText);
   warnings.push(...marked.warnings);
   warnings.push(...layout.warnings);
-  const metadata = newYorkMetadata(
+  const metadata = stateBillMetadata(
     layout.lines.map((line) => line.text).join('\n'),
     options,
+    rawText,
   );
   if (metadata.jurisdiction === 'New York' && !metadata.billNumber) {
     const cover = pages[0]?.items.map((item) => item.text).join('\n') ?? '';
-    const coverMetadata = newYorkMetadata(cover, options);
+    const coverMetadata = stateBillMetadata(cover, options);
     metadata.billNumber = coverMetadata.billNumber;
     metadata.version = coverMetadata.version;
   }
@@ -608,12 +610,21 @@ export function toSourceLines(
     openingIndents.reduce((a, b) => Math.max(a, b)) -
       openingIndents.reduce((a, b) => Math.min(a, b)) >
       INDENT_TOLERANCE;
-  return lines.map((line) => ({
+  // NJ prints "(cf: P.L.1976, c.45, s.3)" as the last line of a quoted section; whatever follows
+  // starts a new paragraph even when the page break left it at the left margin.
+  const endsQuotedLaw = (index: number): boolean =>
+    /\)\s*$/.test(lines[index - 1]?.text ?? '') &&
+    `${lines[index - 2]?.text ?? ''} ${lines[index - 1]?.text ?? ''}`.includes(
+      '(cf:',
+    );
+  return lines.map((line, index) => ({
     text: line.text,
     page: line.page,
     ...(line.line === undefined ? {} : { line: line.line }),
     ...(useIndent ? { x: line.x } : {}),
     statuses: line.statuses,
-    ...(firstLineIndent && atMargin(line) ? { continuation: true } : {}),
+    ...(firstLineIndent && atMargin(line) && !endsQuotedLaw(index)
+      ? { continuation: true }
+      : {}),
   }));
 }

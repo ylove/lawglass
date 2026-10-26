@@ -50,7 +50,7 @@ test.each(DEFAULT_INGEST_HOSTS)('allows exact official host %s', (host) => {
 });
 
 test.each([
-  'https://pub.njleg.gov/bill',
+  'https://www.nxleg.example/bill',
   'https://www.palegis.us/bill',
   'https://127.0.0.1/bill',
   'https://[::1]/bill',
@@ -63,7 +63,7 @@ test.each([
   }).toThrow(
     expect.objectContaining({
       code: 'INVALID_INPUT',
-      userMessage: `${BRAND.displayName} currently reads U.S. federal bills (congress.gov, govinfo.gov) Ohio legislation (legislature.ohio.gov), and New York bills (nysenate.gov, nyassembly.gov). Other states are on the roadmap.`,
+      userMessage: `${BRAND.displayName} currently reads U.S. federal bills (congress.gov, govinfo.gov) Ohio legislation (legislature.ohio.gov), New York bills (nysenate.gov, nyassembly.gov), and New Jersey bills (njleg.state.nj.us, pub.njleg.gov). Other states are on the roadmap.`,
     }),
   );
 });
@@ -108,3 +108,51 @@ test.each(['nyassembly.gov', 'www.nyassembly.gov', 'legislation.nysenate.gov'])(
     }).not.toThrow();
   },
 );
+
+test.each([
+  'njleg.state.nj.us',
+  'www.njleg.state.nj.us',
+  'njleg.gov',
+  'www.njleg.gov',
+  'pub.njleg.gov',
+  'pub.njleg.state.nj.us',
+])('accepts the New Jersey host %s when pasted', (host) => {
+  expect(() => {
+    checkIngestHost(`https://${host}/bill-search/2026/S1000`, ingestHosts({}));
+  }).not.toThrow();
+  expect(DEFAULT_INGEST_HOSTS).toContain(host);
+});
+
+test('fetches only bill text and the bill-text JSON from New Jersey hosts', () => {
+  const hosts = ingestHosts({});
+  for (const ok of [
+    'https://pub.njleg.gov/Bills/2026/S1000/1000_I1.PDF',
+    'https://pub.njleg.state.nj.us/bills/2024/S1500/1446_R2.PDF',
+    'https://www.njleg.state.nj.us/api/billDetailHist/billText/S1000/2026',
+  ])
+    expect(() => {
+      checkIngestFetchHost(new URL(ok), hosts);
+    }).not.toThrow();
+  for (const bad of [
+    'https://www.njleg.state.nj.us/bill-search/2026/S1000',
+    'https://njleg.gov/api/billDetailHist/billText/S1000/2026',
+    'https://www.njleg.state.nj.us/api/billDetail/billSponsors/S1000/2026',
+    'http://pub.njleg.gov/Bills/2026/S1000/1000_I1.PDF',
+    'https://pub.njleg.gov:8443/Bills/2026/S1000/1000_I1.PDF',
+    'https://pub.njleg.gov/other/file.pdf',
+  ])
+    expect(() => {
+      checkIngestFetchHost(new URL(bad), hosts);
+    }).toThrow();
+});
+
+test.each([
+  'https://evilnjleg.gov/bill',
+  'https://njleg.gov.evil.example/bill',
+  'https://pub.njleg.gov@evil.example/bill',
+  'https://notpub.njleg.gov/bill',
+])('refuses the lookalike %s', (url) => {
+  expect(() => {
+    checkIngestHost(url, ingestHosts({}));
+  }).toThrow(expect.objectContaining({ code: 'INVALID_INPUT' }));
+});

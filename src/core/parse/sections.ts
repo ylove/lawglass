@@ -77,9 +77,51 @@ export const DEFAULT_SECTION_PATTERNS: readonly SectionPattern[] = [
   },
 ];
 
+/**
+ * Decides whether a `section`-kind marker is one of the document's own sections. A rejected
+ * marker is quoted statute text: it becomes a child container of the current section, so
+ * its subdivisions nest under it instead of continuing the previous subdivision stack.
+ */
+export interface SectionGate {
+  /**
+   * `lines` starts with the rest of the marker's line, followed by the next few lines.
+   */
+  accept(marker: string, lines: readonly GateLine[]): boolean;
+  /** Sees every line (as amended) before it is split, e.g. to reset numbering at PART lines. */
+  observe?(lineText: string): void;
+  /** A label such as "Part B" for bill sections opened now; it leads their heading. */
+  qualifier?(): string | undefined;
+}
+
+export interface GateLine {
+  text: string;
+  /** One flag per character of `text`: struck or inserted. */
+  changed: readonly boolean[];
+}
+
+/** How many lines a gate may read to find the end of a section's opening clause. */
+const GATE_LOOKAHEAD_LINES = 10;
+
 export interface SectionDetectionOptions {
   /** Replaces the defaults; extend them with [...DEFAULT_SECTION_PATTERNS, ...]. */
   patterns?: readonly SectionPattern[];
+  /**
+   * Called once per detection run; the returned function decides whether a `section`-kind
+   * marker really opens a section. A rejected marker stays ordinary text of the current
+   * section. Bills use this so numbers inside quoted statutory text cannot become sections.
+   */
+  createSectionGate?: () => SectionGate;
+  /**
+   * Bill sections carry no real titles. When set, a section heading is kept only if it is a
+   * short leading phrase ending in a period ("Short title."), never the rest of the line.
+   */
+  shortSectionHeadings?: boolean;
+  /**
+   * NJ prints `a.`, `(1)`, `(a)`, `(i)` with the same indent, and `(a)` reuses the letters of
+   * `a.`. With this set, a level's first marker (a, 1, i) after a different kind is a child,
+   * not a peer of the earlier same-kind marker.
+   */
+  nestRestartedMarkers?: boolean;
 }
 
 const sourceLines = z.array(
@@ -100,18 +142,31 @@ const sourceLines = z.array(
 );
 
 type MarkerKind =
-  'number' | 'lower-letter' | 'upper-letter' | 'lower-roman' | 'upper-roman';
+  | 'number'
+  | 'lower-letter'
+  | 'upper-letter'
+  | 'lower-roman'
+  | 'upper-roman'
+  /** A quoted statute's own section number inside a bill section. Never a sibling. */
+  | 'quoted';
+
+type MarkerForm = 'paren' | 'dot';
 
 interface Frame<Kind extends HeadingKind | MarkerKind> {
   section: Section;
   kind: Kind;
   marker: string;
+  form?: MarkerForm;
   x: number | undefined;
 }
 
 interface Heading {
   kind: SectionPattern['kind'];
+  /** Set by the section gate: a rejected section marker kept as a quoted container. */
+  quoted?: boolean;
   marker: string;
+  /** "(a)" prints in parentheses; "a." with a dot. NJ uses both for the same letters. */
+  form: MarkerForm;
   heading: string;
   /** Offset of the text after the printed marker, including leading whitespace. */
   bodyStart: number;
@@ -161,6 +216,7 @@ function matchHeading(
     return {
       kind,
       marker,
+      form: trimmed.startsWith('(') ? 'paren' : 'dot',
       bodyStart: text.length - trimmed.length + match[0].length,
       heading: trimmed
         .slice(match[0].length)
@@ -185,7 +241,7 @@ interface LinePart {
   nested?: boolean;
 }
 
-type MarkerContext = Pick<Frame<MarkerKind>, 'kind' | 'marker' | 'x'>;
+type MarkerContext = Pick<Frame<MarkerKind>, 'kind' | 'marker' | 'x' | 'form'>;
 
 function romanOrdinal(marker: string): number {
   const values: Record<string, number> = {
@@ -210,6 +266,8 @@ function romanOrdinal(marker: string): number {
 
 function isNextSibling(current: MarkerContext, next: string): boolean {
   switch (current.kind) {
+    case 'quoted':
+      return false;
     case 'number':
       return /^\d+$/.test(next) && Number(next) === Number(current.marker) + 1;
     case 'lower-letter':
@@ -241,15 +299,28 @@ function splitLine(
   x: number | undefined,
   nested = false,
   inColonList = false,
+  restartNesting = false,
 ): LinePart[] {
   const match = matchHeading(text, patterns);
   if (!match) return [{ text }];
   const context = [...stack];
   let current: MarkerContext | undefined;
   if (match.kind === 'enumeration') {
-    const kind = markerKind(match.marker, x, context, nested);
-    if (!nested) context.length = enumerationDepth(kind, x, context);
-    current = { kind, marker: match.marker, x };
+    const kind = markerKind(
+      match.marker,
+      restartNesting ? undefined : x,
+      context,
+      nested,
+    );
+    if (!nested)
+      context.length = enumerationDepth(
+        kind,
+        x,
+        context,
+        restartNesting ? match.marker : undefined,
+        match.form,
+      );
+    current = { kind, marker: match.marker, form: match.form, x };
     context.push(current);
   } else {
     context.length = 0;
@@ -316,6 +387,7 @@ function splitLine(
       undefined,
       !sibling,
       inColonList || opensColonList,
+      restartNesting,
     ),
   ];
 }
@@ -362,12 +434,29 @@ function markerKind(
   return marker.toLowerCase() === 'i' ? roman : letter;
 }
 
+const FIRST_MARKER = /^(?:1|[aA]|[iI])$/;
+
 function enumerationDepth(
   kind: MarkerKind,
   x: number | undefined,
   stack: readonly MarkerContext[],
+  marker?: string,
+  form?: MarkerForm,
 ): number {
   const previous = stack.at(-1);
+  if (marker !== undefined) {
+    // Same-indent bills: the marker closes everything below the frame it follows in sequence,
+    // which tells `c.` (after `b.`'s whole subtree) from `(c)` (after `(b)`). `b.` never
+    // follows a lone `(a)`: the dotted and parenthesised letters are different levels.
+    const sibling = stack.findLastIndex(
+      (frame) =>
+        isNextSibling(frame, marker) &&
+        (form === undefined || frame.form === undefined || frame.form === form),
+    );
+    if (sibling >= 0) return sibling;
+    if (previous && previous.kind !== kind && FIRST_MARKER.test(marker))
+      return stack.length;
+  }
   if (x !== undefined && previous?.x !== undefined) {
     if (x > previous.x + INDENT_TOLERANCE) return stack.length;
     if (x < previous.x - INDENT_TOLERANCE) {
@@ -482,6 +571,16 @@ export function sectionHeading(
   return body || undefined;
 }
 
+const PROSE_OPENER =
+  /^(?:A|An|The|This|That|Such|Each|Any|Every|No|Nothing|If|When|Unless|Except|As|Notwithstanding|Subject|Subdivision|Subdivisions|Paragraph|Subparagraph|Section|Sections|Subsection|Article|Chapter|Title|Within|Upon|For|In|On|Within|All)\b/;
+
+/** "Short title. This act shall be..." -> "Short title."; prose and long openings -> none. */
+export function shortLeadingHeading(body: string): string | undefined {
+  const phrase = /^([A-Z][^.:;]*\.)(?=\s|$)/.exec(body.trim())?.[1];
+  if (!phrase || PROSE_OPENER.test(phrase)) return undefined;
+  return phrase.split(/\s+/).length <= 6 ? phrase : undefined;
+}
+
 /**
  * Infer a section tree without changing source text. Inline markers split a line into unchanged
  * spans; newlines between lines make sectionText() readable. Parent ranges include descendants,
@@ -495,6 +594,7 @@ export function detectSections(
     throw new AppError('INVALID_INPUT', 'Invalid section source lines.');
   }
   const patterns = options.patterns ?? DEFAULT_SECTION_PATTERNS;
+  const sectionGate = options.createSectionGate?.();
   const roots: Section[] = [];
   const headings: Frame<HeadingKind>[] = [];
   const enumerations: Frame<MarkerKind>[] = [];
@@ -548,13 +648,39 @@ export function detectSections(
     recordLocation(section, line);
   }
 
+  /** The marker's line from `partStart` plus the lines after it, for the section gate. */
+  function gateLines(index: number, partStart: number): GateLine[] {
+    return lines
+      .slice(index, index + GATE_LOOKAHEAD_LINES)
+      .map((line, offset) => {
+        const from = offset === 0 ? partStart : 0;
+        return {
+          text: line.text.slice(from),
+          changed: Array.from(
+            line.text.slice(from),
+            (_char, at) =>
+              (line.statuses?.[from + at] ?? 'unchanged') !== 'unchanged',
+          ),
+        };
+      });
+  }
+
   for (const [index, line] of lines.entries()) {
     // Structure (num, heading, nesting) is read from the text as amended; struck characters
     // still go into the spans, as deleted runs, via the offset map.
     const visible = visibleText(line);
+    sectionGate?.observe?.(visible.text);
     const parts: LinePart[] = line.continuation
       ? [{ text: visible.text }]
-      : splitLine(visible.text, patterns, enumerations, line.x);
+      : splitLine(
+          visible.text,
+          patterns,
+          enumerations,
+          line.x,
+          false,
+          false,
+          options.nestRestartedMarkers,
+        );
     let partStart = 0;
     let visibleStart = 0;
     for (const [partIndex, part] of parts.entries()) {
@@ -564,17 +690,40 @@ export function detectSections(
         partIndex === parts.length - 1
           ? line.text.length
           : (visible.offsets[visibleStart] ?? line.text.length);
-      const match = part.match;
+      const rejected =
+        part.match?.kind === 'section' &&
+        sectionGate &&
+        !sectionGate.accept(part.match.marker, gateLines(index, partStart));
+      const match: Heading | undefined =
+        part.match && rejected
+          ? { ...part.match, kind: 'enumeration', quoted: true }
+          : part.match;
       const nested = part.nested ?? false;
       const x = partIndex > 0 ? undefined : line.x;
       if (match) {
         let parent: Section | undefined;
         let kind: HeadingKind | MarkerKind;
         let base: string;
-        if (match.kind === 'enumeration') {
-          kind = markerKind(match.marker, x, enumerations, nested);
+        if (match.quoted) {
+          kind = 'quoted';
+          enumerations.length = 0;
+          parent = headings.at(-1)?.section ?? getPreamble();
+          base = `${parent.id}/${match.marker.toLowerCase()}`;
+        } else if (match.kind === 'enumeration') {
+          kind = markerKind(
+            match.marker,
+            options.nestRestartedMarkers ? undefined : x,
+            enumerations,
+            nested,
+          );
           if (!nested)
-            enumerations.length = enumerationDepth(kind, x, enumerations);
+            enumerations.length = enumerationDepth(
+              kind,
+              x,
+              enumerations,
+              options.nestRestartedMarkers ? match.marker : undefined,
+              match.form,
+            );
           parent =
             enumerations.at(-1)?.section ??
             headings.at(-1)?.section ??
@@ -599,13 +748,28 @@ export function detectSections(
           match.kind === 'enumeration'
             ? subdivisionHeading(match.heading, line.printedHeading)
             : match.kind === 'section'
-              ? sectionHeading(match.heading, match.marker, line.printedHeading)
+              ? options.shortSectionHeadings
+                ? shortLeadingHeading(match.heading)
+                : sectionHeading(
+                    match.heading,
+                    match.marker,
+                    line.printedHeading,
+                  )
               : match.heading;
+        const part =
+          match.kind === 'section' ? sectionGate?.qualifier?.() : undefined;
         current = {
           id: uniqueId(base),
-          num:
-            match.kind === 'enumeration' ? `(${match.marker})` : match.marker,
-          ...(heading ? { heading } : {}),
+          // A quoted statute section reads "§ 1509", never "(1509)", which looks like a
+          // paragraph of the bill section that quotes it.
+          num: match.quoted
+            ? `§ ${match.marker}`
+            : match.kind === 'enumeration'
+              ? `(${match.marker})`
+              : match.marker,
+          ...(heading || part
+            ? { heading: [part, heading].filter(Boolean).join('. ') }
+            : {}),
           level: (parent?.level ?? 0) + 1,
           spans: [],
           children: [],
@@ -614,6 +778,7 @@ export function detectSections(
         const frame = {
           section: current,
           marker: match.marker,
+          form: match.form,
           x,
         };
         if (kind === 'article' || kind === 'chapter' || kind === 'section') {
