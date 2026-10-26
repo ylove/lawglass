@@ -1,9 +1,14 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
-import { afterEach, expect, test } from 'vitest';
+import { afterEach, beforeEach, expect, test } from 'vitest';
 import { BRAND } from '../core/brand.js';
+import { SAMPLE_PATH, visit } from '../../tests/support/web-routes.js';
 import { App } from './App.js';
 import { createMockApi } from './mock-api.js';
 
+beforeEach(() => {
+  // These suites exercise an open document; the homepage has its own tests.
+  visit(SAMPLE_PATH);
+});
 afterEach(cleanup);
 
 test('the bill title sits in the masthead band, and the h1 stays the product name', async () => {
@@ -18,6 +23,7 @@ test('the bill title sits in the masthead band, and the h1 stays the product nam
 });
 
 test('the home screen shows the hero line outside the h1', async () => {
+  visit('/');
   const api = createMockApi({ delayMs: 0 });
   api.listDocs = () => Promise.resolve([]);
   render(<App api={api} />);

@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import {
   AskEvent,
+  BreakdownResponse,
   DocDetail,
   ScenarioResponse,
   SummaryResponse,
@@ -192,6 +193,61 @@ describe('mock API', () => {
     expect(cached.answer?.scenario?.frames.length).toBeGreaterThanOrEqual(3);
     expect((await m.getSummary(sample!.docId)).status).toBe('cached');
     await expect(m.getSummary('missing')).rejects.toThrow('not been loaded');
+  });
+
+  test('the breakdown is pending, then partial, then cached with briefs that cite real sections', async () => {
+    const m = api();
+    const [sample] = await m.listDocs();
+    const id = sample!.docId;
+    expect(BreakdownResponse.parse(await m.getBreakdown(id))).toEqual({
+      status: 'pending',
+    });
+    const partial = BreakdownResponse.parse(await m.getBreakdown(id));
+    expect(partial).toMatchObject({ status: 'pending' });
+    expect(partial.briefs).toHaveLength(1);
+    const done = BreakdownResponse.parse(await m.getBreakdown(id));
+    expect(done.status).toBe('cached');
+    expect(done.briefs?.map((b) => b.example)).toEqual([
+      'available',
+      'none',
+      'available',
+    ]);
+    for (const brief of done.briefs ?? [])
+      expect(brief.citations.every((c) => c.valid)).toBe(true);
+    await expect(m.getBreakdown('missing')).rejects.toThrow('not been loaded');
+  });
+
+  test('a part example is pending once, then ok; a part with none says so', async () => {
+    const m = api();
+    const [sample] = await m.listDocs();
+    const id = sample!.docId;
+    expect(
+      ScenarioResponse.parse(await m.getSectionExample(id, 'sec-6')).status,
+    ).toBe('pending');
+    const ok = ScenarioResponse.parse(await m.getSectionExample(id, 'sec-6'));
+    expect(ok.status).toBe('ok');
+    expect(
+      ok.scenario?.frames.slice(1).every((f) => f.citations[0] === 'sec-6'),
+    ).toBe(true);
+    const none = ScenarioResponse.parse(await m.getSectionExample(id, 'sec-5'));
+    expect(none).toMatchObject({ status: 'none' });
+    expect(none.note).toBeTruthy();
+    await expect(m.getSectionExample(id, 'sec-1')).rejects.toThrow(
+      'could not be found',
+    );
+  });
+
+  test('a public server has no breakdown and no examples', async () => {
+    const pub = createMockApi({ delayMs: 0, publicMode: true });
+    const [sample] = await pub.listDocs();
+    expect(await pub.getBreakdown(sample!.docId)).toEqual({
+      status: 'disabled',
+    });
+    expect(await pub.getSectionExample(sample!.docId, 'sec-6')).toEqual({
+      status: 'disabled',
+    });
+    expect((await pub.getConfig()).breakdownEnabled).toBe(false);
+    expect((await api().getConfig()).breakdownEnabled).toBe(true);
   });
 
   test('a public server serves the warmed sample summary and disables the rest', async () => {

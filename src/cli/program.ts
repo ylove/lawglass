@@ -178,10 +178,11 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
       ) => {
         validateBindHost(options.host, options.public);
         const port = parsePort(options.port);
-        const { runtime } = await ingestSource(url, options);
-        // The UI lists the most recently used document first, which is the one just ingested.
+        const { runtime, docId } = await ingestSource(url, options);
+        // The browser opens straight to the document just ingested.
         await (dependencies.serve ?? createLauncher({ write }))(runtime, {
           publicMode: options.public ?? false,
+          docId,
           ...(options.host === undefined ? {} : { host: options.host }),
           ...(port === undefined ? {} : { port }),
           ...noOpenRequest(options),

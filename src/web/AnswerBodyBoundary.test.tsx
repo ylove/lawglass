@@ -5,12 +5,16 @@ import {
   screen,
   waitFor,
 } from '@testing-library/react';
-import { afterEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { AnswerBodyBoundary } from './AnswerBodyBoundary.js';
 import * as AnswerModule from './AnswerText.js';
+import { SAMPLE_PATH, visit } from '../../tests/support/web-routes.js';
 import { App } from './App.js';
 import { createMockApi } from './mock-api.js';
 
+beforeEach(() => {
+  visit(SAMPLE_PATH);
+});
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();

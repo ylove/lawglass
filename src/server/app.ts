@@ -6,6 +6,7 @@
 import { deleteIndexedDocument } from '../core/answer/context.js';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
+import { getCookie, setCookie } from 'hono/cookie';
 import { streamSSE } from 'hono/streaming';
 import { bodyLimit } from 'hono/body-limit';
 import { z } from 'zod';
@@ -32,6 +33,7 @@ import { buildDocDetail } from './doc-detail.js';
 import { CHIP_LABELS } from './chips.js';
 import { SlidingWindowLimiter } from './rate-limit.js';
 import { registerLocateRoute } from './locate-route.js';
+import { registerBreakdownRoutes } from './breakdown-route.js';
 import { registerScenarioRoute } from './scenario-route.js';
 import { createSummaryService } from './summary.js';
 import { securityHeaders } from './security-headers.js';
@@ -44,6 +46,14 @@ import {
   ingestHosts,
 } from './ingest-hosts.js';
 import { createLogger, type LogWriter } from './log.js';
+import { readExamples } from './examples.js';
+import {
+  isReaderId,
+  newReaderId,
+  READER_COOKIE,
+  READER_COOKIE_MAX_AGE_S,
+  ReaderLibrary,
+} from './readers.js';
 import { createSessionToken, localSession, readAccessKey } from './session.js';
 
 export interface PublicLimits {
@@ -85,6 +95,8 @@ export interface AppOptions {
   localOnly?: boolean;
   /** Launch token; generated when omitted. Ignored in public mode. */
   sessionToken?: string | undefined;
+  /** Example bills for the homepage; defaults to the examples environment variable. */
+  examples?: ClientConfig['examples'];
   now?: () => number;
 }
 
@@ -138,7 +150,17 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     now,
   );
   const ingests = new SlidingWindowLimiter(limits.ingestsPerHour, HOUR_MS, now);
-  let ingestsInFlight = 0;
+  // Documents with an ingest under way, with a count per document. They are never evicted or
+  // reclaimed, and they count toward the public document cap exactly once.
+  const holds = new Map<string, number>();
+  // Capacity decisions (check, reclaim, reserve) run one at a time; the hosted server is a
+  // single process, so a promise chain is enough.
+  let capTail: Promise<unknown> = Promise.resolve();
+  const withCapLock = <T>(task: () => Promise<T>): Promise<T> => {
+    const run = capTail.then(task);
+    capTail = run.catch(() => undefined);
+    return run;
+  };
 
   const clientIp =
     options.clientIp ??
@@ -159,6 +181,18 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     });
 
   const app = new Hono();
+  const logLine =
+    options.logWriter ?? ((line: string) => process.stderr.write(line));
+  const examples = options.examples ?? readExamples(process.env, logLine, now);
+  // Hosted servers keep one document list per reader; local mode lists everything.
+  const readers = hosted
+    ? new ReaderLibrary(runtime.registry.configDir, {
+        now: () => new Date(now()),
+      })
+    : undefined;
+  const readerOf = new WeakMap<Request, string>();
+  // Requests that arrived without a valid cookie, so their reader id was minted just now.
+  const freshReader = new WeakSet<Request>();
 
   // First, so its headers also land on responses that later middleware returns early.
   app.use('*', securityHeaders({ publicMode, privateMode }));
@@ -202,7 +236,9 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       method === 'DELETE' ||
       // HEAD reaches the GET handler, so it can start the same paid generation.
       ((method === 'GET' || method === 'HEAD') &&
-        /^\/api\/docs\/[^/]+\/summary$/.test(c.req.path));
+        /^\/api\/docs\/[^/]+\/(?:summary|breakdown|sections\/[^/]+\/example)$/.test(
+          c.req.path,
+        ));
     if (canSpendOrChange && c.req.header('sec-fetch-site') === 'cross-site')
       return c.json(
         { error: { code: 'INVALID_INPUT', message: 'Cross-site request.' } },
@@ -259,6 +295,36 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     c.req.method === 'POST' ? limitPostBody(c, next) : next();
   app.use('/api/*', postBodyLimit);
 
+  if (hosted) {
+    // Runs after the session check, so a gated visitor never receives a reader id. The id only
+    // keys the list; it grants no access (see readers.ts).
+    const ensureReader: MiddlewareHandler = async (c, next) => {
+      // Health checks are not a reader; they must stay cookie-free.
+      if (c.req.path === '/api/health') return next();
+      const sent = getCookie(c, READER_COOKIE);
+      let id = isReaderId(sent) ? sent : undefined;
+      if (!id) {
+        id = newReaderId();
+        freshReader.add(c.req.raw);
+        setCookie(c, READER_COOKIE, id, {
+          httpOnly: true,
+          secure: true,
+          sameSite: 'Strict',
+          path: '/',
+          maxAge: READER_COOKIE_MAX_AGE_S,
+        });
+      }
+      readerOf.set(c.req.raw, id);
+      await next();
+    };
+    app.use('/api/*', ensureReader);
+  }
+  const readerId = (c: Context): string => {
+    const id = readerOf.get(c.req.raw);
+    if (!id) throw new Error('Reader id missing.');
+    return id;
+  };
+
   app.onError((error, c) => {
     if (isAppError(error))
       return c.json(
@@ -290,9 +356,11 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       model,
       chips: CHIP_LABELS,
       scenariosEnabled: !publicMode,
-      // Served once Section by section lands (#276).
-      breakdownEnabled: false,
+      // Public servers never start a model call for a visitor, so there is nothing to show.
+      breakdownEnabled: !publicMode,
       locateEnabled: !publicMode,
+      library: hosted ? 'reader' : 'local',
+      ...(examples && examples.length > 0 ? { examples } : {}),
     };
     return c.json(config);
   });
@@ -304,7 +372,35 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       .map((e) => DocSummary.parse(e));
   };
 
-  app.get('/api/docs', async (c) => c.json(await summaries()));
+  app.get('/api/docs', async (c) => {
+    const all = await summaries();
+    if (!readers) return c.json(all);
+    // The reader's own list, newest use first. Documents evicted since simply drop out.
+    const byId = new Map(all.map((d) => [d.docId, d]));
+    return c.json(
+      (await readers.list(readerId(c))).flatMap((r) => {
+        const doc = byId.get(r.docId);
+        return doc ? [{ ...doc, lastUsedAt: r.lastUsedAt }] : [];
+      }),
+    );
+  });
+
+  /** The list is a convenience: failing to save it must not fail the request that triggered it. */
+  const rememberForReader = async (
+    c: Context,
+    docId: string,
+    /** Opening a shared link is not worth a file on a public server: wait for a returning reader. */
+    options: { skipFreshPublic?: boolean } = {},
+  ): Promise<void> => {
+    if (!readers) return;
+    if (options.skipFreshPublic && publicMode && freshReader.has(c.req.raw))
+      return;
+    try {
+      await readers.markUsed(readerId(c), docId);
+    } catch (error) {
+      log.error(c, error, 0);
+    }
+  };
 
   const entryFor = async (docId: string): Promise<RegistryEntry> => {
     const entry = (await runtime.registry.list()).find(
@@ -317,6 +413,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   app.get('/api/docs/:docId', async (c) => {
     const entry = await entryFor(c.req.param('docId'));
     const doc = await runtime.registry.getDocument(entry.docId);
+    await rememberForReader(c, entry.docId, { skipFreshPublic: true });
     return c.json(await buildDocDetail(runtime, DocSummary.parse(entry), doc));
   });
 
@@ -342,8 +439,12 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   });
 
   app.delete('/api/docs/:docId', async (c) => {
-    // Public servers share one library; visitors must not be able to wipe each other's documents.
-    if (publicMode) throw new AppError('PUBLIC_MODE_FORBIDDEN');
+    if (readers) {
+      // Hosted servers share one store, so removing only takes the document off this reader's
+      // list. Idempotent: an already evicted document is simply gone from the list too.
+      await readers.remove(readerId(c), c.req.param('docId'));
+      return c.body(null, 204);
+    }
     const entry = await entryFor(c.req.param('docId'));
     if (entry.backend === runtime.backend.kind) {
       await deleteIndexedDocument(runtime.backend, entry.docId);
@@ -480,6 +581,76 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     if (!limiter.take(ip)) throw new AppError('RATE_LIMITED');
   }
 
+  /**
+   * Admission for one ingest, called by the pipeline once the document id is known (so an
+   * address that turns out to be a document we already hold is never refused). It protects the
+   * document for the length of the request. On a public server at the cap, documents no reader
+   * lists are reclaimed oldest first; if there are not enough, the ingest is refused.
+   */
+  function admitDocuments(held: Holds, signal: AbortSignal) {
+    // Resolves to whether the document is stored now, which can differ from what the caller
+    // saw before waiting for the lock (another admission may have reclaimed it meanwhile).
+    return (docId: string): Promise<boolean> =>
+      withCapLock(async () => {
+        // A request that gave up, or whose holds were already released, must not take a
+        // hold nobody would release.
+        signal.throwIfAborted();
+        if (held.closed)
+          throw new AppError('INVALID_INPUT', 'Request finished.');
+        if (!held.ids.has(docId)) {
+          held.ids.add(docId);
+          holds.set(docId, (holds.get(docId) ?? 0) + 1);
+        }
+        const entries = await runtime.registry.list();
+        const stored = new Set(entries.map((e) => e.docId));
+        if (!publicMode) return stored.has(docId);
+        if (stored.has(docId)) return true;
+        // Each document counts once: stored, or about to be (held but not stored yet).
+        const unstored = [...holds.keys()].filter((id) => !stored.has(id));
+        const excess = stored.size + unstored.length - limits.maxDocs;
+        if (excess <= 0) return false;
+        const listed = readers
+          ? await readers.listedDocIds()
+          : new Set<string>();
+        // Other backends' entries are left alone: only their own backend can delete the index.
+        const reclaimable = entries
+          .filter(
+            (e) =>
+              !listed.has(e.docId) &&
+              !holds.has(e.docId) &&
+              e.backend === runtime.backend.kind,
+          )
+          .sort(
+            (a, b) =>
+              a.lastUsedAt.localeCompare(b.lastUsedAt) ||
+              a.ingestedAt.localeCompare(b.ingestedAt) ||
+              a.docId.localeCompare(b.docId),
+          )
+          .slice(0, excess);
+        if (reclaimable.length < excess) throw new AppError('DOC_CAP_REACHED');
+        for (const old of reclaimable) {
+          await runtime.backend.deleteDocument(old.docId);
+          await runtime.registry.remove(old.docId);
+        }
+        return false;
+      });
+  }
+
+  /** Holds taken by one ingest request; released when its pipeline run ends, not its stream. */
+  interface Holds {
+    ids: Set<string>;
+    closed: boolean;
+  }
+  const releaseDocuments = (held: Holds): void => {
+    held.closed = true;
+    for (const id of held.ids) {
+      const left = (holds.get(id) ?? 1) - 1;
+      if (left <= 0) holds.delete(id);
+      else holds.set(id, left);
+    }
+    held.ids.clear();
+  };
+
   app.post('/api/ingest', async (c) => {
     const body = await parseBody(
       c,
@@ -495,15 +666,10 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       });
     if (hosted) checkIngestHost(body.url, hosts);
     await guardPublic(c, ingests, body.turnstileToken);
-    if (
-      publicMode &&
-      (await runtime.registry.list()).length + ingestsInFlight >= limits.maxDocs
-    )
-      throw new AppError('DOC_CAP_REACHED');
 
     // Resource policy reaches both the default parser and runtime-injected parsers.
     const parsePdf = runtime.parsePdf ?? defaultParsePdf;
-    ingestsInFlight++;
+    const held: Holds = { ids: new Set<string>(), closed: false };
     const started = now();
     let finished = false;
     const sourceHost = new URL(body.url).hostname;
@@ -518,6 +684,9 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       c,
       async (emit, signal) => {
         try {
+          // The holds last as long as the pipeline run, which can outlive a closed stream
+          // (it may still be waiting on a lock). The reader's list is written first, so a
+          // finished document is never both unlisted and unprotected.
           const result = await ingest(
             body.url,
             {
@@ -542,6 +711,16 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
               now: runtime.now,
               // Public servers never evict: a visitor must not push out someone else's document.
               maxDocs: publicMode ? limits.maxDocs : runtime.maxDocs,
+              ...(readers
+                ? {
+                    evictionGuard: {
+                      listed: () => readers.listedDocIds(),
+                      inFlight: () => new Set(holds.keys()),
+                      neverEvictListed: publicMode,
+                    },
+                    admit: admitDocuments(held, signal),
+                  }
+                : {}),
               parseLimits: {
                 ...readParseLimits(publicMode),
                 ...(publicMode ? { maxPages: limits.maxPages } : {}),
@@ -554,8 +733,26 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
               onProgress: (p) => {
                 emit({ type: 'progress', ...stripUndefined(p) });
               },
+              // The reader sees a plain note; the operator sees why (#270).
+              onDiagnostic: (d) => {
+                log.event(c, {
+                  level: 'warn',
+                  event: d.event,
+                  status: 200,
+                  code: d.code,
+                  host: sourceHost,
+                  ms: now() - started,
+                });
+              },
             },
-          );
+          )
+            .then(async (done) => {
+              if (!signal.aborted) await rememberForReader(c, done.doc.docId);
+              return done;
+            })
+            .finally(() => {
+              releaseDocuments(held);
+            });
           signal.throwIfAborted();
           finished = true;
           log.event(c, {
@@ -588,7 +785,6 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       },
       (error) => ({ type: 'error', error }),
       () => {
-        ingestsInFlight--;
         if (!finished)
           log.event(c, {
             level: 'info',
@@ -666,6 +862,16 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
           checkIngestFetchHost(url, hosts);
         }
       : undefined,
+  });
+
+  registerBreakdownRoutes(app, runtime, {
+    publicMode,
+    now,
+    summary,
+    waitMs: options.summaryWaitMs,
+    onError: (c, error, ms) => {
+      log.error(c, error, ms);
+    },
   });
 
   app.all('/api/*', (c) =>

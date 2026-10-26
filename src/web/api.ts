@@ -7,6 +7,7 @@ import {
   LocateVersionsResponse,
   type LocateRequest,
   AskEvent,
+  BreakdownResponse,
   ClientConfig,
   DocDetail,
   DocSummary,
@@ -38,6 +39,14 @@ export interface ApiClient {
   getSection(docId: string, sectionId: string): Promise<SectionExcerpt>;
   /** The summary shown on arrival: cached, still being made (poll again), or off. */
   getSummary(docId: string): Promise<SummaryResponse>;
+  /** "Section by section": cached briefs, a run in progress (poll again, maybe with partial briefs), or off. */
+  getBreakdown(docId: string): Promise<BreakdownResponse>;
+  /** An example for one part of the bill: `pending` while it is drawn, then `ok` or `none` with a note. */
+  getSectionExample(
+    docId: string,
+    sectionId: string,
+    signal?: AbortSignal,
+  ): Promise<ScenarioResponse>;
   /** An illustrated example for a subject the reader names (`POST .../scenario`). */
   getScenario(
     docId: string,
@@ -223,6 +232,20 @@ export function createHttpApi(options: HttpApiOptions = {}): ApiClient {
         `${docPath(docId)}/summary`,
         SummaryResponse,
         undefined,
+        Math.max(defaultTimeout, SUMMARY_TIMEOUT_MS),
+      ),
+    getBreakdown: (docId) =>
+      request(
+        `${docPath(docId)}/breakdown`,
+        BreakdownResponse,
+        undefined,
+        Math.max(defaultTimeout, SUMMARY_TIMEOUT_MS),
+      ),
+    getSectionExample: (docId, sectionId, signal) =>
+      request(
+        `${docPath(docId)}/sections/${encodeURIComponent(sectionId)}/example`,
+        ScenarioResponse,
+        signal ? { signal } : undefined,
         Math.max(defaultTimeout, SUMMARY_TIMEOUT_MS),
       ),
     getScenario: (docId, req, signal) =>

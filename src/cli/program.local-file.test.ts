@@ -149,7 +149,10 @@ test.each(['path', 'file URL'])(
     await writeFile(path, bytes);
     const serve = vi.fn<Launcher>(() => Promise.resolve());
     await run([kind === 'path' ? path : pathToFileURL(path).href], serve);
-    expect(serve).toHaveBeenCalledWith(runtime, { publicMode: false });
+    expect(serve).toHaveBeenCalledWith(runtime, {
+      publicMode: false,
+      docId: expect.any(String) as string,
+    });
     // The UI opens the most recently used document, which is the one just ingested.
     expect((await runtime.registry.list())[0]?.docId).toBe(documentId(bytes));
     expect(output).toContain('Ingested: bill #1.txt');

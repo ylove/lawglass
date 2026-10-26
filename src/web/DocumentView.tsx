@@ -12,6 +12,7 @@ import { CitationDrawer } from './CitationDrawer.js';
 import { AnswerCard } from './document/AnswerCard.js';
 import { LocateCard } from './document/LocateCard.js';
 import { AskForm } from './document/AskForm.js';
+import { BreakdownPanel } from './document/BreakdownPanel.js';
 import { ChipRow } from './document/ChipRow.js';
 import { MetadataHeader } from './document/MetadataHeader.js';
 import { NoticeBar } from './document/NoticeBar.js';
@@ -22,6 +23,7 @@ import { ServerDownCard } from './document/ServerDownCard.js';
 import { SummaryPanel } from './document/SummaryPanel.js';
 import type { Turn } from './document/types.js';
 import { errorMessage } from './errors.js';
+import { HOME_PATH, Link } from './nav.js';
 import { ApiError } from './sse.js';
 import { CUT_OFF } from './sse.js';
 
@@ -31,6 +33,7 @@ export function DocumentView({
   docId,
   notice,
   mastheadSlot,
+  onLoaded,
 }: {
   api: ApiClient;
   config: ClientConfig;
@@ -38,6 +41,8 @@ export function DocumentView({
   notice?: string | null;
   /** The masthead element that should hold the bill's title; falls back to inline. */
   mastheadSlot?: HTMLElement | null;
+  /** Called once the document has opened, so the reader's list can pick up the new recency. */
+  onLoaded?: () => void;
 }) {
   const [detail, setDetail] = useState<DocDetail | null>(null);
   const [loadError, setLoadError] = useState<unknown>(null);
@@ -49,13 +54,17 @@ export function DocumentView({
   } | null>(null);
   const abort = useRef<AbortController | null>(null);
   const nextTurnId = useRef(0);
+  const loaded = useRef(onLoaded);
+  loaded.current = onLoaded;
 
   useEffect(() => {
     let live = true;
     api
       .getDoc(docId)
       .then((d) => {
-        if (live) setDetail(d);
+        if (!live) return;
+        setDetail(d);
+        loaded.current?.();
       })
       .catch((e: unknown) => {
         if (live) setLoadError(e);
@@ -143,6 +152,17 @@ export function DocumentView({
     if (loadError instanceof ApiError && loadError.code === 'NETWORK') {
       return <ServerDownCard onRetry={retry} />;
     }
+    if (loadError instanceof ApiError && loadError.code === 'DOC_NOT_FOUND') {
+      return (
+        <section aria-labelledby="missing-title" className="card">
+          <h2 id="missing-title">{"This document isn't in your list"}</h2>
+          <p>It may have been removed, or the link may be out of date.</p>
+          <p>
+            <Link to={HOME_PATH}>Go to the home page</Link>
+          </p>
+        </section>
+      );
+    }
     return (
       <>
         <p role="alert" className="error">
@@ -174,6 +194,12 @@ export function DocumentView({
             preview={detail.preview}
             officialSummary={detail.history?.officialSummary}
             publicMode={config.publicMode}
+            onOpenSection={openSection}
+          />
+          <BreakdownPanel
+            api={api}
+            docId={docId}
+            enabled={config.breakdownEnabled}
             onOpenSection={openSection}
           />
           <ChipRow

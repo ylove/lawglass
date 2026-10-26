@@ -20,6 +20,7 @@ import {
   type LlmProvider,
   type RetrievalBackend,
   type RetrievalMode,
+  type Scenario,
   type ScenarioResponse,
   type SearchHit,
 } from '../model/index.js';
@@ -39,6 +40,24 @@ const SUBJECT_HITS = 5;
 const SUMMARY_HITS = 3;
 /** A scenario shows three frames; the model is asked for 3 to 4 so one can fail validation. */
 export const SCENARIO_FRAMES = 3;
+
+/**
+ * Showing the first three frames that validated must still leave at least one cited frame;
+ * otherwise there is nothing grounded to show and the result is `none`.
+ */
+export function scenarioOutcome(
+  scenario: Scenario | undefined,
+): { status: 'ok'; scenario: Scenario } | { status: 'none' } {
+  const frames = scenario?.frames.slice(0, SCENARIO_FRAMES);
+  if (
+    !scenario ||
+    !frames ||
+    frames.length < SCENARIO_FRAMES ||
+    frames.every((frame) => frame.kind === 'setup')
+  )
+    return { status: 'none' };
+  return { status: 'ok', scenario: { ...scenario, frames } };
+}
 
 export interface RunScenarioDeps {
   backend: RetrievalBackend;
@@ -158,19 +177,7 @@ export async function runScenario(
         llmInputTokens: attached.usage.inputTokens,
         llmOutputTokens: attached.usage.outputTokens,
       });
-      const frames = attached.scenario?.frames.slice(0, SCENARIO_FRAMES);
-      // Showing the first three that validated must still leave at least one cited frame.
-      if (
-        !attached.scenario ||
-        !frames ||
-        frames.length < SCENARIO_FRAMES ||
-        frames.every((frame) => frame.kind === 'setup')
-      )
-        return { status: 'none' as const };
-      return {
-        status: 'ok' as const,
-        scenario: { ...attached.scenario, frames },
-      };
+      return scenarioOutcome(attached.scenario);
     } finally {
       release();
     }
