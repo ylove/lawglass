@@ -4,7 +4,7 @@
  */
 import {
   documentContext,
-  forgetDocument,
+  deleteIndexedDocument,
   MEMO_OWNER,
 } from '../answer/context.js';
 import { answer } from '../answer/index.js';
@@ -173,10 +173,7 @@ function guarded(
       await ensure();
       return backend.rerank(req);
     },
-    deleteDocument: async (id) => {
-      forgetDocument(backend, id);
-      await backend.deleteDocument(id);
-    },
+    deleteDocument: (id) => deleteIndexedDocument(backend, id),
     // The per-ask wrapper must share the real backend's whole-bill scan memo.
     [MEMO_OWNER]: backend,
   } as RetrievalBackend;

@@ -236,5 +236,8 @@ describe('whole mode tags', () => {
     expect(text).not.toContain('<excerpt');
     expect(built.system).toContain('<part id="1" section="..."');
     expect(built.system).not.toContain('text block');
+    // Message pieces are "blocks"; only the bill's text pieces are "parts".
+    expect(built.system).toContain('has these blocks: <document>');
+    expect(built.system).not.toContain('has these parts');
   });
 });

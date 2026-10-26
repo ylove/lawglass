@@ -605,3 +605,19 @@ test('cached summaries and repeat polls need no backend scan once the mode is kn
   await summary(a, docId);
   expect(get).not.toHaveBeenCalled();
 });
+
+test('a missing index is reported, not remembered as an empty bill', async () => {
+  const provider = countingProvider(env.provider);
+  Object.assign(env.runtime, { answerProvider: provider });
+  const a = app();
+  const docId = await ingestDoc(a);
+  await env.runtime.backend.deleteDocument(docId);
+  forgetDocument(env.runtime.backend, docId);
+  const res = await a.request(`/api/docs/${docId}/summary`);
+  expect(res.status).toBeGreaterThanOrEqual(400);
+  // Re-ingest the same content: the next scan sees the document, not a pinned empty one.
+  await ingestDoc(a);
+  const again = await summary(a, docId);
+  expect(again.status).not.toBe('disabled');
+  expect((await settled(a, docId)).answer?.context).toBe('whole');
+});

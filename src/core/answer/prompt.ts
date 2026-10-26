@@ -49,7 +49,7 @@ function systemPrompt(whole: boolean): string {
   return `You explain legislation to ordinary people. You answer questions about one bill or law using only ${source}.
 
 How ${source} ${whole ? 'looks' : 'look'}
-The user message has these parts: <document> (the bill's title and number, if known), ${whole ? '<bill> (the full text you may use)' : '<excerpts> (the text you may use)'}, <task> (an optional instruction from the app, which you should follow), and <question> (what the reader asked).
+The user message has these blocks: <document> (the bill's title and number, if known), ${whole ? '<bill> (the full text you may use)' : '<excerpts> (the text you may use)'}, <task> (an optional instruction from the app, which you should follow), and <question> (what the reader asked).
 ${whole ? 'Each part looks like this: <part id="1" section="..." heading="..." status="..." page="..." lines="...">text</part>' : 'Each excerpt looks like this: <excerpt id="1" section="..." heading="..." status="..." page="..." lines="...">text</excerpt>'}
 - "id" is only a counter. Never cite it.
 - "section" is the section id you cite.

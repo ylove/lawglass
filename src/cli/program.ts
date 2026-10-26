@@ -1,5 +1,5 @@
 // CLI command definitions. Each command is a thin wrapper over the shared pipeline.
-import { forgetDocument } from '../core/answer/context.js';
+import { deleteIndexedDocument } from '../core/answer/context.js';
 import { Command } from 'commander';
 import packageJson from '../../package.json' with { type: 'json' };
 import { BRAND } from '../core/brand.js';
@@ -309,8 +309,7 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
         throw new AppError('INVALID_INPUT', 'Document is on another backend.', {
           userMessage: `${safeText(entry.label)} was indexed with the ${entry.backend} backend. Run again with --backend ${entry.backend}.`,
         });
-      forgetDocument(runtime.backend, entry.docId);
-      await runtime.backend.deleteDocument(entry.docId);
+      await deleteIndexedDocument(runtime.backend, entry.docId);
       await runtime.registry.remove(entry.docId);
       write(`Removed ${safeText(entry.label)}\n`);
     });
