@@ -1,5 +1,6 @@
 import type { BillHistory } from '../../core/model/index.js';
 import { formatRecordDate } from '../format-date.js';
+import { ExternalLink, officialSiteName } from './ExternalLink.js';
 
 /** The first action plus the latest few; a long floor history would otherwise bury the card. */
 const RECENT_ACTIONS = 3;
@@ -16,27 +17,18 @@ function byDate<T extends { date?: string | undefined }>(items: T[]): T[] {
     .map((e) => e.item);
 }
 
-const STATUS_TEXT = {
-  adopted: 'Adopted',
-  offered: 'Offered',
-  rejected: 'Rejected',
-  withdrawn: 'Withdrawn',
-  unknown: 'Status not recorded',
-} as const;
-
-function ExternalLink({ href, children }: { href: string; children: string }) {
-  return (
-    <a href={href} target="_blank" rel="noopener noreferrer">
-      {children}
-    </a>
-  );
-}
-
 /**
  * "How did it get here?" from the official record. Nothing is inferred: a field the record
  * leaves out is left out here too, and people are named only where the record names them.
  */
-export function HistoryCard({ history }: { history: BillHistory | undefined }) {
+export function HistoryCard({
+  history,
+  allActionsUrl,
+}: {
+  history: BillHistory | undefined;
+  /** The official site's full list of actions (`DocDetail.historyLinks.actions`), when known. */
+  allActionsUrl?: string | undefined;
+}) {
   const versions = history ? byDate(history.versions) : [];
   const actions = history ? byDate(history.actions) : [];
   const [firstAction, ...laterActions] = actions;
@@ -44,10 +36,10 @@ export function HistoryCard({ history }: { history: BillHistory | undefined }) {
     firstAction && actions.length > RECENT_ACTIONS + 1
       ? [firstAction, ...laterActions.slice(-RECENT_ACTIONS)]
       : actions;
-  const amendments = history?.amendments ?? [];
-  const empty =
-    !history ||
-    (versions.length === 0 && actions.length === 0 && amendments.length === 0);
+  const hasAmendments = (history?.amendments.length ?? 0) > 0;
+  const empty = versions.length === 0 && actions.length === 0;
+  // Amendments have their own card; with only those on record this one has nothing to say.
+  if (empty && hasAmendments) return null;
   return (
     <section aria-labelledby="history-title" className="card history">
       <h3 id="history-title">How did it get here?</h3>
@@ -91,38 +83,17 @@ export function HistoryCard({ history }: { history: BillHistory | undefined }) {
           {actions.length > keyActions.length && (
             <p className="muted history-more">
               Showing {keyActions.length} of {actions.length} recorded actions.
+              {allActionsUrl && (
+                <>
+                  {' '}
+                  <ExternalLink href={allActionsUrl}>
+                    {`See all ${String(actions.length)} on ${officialSiteName(allActionsUrl)}`}
+                  </ExternalLink>
+                </>
+              )}
             </p>
           )}
         </>
-      )}
-      {amendments.length > 0 && (
-        <>
-          <h4>Amendments</h4>
-          <ul className="timeline">
-            {amendments.map((a) => (
-              <li key={a.id}>
-                <span className="when">
-                  {STATUS_TEXT[a.status]}
-                  {a.date ? `, ${formatRecordDate(a.date)}` : ''}
-                </span>
-                <span>
-                  {a.number ? `Amendment ${a.number}` : 'Amendment'}
-                  {a.sponsor ? ` by ${a.sponsor.name}` : ''}
-                  {a.committee ? ` (${a.committee})` : ''}
-                  {a.purpose || a.description
-                    ? `: ${a.purpose ?? a.description ?? ''}`
-                    : ''}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-      {!empty && (
-        <p className="muted history-note">
-          From the official record. People are named only when the record names
-          them.
-        </p>
       )}
     </section>
   );

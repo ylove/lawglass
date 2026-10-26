@@ -661,6 +661,16 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
               ],
         hasLineNumbers: hasLines(doc),
         ...(sample ? { history: structuredClone(SAMPLE_HISTORY) } : {}),
+        ...(sample
+          ? {
+              historyLinks: {
+                actions:
+                  'https://www.congress.gov/bill/119th-congress/house-bill/214/all-actions',
+                amendments:
+                  'https://www.congress.gov/bill/119th-congress/house-bill/214/amendments',
+              },
+            }
+          : {}),
         ...(sample ? { scenarioPersonas: [...SAMPLE_PERSONAS] } : {}),
         preview: sample
           ? {

@@ -311,19 +311,93 @@ describe('sponsor byline', () => {
 });
 
 describe('history card', () => {
-  test('lists versions and actions oldest first, amendments, and the note', async () => {
+  test('lists versions and actions oldest first; amendments sit in their own card below the laws it refers to', async () => {
     render(<App api={mock()} />);
     await ready();
     const card = screen.getByRole('region', { name: 'How did it get here?' });
     expect(within(card).getByText('Introduced in House')).toBeTruthy();
     expect(within(card).getByText('Reported in House')).toBeTruthy();
-    expect(within(card).getByText(/Amendment 1 by Rep. J. Chen/)).toBeTruthy();
+    expect(within(card).queryByText(/Amendment 1/)).toBeNull();
+    expect(within(card).queryByRole('button')).toBeNull();
+
+    const amendments = screen.getByRole('region', { name: 'Amendments' });
+    expect(within(amendments).getByText(/Amendment 1/)).toBeTruthy();
     expect(
-      within(card).getByText(
+      within(amendments).getByText(
         'From the official record. People are named only when the record names them.',
       ),
     ).toBeTruthy();
-    expect(within(card).queryByRole('button')).toBeNull();
+    expect(
+      within(amendments).getByRole('link', {
+        name: /See all 1 amendment on Congress\.gov/,
+      }),
+    ).toBeTruthy();
+    // Order in the aside: history, laws it refers to, then amendments.
+    const order = screen
+      .getAllByRole('region')
+      .map((r) => r.getAttribute('aria-labelledby'));
+    const at = (id: string) => order.indexOf(id);
+    expect(at('amendments-title')).toBeGreaterThan(at('history-title'));
+  });
+
+  test('links "see all" to the official site when the history is trimmed', async () => {
+    const api = mock();
+    const real = api.getDoc.bind(api);
+    api.getDoc = async (id) => {
+      const detail = await real(id);
+      const base = detail.history!.actions[0]!;
+      return {
+        ...detail,
+        history: {
+          ...detail.history!,
+          actions: Array.from({ length: 9 }, (_, i) => ({
+            ...base,
+            date: `2026-03-0${String(i + 1)}`,
+            text: `Action ${String(i)}`,
+          })),
+        },
+      };
+    };
+    render(<App api={api} />);
+    await ready();
+    const card = screen.getByRole('region', { name: 'How did it get here?' });
+    expect(
+      within(card).getByText(/Showing 4 of 9 recorded actions\./),
+    ).toBeTruthy();
+    const link = within(card).getByRole('link', {
+      name: /See all 9 on Congress\.gov/,
+    });
+    expect(link.getAttribute('href')).toBe(
+      'https://www.congress.gov/bill/119th-congress/house-bill/214/all-actions',
+    );
+    expect(link.getAttribute('target')).toBe('_blank');
+    expect(link.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(link.textContent).toContain('(opens in a new tab)');
+  });
+
+  test('keeps the sentence alone when no official link is known', async () => {
+    const api = mock();
+    const real = api.getDoc.bind(api);
+    api.getDoc = async (id) => {
+      const { historyLinks: _links, ...detail } = await real(id);
+      const base = detail.history!.actions[0]!;
+      return {
+        ...detail,
+        history: {
+          ...detail.history!,
+          actions: Array.from({ length: 9 }, (_, i) => ({
+            ...base,
+            date: `2026-03-0${String(i + 1)}`,
+            text: `Action ${String(i)}`,
+          })),
+        },
+      };
+    };
+    render(<App api={api} />);
+    await ready();
+    const card = screen.getByRole('region', { name: 'How did it get here?' });
+    expect(within(card).getByText(/Showing 4 of 9/)).toBeTruthy();
+    expect(within(card).queryByRole('link', { name: /See all/ })).toBeNull();
   });
 
   test('says plainly when no history is available', async () => {
