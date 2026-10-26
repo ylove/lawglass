@@ -44,8 +44,9 @@ jobs:
       - run: npm run build
       - name: Pack the tarball
         run: npm pack --ignore-scripts --pack-destination release-assets
-      # Dev dependencies stay in on purpose: pdfjs-dist (a devDependency) and its WASM are
-      # bundled into dist/cli.js, so an SBOM that omitted dev dependencies would hide them.
+      # Dev dependencies stay in on purpose: pdfjs-dist (a devDependency) has its JS bundled into
+      # dist/cli.js, so an SBOM that omitted dev dependencies would hide it. Its WASM files are
+      # not shipped (not in the package's `files`), so a component-level entry is the right level.
       - name: Generate the CycloneDX SBOM
         run: npm sbom --sbom-format cyclonedx > release-assets/sbom.cdx.json
       - name: Check the SBOM lists the bundled pdfjs-dist
