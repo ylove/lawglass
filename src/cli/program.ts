@@ -6,7 +6,7 @@ import { BRAND } from '../core/brand.js';
 import { CHIPS } from '../core/chips.js';
 import { lazyProvider } from '../core/llm/lazy-provider.js';
 import { initConfig } from '../core/config.js';
-import { AppError, ChipId } from '../core/model/index.js';
+import { AppError, ChipId, ERROR_CODES } from '../core/model/index.js';
 import { ask, ingest } from '../core/pipeline/index.js';
 import { runEvalCommand } from '../eval/command.js';
 import { runCompareCommand, type CompareOptions } from '../eval/compare.js';
@@ -30,6 +30,10 @@ import { createLauncher, type Launcher } from '../server/launch.js';
 import { prepareIngestSource } from './ingest-source.js';
 import { readAccessKey } from '../server/session.js';
 import { validateBindHost } from '../server/bind.js';
+import { launchMcp, type McpLauncher } from '../mcp/launch.js';
+import { getSection, searchDocument } from '../mcp/queries.js';
+import { toErrorPayload, ToolError } from '../mcp/errors.js';
+import { UntrustedText } from '../mcp/untrusted.js';
 
 export interface CliDependencies {
   init?: (options: {
@@ -42,6 +46,8 @@ export interface CliDependencies {
   write?: (text: string) => void;
   /** Starts the web server (and opens the browser unless public). Default: the real one. */
   serve?: Launcher;
+  /** Serves the MCP protocol on stdio. Default: the real server. */
+  mcp?: McpLauncher;
 }
 
 /** Commander turns `--no-open` into `open: false`; it is `true` when the flag is absent. */
@@ -78,6 +84,10 @@ function parsePort(value: string | undefined): number | undefined {
 
 interface BackendOption {
   backend?: string;
+}
+
+function formatJson(value: unknown, compact: boolean | undefined): string {
+  return `${JSON.stringify(value, null, compact ? undefined : 2)}\n`;
 }
 
 export function createProgram(dependencies: CliDependencies = {}): Command {
@@ -142,6 +152,36 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
         });
       }
       throw error;
+    }
+  }
+
+  /**
+   * Prints a query result. A tool-level failure (bad section, document not ingested) keeps its
+   * fixed message: `--json` gets the same `{error:{code,message}}` the MCP tools return.
+   */
+  async function printQuery(
+    json: boolean | undefined,
+    task: () => Promise<unknown>,
+  ): Promise<void> {
+    try {
+      write(formatJson(await task(), json));
+    } catch (error) {
+      if (!(error instanceof ToolError || error instanceof AppError))
+        throw error;
+      // The MCP wording for an unknown document tells an agent to call the ingest tool; a person
+      // at the CLI gets the plain message.
+      const payload =
+        error instanceof AppError && error.code === 'DOC_NOT_FOUND'
+          ? {
+              error: {
+                code: error.code,
+                message: ERROR_CODES.DOC_NOT_FOUND,
+              },
+            }
+          : toErrorPayload(error);
+      if (json) write(formatJson(payload, true));
+      else console.error(payload.error.message);
+      process.exitCode = 1;
     }
   }
 
@@ -303,6 +343,75 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
         write(`\n${formatAskFooter(result, normalized)}`);
       },
     );
+  program
+    .command('search <doc> <query>')
+    .description(
+      'search a document; prints the same JSON as the MCP search tool',
+    )
+    .option('--cursor <cursor>', 'cursor from a previous result, for more hits')
+    .option('--json', 'print compact JSON on one line')
+    .option('--backend <backend>', 'retrieval backend (pinecone or local)')
+    .action(
+      async (
+        doc: string,
+        query: string,
+        options: BackendOption & { cursor?: string; json?: boolean },
+      ) => {
+        const runtime = await open(options, false);
+        await printQuery(options.json, async () => {
+          const entry = await runtime.registry.findByLabelOrPrefix(doc);
+          return searchDocument(
+            runtime,
+            entry.docId,
+            { query, cursor: options.cursor },
+            new UntrustedText(),
+          );
+        });
+      },
+    );
+  program
+    .command('get-section <doc> <section>')
+    .description('print one section; the same JSON as the MCP get_section tool')
+    .option('--view <view>', 'current (default) or redline', 'current')
+    .option(
+      '--cursor <cursor>',
+      'cursor from a previous result, for a long section',
+    )
+    .option('--json', 'print compact JSON on one line')
+    .option('--backend <backend>', 'retrieval backend (pinecone or local)')
+    .action(
+      async (
+        doc: string,
+        section: string,
+        options: BackendOption & {
+          view: string;
+          cursor?: string;
+          json?: boolean;
+        },
+      ) => {
+        const runtime = await open(options, false);
+        await printQuery(options.json, async () => {
+          const entry = await runtime.registry.findByLabelOrPrefix(doc);
+          return getSection(
+            runtime,
+            entry.docId,
+            { section, view: options.view, cursor: options.cursor },
+            new UntrustedText(),
+          );
+        });
+      },
+    );
+  program
+    .command('mcp')
+    .description(
+      'serve the Model Context Protocol on stdio, for AI agents (reads stdin, writes only protocol messages to stdout)',
+    )
+    .action(async () => {
+      // Local backend only: no key, and an agent never reaches a hosted index.
+      await (dependencies.mcp ?? launchMcp)(() =>
+        open({ backend: 'local' }, false),
+      );
+    });
   program
     .command('list')
     .description('list ingested documents')
