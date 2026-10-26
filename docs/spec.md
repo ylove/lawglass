@@ -126,6 +126,16 @@ These override the original text below, and the earlier amendments, where they c
     - **Operations.** `--trust-proxy <hops>` reads the client address from the right of `X-Forwarded-For`. Errors and refusals are logged as JSON lines without query strings, bodies or keys. A hosted ingest stops after 15 minutes. The summary endpoint waits up to 20 seconds for a summary that is being written.
     - **Deployment.** One Cloud Run instance, with state saved to a private Cloud Storage bucket as a tarball and secrets in Secret Manager (`deploy/cloud-run/`). Opening the site to anonymous visitors still needs amendment 19's public-mode work.
 
+## Amendment (2026-10-26, v1.1)
+
+21. **Read the whole bill when it fits (§5.6, §5.7, §3.3).** Issue #273; see [decision 0015](decisions/0015-whole-bill-context.md). These rules override excerpt-only answering and the summary strategy for bills that fit.
+    - Sum the stored chunk token counts for the text to be shown. At or below 100,000 tokens, use **whole** context; otherwise retain **excerpts** and today's retrieval and summary map-reduce. The branded `WHOLE_BILL_MAX_TOKENS` environment variable overrides the budget; `0` disables whole mode. Deleted-only chunks are shown and counted only for change questions. Fetch every chunk through the backend and preserve document order.
+    - Whole-mode questions and retrieval chips skip search. The summary makes one call asking for a short paragraph and a list of main parts. Definitions keep the first-25-and-count behavior; marked what-changes and metadata chips retain their existing paths. Unmarked amendment instructions use the whole bill without a subset-coverage note.
+    - Whole-mode user content has two parts: a cacheable document-and-bill prefix, then the task and question. The system rules are identical across questions and chips. Preserve the citation attributes, trusted change markers and all struck-text protections; validate citations against every section actually supplied.
+    - Record `AnswerResult.context` on model-backed answers and include it in CLI `ask --json`. The retrieval SSE event may report `mode: whole` with empty refs. Both answer prompts prohibit discussion of excerpts or what the model was shown. If the bill partly answers a question, answer that part and say briefly what the bill does not say; otherwise use the exact decline text.
+    - Whole answers default to medium effort, overridden by the branded `EFFORT=low|medium|high`, and 16,000 output tokens. Truncation warnings and cache exclusions stay intact. Whole-mode scenarios may use all live sections; their schema, citation and figure validation do not change.
+    - Answer-cache identity includes context mode and the whole-mode prompt version, including the summary on arrival. The retrieval eval explicitly uses excerpts mode so it continues to measure retrieval quality.
+
 ## 1. Purpose
 
 A local-first tool that takes the URL of any piece of legislation (federal, state, county, municipal), ingests it into Pinecone using structure-aware chunking and hybrid retrieval, and answers questions about it with citations to the exact section, page, and line.

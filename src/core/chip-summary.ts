@@ -54,6 +54,14 @@ export const OUTLINE_CHAR_BUDGET = 2500;
 /** How many chunks (the unit's own, then its descendants') are tried for a unit's first chunk. */
 const FIRST_CHUNK_CANDIDATES = 6;
 
+/**
+ * The one-call whole-bill summary reads live text only: struck text is never in its prompt, so
+ * it must not be asked to describe removals (it could only guess, or present struck wording as
+ * current law). Change questions have their own marked path.
+ */
+export const SUMMARY_WHOLE_INSTRUCTION =
+  'Summarize the whole bill in a short paragraph, then a short list of its main parts, one line per part. Say what the bill does first.';
+
 export const SUMMARY_LABEL = 'Summarize this bill';
 export const SUMMARY_INSTRUCTION =
   'Summarize the whole bill in a short paragraph, then a short list of its main parts, one line per part. Say what the bill does first. Keep struck-out text out of the summary except to say what the bill removes.';
@@ -68,6 +76,7 @@ export const REDUCE_INSTRUCTION =
 export const SUMMARY_PROMPT_VERSION = promptVersion(
   SUMMARY_LABEL,
   SUMMARY_INSTRUCTION,
+  SUMMARY_WHOLE_INSTRUCTION,
   MAP_INSTRUCTION,
   REDUCE_INSTRUCTION,
 );
@@ -354,6 +363,8 @@ export async function runOutlineChip(
       : final.warnings;
   const finished: AnswerResult = {
     ...final,
+    // Map calls still read excerpts even if every partial is declined before reduction.
+    ...(allHits.length > 0 ? { context: 'excerpts' as const } : {}),
     warnings,
     citations: final.citations.map((c) =>
       c.valid ? (real.get(c.sectionId) ?? withoutSyntheticChunks(c, docId)) : c,

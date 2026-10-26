@@ -3,6 +3,7 @@
  * (ingest, ask, excerpts) is delegated to core/pipeline; this layer only does HTTP, SSE framing,
  * public-mode policy and error mapping.
  */
+import { deleteIndexedDocument } from '../core/answer/context.js';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { streamSSE } from 'hono/streaming';
@@ -345,7 +346,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     if (publicMode) throw new AppError('PUBLIC_MODE_FORBIDDEN');
     const entry = await entryFor(c.req.param('docId'));
     if (entry.backend === runtime.backend.kind) {
-      await runtime.backend.deleteDocument(entry.docId);
+      await deleteIndexedDocument(runtime.backend, entry.docId);
     }
     await runtime.registry.remove(entry.docId);
     return c.body(null, 204);

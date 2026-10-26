@@ -338,7 +338,9 @@ describe('what-changes chip (built from spans)', () => {
 
   it('falls back to instruction retrieval when nothing is marked up, and declines without a model call if that finds nothing', async () => {
     const provider = new ScriptedProvider();
-    const r = await run([section('sec-1', [same('Plain.')])], provider);
+    const r = await run([section('sec-1', [same('Plain.')])], provider, {
+      wholeBillMaxTokens: 0,
+    });
     expect(r.answer.declined).toBe(true);
     expect(provider.calls).toHaveLength(0);
     expect(r.mode).toBe('hybrid');
