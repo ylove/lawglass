@@ -131,7 +131,7 @@ sup {
 }
 /* Removed text is struck through on amber; added text is underlined on blue. The line and the
    fill both change, so neither color nor shape is needed alone. Ink on fill is >= 4.5:1 in
-   both themes (del 6.9:1 / 9.1:1, ins 14.7:1 / 12.2:1). */
+   both themes (light / dark: del 7.1 / 8.3, ins 14.0 / 11.4; links inside keep the same ink). */
 del,
 ins {
   padding: 0.05em 0.2em;
@@ -147,6 +147,13 @@ ins {
   background: var(--ins-bg);
   color: var(--ink);
   text-decoration-color: var(--accent);
+}
+/* A link inside amended text takes the amendment's own ink: the link color on the amber or blue
+   fill falls under 4.5:1 in light mode. The underline still marks it as a link, and the strike
+   or underline of the amendment still shows. */
+del a,
+ins a {
+  color: inherit;
 }
 .legend {
   margin: 0.75rem 0 0;
@@ -227,16 +234,16 @@ ins {
   font-variant-numeric: tabular-nums;
 }
 
-/* Referenced card: tighter list, citation in bold, explanation in the secondary size. */
-.card ul:not(.timeline) {
+/* Referenced card only (`.refs`): tighter list, citation in bold, explanation in the secondary size. */
+.refs ul {
   padding-left: 1.2rem;
   font-size: var(--text-sm);
   line-height: var(--lh-ui);
 }
-.card ul:not(.timeline) li {
+.refs ul li {
   margin-bottom: 0.75rem;
 }
-.card ul:not(.timeline) li::marker {
+.refs ul li::marker {
   color: var(--muted);
 }
 
