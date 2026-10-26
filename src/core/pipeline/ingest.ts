@@ -373,17 +373,40 @@ function metadataText(doc: NormalizedDoc): string {
   return text.slice(0, MAX_METADATA_CHARS);
 }
 
-function hostLabel(url: string): string {
+const GENERIC_URL_SEGMENTS = new Set([
+  'pdf',
+  'xml',
+  'html',
+  'htm',
+  'txt',
+  'text',
+  'download',
+  'file',
+  'files',
+  'view',
+  'content',
+  'latest',
+]);
+
+export function hostLabel(url: string): string {
   try {
     const parsed = new URL(url);
-    const last = parsed.pathname.split('/').filter(Boolean).at(-1);
-    return last ? decodeURIComponent(last) : parsed.hostname;
+    const segments = parsed.pathname.split('/').filter(Boolean).reverse();
+    for (const segment of segments) {
+      const decoded = decodeURIComponent(segment);
+      if (
+        !GENERIC_URL_SEGMENTS.has(decoded.toLowerCase()) &&
+        !/^[0-9]{2}_[a-z]{2}$/i.test(decoded)
+      )
+        return decoded;
+    }
+    return parsed.hostname;
   } catch {
     return '';
   }
 }
 
-/** Default label: bill number, else title, else the URL's last segment. Unique among labels. */
+/** Default label: bill number, else title, else a meaningful URL segment. Unique among labels. */
 function chooseLabel(doc: NormalizedDoc, taken: ReadonlySet<string>): string {
   const base =
     [doc.metadata.billNumber, doc.metadata.title, hostLabel(doc.sourceUrl)]

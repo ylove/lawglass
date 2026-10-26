@@ -7,7 +7,7 @@ import {
   fixturePath,
 } from '../../../tests/support/fixtures.js';
 import type { ExternalRef, Section } from '../model/index.js';
-import { parsePdf, parseXml } from '../parse/index.js';
+import { parseHtml, parsePdf, parseText, parseXml } from '../parse/index.js';
 import { chunkDocument } from '../chunk/index.js';
 import {
   GROUP_CAP,
@@ -77,6 +77,43 @@ describe('decided later: rule-making and discretion', () => {
       '(b) Rulemaking.—The Secretary shall promulgate regulations.',
     );
     expect(item?.actor).toBe('The Secretary');
+  });
+
+  it.each([
+    [
+      'Waivers',
+      'The Administrator may waive the requirement.',
+      'The Administrator',
+    ],
+    [
+      'Rules',
+      'The Secretary of Education shall adopt rules.',
+      'The Secretary of Education',
+    ],
+    ['STANDARDS', 'The Board shall establish uniform standards.', 'The Board'],
+  ])(
+    'excludes a plain-text section heading from the actor: %s',
+    (heading, body, actor) => {
+      const doc = parseText(`Section 1. ${heading}\n${body}`, {
+        sourceUrl: 'https://example.test/bill.txt',
+        fetchedAt: '2026-10-13T12:00:00.000Z',
+      });
+      expect(extractDelegations(doc.sections).decidedLater[0]?.actor).toBe(
+        actor,
+      );
+    },
+  );
+
+  it('keeps wrapped actor names and operative text stored as a heading', () => {
+    const body =
+      'The Secretary of\nEducation shall adopt rules.\nThe Mayor may waive fees.';
+    const doc = parseText(`Section 1. ${body}`, {
+      sourceUrl: 'https://example.test/bill.txt',
+      fetchedAt: '2026-10-13T12:00:00.000Z',
+    });
+    expect(
+      extractDelegations(doc.sections).decidedLater.map((i) => i.actor),
+    ).toEqual(['The Secretary of\nEducation', 'The Mayor']);
   });
 
   it('finds "as the X determines appropriate"', () => {
@@ -325,7 +362,101 @@ describe('depends on', () => {
         kind: 'law',
         actor: 'R.C. 5747.01',
         what: 'section 5747.01 of the Revised Code',
+        lawRole: 'citation',
       });
+    });
+
+    it.each([
+      'as provided by',
+      'as provided in',
+      'as provided under',
+      'subject to',
+      'subject to the requirements of',
+      'pursuant to',
+      'in accordance with',
+    ])('recognizes a dependency law introduced by "%s"', (phrase) => {
+      const result = extractDelegations(
+        [sec('s', `Payments are ${phrase} ${ref.text}.`)],
+        [ref],
+      );
+      expect(result.dependsOn).toMatchObject([
+        {
+          actor: ref.citation,
+          lawRole: 'dependency',
+          what: `${phrase} ${ref.text}`,
+        },
+      ]);
+    });
+
+    it.each([
+      `Payments are not subject to ${ref.text}.`,
+      `Subject to appropriations, payments follow ${ref.text}.`,
+      `Terms are as provided by the Board, which cites ${ref.text}.`,
+      `Payments are subject to this Act. See ${ref.text}.`,
+    ])(
+      'does not promote a negated or unrelated dependency phrase: %s',
+      (text) => {
+        const laws = extractDelegations(
+          [sec('s', text)],
+          [ref],
+        ).dependsOn.filter((i) => i.kind === 'law');
+        expect(laws).toMatchObject([{ lawRole: 'citation' }]);
+      },
+    );
+
+    it('prefers a later dependency occurrence over an earlier plain citation', () => {
+      const sections = [
+        sec('s', `See ${ref.text}. Payments are subject to ${ref.text}.`),
+      ];
+      expect(extractDelegations(sections, [ref]).dependsOn).toMatchObject([
+        {
+          lawRole: 'dependency',
+          what: `subject to ${ref.text}`,
+          quote: `Payments are subject to ${ref.text}.`,
+        },
+      ]);
+    });
+
+    it('ranks triggers, funding, bodies and dependency laws before plain citations', () => {
+      const plainRef = {
+        ...ref,
+        citation: 'R.C. 5747.02',
+        text: 'section 5747.02 of the Revised Code',
+      };
+      const text = [
+        `See ${plainRef.text}.`,
+        `Payments are subject to ${ref.text}.`,
+        'The plan must be approved by the Department of Labor.',
+        'Spending is subject to appropriations.',
+        'The plan is contingent upon the enactment of another bill.',
+        'The charter is subject to the approval of the voters.',
+      ].join(' ');
+      const result = extractDelegations([sec('s', text)], [plainRef, ref]);
+      expect(result.dependsOn.map((i) => [i.kind, i.lawRole])).toEqual([
+        ['contingency', undefined],
+        ['voter_approval', undefined],
+        ['appropriation', undefined],
+        ['outside_body', undefined],
+        ['law', 'dependency'],
+        ['law', 'citation'],
+      ]);
+      expect(extractDelegations([sec('s', text)], [ref, plainRef])).toEqual(
+        result,
+      );
+    });
+
+    it('keeps laws in document order within each rank regardless of reference input order', () => {
+      const laterRef = {
+        ...ref,
+        citation: 'R.C. 5747.02',
+        text: 'section 5747.02 of the Revised Code',
+      };
+      const sections = [sec('s', `See ${ref.text} and ${laterRef.text}.`)];
+      expect(
+        extractDelegations(sections, [laterRef, ref]).dependsOn.map(
+          (i) => i.actor,
+        ),
+      ).toEqual([ref.citation, laterRef.citation]);
     });
 
     it('drops a law cited only in struck text', () => {
@@ -354,10 +485,14 @@ describe('depends on', () => {
       const text =
         'Grants follow ' +
         refs.map((r) => r.text).join(', ') +
-        '. Spending is subject to appropriations.';
+        `. Spending is subject to appropriations. Payments are subject to ${refs.at(-1)!.text}.`;
       const result = extractDelegations([sec('s', text)], refs);
       expect(result.dependsOn).toHaveLength(GROUP_CAP);
       expect(result.dependsOn[0]?.kind).toBe('appropriation');
+      expect(result.dependsOn[1]).toMatchObject({
+        lawRole: 'dependency',
+        actor: refs.at(-1)!.citation,
+      });
       expect(result.truncated.dependsOn).toBe(31 - GROUP_CAP);
     });
   });
@@ -399,6 +534,65 @@ describe('takes effect', () => {
 });
 
 describe('positions, quotes, caps', () => {
+  it('preserves printed positions after excluding a heading line', () => {
+    const section = sec('s', '', {
+      heading: 'Waivers',
+      spans: [
+        { text: 'Section 1. Waivers\n', status: 'unchanged', page: 1, line: 2 },
+        {
+          text: 'The Administrator may waive fees.',
+          status: 'unchanged',
+          page: 2,
+          line: 5,
+        },
+      ],
+    });
+    expect(extractDelegations([section]).decidedLater[0]).toMatchObject({
+      actor: 'The Administrator',
+      page: 2,
+      line: 5,
+    });
+  });
+
+  it.each(['—', '–', '--', ':'])(
+    'trims an unfinished list introduction ending in "%s"',
+    (dash) => {
+      const section = sec(
+        's',
+        `the Administrator otherwise determines should be excluded in order${dash}`,
+        {
+          children: [
+            sec('s/I', 'to preserve the integrity of the Program; and'),
+          ],
+        },
+      );
+      expect(extractDelegations([section]).decidedLater).toMatchObject([
+        {
+          sectionId: 's',
+          actor: 'the Administrator',
+          what: 'determines should be excluded',
+        },
+      ]);
+    },
+  );
+
+  it('ends a long excerpt at the preceding comma instead of cutting a clause', () => {
+    const clause =
+      'may waive the annual reporting requirement for licensed facilities in rural districts';
+    const [item] = decided(
+      `The Secretary ${clause}, when the Secretary finds that a waiver would serve the needs of the public and protect participants.`,
+    );
+    expect(item?.what).toBe(`${clause}…`);
+  });
+
+  it('marks omissions at whole words when a long clause has no comma', () => {
+    const [item] = decided(
+      `The Secretary may waive ${'reporting requirements '.repeat(15)}.`,
+    );
+    expect(item?.what.length).toBeLessThanOrEqual(140);
+    expect(item?.what).toMatch(/(?:reporting|requirements)…$/);
+  });
+
   it('reports the line and page of the span that holds the match', () => {
     const s: Section = {
       id: 's',
@@ -800,7 +994,31 @@ describeWithFixture('us-s202-119-is', () => {
       fetchedAt: '2026-10-13T12:00:00.000Z',
     });
     const { doc } = enrichDocument(raw, chunkDocument(raw));
+    expect(
+      extractDelegations(doc.sections, doc.externalRefs).decidedLater[0],
+    ).toMatchObject({
+      actor: 'the Administrator',
+      what: 'determines should be excluded',
+    });
     report('S. 202', doc.sections, doc.externalRefs);
+  });
+});
+
+describeWithFixture('us-s202-119-is-html', () => {
+  it('cleans the HTML version of the Administrator determination', () => {
+    const raw = parseHtml(readFileSync(fixturePath('us-s202-119-is-html')!), {
+      sourceUrl: 'https://example.test/bill.html',
+      fetchedAt: '2026-10-13T12:00:00.000Z',
+    });
+    const { doc } = enrichDocument(raw, chunkDocument(raw));
+    const found = extractDelegations(doc.sections, doc.externalRefs);
+    expect(found.decidedLater[0]).toMatchObject({
+      actor: 'the Administrator',
+      what: 'determines should be excluded',
+    });
+    expect(found.dependsOn.every((item) => item.lawRole === 'citation')).toBe(
+      true,
+    );
   });
 });
 

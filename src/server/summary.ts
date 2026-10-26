@@ -83,6 +83,11 @@ export const FAILED_RETRY_MS = 60_000;
 
 export interface SummaryRequestOptions {
   wait?: boolean;
+  /**
+   * False only reports: a cached summary, or `pending` while a run is in progress, and never
+   * starts one. For work that follows a summary (pictures) without being a reason to make it.
+   */
+  start?: boolean;
   signal?: AbortSignal;
   onError?: (error: unknown, ms: number) => void;
 }
@@ -238,6 +243,7 @@ export function createSummaryService(
         }
         return { status: 'pending' };
       }
+      if (request.start === false) return { status: 'disabled' };
       const failed = failedAt.get(name);
       if (failed !== undefined) {
         if (now() - failed < FAILED_RETRY_MS) return { status: 'disabled' };
