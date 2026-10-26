@@ -462,6 +462,11 @@ const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
       reject(abortError());
       return;
     }
+    // A zero-delay stream should not accumulate one scheduled timer per word in tests.
+    if (ms <= 0) {
+      resolve();
+      return;
+    }
     const timer = setTimeout(resolve, ms);
     signal?.addEventListener(
       'abort',

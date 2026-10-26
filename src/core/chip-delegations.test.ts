@@ -21,6 +21,7 @@ import { lazyProvider } from './llm/lazy-provider.js';
 import {
   AppError,
   EMPTY_METADATA,
+  type ExternalRef,
   type LlmProvider,
   type Section,
 } from './model/index.js';
@@ -285,6 +286,79 @@ describe('delegations chip: public mode', () => {
 });
 
 describe('delegations chip: empty and capped', () => {
+  it('keeps real dependencies visible ahead of plain citations, labeled "Also cites"', async () => {
+    const refs: ExternalRef[] = Array.from({ length: 10 }, (_, i) => ({
+      citation: `R.C. ${String(4000 + i)}.01`,
+      text: `section ${String(4000 + i)}.01 of the Revised Code`,
+      kind: 'state_code',
+      sectionIds: [`cite-${String(i)}`],
+    }));
+    const sections = [
+      ...refs.map((ref, i) => sec(`cite-${String(i)}`, `See ${ref.text}.`)),
+      sec('law', 'Fees are as provided by the Ohio Revised Code.'),
+      sec('body', 'The plan must be approved by the Department of Labor.'),
+      sec('funds', 'Spending is subject to appropriations.'),
+      sec(
+        'trigger',
+        'The plan is contingent upon the enactment of another bill.',
+      ),
+      sec('vote', 'The charter is subject to the approval of the voters.'),
+    ];
+    const { answer } = await run(
+      deps(missingKey, {
+        doc: { metadata: EMPTY_METADATA, sections, externalRefs: refs },
+      }),
+    );
+    expect(answer.text).toBe(
+      [
+        '**Depends on**',
+        '- contingent upon the enactment of another bill [S:trigger]',
+        '- subject to the approval of the voters [S:vote]',
+        '- subject to appropriations [S:funds]',
+        '- the Department of Labor: approved by the Department of Labor [S:body]',
+        '- the Ohio Revised Code: as provided by the Ohio Revised Code [S:law]',
+        '',
+        '**Also cites**',
+        '- R.C. 4000.01: section 4000.01 of the Revised Code [S:cite-0]',
+        '- R.C. 4001.01: section 4001.01 of the Revised Code [S:cite-1]',
+        '- R.C. 4002.01: section 4002.01 of the Revised Code [S:cite-2]',
+        '- and 7 more',
+      ].join('\n'),
+    );
+    expect(answer.citations).toHaveLength(MAX_ITEMS_PER_GROUP);
+    expect(answer.citations.every((c) => c.valid)).toBe(true);
+    expect(answer.invalidCitations).toEqual([]);
+  });
+
+  it('labels plain citations for both the reader and the lede provider', async () => {
+    const provider = new ScriptedProvider({
+      reply: 'The bill cites existing law [S:cite].',
+    });
+    const ref: ExternalRef = {
+      citation: 'R.C. 4000.01',
+      text: 'section 4000.01 of the Revised Code',
+      kind: 'state_code',
+      sectionIds: ['cite'],
+    };
+    const { answer } = await run(
+      deps(provider, {
+        doc: {
+          metadata: EMPTY_METADATA,
+          sections: [sec('cite', `See ${ref.text}.`)],
+          externalRefs: [ref],
+        },
+      }),
+    );
+    expect(answer.text).toContain('**Also cites**');
+    expect(answer.text).not.toContain('**Depends on**');
+    const call = provider.calls[0] as unknown as {
+      messages: { content: string }[];
+    };
+    expect(call.messages[0]?.content).toContain('(also cites)');
+    expect(call.messages[0]?.content).not.toContain('(depends on)');
+    expect(answer.invalidCitations).toEqual([]);
+  });
+
   it('says so, with no model call, when nothing is left for later', async () => {
     const provider = new ScriptedProvider({ reply: 'unused [S:a]' });
     const { answer } = await run(
@@ -355,6 +429,9 @@ describe('delegations chip: empty and capped', () => {
     expect(unescapeDelegationList('No list \\*here\\*.')).toBe(
       'No list \\*here\\*.',
     );
+    expect(unescapeDelegationList('**Also cites**\n- a \\*b\\* [S:x]')).toBe(
+      '**Also cites**\n- a *b* [S:x]',
+    );
   });
 
   it('reports page and line for an item from a numbered source', async () => {
@@ -398,7 +475,11 @@ describeWithFixture('us-s202-119-is', () => {
     };
     const plainRun = await run({ ...base, provider: missingKey });
     expect(plainRun.answer.text).toMatch(/Administrator/);
-    expect(plainRun.answer.text).toContain('**Depends on**');
+    expect(plainRun.answer.text).toContain('**Also cites**');
+    expect(plainRun.answer.text).toContain(
+      '- the Administrator — determines should be excluded [S:sec-2/4/B/vi]',
+    );
+    expect(plainRun.answer.text).not.toContain('in order—');
     expect(plainRun.answer.invalidCitations).toEqual([]);
 
     const firstId = plainRun.answer.citations[0]?.sectionId ?? '';

@@ -300,6 +300,7 @@ function splitLine(
   nested = false,
   inColonList = false,
   restartNesting = false,
+  nextMarker?: string,
 ): LinePart[] {
   const match = matchHeading(text, patterns);
   if (!match) return [{ text }];
@@ -311,6 +312,7 @@ function splitLine(
       restartNesting ? undefined : x,
       context,
       nested,
+      nextMarker,
     );
     if (!nested)
       context.length = enumerationDepth(
@@ -397,12 +399,28 @@ function markerKind(
   x: number | undefined,
   stack: readonly MarkerContext[],
   nested = false,
+  nextMarker?: string,
 ): MarkerKind {
   if (/^\d+$/.test(marker)) return 'number';
   const lower = marker === marker.toLowerCase();
   const letter: MarkerKind = lower ? 'lower-letter' : 'upper-letter';
   const roman: MarkerKind = lower ? 'lower-roman' : 'upper-roman';
   if (!ROMAN.test(marker)) return letter;
+
+  // Ohio indents every paragraph alike: (h), then (i), then (ii) starts a Roman list
+  // under (h). Without the next marker, (i) looks like the next letter instead.
+  const previousFrame = stack.at(-1);
+  if (
+    !nested &&
+    marker.toLowerCase() === 'i' &&
+    nextMarker === (lower ? 'ii' : 'II') &&
+    previousFrame?.kind === letter &&
+    previousFrame.marker === (lower ? 'h' : 'H') &&
+    (x === undefined ||
+      previousFrame.x === undefined ||
+      x >= previousFrame.x - INDENT_TOLERANCE)
+  )
+    return roman;
 
   // Equal indents resolve ambiguous (i)/(I) using the established level's alphabet.
   if (!nested && marker.length === 1 && x !== undefined) {
@@ -537,6 +555,10 @@ function recordLocation(section: Section, line: SourceLine): void {
   }
 }
 
+const MAX_HEADING_LENGTH = 160;
+const SENTENCE_VERB =
+  /\b(?:is|are|was|were|be|been|being|has|have|had|shall|must|may|can|will|should|would|could|does|do|did|means|requires|provides|applies)\b/i;
+
 /** Subdivision body sentences are not titles; only explicit heading signals name them. */
 export function subdivisionHeading(
   body: string,
@@ -544,31 +566,51 @@ export function subdivisionHeading(
 ): string | undefined {
   const text = body.trim();
   if (!text) return undefined;
-  const dashed = /^([^.—–\n]+\.(?:[—–]|--(?!-)))/.exec(text);
-  if (dashed) return dashed[1];
-  if (printedHeading || (/[A-Z]/.test(text) && text === text.toUpperCase()))
-    return text;
+  // GPO wraps long definition labels across lines before printing the dash separator.
+  const opening = (text.split(/\n\s*\n/, 1)[0] ?? '').replace(/\s+/g, ' ');
+  const dashed = /^([^.—–]+\.(?:[—–]|--(?!-)))/.exec(opening)?.[1];
+  if (
+    dashed &&
+    dashed.length <= MAX_HEADING_LENGTH &&
+    !SENTENCE_VERB.test(dashed)
+  )
+    return dashed;
+  const firstLine = (text.split('\n', 1)[0] ?? '').trim().replace(/\s+/g, ' ');
+  if (
+    printedHeading ||
+    (/[A-Z]/.test(firstLine) && firstLine === firstLine.toUpperCase())
+  )
+    return firstLine;
   return undefined;
 }
 
 /**
  * Ohio-style code sections often put the first body clause after the number on the same
- * line. A prose opener is not a title; explicit typography still wins ("The board.—").
- * Keep ordinary short titles, including "Section 5747.01 Short title".
+ * line. Short noun phrases can start with articles or "Subject"; their first word alone
+ * cannot tell a title from prose. Explicit typography still wins ("The board.—").
  */
 export function sectionHeading(
   body: string,
   marker: string | undefined,
   printedHeading = false,
 ): string | undefined {
+  if (!marker?.includes('.')) return body || undefined;
+  const explicit = subdivisionHeading(body, printedHeading);
+  if (explicit) return explicit;
+  const title = body.trim();
   if (
-    marker?.includes('.') &&
-    /^(?:A|An|The|Each|Any|Every|No|If|When|Unless|Except|As|Notwithstanding|Subject|That)\b/i.test(
-      body,
-    )
+    title.length > 80 ||
+    title.split(/\s+/).length > 6 ||
+    SENTENCE_VERB.test(title) ||
+    /[,;:!?]|\.(?!$)/.test(title) ||
+    /\b(?:of|under|and|or|for|with|to|from|in|on|at|that|which|who)\.?$/i.test(
+      title,
+    ) ||
+    /^(?:If|When|Unless|Except|As|Notwithstanding|Subject to)\b/i.test(title) ||
+    /^(?:A|An|Each|Any|Every|That)\s+[a-z]/.test(title)
   )
-    return subdivisionHeading(body, printedHeading);
-  return body || undefined;
+    return undefined;
+  return title || undefined;
 }
 
 const PROSE_OPENER =
@@ -665,11 +707,53 @@ export function detectSections(
       });
   }
 
+  function wrappedHeading(index: number, body: string): string {
+    if (!body.trim()) return body;
+    let text = body;
+    for (let next = index + 1; next < lines.length; next++) {
+      if (text.length > MAX_HEADING_LENGTH || /[.—–]/.test(text)) break;
+      const line = lines[next];
+      if (!line) break;
+      const visible = visibleText(line).text;
+      if (
+        !visible.trim() ||
+        (!line.continuation && matchHeading(visible, patterns))
+      )
+        break;
+      text += `\n${visible.trim()}`;
+    }
+    return text;
+  }
+
+  function followingMarker(index: number): string | undefined {
+    const x = lines[index]?.x;
+    for (let next = index + 1; next < lines.length; next++) {
+      const line = lines[next];
+      if (!line) break;
+      if (line.continuation) continue;
+      const match = matchHeading(visibleText(line).text, patterns);
+      if (!match) continue;
+      if (
+        match.kind === 'enumeration' &&
+        (x === undefined ||
+          line.x === undefined ||
+          Math.abs(x - line.x) <= INDENT_TOLERANCE)
+      )
+        return match.marker;
+      return undefined;
+    }
+    return undefined;
+  }
+
   for (const [index, line] of lines.entries()) {
     // Structure (num, heading, nesting) is read from the text as amended; struck characters
     // still go into the spans, as deleted runs, via the offset map.
     const visible = visibleText(line);
     sectionGate?.observe?.(visible.text);
+    const nextMarker =
+      !line.continuation && /^\s*\([iI]\)/.test(visible.text)
+        ? followingMarker(index)
+        : undefined;
     const parts: LinePart[] = line.continuation
       ? [{ text: visible.text }]
       : splitLine(
@@ -680,6 +764,7 @@ export function detectSections(
           false,
           false,
           options.nestRestartedMarkers,
+          nextMarker,
         );
     let partStart = 0;
     let visibleStart = 0;
@@ -715,6 +800,7 @@ export function detectSections(
             options.nestRestartedMarkers ? undefined : x,
             enumerations,
             nested,
+            partIndex === 0 ? nextMarker : undefined,
           );
           if (!nested)
             enumerations.length = enumerationDepth(
@@ -746,7 +832,12 @@ export function detectSections(
         }
         const heading =
           match.kind === 'enumeration'
-            ? subdivisionHeading(match.heading, line.printedHeading)
+            ? subdivisionHeading(
+                partIndex === parts.length - 1
+                  ? wrappedHeading(index, match.heading)
+                  : match.heading,
+                line.printedHeading,
+              )
             : match.kind === 'section'
               ? options.shortSectionHeadings
                 ? shortLeadingHeading(match.heading)
