@@ -474,7 +474,9 @@ describe('pre-generation', () => {
     const a = app();
     const docId = await ingestDoc(a);
     await breakdown(a, docId);
-    await cachedBreakdown(a, docId);
+    const done = await cachedBreakdown(a, docId);
+    const available =
+      done.briefs?.filter((b) => b.example === 'available').length ?? 0;
     await new Promise((resolve) => setTimeout(resolve, 100));
     // A fresh process (as after a restart) has not drawn this document's examples yet.
     vi.stubEnv(envVar('PREGENERATE_EXAMPLES'), '1');
@@ -484,11 +486,17 @@ describe('pre-generation', () => {
     ).toBe('cached');
     await new Promise((resolve) => setTimeout(resolve, 100));
     expect(state.started).toEqual([]);
-    // The same look without start:false does start them, so the check above can fail.
+    // The same look without start:false does start them, so the check above can fail. Let
+    // the pass finish, so no example is still writing when the test's directory is removed.
     await service.get(docId, { wait: false });
-    await vi.waitFor(() => {
-      expect(state.started.length).toBeGreaterThan(0);
-    });
+    await vi.waitFor(
+      () => {
+        expect(state.started).toHaveLength(available);
+        expect(state.active).toBe(0);
+      },
+      { timeout: 10_000 },
+    );
+    expect(available).toBeGreaterThan(0);
   });
 
   test('a bill with more than the bound of available examples draws them on demand only', async () => {

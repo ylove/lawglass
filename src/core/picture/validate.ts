@@ -93,11 +93,19 @@ function wordsFromItem(label: string, itemStems: ReadonlySet<string>): boolean {
  * pair is joined when the joined word is one of the item's.
  */
 function joinItemCompounds(label: string, itemStems: ReadonlySet<string>) {
-  return normalize(label).replace(
-    /(\p{L}+)-(\p{L}+)/gu,
-    (pair: string, a: string, b: string) =>
-      itemStems.has(a + b) ? a + b : pair,
-  );
+  // Split by hand rather than with a pattern over letter runs, which backtracks on long input.
+  return normalize(label)
+    .split(' ')
+    .map((token) => {
+      const parts = token.split('-');
+      const joined = parts.join('');
+      return parts.length === 2 &&
+        /^\p{L}+$/u.test(joined) &&
+        itemStems.has(joined)
+        ? joined
+        : token;
+    })
+    .join(' ');
 }
 
 /** Every number in a label must be written the same way in the item. */
