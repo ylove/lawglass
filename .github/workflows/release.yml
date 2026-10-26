@@ -34,12 +34,22 @@ jobs:
           # No dependency cache in a tag-triggered release job (cache poisoning). package.json's
           # packageManager field would otherwise turn caching on implicitly.
           package-manager-cache: false
-      - run: npm ci --ignore-scripts
       # Only releases from main: the tagged commit must already have passed review and CI there.
+      # Checked before npm ci so nothing from an off-main commit is installed or run.
       - name: Require the tagged commit to be on main
         run: |
           git fetch --no-tags origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      - name: Require the tag to match package.json's version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(node -p "require('./package.json').version")"
+          if [ "$TAG" != "v${version}" ]; then
+            echo "Tag $TAG does not match package.json version v${version}" >&2
+            exit 1
+          fi
+      - run: npm ci --ignore-scripts
       - run: npm run check
       - run: npm run build
       - name: Pack the tarball
