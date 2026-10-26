@@ -1,5 +1,5 @@
 // Local web UI shell: header, sidebar, main screen (ingest or document) and footer.
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { BRAND } from '../core/brand.js';
 import type {
   ClientConfig,
@@ -11,8 +11,16 @@ import { ServerDownCard } from './document/ServerDownCard.js';
 import { BILL_TITLE_ID } from './document/MetadataHeader.js';
 import { DocumentView } from './DocumentView.js';
 import { errorMessage } from './errors.js';
-import { Ingest } from './Ingest.js';
+import { Home } from './Home.js';
 import { LogoMark } from './LogoMark.js';
+import {
+  docPath,
+  HOME_PATH,
+  Link,
+  NavContext,
+  parseDocPath,
+  withSearch,
+} from './nav.js';
 import { dataNote } from './provider-label.js';
 import { Sidebar } from './Sidebar.js';
 import { ApiError } from './sse.js';
@@ -29,7 +37,11 @@ export function App({ api: provided }: { api?: ApiClient }) {
   );
   const [config, setConfig] = useState<ClientConfig | null>(null);
   const [docs, setDocs] = useState<DocSummary[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
+  // The address bar is the source of truth for what is open: `/` is home, `/doc/<id>` a document.
+  const [path, setPath] = useState(() => window.location.pathname);
+  const selected = parseDocPath(path);
+  // Counts navigations so focus can follow each one (the clicked link may no longer exist).
+  const [navigations, setNavigations] = useState(0);
   const [loading, setLoading] = useState(true);
   const [problem, setProblem] = useState<string | null>(null);
   // True when the first requests could not reach the server at all (not a server-side error).
@@ -42,13 +54,39 @@ export function App({ api: provided }: { api?: ApiClient }) {
   const [mastheadSlot, setMastheadSlot] = useState<HTMLElement | null>(null);
 
   useEffect(() => {
+    const onPop = () => {
+      setPath(window.location.pathname);
+      setNotice(null);
+      setNavigations((n) => n + 1);
+    };
+    window.addEventListener('popstate', onPop);
+    return () => {
+      window.removeEventListener('popstate', onPop);
+    };
+  }, []);
+
+  const navigate = useCallback((to: string) => {
+    const target = withSearch(to);
+    if (window.location.pathname + window.location.search !== target)
+      window.history.pushState({}, '', target);
+    setPath(to);
+    setNotice(null);
+    setNavigations((n) => n + 1);
+  }, []);
+
+  // After a route change, move focus to the page's main region (named by the bill title on a
+  // document page) so keyboard and screen reader users start at the new content.
+  useEffect(() => {
+    if (navigations > 0) document.getElementById('main')?.focus();
+  }, [navigations]);
+
+  useEffect(() => {
     let live = true;
     Promise.all([api.getConfig(), api.listDocs()])
       .then(([c, list]) => {
         if (!live) return;
         setConfig(c);
         setDocs(list);
-        setSelected(list[0]?.docId ?? null);
       })
       .catch((e: unknown) => {
         if (!live) return;
@@ -77,7 +115,7 @@ export function App({ api: provided }: { api?: ApiClient }) {
 
   function onIngested(doc: DocSummary, stats: IngestStats) {
     setDocs((prev) => [doc, ...prev.filter((d) => d.docId !== doc.docId)]);
-    setSelected(doc.docId);
+    navigate(docPath(doc.docId));
     setNotice(
       stats.reused
         ? 'This document was already loaded, so nothing new was processed.'
@@ -95,109 +133,133 @@ export function App({ api: provided }: { api?: ApiClient }) {
     setProblem(null);
     const rest = docs.filter((d) => d.docId !== docId);
     setDocs(rest);
-    if (selected === docId) setSelected(rest[0]?.docId ?? null);
+    if (selected === docId) navigate(HOME_PATH);
   }
 
+  // Opening a document moves it to the top of the reader's own list (and adds a shared link).
+  const refreshList = useCallback(() => {
+    if (config?.library !== 'reader') return;
+    api
+      .listDocs()
+      .then(setDocs)
+      .catch(() => undefined);
+  }, [api, config?.library]);
+
   return (
-    <div className="app" data-screen={selected === null ? 'home' : 'bill'}>
-      <a className="skip" href="#main">
-        Skip to main content
-      </a>
-      <header className="masthead">
-        <div className="brand">
-          <LogoMark />
-          <h1>{productName}</h1>
-        </div>
-        {selected === null && (
-          <div className="hero">
-            <p className="hero-kicker">Federal, state and local legislation</p>
-            <p className="hero-title">Understand any bill, line by line.</p>
-            <p className="hero-sub">
-              Paste a link. Get a plain-language answer, and see the exact
-              section and line behind every point.
-            </p>
-          </div>
-        )}
-        <div className="masthead-doc" ref={setMastheadSlot} />
-      </header>
-      <div className="layout">
-        {config && (
-          <Sidebar
-            docs={docs}
-            selectedId={selected}
-            onSelect={(id) => {
-              setSelected(id);
-              setNotice(null);
-            }}
-            onAdd={() => {
-              setSelected(null);
-              setNotice(null);
-            }}
-            onRemove={(id) => void remove(id)}
-          />
-        )}
-        <main
-          id="main"
-          tabIndex={-1}
-          aria-labelledby={selected !== null ? BILL_TITLE_ID : undefined}
-        >
-          {serverDown && (
-            <ServerDownCard
-              onRetry={() => {
-                setLoading(true);
-                setServerDown(false);
-                setProblem(null);
-                setAttempt((n) => n + 1);
-              }}
-            />
-          )}
-          {problem && (
-            <p role="alert" className="error">
-              {problem}
-            </p>
-          )}
-          {problem && slowStart && (
-            <button
-              type="button"
-              className="btn"
-              onClick={() => {
-                setLoading(true);
-                setSlowStart(false);
-                setProblem(null);
-                setAttempt((n) => n + 1);
-              }}
+    <NavContext.Provider value={navigate}>
+      <div className="app" data-screen={selected === null ? 'home' : 'bill'}>
+        <a className="skip" href="#main">
+          Skip to main content
+        </a>
+        <header className="masthead">
+          <div className="brand">
+            <Link
+              to={HOME_PATH}
+              className="brand-link"
+              aria-label={`${productName} home`}
             >
-              Retry
-            </button>
+              <LogoMark />
+              <h1>{productName}</h1>
+            </Link>
+          </div>
+          {selected === null && (
+            <div className="hero">
+              <p className="hero-kicker">
+                Federal, state and local legislation
+              </p>
+              <p className="hero-title">Understand any bill, line by line.</p>
+              <p className="hero-sub">
+                Paste a link. Get a plain-language answer, and see the exact
+                section and line behind every point.
+              </p>
+            </div>
           )}
-          {loading && <p role="status">Loading...</p>}
-          {config && selected === null && (
-            <Ingest api={api} onIngested={onIngested} />
-          )}
+          <div className="masthead-doc" ref={setMastheadSlot} />
+        </header>
+        <div className="layout">
           {config && selected !== null && (
-            <DocumentView
-              key={selected}
-              api={api}
-              config={config}
-              docId={selected}
-              notice={notice}
-              mastheadSlot={mastheadSlot}
+            <Sidebar
+              docs={docs}
+              selectedId={selected}
+              perReader={config.library === 'reader'}
+              onSelect={(id) => {
+                navigate(docPath(id));
+              }}
+              onAdd={() => {
+                navigate(HOME_PATH);
+              }}
+              onRemove={(id) => void remove(id)}
             />
           )}
-        </main>
+          <main
+            id="main"
+            tabIndex={-1}
+            aria-labelledby={selected !== null ? BILL_TITLE_ID : undefined}
+          >
+            {serverDown && (
+              <ServerDownCard
+                onRetry={() => {
+                  setLoading(true);
+                  setServerDown(false);
+                  setProblem(null);
+                  setAttempt((n) => n + 1);
+                }}
+              />
+            )}
+            {problem && (
+              <p role="alert" className="error">
+                {problem}
+              </p>
+            )}
+            {problem && slowStart && (
+              <button
+                type="button"
+                className="btn"
+                onClick={() => {
+                  setLoading(true);
+                  setSlowStart(false);
+                  setProblem(null);
+                  setAttempt((n) => n + 1);
+                }}
+              >
+                Retry
+              </button>
+            )}
+            {loading && <p role="status">Loading...</p>}
+            {config && selected === null && (
+              <Home
+                api={api}
+                docs={docs}
+                examples={config.examples}
+                onIngested={onIngested}
+              />
+            )}
+            {config && selected !== null && (
+              <DocumentView
+                key={selected}
+                api={api}
+                config={config}
+                docId={selected}
+                notice={notice}
+                mastheadSlot={mastheadSlot}
+                onLoaded={refreshList}
+              />
+            )}
+          </main>
+        </div>
+        <footer className="site-footer">
+          <p>
+            Not legal advice. Answers are generated only from the text of this
+            document.
+          </p>
+          {note && <p>{note}</p>}
+          <p>
+            <a href={BRAND.repositoryUrl} rel="noopener noreferrer">
+              Source code
+            </a>
+          </p>
+        </footer>
       </div>
-      <footer className="site-footer">
-        <p>
-          Not legal advice. Answers are generated only from the text of this
-          document.
-        </p>
-        {note && <p>{note}</p>}
-        <p>
-          <a href={BRAND.repositoryUrl} rel="noopener noreferrer">
-            Source code
-          </a>
-        </p>
-      </footer>
-    </div>
+    </NavContext.Provider>
   );
 }

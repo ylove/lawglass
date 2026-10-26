@@ -43,10 +43,12 @@ test.afterAll(async ({ packedApp }) => {
 
 async function openDocument(page: import('@playwright/test').Page) {
   await page.goto('/');
+  // The homepage lists the documents; opening one moves to /doc/<id>.
   await page
-    .getByRole('navigation', { name: 'Loaded documents' })
-    .getByRole('button', { name: LABEL_PATTERN })
+    .getByRole('region', { name: 'Your documents' })
+    .getByRole('link', { name: LABEL_PATTERN })
     .click();
+  await expect(page).toHaveURL(/\/doc\/[a-f0-9]{64}$/);
 }
 
 test('summary on arrival: preview, then summary, then cached on reload', async ({
@@ -147,8 +149,12 @@ test('server-down card appears when the server stops, and Retry recovers', async
   const first = await packedApp.serve();
   const port = Number(new URL(first.url).port);
   await page.goto(first.url);
+  // Arrive on the homepage, open one document; the other is clicked once the server is gone.
+  await page
+    .getByRole('region', { name: 'Your documents' })
+    .getByRole('link', { name: LABEL_PATTERN })
+    .click();
   const sidebar = page.getByRole('navigation', { name: 'Loaded documents' });
-  // The app opens the first listed document; the other one is clicked once the server is gone.
   await expect(
     sidebar.getByRole('button', { name: LABEL_PATTERN }),
   ).toBeVisible();
@@ -156,12 +162,7 @@ test('server-down card appears when the server stops, and Retry recovers', async
     sidebar.getByRole('button', { name: SECOND_PATTERN }),
   ).toBeVisible();
   await expect(page.getByRole('region', { name: 'In brief' })).toBeVisible();
-  const current = await sidebar
-    .locator('[aria-current="page"]')
-    .first()
-    .innerText()
-    .catch(() => '');
-  const other = current.includes(SECOND_LABEL) ? LABEL : SECOND_LABEL;
+  const other = SECOND_LABEL;
 
   await first.stop();
   await sidebar.getByRole('button', { name: new RegExp(`^${other}`) }).click();

@@ -403,8 +403,15 @@ export class Registry {
     });
   }
 
-  /** The oldest entries beyond the cap. The caller evicts these from their recorded backends. */
-  evictionCandidates(maxDocs: number): Promise<RegistryEntry[]> {
+  /**
+   * The entries beyond the cap, which the caller evicts from their recorded backends. Documents
+   * in `listed` (some reader still has them on their list) go last; within each group the
+   * oldest go first.
+   */
+  evictionCandidates(
+    maxDocs: number,
+    listed: ReadonlySet<string> = new Set(),
+  ): Promise<RegistryEntry[]> {
     return this.exclusive(async () => {
       if (!z.number().int().nonnegative().safeParse(maxDocs).success) {
         throw storageError('The document cap must be a nonnegative integer.');
@@ -413,6 +420,7 @@ export class Registry {
       return entries
         .sort(
           (a, b) =>
+            Number(listed.has(a.docId)) - Number(listed.has(b.docId)) ||
             a.lastUsedAt.localeCompare(b.lastUsedAt) ||
             a.ingestedAt.localeCompare(b.ingestedAt) ||
             a.docId.localeCompare(b.docId),

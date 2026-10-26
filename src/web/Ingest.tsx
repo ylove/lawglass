@@ -54,13 +54,16 @@ interface Progress {
 export function Ingest({
   api,
   onIngested,
+  autoStart,
 }: {
   api: ApiClient;
   onIngested: (doc: DocSummary, stats: IngestStats) => void;
+  /** Read this address as soon as the form appears (an example chosen on the homepage). */
+  autoStart?: string;
 }) {
   const inputId = useId();
   const errorId = useId();
-  const [url, setUrl] = useState('');
+  const [url, setUrl] = useState(autoStart ?? '');
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);
@@ -74,6 +77,13 @@ export function Ingest({
     },
     [],
   );
+
+  useEffect(() => {
+    // Mounted by an example click: start reading right away.
+    if (autoStart) void submit(autoStart);
+    // Runs once per mount; the parent remounts this form for each example.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function submit(address: string) {
     const problem = validateUrl(address);

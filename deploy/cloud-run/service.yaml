@@ -47,6 +47,12 @@ spec:
             # within the 15-minute ingest deadline; refuse it right after parsing instead.
             - name: LAWGLASS_MAX_CHUNKS
               value: '6000'
+            # Homepage "Try an example" line: a JSON array of {label, url}.
+            - name: LAWGLASS_EXAMPLES
+              value: >-
+                [{"label":"S. 1582, GENIUS Act","url":"https://www.congress.gov/bill/119th-congress/senate-bill/1582"},
+                {"label":"S. 5687, executive clemency","url":"https://www.congress.gov/bill/119th-congress/senate-bill/5687"},
+                {"label":"Ohio SB 113","url":"https://www.legislature.ohio.gov/legislation/136/sb113"}]
             - name: LAWGLASS_PUBLIC_ORIGIN
               value: ${PUBLIC_ORIGIN}
             - name: ANTHROPIC_API_KEY

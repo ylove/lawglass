@@ -306,6 +306,29 @@ describe('Registry', () => {
     });
   });
 
+  it('evictionCandidates spares documents some reader lists while others can go', async () => {
+    const c = clock();
+    const r = new Registry(dir, { now: c.now });
+    await r.add(doc(id('a')), { label: 'a', backend: 'local' });
+    c.set('2026-01-02T00:00:00.000Z');
+    await r.add(doc(id('b')), { label: 'b', backend: 'local' });
+    c.set('2026-01-03T00:00:00.000Z');
+    await r.add(doc(id('c')), { label: 'c', backend: 'local' });
+    // The oldest document is listed, so the unlisted ones go first, oldest first.
+    const listed = new Set([id('a')]);
+    expect((await r.evictionCandidates(2, listed)).map((e) => e.label)).toEqual(
+      ['b'],
+    );
+    expect((await r.evictionCandidates(1, listed)).map((e) => e.label)).toEqual(
+      ['b', 'c'],
+    );
+    // When everything is listed it falls back to oldest first.
+    const all = new Set([id('a'), id('b'), id('c')]);
+    expect((await r.evictionCandidates(2, all)).map((e) => e.label)).toEqual([
+      'a',
+    ]);
+  });
+
   it('serializes concurrent adds without losing entries', async () => {
     const r1 = new Registry(dir);
     const r2 = new Registry(dir);

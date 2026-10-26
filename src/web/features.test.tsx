@@ -8,8 +8,9 @@ import {
   waitFor,
   within,
 } from '@testing-library/react';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { BRAND } from '../core/brand.js';
+import { SAMPLE_PATH, visit } from '../../tests/support/web-routes.js';
 import { App } from './App.js';
 import type { ApiClient } from './api.js';
 import { createMockApi } from './mock-api.js';
@@ -21,6 +22,10 @@ import { AvatarId, IconId } from '../core/model/index.js';
 import type { Scenario, SponsorLink } from '../core/model/index.js';
 import { ApiError } from './sse.js';
 
+beforeEach(() => {
+  // These suites exercise an open document; the homepage has its own tests.
+  visit(SAMPLE_PATH);
+});
 afterEach(cleanup);
 
 const mock = (publicMode = false): ApiClient =>
