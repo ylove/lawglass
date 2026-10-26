@@ -9,6 +9,7 @@ import {
   messageText,
 } from '../model/index.js';
 import { jsonSchema, validateObject } from './shared.js';
+import { mockObject } from './mock-objects.js';
 import { trimEndWhile } from '../trim.js';
 
 const STOP_WORDS = new Set(
@@ -87,13 +88,14 @@ function answer(req: TextRequest): string {
     .sort((a, b) => b.score - a.score);
   const selected = excerpts.slice(0, 2);
   if (!selected.length) return DECLINE_TEXT;
-  return selected
-    .map((excerpt) => {
-      const sentence =
-        /^.*?[.!?](?:\s|$)/.exec(excerpt.text)?.[0]?.trim() ?? excerpt.text;
-      return `${trimEndWhile(sentence.slice(0, 220), (c) => '.!?'.includes(c))} [S:${excerpt.section}].`;
-    })
-    .join(' ');
+  // The summary chip asks for "one line per part": answer as a list, like a model would.
+  const asList = parsed.question.includes('one line per part');
+  const lines = selected.map((excerpt) => {
+    const sentence =
+      /^.*?[.!?](?:\s|$)/.exec(excerpt.text)?.[0]?.trim() ?? excerpt.text;
+    return `${trimEndWhile(sentence.slice(0, 220), (c) => '.!?'.includes(c))} [S:${excerpt.section}].`;
+  });
+  return asList ? lines.map((line) => `- ${line}`).join('\n') : lines.join(' ');
 }
 
 /** Build conservative defaults from public JSON Schema, then let zod check refinements. */
@@ -165,7 +167,10 @@ export class MockProvider implements LlmProvider {
   generateObject<T>(req: ObjectRequest<T>) {
     checkAbort(req.signal);
     return Promise.resolve({
-      object: validateObject(req.schema, emptyValue(jsonSchema(req.schema))),
+      object: validateObject(
+        req.schema,
+        mockObject(req) ?? emptyValue(jsonSchema(req.schema)),
+      ),
       usage: { inputTokens: 0, outputTokens: 0 },
     });
   }
