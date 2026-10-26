@@ -13,7 +13,7 @@ The options studied were:
 - the existing local HTTP API;
 - a Claude skill or plugin that wraps the CLI.
 
-The case for Lawglass over a plain paste is what it adds: struck and inserted text read correctly, citations to section, page and line that are validated, and the cached, bounded pipeline. For a short, clean bill that case is weak: in a first test, pasting the bill tied. It is stronger for bills too big to read whole, scanned local measures, and redlines where repealed text must stay out of "current law". It has not been tested against the strongest paste setup (the API with page images, citations and caching).
+The case for Lawglass over a plain paste is what it adds: struck and inserted text read correctly, citations to section, page and line that are validated, and the cached, bounded pipeline. For a short, clean bill that case is weak: in an informal first comparison during the #205 study, pasting the bill tied. We expect it to be stronger for bills too big to read whole, scanned local measures, and redlines where repealed text must stay out of "current law", but that is a hypothesis to measure. It has not been tested against the strongest paste setup (the API with page images, citations and caching).
 
 ## Decision
 
@@ -42,6 +42,6 @@ Whatever the interface, two constraints are already decided elsewhere and bind i
 
 ## Consequences
 
-- `@modelcontextprotocol/sdk` is a runtime dependency, pinned exactly. It adds about 80 transitive packages that the stdio server does not use.
+- `@modelcontextprotocol/sdk` is a runtime dependency, pinned exactly. It adds about 90 transitive packages that the stdio server does not use.
 - Cross-process store safety (#222) and the asynchronous ingest work (#221) matter more now, because an agent client and a person's CLI can share one store.
 - The measurement run is the next step for agent access. Until it passes, the MCP server is documented as a prototype.
