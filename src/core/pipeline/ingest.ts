@@ -55,6 +55,7 @@ export type Fetcher = (
     signal?: AbortSignal | undefined;
     validateUrl?: ((url: URL) => void) | undefined;
     refresh?: boolean | undefined;
+    maxBytes?: number | undefined;
     parseLimits?: ParseLimits | undefined;
   },
 ) => Promise<SafeFetchResult>;
