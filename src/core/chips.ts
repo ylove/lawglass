@@ -1,5 +1,5 @@
 /**
- * Question chips (spec §3.3): the nine one-click questions, each with its own explicit
+ * Question chips (spec §3.3): the ten one-click questions, each with its own explicit
  * retrieval strategy. This file is the showcase of "retrieval is a per-question decision":
  *
  *   sparse-heavy   effective-date, penalties   exact words ("shall take effect", "fine") matter
@@ -9,6 +9,7 @@
  *   reranked       who-affected                the question is vague, so a cross-encoder
  *                                              re-orders the candidates
  *   structural     summary                     no query at all: walk the outline instead
+ *   extracted      delegations                 a list built in code from the section tree
  *   no model       sponsors,                   the answer is a stored record, so no retrieval
  *                  history                     and no LLM call
  *
@@ -16,6 +17,7 @@
  * ./chip-runner.ts (re-exported here), so this file stays plain, readable configuration.
  */
 import { AppError, ChipDefinition, type ChipId } from './model/index.js';
+import { LEDE_INSTRUCTION } from './chip-delegations.js';
 import { SUMMARY_INSTRUCTION, SUMMARY_LABEL } from './chip-summary.js';
 
 export { runChip } from './chip-runner.js';
@@ -219,6 +221,21 @@ const history = defineChip({
   queries: [],
 });
 
+/**
+ * Who decides later?
+ * Not a search: the executor (chip-delegations.ts) reads the section tree for rule-making and
+ * discretion phrases, outside dependencies and conditional start dates. Code finds the items; a
+ * model, when a key is available, only writes a short lede from that list.
+ */
+const delegations = defineChip({
+  id: 'delegations',
+  label: 'Who decides later?',
+  strategy: 'extract',
+  queries: [],
+  // Instructs only the optional lede; the list itself is built in code.
+  answerInstruction: LEDE_INSTRUCTION,
+});
+
 /** Every chip in display order. Frozen. */
 export const CHIPS: readonly ChipDefinition[] = Object.freeze([
   summary,
@@ -227,6 +244,7 @@ export const CHIPS: readonly ChipDefinition[] = Object.freeze([
   history,
   penalties,
   effectiveDate,
+  delegations,
   money,
   definitions,
   sponsors,
