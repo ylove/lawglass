@@ -23,6 +23,26 @@ describeProviderContract(
     }),
 );
 describe('Claude CLI isolation and lifecycle', () => {
+  it('joins message parts into one string on stdin', async () => {
+    const fake = fakeCli();
+    const provider = new ClaudeCliProvider(config, fake);
+    await drain(provider, {
+      ...textRequest,
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { text: 'The bill. ', cache: true },
+            { text: 'The question.' },
+          ],
+        },
+      ],
+    });
+    expect(JSON.parse(fake.calls[0]!.prompt)).toEqual({
+      messages: [{ role: 'user', content: 'The bill. The question.' }],
+    });
+  });
+
   it('replays the recorded transcript with a real system prompt, stdin conversation and isolated cwd', async () => {
     const fake = fakeCli();
     const provider = new ClaudeCliProvider(
@@ -40,7 +60,12 @@ describe('Claude CLI isolation and lifecycle', () => {
       { type: 'text', text: 'Hello.' },
       {
         type: 'done',
-        usage: { inputTokens: 2003, outputTokens: 6 },
+        usage: {
+          inputTokens: 2003,
+          outputTokens: 6,
+          cacheReadTokens: 535,
+          cacheWriteTokens: 1466,
+        },
         stopReason: 'end_turn',
       },
     ]);

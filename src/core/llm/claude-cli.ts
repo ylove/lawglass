@@ -16,6 +16,7 @@ import {
   type ObjectRequest,
   type ProviderConfig,
   type TextRequest,
+  messageText,
 } from '../model/index.js';
 import {
   anthropicUsage,
@@ -190,7 +191,14 @@ export class ClaudeCliProvider implements LlmProvider {
       };
       signal.addEventListener('abort', kill, { once: true });
       signal.throwIfAborted();
-      child.stdin.end(JSON.stringify({ messages: req.messages }));
+      child.stdin.end(
+        JSON.stringify({
+          messages: req.messages.map((m) => ({
+            role: m.role,
+            content: messageText(m.content),
+          })),
+        }),
+      );
       let result: z.infer<typeof TranscriptEvent> | undefined;
       let emittedText = false;
       for await (const line of lines) {

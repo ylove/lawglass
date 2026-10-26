@@ -11,6 +11,8 @@ import {
   type ObjectRequest,
   type ProviderConfig,
   type TextRequest,
+  type LlmUsage,
+  messageText,
 } from '../model/index.js';
 import {
   jsonSchema,
@@ -72,6 +74,25 @@ function rejectsStreamOptions(error: unknown): boolean {
   );
 }
 
+/** OpenAI-compatible usage. Prefix caching is automatic; `cached_tokens` says how much was reused. */
+function openaiUsage(
+  usage:
+    | {
+        prompt_tokens: number;
+        completion_tokens: number;
+        prompt_tokens_details?: { cached_tokens?: number } | null;
+      }
+    | null
+    | undefined,
+): LlmUsage {
+  const cached = usage?.prompt_tokens_details?.cached_tokens ?? 0;
+  return {
+    inputTokens: usage?.prompt_tokens ?? 0,
+    outputTokens: usage?.completion_tokens ?? 0,
+    ...(cached > 0 ? { cacheReadTokens: cached } : {}),
+  };
+}
+
 export class OpenAIProvider implements LlmProvider {
   readonly id = 'openai' as const;
   readonly model: string;
@@ -109,7 +130,14 @@ export class OpenAIProvider implements LlmProvider {
       const signal = requestSignal(req.signal, this.config.timeoutMs);
       const params: ChatCompletionCreateParamsStreaming = {
         model: this.model,
-        messages: [{ role: 'system', content: req.system }, ...req.messages],
+        messages: [
+          { role: 'system', content: req.system },
+          // OpenAI caches long prefixes on its own, so cache hints only need joining.
+          ...req.messages.map((m) => ({
+            role: m.role,
+            content: messageText(m.content),
+          })),
+        ],
         ...this.tokenLimit(req.maxTokens),
         temperature: req.temperature,
         stream: true,
@@ -135,11 +163,7 @@ export class OpenAIProvider implements LlmProvider {
         if (choice?.delta.content)
           yield { type: 'text', text: choice.delta.content };
         if (choice?.finish_reason) stopReason = choice.finish_reason;
-        if (includeUsage && chunk.usage)
-          usage = {
-            inputTokens: chunk.usage.prompt_tokens,
-            outputTokens: chunk.usage.completion_tokens,
-          };
+        if (includeUsage && chunk.usage) usage = openaiUsage(chunk.usage);
       }
       signal.throwIfAborted();
       if (!stopReason) throw new AppError('PROVIDER_ERROR');
@@ -190,10 +214,7 @@ export class OpenAIProvider implements LlmProvider {
               req.schema,
               parseJson(choice?.message.content ?? ''),
             ),
-            usage: {
-              inputTokens: result.usage?.prompt_tokens ?? 0,
-              outputTokens: result.usage?.completion_tokens ?? 0,
-            },
+            usage: openaiUsage(result.usage),
           };
         } catch (error) {
           if (index === formats.length - 1 || !rejectsFormat(error))

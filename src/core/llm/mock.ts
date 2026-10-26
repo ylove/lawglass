@@ -6,6 +6,7 @@ import {
   type LlmStreamEvent,
   type ObjectRequest,
   type TextRequest,
+  messageText,
 } from '../model/index.js';
 import { jsonSchema, validateObject } from './shared.js';
 import { trimEndWhile } from '../trim.js';
@@ -60,7 +61,7 @@ function parseExcerpts(prompt: string) {
 function answer(req: TextRequest): string {
   const prompt = req.messages
     .filter((m) => m.role === 'user')
-    .map((m) => m.content)
+    .map((m) => messageText(m.content))
     .join('\n');
   const parsed = parseExcerpts(prompt);
   const question = words(parsed.question);

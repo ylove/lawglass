@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { MessageStream } from '@anthropic-ai/sdk/lib/MessageStream';
 import {
+  type LlmMessage,
   type LlmProvider,
   type LlmStreamEvent,
   type ObjectRequest,
@@ -16,6 +17,23 @@ import {
   requireKey,
   validateObject,
 } from './shared.js';
+
+/**
+ * Parts become text blocks; a `cache` part ends a prompt-cache prefix (system + everything up to
+ * and including that block), so the same bill is billed at the cache-read rate on later questions.
+ */
+function anthropicMessage(m: LlmMessage): Anthropic.MessageParam {
+  if (typeof m.content === 'string')
+    return { role: m.role, content: m.content };
+  return {
+    role: m.role,
+    content: m.content.map((part) => ({
+      type: 'text' as const,
+      text: part.text,
+      ...(part.cache ? { cache_control: { type: 'ephemeral' as const } } : {}),
+    })),
+  };
+}
 
 export class AnthropicProvider implements LlmProvider {
   readonly id = 'anthropic' as const;
@@ -46,9 +64,10 @@ export class AnthropicProvider implements LlmProvider {
         {
           model: this.model,
           system: req.system,
-          messages: [...req.messages],
+          messages: req.messages.map(anthropicMessage),
           max_tokens: req.maxTokens,
           temperature: req.temperature,
+          ...(req.effort ? { output_config: { effort: req.effort } } : {}),
         },
         { signal },
       );

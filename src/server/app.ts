@@ -288,6 +288,8 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       model,
       chips: CHIP_LABELS,
       scenariosEnabled: !publicMode,
+      // Served once Section by section lands (#276).
+      breakdownEnabled: false,
     };
     return c.json(config);
   });

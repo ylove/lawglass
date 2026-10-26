@@ -42,3 +42,26 @@ The rc.3 round grows the contracts again. Every change is additive and every new
 - **`doc.ts`:** `BillMetadata.docKind?` (`DocKind`) and `BillMetadata.amends?` (`AmendsTarget`: name, optional jurisdiction, sections). `ExternalRef.kind` is unchanged so an rc.2 binary sharing `~/.lawglass` still parses; charter refs use `kind: 'other'` plus the new optional `category` (`charter | local_code | general_law`). `NormalizedDoc.scan?` (`ScanStatus`: per-page `read | uncertain | not-read`).
 - **`api.ts`:** `DocDetail.scan?` and `DocDetail.scenarioPersonas?`, `ClientConfig.scenariosEnabled` (required) and `ClientConfig.turnstileSiteKey?` (for #180), and `ScenarioRequest` / `ScenarioResponse` for `POST /api/docs/:docId/scenario`, reusing `Scenario`.
 - **Not touched:** `Span`, `ChunkType`, `ERROR_CODES`, `DocSummary` / `RegistryEntry` (strict), `ConfigSettings` (strict).
+
+## Amendment 2026-10-26 (#272)
+
+The v1.1 round (milestone M13) grows the contracts once, up front, so its parallel tracks share one set of shapes. Every change is additive, and every new field is optional or has a default. v1.0 documents, answers and configs still parse (pinned by `src/core/model/v11.test.ts`).
+
+- **`ports.ts`:**
+  - `LlmMessage.content` may be ordered `LlmTextPart`s. A part with `cache: true` ends a prefix that repeats across requests (the rules plus a whole bill). Anthropic maps it to `cache_control`; the other providers join the parts (`messageText`).
+  - `TextRequest.effort` is a reasoning-effort hint.
+  - `LlmUsage` reports cache reads and writes when the provider does.
+- **`answer.ts`:**
+  - `AnswerResult.context` (`whole` or `excerpts`) records what the model read.
+  - `simplified` marks a reading-level rewrite.
+  - `usage` keeps the cache counts.
+- **`doc.ts`:**
+  - `ReferenceText` is another law's text, read from an official source and cited as `[S:ref:…]`. The reserved `ref:` prefix means a reference can never collide with a bill section id.
+  - `NormalizedDoc.references` holds them, and `ExternalRef.referenceId` points at the one that was read.
+- **`api.ts`:**
+  - `ClientConfig.library` (`local` or `reader`).
+  - `ClientConfig.examples` (at most 6).
+  - `ClientConfig.breakdownEnabled`, default off.
+  - `SectionExcerpt.reference`, for the drawer.
+  - `ScenarioResponse` gains `pending` and a `note`, for per-section examples.
+  - `SectionBrief` and `BreakdownResponse`, for "Section by section" (`GET /api/docs/:docId/breakdown`).
