@@ -2,8 +2,7 @@
 // tested, and wired into Vite as a tiny plugin (see vite.config.ts).
 import { BRAND } from '../src/core/brand.js';
 
-export const META_DESCRIPTION =
-  'Plain-language answers about U.S. federal and Ohio bills, with citations to section, page and line.';
+export const META_DESCRIPTION = BRAND.description;
 export const THEME_COLOR = '#0f3b6e';
 
 export function escapeHtmlAttr(value: string): string {

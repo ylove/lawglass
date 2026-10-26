@@ -38,6 +38,13 @@ test('gate is branded, static and has social metadata without inventing an origi
   );
 });
 
+test('the description names every jurisdiction a hosted server reads', async () => {
+  const html = await gatePage(undefined, root);
+  expect(html).toContain(`<p>${BRAND.description}</p>`);
+  for (const place of ['federal', 'Ohio', 'New York', 'New Jersey'])
+    expect(BRAND.description).toContain(place);
+});
+
 test('uses only a configured http(s) origin and escapes HTML', async () => {
   const html = await gatePage(
     'https://preview.example/some/path?k=secret',
