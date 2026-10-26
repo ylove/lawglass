@@ -5,8 +5,16 @@ import { BRAND, envVar } from '../core/brand.js';
 import { AppError } from '../core/model/index.js';
 import { gatePage, gateAssets } from './gate.js';
 
-export function sessionCookieName(port: number): string {
-  return `${BRAND.name}_session_${String(port)}`;
+/**
+ * Cookies are scoped by host, not port, so two local servers on one machine would overwrite
+ * each other's session (#228); the port in the name keeps them apart. A hosted private preview
+ * runs one instance per host and keeps the original name, so invited readers who already opened
+ * their link stay signed in across this change.
+ */
+export function sessionCookieName(port: number, privateMode = false): string {
+  return privateMode
+    ? `${BRAND.name}_session`
+    : `${BRAND.name}_session_${String(port)}`;
 }
 
 export function createSessionToken(): string {
@@ -63,7 +71,7 @@ export function localSession(
     const url = new URL(c.req.url);
     const port =
       typeof options.port === 'function' ? options.port() : options.port;
-    const cookieName = sessionCookieName(port);
+    const cookieName = sessionCookieName(port, privateMode);
     if (matchesSessionToken(url.searchParams.get('k') ?? undefined, token)) {
       setCookie(c, cookieName, cookieValue, {
         httpOnly: true,

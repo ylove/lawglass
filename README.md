@@ -229,6 +229,7 @@ Caveats: 21 to 28 questions per bill means one question moves recall@5 by about 
 Session cookie names include the server port so local instances do not overwrite each other’s
 sessions. Cookies are scoped by host, not port: other services on the same host (including
 `127.0.0.1`) can receive them. The name separates instances; it does not isolate the cookie.
+A hosted private preview (`serve --private`) runs one instance per host and keeps the plain name.
 Behind a proxy, the name uses the server’s listening port (for example, `8080`).
 
 ### Hosting a private preview

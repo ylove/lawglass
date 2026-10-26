@@ -21,7 +21,7 @@ import { privateCookieValue, sessionCookieName } from './session.js';
 import { READER_COOKIE, ReaderLibrary, readerKey } from './readers.js';
 
 const accessKey = 'k'.repeat(40);
-const session = `${sessionCookieName(4317)}=${privateCookieValue(accessKey)}`;
+const session = `${sessionCookieName(4317, true)}=${privateCookieValue(accessKey)}`;
 const urls = {
   a: 'https://govinfo.gov/a.txt',
   b: 'https://govinfo.gov/b.xml',

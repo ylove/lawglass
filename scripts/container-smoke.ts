@@ -30,7 +30,9 @@ const OUT_OF_SCOPE_BILL = 'https://pub.njleg.gov/Bills/2024/S0500/1_I1.HTM';
 export function sessionCookie(setCookie: string | null): string | undefined {
   if (!setCookie) return undefined;
   const pair = setCookie.split(';')[0]?.trim();
-  return pair?.startsWith(`${sessionCookieName(8080)}=`) ? pair : undefined;
+  return pair?.startsWith(`${sessionCookieName(8080, true)}=`)
+    ? pair
+    : undefined;
 }
 
 /** The JSON payloads of every `data:` line in a server-sent event stream. */

@@ -190,7 +190,7 @@ describe('private session', () => {
     );
     expect(response.headers.get('location')).toBe('/doc?x=1&q=a%26b');
     const cookie = response.headers.get('set-cookie')!;
-    expect(cookie).toContain(`${sessionCookieName(4317)}=${expected}`);
+    expect(cookie).toContain(`${sessionCookieName(4317, true)}=${expected}`);
     for (const attribute of [
       'HttpOnly',
       'SameSite=Strict',
@@ -206,7 +206,7 @@ describe('private session', () => {
     expect(
       (
         await a.request('/api/health', {
-          headers: { cookie: `${sessionCookieName(4317)}=${token}` },
+          headers: { cookie: `${sessionCookieName(4317, true)}=${token}` },
         })
       ).status,
     ).toBe(401);

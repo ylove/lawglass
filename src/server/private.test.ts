@@ -15,7 +15,7 @@ import { createApp, type AppOptions } from './app.js';
 import { privateCookieValue, sessionCookieName } from './session.js';
 
 const accessKey = 'k'.repeat(40);
-const cookie = `${sessionCookieName(4317)}=${privateCookieValue(accessKey)}`;
+const cookie = `${sessionCookieName(4317, true)}=${privateCookieValue(accessKey)}`;
 const sourceUrl = 'https://govinfo.gov/a.txt';
 let env: PipelineEnv;
 let root: string;
@@ -51,17 +51,19 @@ const post = (url = sourceUrl, headers: Record<string, string> = {}) => ({
   body: JSON.stringify({ url }),
 });
 
-test('private sessions use the listener port behind a proxy with a different public port', async () => {
+test('private sessions keep the original cookie name, whatever the port', async () => {
   const a = app({ sessionPort: () => 8080 });
   const exchange = await a.request(`https://preview.example/?k=${accessKey}`);
   const cookie = exchange.headers.get('set-cookie')?.split(';')[0] ?? '';
   expect(cookie).toBe(
-    `${sessionCookieName(8080)}=${privateCookieValue(accessKey)}`,
+    `${sessionCookieName(8080, true)}=${privateCookieValue(accessKey)}`,
   );
   const response = await a.request('https://preview.example/api/docs', {
     headers: { cookie },
   });
   expect(response.status).toBe(200);
+  expect(sessionCookieName(8080, true)).toBe(sessionCookieName(4317, true));
+  expect(sessionCookieName(8080, true)).not.toContain('8080');
 });
 
 test('gate and only brand assets are accessible without a session; the full app works with an invite', async () => {

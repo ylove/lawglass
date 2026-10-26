@@ -6,9 +6,9 @@ describe('sessionCookie', () => {
   test('returns the name=value pair of the session cookie', () => {
     expect(
       sessionCookie(
-        `${sessionCookieName(8080)}=abc123; Path=/; HttpOnly; Secure; SameSite=Strict`,
+        `${sessionCookieName(8080, true)}=abc123; Path=/; HttpOnly; Secure; SameSite=Strict`,
       ),
-    ).toBe(`${sessionCookieName(8080)}=abc123`);
+    ).toBe(`${sessionCookieName(8080, true)}=abc123`);
   });
 
   test('ignores other cookies and a missing header', () => {
