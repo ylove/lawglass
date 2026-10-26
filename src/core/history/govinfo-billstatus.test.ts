@@ -307,8 +307,21 @@ test('inline XML text retains word order', () => {
   ).toBe('Referred to Example Committee.');
 });
 
+test('a very long official title is capped by the sanitizer and still parses as a history (#354 review)', () => {
+  // No spaces, so the cut lands mid-word and the sanitizer appends its ellipsis.
+  const long = 'X'.repeat(2500);
+  const history = parse(
+    BILLSTATUS_XML.replace(
+      'To create example grants for community gardens, and for other purposes.',
+      long,
+    ),
+  ).history;
+  expect(history.officialTitle?.length).toBeGreaterThan(2000);
+  expect(BillHistory.safeParse(history).success).toBe(true);
+});
+
 test('the official title is read from titles, preferring the introduced wording and never a short title', () => {
-  expect(parse(BILLSTATUS_XML).officialTitle).toBe(
+  expect(parse(BILLSTATUS_XML).history.officialTitle).toBe(
     'To create example grants for community gardens, and for other purposes.',
   );
   const withTitles = (titles: string) =>
@@ -322,14 +335,14 @@ test('the official title is read from titles, preferring the introduced wording 
         `<item><titleType>Official Title as Amended</titleType><title>Later wording.</title></item>
          <item><titleType>Official Title as Introduced</titleType><title>Introduced wording.</title></item>`,
       ),
-    ).officialTitle,
+    ).history.officialTitle,
   ).toBe('Introduced wording.');
   expect(
     parse(
       withTitles(
         `<item><titleType>Short Title(s) as Introduced</titleType><title>Only short.</title></item>`,
       ),
-    ),
+    ).history,
   ).not.toHaveProperty('officialTitle');
 });
 

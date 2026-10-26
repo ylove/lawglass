@@ -22,8 +22,6 @@ export interface HistoryPlan {
 export interface HistoryRecord {
   history: BillHistory;
   sponsorProfiles: SponsorProfile[];
-  /** The record's official title (federal only), for the preview. Stored beside the history. */
-  officialTitle?: string;
   /** Part of the record could not be read; the rest is kept and the user is warned. */
   partial?: boolean;
 }
@@ -47,7 +45,7 @@ export interface GovinfoPlan extends HistoryPlan {
   number: number;
 }
 
-const BILL_TYPES: Readonly<Record<string, string>> = {
+export const BILL_TYPES: Readonly<Record<string, string>> = {
   'house-bill': 'hr',
   'senate-bill': 's',
   'house-joint-resolution': 'hjres',

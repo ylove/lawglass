@@ -139,17 +139,16 @@ test('a failing sponsor directory never blocks ingest and leaves the profiles un
   agent.assertNoPendingInterceptors();
 });
 
-test('the official title from BILLSTATUS is saved beside the history', async () => {
+test('the official title from BILLSTATUS is saved in the history', async () => {
   serveStatus();
   serveText('enr');
   serveDirectory();
   const result = await ingest(page, deps);
-  expect(await historyStore.readOfficialTitle(dir, result.doc.docId)).toBe(
+  expect(
+    (await historyStore.readHistory(dir, result.doc.docId))?.officialTitle,
+  ).toBe(
     'To create example grants for community gardens, and for other purposes.',
   );
-  expect(
-    await historyStore.readHistory(dir, result.doc.docId),
-  ).not.toHaveProperty('officialTitle');
 });
 
 test.each([

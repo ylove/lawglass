@@ -15,6 +15,7 @@ import { parseGovinfoBillStatus } from '../core/history/govinfo-billstatus.js';
 import { resolveGovinfo } from '../core/history/resolve.js';
 import {
   DocDetail,
+  DocSummary,
   IngestEvent,
   type BillHistory,
   type NormalizedDoc,
@@ -24,6 +25,7 @@ import { parsePdf } from '../core/parse/index.js';
 import { readSseEvents } from '../web/sse.js';
 import { createSessionTestApp as createApp } from '../../tests/support/session-app.js';
 import {
+  buildDocDetail,
   OFFICIAL_SUMMARY_MAX_LENGTH,
   PERSONA_RULES,
   scenarioPersonasFor,
@@ -157,13 +159,7 @@ describe('GET /api/docs/:docId detail', () => {
       plan,
       '2026-10-14T00:00:00.000Z',
     );
-    await writeHistory(
-      env.registry.configDir,
-      docId,
-      record.history,
-      undefined,
-      record.officialTitle,
-    );
+    await writeHistory(env.registry.configDir, docId, record.history);
     const after = await detail(docId);
     expect(after.preview).toEqual({
       kind: 'purpose',
@@ -353,5 +349,75 @@ describe('GET /api/docs/:docId detail for a scanned PDF', () => {
   test('has no scan status for a text document', async () => {
     const d = await detail(await ingestDoc('https://example.gov/a.txt'));
     expect(d.scan).toBeUndefined();
+  });
+});
+
+describe('historyLinks', () => {
+  async function linksFor(sourceUrl: string, withHistory: boolean) {
+    const docId = await ingestDoc('https://example.gov/b.xml');
+    const doc = await env.runtime.registry.getDocument(docId);
+    const entry = (await env.runtime.registry.list()).find(
+      (e) => e.docId === docId,
+    )!;
+    if (withHistory)
+      await writeHistory(env.registry.configDir, docId, history());
+    const built = await buildDocDetail(env.runtime, DocSummary.parse(entry), {
+      ...doc,
+      sourceUrl,
+    });
+    return built.historyLinks;
+  }
+
+  test('federal senate bill (GovInfo package URL, no stored history)', async () => {
+    expect(
+      await linksFor(
+        'https://www.govinfo.gov/content/pkg/BILLS-119s1582enr/xml/BILLS-119s1582enr.xml',
+        false,
+      ),
+    ).toEqual({
+      actions:
+        'https://www.congress.gov/bill/119th-congress/senate-bill/1582/all-actions',
+      amendments:
+        'https://www.congress.gov/bill/119th-congress/senate-bill/1582/amendments',
+    });
+  });
+
+  test('federal house joint resolution', async () => {
+    expect(
+      (
+        await linksFor(
+          'https://www.govinfo.gov/content/pkg/BILLS-118hjres7ih/xml/BILLS-118hjres7ih.xml',
+          true,
+        )
+      )?.actions,
+    ).toBe(
+      'https://www.congress.gov/bill/118th-congress/house-joint-resolution/7/all-actions',
+    );
+  });
+
+  test('Ohio gets the status page and no amendments link', async () => {
+    expect(
+      await linksFor(
+        'https://search-prod.lis.state.oh.us/api/v2/general_assembly_136/legislation/hb96/05_EN/pdf/',
+        true,
+      ),
+    ).toEqual({
+      actions: 'https://www.legislature.ohio.gov/legislation/136/hb96/status',
+    });
+  });
+
+  test('a state without a history adapter has no links', async () => {
+    expect(
+      await linksFor('https://nyassembly.gov/leg/?default_fld=&bn=A1', false),
+    ).toBeUndefined();
+  });
+
+  test('a malformed source URL has no links', async () => {
+    expect(
+      await linksFor(
+        'https://www.govinfo.gov/content/pkg/BILLS-119s0enr/xml/x.xml',
+        false,
+      ),
+    ).toBeUndefined();
   });
 });
