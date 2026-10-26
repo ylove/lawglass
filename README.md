@@ -337,12 +337,14 @@ Conventions are in [`AGENTS.md`](AGENTS.md): the frozen contracts in `src/core/m
 
 ## Roadmap
 
+Scheduled work is in [issues](https://github.com/ylove/lawglass/issues). Designed but unscheduled work, with sizes and prerequisites, is in [docs/roadmap.md](docs/roadmap.md).
+
 - **v1.5:** resolve a bill from number plus jurisdiction to a URL, then run the same pipeline.
 - **v2:** natural-language discovery search across bills.
 - **v2:** official secondary sources only (fiscal notes, nonpartisan analyses). News articles are never used.
 - Read more of the law a bill refers to. Today only U.S. Code definitions the bill borrows are read; everything else is an official link.
 - Akoma Ntoso export of the normalized document.
-- **Known gaps from the eval:** the forks/flatware miss on large bills; a sturdier signal for "is this question about what changed" ([#104](https://github.com/ylove/lawglass/issues/104)); before-and-after excerpts for one-word strikes in free-form questions ([#102](https://github.com/ylove/lawglass/issues/102)); consistent declines ([#109](https://github.com/ylove/lawglass/issues/109)); answers closer to a 7th-grade reading level, including the section-by-section briefs ([#320](https://github.com/ylove/lawglass/issues/320)).
+- **Known gaps from the eval:** the forks/flatware miss on large bills, and a sturdier signal for "is this question about what changed" ([roadmap](docs/roadmap.md#answers)).
 - **More states**, family by family: the 20 states that mark changes with strike-through and underline, like Ohio, come first ([plan](docs/jurisdictions.md)).
 - **Agent access:** run the pre-registered MCP evaluation (Lawglass tools against the same bills pasted into a model with citations and caching) before making any claim about it.
 - An open public site. The hosted preview stays invite-only until public mode has had its own review ([#180](https://github.com/ylove/lawglass/issues/180)).
