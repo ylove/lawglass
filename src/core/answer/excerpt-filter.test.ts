@@ -89,8 +89,16 @@ describe('rewordCitedExcerptTalk (live NDAA answer, v1.1.0 check)', () => {
       '- **Deadline:** Reports are due in 90 days [S:sec-4]',
     ],
     [
-      '- **Notice:** The excerpt only covers the first notice [S:sec-5]',
-      '- **Notice:** This section only covers the first notice [S:sec-5]',
+      '- **Notice:** The excerpt only shows the first notice [S:sec-5]',
+      '- **Notice:** This section only shows the first notice [S:sec-5]',
+    ],
+    [
+      '2. Based on the excerpts, the fee is $5 [S:sec-2]',
+      '2. The fee is $5 [S:sec-2]',
+    ],
+    [
+      'According to the passages I was given, Congress must report [S:sec-3].',
+      'Congress must report [S:sec-3].',
     ],
   ])('rewords %s', (sentence, plain) => {
     expect(rewordCitedExcerptTalk(sentence)).toBe(plain);
@@ -107,6 +115,15 @@ describe('rewordCitedExcerptTalk (live NDAA answer, v1.1.0 check)', () => {
     'The passage of the act ends the program [S:sec-9].',
     // An opening clause that is not about the retrieval.
     'Based on the census, the formula sets each share [S:sec-3].',
+    'Based on the passage of the act, the program ends [S:sec-9].',
+    // #339 review: cutting at the first comma would leave a fragment or detach a hedge.
+    'Based on the excerpts from Title 10, United States Code, the bill amends section 5 [S:sec-5].',
+    'Based on the excerpts, not the full bill, the fee is $5 [S:sec-2].',
+    'Based on the excerpts, and subject to appropriations, the fee is $5 [S:sec-2].',
+    // #339 review: verbs a bill can use of its own excerpts.
+    'The copyright act says the excerpt includes up to 300 words [S:sec-2].',
+    'The excerpt does not apply to records requests [S:sec-3].',
+    'The chunk specifies the size of each fishery quota [S:sec-4].',
   ])('leaves %s alone', (sentence) => {
     expect(rewordCitedExcerptTalk(sentence)).toBe(sentence);
   });

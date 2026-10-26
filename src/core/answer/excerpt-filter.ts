@@ -46,27 +46,40 @@ export function talksAboutExcerpts(sentence: string): boolean {
   );
 }
 
-/** A list marker and a bold label ("- **Deadline:** ") come before a sentence's own words. */
-const LEAD = String.raw`^(\s*(?:[-*]\s+)?(?:\*\*[^*\n]{1,80}\*\*:?\s+)?)`;
+/** A list marker and a bold label ("- **Deadline:** ", "2. ") come before a sentence's own words. */
+const LEAD = String.raw`^(\s*(?:(?:[-*]|\d{1,3}[.)])\s+)?(?:\*\*[^*\n]{1,80}\*\*:?\s+)?)`;
 /**
  * "Based on the excerpts, ", "According to the passages given, ", "As shown in the passages from
- * Sec. 4, ": an attribution clause that opens the sentence and ends at its first comma. Only the
- * clause goes; what follows the comma is the claim.
+ * Sec. 4, ": an attribution clause that opens the sentence. Only the clause goes, and only when
+ * it is nothing but the retrieval phrase and what follows the comma opens a claim. "Based on the
+ * excerpts from Title 10, United States Code, the …" and "Based on the excerpts, not the full
+ * bill, the …" are left alone: cutting there would leave a fragment or drop a hedge.
  */
+/**
+ * Words that open a hedge or a tail of the attribution itself ("…excerpts, not the full bill,
+ * …", "…excerpts, and subject to appropriations, …") rather than the claim. After one of these
+ * the clause stays: removing it would detach the hedge from what it qualifies.
+ */
+const CONTINUATION = String.raw`(?:not|and|but|or|nor|which|who|whose|that|including|excluding|except|unless|subject|only|at|in|on|as|if|when|where|while|although|though|so|yet|plus|along|together|rather|than|then|to|with|without|because|since|assuming|provided|given|i\.e|e\.g)`;
 const LEADING_ATTRIBUTION = new RegExp(
   LEAD +
-    String.raw`(?:based on|according to|as (?:shown|seen|stated|described) in)\s+` +
+    String.raw`(?:[Bb]ased on|[Aa]ccording to|[Aa]s (?:shown|seen|stated|described) in)\s+` +
     String.raw`(?:the|these|those)\s+(?:(?:provided|given|retrieved|supplied|available)\s+)?` +
-    String.raw`(?:excerpts?|passages?|chunks?|snippets?)\b(?!\s+of\b)[^,[\]\n]{0,60},\s+`,
-  'i',
+    String.raw`(?:excerpts?|passages?|chunks?|snippets?)` +
+    String.raw`(?:\s+(?:provided|given|retrieved|supplied|shown|above))?` +
+    String.raw`(?:\s+(?:I|you|we)\s+(?:was|were|have been)\s+(?:given|shown|provided))?` +
+    String.raw`(?:\s+(?:from|for|in)\s+(?:Sec\.|Section|section|§)\s?[\w().-]{1,20})?` +
+    String.raw`,\s+(?!${CONTINUATION}\b)(?=\S)`,
 );
 /**
- * "The excerpt gives", "These excerpts provided show", "The chunk does not": retrieval material as
- * the subject of a reporting verb. "Passage" is left alone (bills use it: "the passage of the
- * act"), and so is "the excerpt must be filed", where the bill itself is about excerpts.
+ * "The excerpt gives no …", "These excerpts provided show …", "The chunks do not say …": the
+ * retrieval material as the subject of a verb that only retrieval talk uses with it. Verbs a bill
+ * could use of its own excerpts ("the excerpt includes up to 300 words", "the excerpt does not
+ * apply to …", "the chunk specifies …") are not on the list, and "passage" is never renamed
+ * (bills use it: "the passage of the act").
  */
 const MATERIAL_SUBJECT =
-  /\b(the|this|that|these|those)\s+(?:(?:provided|given|retrieved|supplied|available)\s+)?(?:excerpt|chunk|snippet)(s?)(?:\s+(?:provided|given|retrieved|supplied|shown|above))?(?=\s+(?:does|do|did|shows?|says?|states?|gives?|lists?|sets?|includes?|mentions?|covers?|provides?|specif(?:y|ies)|describes?|explains?|address(?:es)?|only|also)\b)/gi;
+  /\b([Tt]he|[Tt]his|[Tt]hat|[Tt]hese|[Tt]hose)\s+(?:(?:provided|given|retrieved|supplied|available)\s+)?(?:excerpt|chunk|snippet)(s?)(?:\s+(?:provided|given|retrieved|supplied|shown|above))?(?=\s+(?:(?:does|do|did)\s+not|doesn['’]t|don['’]t|didn['’]t)\s+(?:say|show|state|specify|mention|give|list|describe|explain|address|cover|indicate)\b|\s+(?:only\s+)?(?:shows?|says?|states?|mentions?|indicates?)\b|\s+gives?\s+no\b)/g;
 
 /**
  * Changes with the filter's rules. The cached summary is filtered before it is stored, so a
@@ -105,6 +118,8 @@ export function rewordCitedExcerptTalk(sentence: string): string {
           new RegExp(LEAD + String.raw`(\S)`),
           (_m, lead: string, first: string) => lead + first.toUpperCase(),
         );
+  // The noun keeps its number so the model's verb still agrees: "The excerpts show" becomes
+  // "These sections show", never "This section show".
   return opened.replace(
     MATERIAL_SUBJECT,
     (_match, determiner: string, plural: string) => {
