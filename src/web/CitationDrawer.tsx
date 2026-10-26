@@ -180,13 +180,29 @@ export function CitationDrawer({
         {excerpt && (
           <>
             <p className="breadcrumb">{excerpt.breadcrumb}</p>
-            <p className="location">
-              {describeLocation(excerpt.location, hasLineNumbers)}
-            </p>
-            <p className="legend">
-              <del>Struck-through text</del> was removed.{' '}
-              <ins>Underlined text</ins> was added.
-            </p>
+            {excerpt.reference ? (
+              // Another law's text, read for this document: no page or lines, no amendment marks.
+              <p className="location">
+                From the U.S. Code (official source):{' '}
+                <a
+                  href={excerpt.reference.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  {excerpt.reference.citation}
+                </a>
+              </p>
+            ) : (
+              <>
+                <p className="location">
+                  {describeLocation(excerpt.location, hasLineNumbers)}
+                </p>
+                <p className="legend">
+                  <del>Struck-through text</del> was removed.{' '}
+                  <ins>Underlined text</ins> was added.
+                </p>
+              </>
+            )}
             <div className="excerpt">
               {(excerpt.num ?? excerpt.heading) && (
                 <h3>

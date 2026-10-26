@@ -230,14 +230,14 @@ describe('document flow', () => {
     expect(await screen.findByText(/Section-only citation/)).toBeTruthy();
   });
 
-  test('metadata hides null fields and the referenced-not-loaded panel lists refs', async () => {
+  test('metadata hides null fields and the laws-it-refers-to panel lists refs', async () => {
     render(<App api={mock()} />);
     await ready();
     expect(screen.getAllByText('HB 214').length).toBeGreaterThan(0);
     // Sponsors are now profile links (see features.test.tsx for the labels and the cosponsor disclosure).
     expect(screen.getByRole('link', { name: /Rep. A. Rivera/ })).toBeTruthy();
     expect(screen.getByText('and 1 cosponsor')).toBeTruthy();
-    const refs = screen.getByRole('region', { name: 'Referenced, not loaded' });
+    const refs = screen.getByRole('region', { name: 'Laws it refers to' });
     expect(within(refs).getByText('42 U.S.C. 300g-1')).toBeTruthy();
     expect(within(refs).getByText(/mentioned in 2 sections/)).toBeTruthy();
     expect(within(refs).getByText(/mentioned in 1 section\b/)).toBeTruthy();
@@ -267,7 +267,7 @@ describe('document flow', () => {
     expect(screen.queryByText('Number')).toBeNull();
     expect(screen.queryByText('Sponsors')).toBeNull();
     expect(
-      screen.queryByRole('region', { name: 'Referenced, not loaded' }),
+      screen.queryByRole('region', { name: 'Laws it refers to' }),
     ).toBeNull();
     expect(
       screen.getByText(/picked out of the text automatically/),

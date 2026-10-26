@@ -726,6 +726,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
                 ...(publicMode ? { maxPages: limits.maxPages } : {}),
               },
               parsePdf,
+              onReferenceSkip: log.referenceSkipped,
             },
             {
               ...(body.label === undefined ? {} : { label: body.label }),

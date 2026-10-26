@@ -212,6 +212,52 @@ describe('ingest and documents', () => {
     );
   });
 
+  test('serves the text read for a referenced law under its ref: id, and 404s an unknown one', async () => {
+    const a = app();
+    const doc = await ingestDoc(a);
+    const stored: NormalizedDoc = await env.registry.getDocument(doc.docId);
+    await env.registry.updateDocument({
+      ...stored,
+      references: [
+        {
+          sectionId: 'ref:usc/15/6809',
+          citation: '15 U.S.C. 6809',
+          heading: '§6809. Definitions',
+          sourceUrl:
+            'https://www.govinfo.gov/link/uscode/15/6809?link-type=html',
+          text: 'The term "financial institution" means any institution.',
+          terms: ['financial institution'],
+          fetchedAt: '2026-10-26T00:00:00.000Z',
+        },
+      ],
+    });
+    const res = await a.request(
+      `/api/docs/${doc.docId}/sections/${encodeURIComponent('ref:usc/15/6809')}`,
+    );
+    expect(res.status).toBe(200);
+    const excerpt = SectionExcerpt.parse(await res.json());
+    expect(excerpt).toMatchObject({
+      sectionId: 'ref:usc/15/6809',
+      breadcrumb:
+        "15 U.S.C. 6809 (U.S. Code, read for 'financial institution')",
+      spans: [
+        {
+          text: 'The term "financial institution" means any institution.',
+          status: 'unchanged',
+        },
+      ],
+      location: {},
+      reference: {
+        citation: '15 U.S.C. 6809',
+        url: 'https://www.govinfo.gov/link/uscode/15/6809?link-type=html',
+      },
+    });
+    const missing = await a.request(
+      `/api/docs/${doc.docId}/sections/${encodeURIComponent('ref:usc/15/1')}`,
+    );
+    expect(missing.status).toBe(404);
+  });
+
   test('re-ingesting the same bytes reports reuse', async () => {
     const a = app();
     await ingestDoc(a);

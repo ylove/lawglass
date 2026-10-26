@@ -1,4 +1,7 @@
 import type { DocDetail } from '../../core/model/index.js';
+import { officialUrl } from '../../core/enrich/official-url.js';
+
+type ExternalRef = DocDetail['externalRefs'][number];
 
 const KIND_LABEL = {
   us_code: 'Federal law',
@@ -15,66 +18,78 @@ const CATEGORY_LABEL = {
   general_law: 'State law',
 } as const;
 
-const ORC = 'https://codes.ohio.gov/ohio-revised-code';
+const label = (ref: ExternalRef): string =>
+  ref.category ? CATEGORY_LABEL[ref.category] : KIND_LABEL[ref.kind];
 
-/**
- * A link to the official code site, only when the citation maps cleanly. No search engines:
- * they would learn what the reader is looking at. Charter and city code get no link.
- */
-export function officialUrl(citation: string): string | undefined {
-  if (citation === 'Ohio Revised Code, Title 35') return `${ORC}/title-35`;
-  const section = /^R\.C\. (\d+\.\d+(?:\.\d+)?)$/.exec(citation);
-  if (section) return `${ORC}/section-${encodeURIComponent(section[1] ?? '')}`;
-  const chapter = /^R\.C\. Chapter (\d+(?:\.\d+)?)$/.exec(citation);
-  if (chapter) return `${ORC}/chapter-${encodeURIComponent(chapter[1] ?? '')}`;
-  return undefined;
+/** Read references first (answers can use them), then the most mentioned. Stable otherwise. */
+function ordered(refs: DocDetail['externalRefs']): ExternalRef[] {
+  return refs
+    .map((ref, index) => ({ ref, index }))
+    .sort(
+      (a, b) =>
+        Number(b.ref.referenceId !== undefined) -
+          Number(a.ref.referenceId !== undefined) ||
+        b.ref.sectionIds.length - a.ref.sectionIds.length ||
+        a.index - b.index,
+    )
+    .map(({ ref }) => ref);
 }
 
 export function ReferencedCard({
   externalRefs,
+  onOpenReference,
 }: {
   externalRefs: DocDetail['externalRefs'];
+  /** Opens the text that was read for a reference (the drawer, on its `ref:` id). */
+  onOpenReference?: (referenceId: string, trigger: HTMLElement) => void;
 }) {
   if (externalRefs.length === 0) return null;
+  const anyRead = externalRefs.some((r) => r.referenceId !== undefined);
   return (
     <section aria-labelledby="refs-title" className="card refs">
-      <h3 id="refs-title">Referenced, not loaded</h3>
+      <h3 id="refs-title">Laws it refers to</h3>
       <p className="muted">
-        This document mentions other laws. They are not loaded here, so answers
-        do not draw on them.
+        {anyRead
+          ? 'Answers can draw on the laws marked "Read" below. The others are only listed, so answers do not use them.'
+          : 'This document mentions other laws. They are not loaded here, so answers do not draw on them.'}
       </p>
-      <ul>
-        {externalRefs.map((r) => (
-          <li key={r.citation}>
-            <strong>{r.citation}</strong>{' '}
-            <span className="muted">
-              ({r.category ? CATEGORY_LABEL[r.category] : KIND_LABEL[r.kind]})
-            </span>
-            {(() => {
-              const href = officialUrl(r.citation);
-              return href ? (
-                <>
-                  {' '}
-                  <a
-                    href={href}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    aria-label={`View ${r.citation} on codes.ohio.gov`}
-                  >
-                    View on codes.ohio.gov
-                  </a>
-                </>
-              ) : null;
-            })()}
-            <br />
-            <span>{r.text}</span>
-            <span className="muted">
-              {' '}
-              - mentioned in {r.sectionIds.length}{' '}
-              {r.sectionIds.length === 1 ? 'section' : 'sections'}
-            </span>
-          </li>
-        ))}
+      <ul className="ref-list" role="list">
+        {ordered(externalRefs).map((r) => {
+          const href = officialUrl(r.citation);
+          const count = r.sectionIds.length;
+          return (
+            <li key={r.citation}>
+              {href ? (
+                <a href={href} target="_blank" rel="noopener noreferrer">
+                  {r.citation}
+                </a>
+              ) : (
+                <span>{r.citation}</span>
+              )}
+              <br />
+              <small className="muted">
+                {label(r)} · mentioned in {count}{' '}
+                {count === 1 ? 'section' : 'sections'}
+                {r.referenceId !== undefined && onOpenReference ? (
+                  <>
+                    {' · '}
+                    <button
+                      type="button"
+                      className="link-btn"
+                      aria-label={`Read: show the text of ${r.citation} that answers use`}
+                      onClick={(e) => {
+                        if (r.referenceId !== undefined)
+                          onOpenReference(r.referenceId, e.currentTarget);
+                      }}
+                    >
+                      Read
+                    </button>
+                  </>
+                ) : null}
+              </small>
+            </li>
+          );
+        })}
       </ul>
     </section>
   );

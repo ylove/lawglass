@@ -12,6 +12,7 @@ import type {
   ScanStatus,
   LlmProvider,
   RetrievalBackend,
+  ReferenceText,
   RetrievalMode,
   SearchHit,
   Section,
@@ -25,6 +26,8 @@ export interface ChipDoc {
   sections: readonly Section[];
   /** When given, `definitions` lists document-wide definitions before section-limited ones. */
   definitions?: readonly Definition[] | undefined;
+  /** U.S. Code text read for definitions the bill borrows; shown beside the bill (issue #275). */
+  references?: readonly ReferenceText[] | undefined;
   /** The stored official record, read by `history`. Absent when none was fetched. */
   history?: BillHistory | undefined;
   /** Per-page read quality for scanned PDFs; `what-changes` will not claim "no changes" on a doubtful one. */

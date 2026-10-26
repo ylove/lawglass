@@ -6,11 +6,17 @@
  * escaping the data so it cannot forge our tags is the second.
  */
 import { createHash } from 'node:crypto';
-import { promptText } from './markers.js';
+import {
+  neutralizeCitations,
+  neutralizeMarkers,
+  promptText,
+} from './markers.js';
+import { referenceHeading } from './references.js';
 import {
   DECLINE_TEXT,
   type BillMetadata,
   type LlmMessage,
+  type ReferenceText,
   type SearchHit,
 } from '../model/index.js';
 
@@ -34,6 +40,9 @@ import {
  * Markers               Questions about changes get excerpts with `[struck]…[/struck]` and
  *                        `[inserted]…[/inserted]` in place. Document text can never contain
  *                        these tags (`markers.ts` neutralizes them), so they are trustworthy.
+ * kind="reference"     Other law the bill borrows a term from (U.S. Code text read at ingest).
+ *                        It is allowed source for what a borrowed term means, is cited like the
+ *                        bill, and is never presented as part of the bill.
  * Rule 9 (reader view)   Retrieval is internal; the reader needs what the bill says.
  * Format                 Plain prose, no markdown tables, so the UI can render it safely.
  */
@@ -55,6 +64,7 @@ ${whole ? 'Each part looks like this: <part id="1" section="..." heading="..." s
 - "section" is the section id you cite.
 - "heading" is the path to the ${block}, such as "Sec. 4 > (b) Eligibility". It is context, not part of the text.
 - kind="definition" marks ${aBlock} that defines a term.
+- kind="reference" marks ${aBlock} quoting other law that ${document} points to, such as a U.S. Code definition${whole ? ' (these follow the bill, inside <references>)' : ''}. Use it to explain a term ${document} borrows and cite it like any other ${block}. Never present it as part of ${document}. It is the current text of that law: if ${document} amends the same section, the text of ${document} says what the law will be.
 - "status" tells you what kind of text it is:
   - status="unchanged": current text with no amendment marks.
   - status="inserted": current text that includes some new wording the bill adds; the ${block} does not show which words are new. Treat it as the text that will be law, and do not say a particular sentence is added unless the ${block} makes that clear.
@@ -144,6 +154,23 @@ export function formatExcerpt(
   return `<${tag} ${attrText}>${escapeText(promptText(c))}</${tag}>`;
 }
 
+/** One reference text as `<excerpt kind="reference" ...>` (`<part ...>` reading the whole bill). */
+export function formatReference(
+  reference: ReferenceText,
+  id: string,
+  tag: 'excerpt' | 'part' = 'excerpt',
+): string {
+  const attrs: [string, string][] = [
+    ['id', id],
+    ['section', reference.sectionId],
+    ['heading', referenceHeading(reference)],
+    ['kind', 'reference'],
+    ['status', 'unchanged'],
+  ];
+  const attrText = attrs.map(([k, v]) => `${k}="${escapeXml(v)}"`).join(' ');
+  return `<${tag} ${attrText}>${escapeText(neutralizeCitations(neutralizeMarkers(reference.text)))}</${tag}>`;
+}
+
 /** Hits followed by injected definitions, de-duplicated by chunk id (first occurrence wins). */
 export function mergeContext(
   hits: readonly SearchHit[],
@@ -177,6 +204,8 @@ export interface BuildPromptInput {
   question: string;
   hits: readonly SearchHit[];
   definitions?: readonly SearchHit[] | undefined;
+  /** Other law's text to show beside the bill; already chosen (see `selectReferences`). */
+  references?: readonly ReferenceText[] | undefined;
   metadata?: BillMetadata | undefined;
   /** Extra instruction for a chip (e.g. "list penalties"). Trusted: it comes from our code. */
   chipInstruction?: string | undefined;
@@ -187,6 +216,8 @@ export interface BuiltPrompt {
   user: LlmMessage['content'];
   /** The hits actually placed in the prompt (after merge), in prompt order. */
   hits: SearchHit[];
+  /** The references actually placed in the prompt, in prompt order. */
+  references: ReferenceText[];
 }
 
 /**
@@ -208,6 +239,11 @@ export function buildPrompt(input: BuildPromptInput): BuiltPrompt {
       ),
     )
     .join('\n');
+  const references = [...(input.references ?? [])];
+  const tag = input.mode === 'whole' ? 'part' : 'excerpt';
+  const referenceBlocks = references
+    .map((r, i) => formatReference(r, String(hits.length + i + 1), tag))
+    .join('\n');
   const chip = input.chipInstruction
     ? `<task>${escapeText(input.chipInstruction)}</task>\n`
     : '';
@@ -217,17 +253,25 @@ export function buildPrompt(input: BuildPromptInput): BuiltPrompt {
       system: WHOLE_SYSTEM_PROMPT,
       user: [
         {
-          text: `${formatDocument(input.metadata)}<bill>\n${excerpts}\n</bill>\n`,
+          text: `${formatDocument(input.metadata)}<bill>\n${excerpts}\n</bill>\n${
+            references.length > 0
+              ? `<references>\n${referenceBlocks}\n</references>\n`
+              : ''
+          }`,
           cache: true,
         },
         { text: task },
       ],
       hits,
+      references,
     };
   }
   return {
     system: SYSTEM_PROMPT,
-    user: `${formatDocument(input.metadata)}<excerpts>\n${excerpts}\n</excerpts>\n${task}`,
+    user: `${formatDocument(input.metadata)}<excerpts>\n${excerpts}${
+      references.length > 0 ? `\n${referenceBlocks}` : ''
+    }\n</excerpts>\n${task}`,
     hits,
+    references,
   };
 }

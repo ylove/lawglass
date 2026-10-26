@@ -32,6 +32,12 @@ export interface SafeFetchOptions {
   refresh?: boolean | undefined;
   /** Additional source policy, applied before DNS on every hop, including cached redirects. */
   validateUrl?: ((url: URL) => void) | undefined;
+  /**
+   * Accept an HTML page that looks like a link hub rather than a document. For official pages
+   * we know are statute text (a U.S. Code section is mostly cross-reference links and has no
+   * "Section 1." heading), where the wrapper heuristic would otherwise refuse them.
+   */
+  skipWrapperCheck?: boolean | undefined;
   /** Cancels DNS, redirects and body streaming without replacing the download deadline. */
   signal?: AbortSignal | undefined;
   resolver?: Resolver;
@@ -131,7 +137,7 @@ function makeResult(
       { contentType, maxHtmlBytes: limits.maxHtmlBytes },
       budget,
     );
-    if (isLikelyWrapper(preparedHtml.dom)) {
+    if (!opts.skipWrapperCheck && isLikelyWrapper(preparedHtml.dom)) {
       throw new AppError('WRAPPER_PAGE', undefined, {
         details: { links: findCandidateLinks(preparedHtml.dom, finalUrl) },
       });
