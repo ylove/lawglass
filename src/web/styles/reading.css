@@ -1,0 +1,271 @@
+/* The reading system. Long-form content (the "In brief" summary, answers, the official summary,
+   the bill text in the drawer, scenario captions) is set in a serif at a comfortable measure and
+   leading; everything around it (buttons, chips, labels, card meta) stays in the UI sans.
+   Imported after answer/summary/drawer so these rules are the single place reading text is tuned. */
+
+/* ---- Reading text ------------------------------------------------------------------------- */
+.summary-text,
+.summary-preview,
+.answer-body,
+.excerpt,
+.official-summary p,
+.scenario-frame p {
+  font-family: var(--font-read);
+  font-kerning: normal;
+  font-variant-numeric: lining-nums;
+  text-wrap: pretty;
+}
+.summary-text,
+.summary-preview,
+.answer-body,
+.official-summary p {
+  max-width: var(--measure);
+}
+.answer-body,
+.excerpt-text,
+.official-summary p {
+  font-size: var(--text-read);
+  line-height: var(--lh-read);
+}
+.summary-text,
+.summary-preview {
+  font-size: var(--text-lead);
+  line-height: var(--lh-lead);
+}
+.official-summary p {
+  font-size: var(--text-base);
+}
+
+/* Paragraph and list rhythm. Spacing sits between blocks only, so a card never ends in a gap. */
+.summary-text p,
+.answer-body p,
+.excerpt p {
+  margin: 0 0 var(--space-para);
+}
+.summary-text > :last-child,
+.answer-body > :last-child,
+.excerpt > :last-child {
+  margin-bottom: 0;
+}
+.summary-text ul,
+.summary-text ol,
+.answer-body ul,
+.answer-body ol {
+  margin: 0 0 var(--space-para);
+  padding-left: 1.5rem;
+}
+.summary-text li,
+.answer-body li {
+  margin: 0 0 0.4em;
+  padding-left: 0.25rem;
+}
+.summary-text li > :last-child,
+.answer-body li > :last-child {
+  margin-bottom: 0;
+}
+/* Markers are quieter than the text; numbers align on the digits. */
+.summary-text li::marker,
+.answer-body li::marker {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.summary-text strong,
+.answer-body strong,
+.excerpt strong {
+  font-weight: 600;
+}
+.summary-text em,
+.answer-body em {
+  font-style: italic;
+}
+
+/* Citation markers: small sans pills that sit on the text without stretching the line. */
+sup {
+  line-height: 0;
+  vertical-align: baseline;
+  position: relative;
+  top: -0.45em;
+  margin-left: 0.1em;
+}
+.cite {
+  display: inline-block;
+  line-height: 1.5rem;
+  vertical-align: middle;
+  font-family: var(--font);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+.cite:hover {
+  background: var(--chip);
+}
+
+/* Links inside reading text: underlined, so they never rely on color alone. */
+.summary-text a,
+.summary-preview a,
+.answer-body a,
+.excerpt a,
+.official-summary p a {
+  color: var(--accent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.15em;
+  overflow-wrap: anywhere;
+}
+
+/* ---- Bill text in the drawer -------------------------------------------------------------- */
+.excerpt {
+  border-left: 3px solid var(--accent);
+  padding-left: 1rem;
+  margin-top: 1rem;
+}
+.excerpt h3 {
+  font-family: var(--font-read);
+  font-size: var(--text-h3);
+  font-weight: 600;
+  line-height: var(--lh-head);
+  letter-spacing: 0;
+  margin: 0 0 0.6rem;
+}
+.excerpt-text {
+  font-size: var(--text-base);
+  line-height: 1.65;
+}
+/* Removed text is struck through on amber; added text is underlined on blue. The line and the
+   fill both change, so neither color nor shape is needed alone. Ink on fill is >= 4.5:1 in
+   both themes (light / dark: del 7.1 / 8.3, ins 14.0 / 11.4; links inside keep the same ink). */
+del,
+ins {
+  padding: 0.05em 0.2em;
+  border-radius: 0.2em;
+  /* Keep the fill continuous across wrapped lines. */
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+del {
+  text-decoration-thickness: 1.5px;
+}
+ins {
+  background: var(--ins-bg);
+  color: var(--ink);
+  text-decoration-color: var(--accent);
+}
+/* A link inside amended text takes the amendment's own ink: the link color on the amber or blue
+   fill falls under 4.5:1 in light mode. The underline still marks it as a link, and the strike
+   or underline of the amendment still shows. */
+/* Scoped like `.excerpt a` above so it wins on specificity; a bare `del a` would lose to it. */
+.excerpt del a,
+.excerpt ins a,
+del a,
+ins a {
+  color: inherit;
+}
+.legend {
+  margin: 0.75rem 0 0;
+  font-size: var(--text-xs);
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+/* ---- Card headings, eyebrows and meta: one system ----------------------------------------- */
+.card > h3,
+.card > .asked {
+  margin: 0 0 0.75rem;
+  font-size: var(--text-h3);
+  font-weight: 600;
+  line-height: var(--lh-head);
+  letter-spacing: -0.005em;
+}
+.doc-aside .card > h3 {
+  font-size: var(--text-base);
+}
+/* Eyebrow labels: small, uppercase, tracked. Used for sub-sections inside a card. */
+.card h4,
+.sources h4 {
+  margin: 1rem 0 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.card h4:first-child {
+  margin-top: 0;
+}
+.card > p.muted,
+.history-note,
+.history-more {
+  font-size: var(--text-sm);
+  line-height: var(--lh-ui);
+}
+.when {
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.timeline {
+  font-size: var(--text-sm);
+  line-height: var(--lh-ui);
+}
+.facts dl {
+  font-size: var(--text-sm);
+  line-height: var(--lh-ui);
+}
+.facts dd {
+  font-variant-numeric: tabular-nums;
+}
+.facts dt {
+  font-size: var(--text-xs);
+  padding-top: 0.1rem;
+}
+* + .summary-note {
+  margin-top: 0.75rem;
+}
+.summary-note {
+  font-size: var(--text-xs);
+}
+
+/* Sources list: sans, compact, numbers aligned with the citation pills. */
+.sources ol {
+  margin: 0;
+  font-size: var(--text-sm);
+  line-height: var(--lh-ui);
+}
+.sources li {
+  margin-bottom: 0.35rem;
+}
+.sources li::before {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Referenced card only (`.refs`): tighter list, citation in bold, explanation in the secondary size. */
+.refs ul {
+  padding-left: 1.2rem;
+  font-size: var(--text-sm);
+  line-height: var(--lh-ui);
+}
+.refs ul li {
+  margin-bottom: 0.75rem;
+}
+.refs ul li::marker {
+  color: var(--muted);
+}
+
+/* ---- Scenario strip ----------------------------------------------------------------------- */
+.scenario-head h3 {
+  font-size: var(--text-h2);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: var(--lh-head);
+}
+.scenario-frame p {
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+.scenario-note {
+  font-size: var(--text-xs);
+  line-height: var(--lh-ui);
+}
+.scenario-badge {
+  font-size: 0.75rem;
+  letter-spacing: 0.02em;
+}

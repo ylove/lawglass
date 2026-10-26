@@ -28,6 +28,23 @@
   --font:
     'Instrument Sans', system-ui, -apple-system, 'Segoe UI', Roboto,
     'Helvetica Neue', Arial, sans-serif;
+  /* The reading face for long-form text; Georgia is the fallback while it loads. */
+  --font-read: 'Source Serif 4', Georgia, 'Times New Roman', serif;
+
+  /* Type scale (rem). UI text steps up in small increments; reading text has its own sizes. */
+  --text-xs: 0.8125rem; /* meta: dates, captions, eyebrow labels */
+  --text-sm: 0.9375rem; /* secondary UI and card body */
+  --text-base: 1.0625rem; /* default UI */
+  --text-read: 1.125rem; /* long-form body */
+  --text-lead: 1.3125rem; /* the "In brief" summary */
+  --text-h3: 1.1875rem; /* card and section headings */
+  --text-h2: 1.375rem;
+  --lh-ui: 1.45;
+  --lh-read: 1.62;
+  --lh-lead: 1.5;
+  --lh-head: 1.25;
+  --measure: 66ch; /* reading line length */
+  --space-para: 0.9em; /* paragraph rhythm inside reading text */
 }
 @media (prefers-color-scheme: dark) {
   :root {

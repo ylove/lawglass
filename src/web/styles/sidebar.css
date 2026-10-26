@@ -12,17 +12,19 @@
 .sidebar ul {
   list-style: none;
   padding: 0;
-  margin: 0.75rem 0 0;
+  margin: 0.5rem 0 0;
 }
+/* The rule between documents is the separator; padding stays small so rows do not float apart. */
 .sidebar li {
   border-top: 1px solid var(--line);
-  padding: 0.5rem 0;
+  padding: 0.25rem 0;
 }
 .doc-link {
   display: block;
   width: 100%;
-  min-height: 2.75rem;
-  padding: 0.25rem 0.5rem;
+  min-height: 2.5rem;
+  padding: 0.35rem 0.5rem;
+  line-height: 1.3;
   font: inherit;
   color: var(--ink);
   background: none;

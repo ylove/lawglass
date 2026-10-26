@@ -235,15 +235,7 @@ export function DocumentView({
         </div>
         <aside aria-label="About this bill" className="doc-aside">
           <FactsCard detail={detail} />
-          <HistoryCard
-            history={detail.history}
-            canAskFullStory={config.chips.some((c) => c.id === 'history')}
-            busy={busy}
-            onFullStory={() => {
-              const chip = config.chips.find((c) => c.id === 'history');
-              if (chip) void run({ chipId: chip.id }, chip.label);
-            }}
-          />
+          <HistoryCard history={detail.history} />
           <ReferencedCard externalRefs={detail.externalRefs} />
         </aside>
       </div>
