@@ -58,9 +58,13 @@ function Link({ panel }: { panel: PicturePanel }) {
  * is hidden from assistive technology; the caption underneath carries the meaning.
  */
 export function PicturePanels({ entry }: { entry: PictureEntry }) {
-  // Panels with 2+ glyphs on both sides are too wide to pair up on a phone; the CSS gives them a row each.
+  // Some panels are too wide to pair up on a phone, and the CSS gives them a row each: 2+ glyphs
+  // on both sides, or a labelled left side next to a note, whose words would otherwise collide.
   const wide = entry.panels.some(
-    (p) => p.left.glyphs.length > 1 && (p.right?.glyphs.length ?? 0) > 1,
+    (p) =>
+      p.right !== undefined &&
+      ((p.left.glyphs.length > 1 && p.right.glyphs.length > 1) ||
+        (p.left.label !== undefined && p.note !== undefined)),
   );
   return (
     <div
