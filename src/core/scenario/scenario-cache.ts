@@ -95,8 +95,20 @@ export class ScenarioCache {
     return join(this.dir, key.docId, `scenario-${scenarioCacheHash(key)}.json`);
   }
 
+  /** True when any result is stored, including a `none` past its cool-down (which `get` hides). */
+  async has(key: ScenarioCacheKey): Promise<boolean> {
+    return (await this.read(key, true)) !== undefined;
+  }
+
   /** A miss is `undefined`: absent, unreadable, corrupt, another model, or a `none` past its cool-down. */
   async get(key: ScenarioCacheKey): Promise<ScenarioLookup> {
+    return this.read(key, false);
+  }
+
+  private async read(
+    key: ScenarioCacheKey,
+    ignoreCooldown: boolean,
+  ): Promise<ScenarioLookup> {
     let value: unknown;
     try {
       value = await readPrivateJson(this.path(key), this.fs);
@@ -112,7 +124,7 @@ export class ScenarioCache {
       return undefined;
     const { status, scenario, storedAt } = parsed.data;
     if (status === 'none')
-      return this.now() - storedAt < NONE_RETRY_MS
+      return ignoreCooldown || this.now() - storedAt < NONE_RETRY_MS
         ? { status: 'none' }
         : undefined;
     return scenario ? { status: 'ok', scenario } : undefined;

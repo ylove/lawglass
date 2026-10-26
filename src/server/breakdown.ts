@@ -74,6 +74,13 @@ export interface BreakdownServiceOptions {
   pregenerate?: boolean | undefined;
 }
 
+/**
+ * Documents whose pre-generation pass has run (or is running) in this process, keyed by library
+ * and document. A pass is never repeated unless it ended in a failure: viewing a breakdown, from
+ * any app instance, must not pay for examples again.
+ */
+const pregenerated = new Set<string>();
+
 export function createBreakdownService(
   runtime: CliRuntime,
   options: BreakdownServiceOptions,
@@ -83,10 +90,10 @@ export function createBreakdownService(
   const breakdowns = defaultBreakdownCache(registry);
   const examples = defaultExampleCache(registry, now);
 
+  const passKey = (docId: string): string => `${registry.configDir}\n${docId}`;
   const running = new Map<string, Set<() => void>>();
   const partial = new Map<string, readonly SectionBrief[]>();
   const failedAt = new Map<string, number>();
-  const pregenerating = new Set<string>();
 
   /** Wake waiters when a run ends, whatever the outcome. */
   function settle(name: string): void {
@@ -205,7 +212,13 @@ export function createBreakdownService(
         ? { status: 'pending', briefs: [...so_far] }
         : { status: 'pending' };
     }
-    if (coolingDown(name)) return { status: 'disabled' };
+    // A recent failure is an error the client can show with a retry, not "off": `disabled`
+    // would hide the panel and the parts the reader was already reading.
+    if (coolingDown(name))
+      throw new AppError('PROVIDER_ERROR', 'Breakdown is cooling down.', {
+        userMessage:
+          "Couldn't finish reading the sections right now. Try again in a minute.",
+      });
     startBreakdown(docId, name, context, request.onError);
     return { status: 'pending' };
   }
@@ -219,10 +232,12 @@ export function createBreakdownService(
     name: string,
     context: Awaited<ReturnType<typeof documentContext>>,
     onError: RequestOptions['onError'],
+    background = false,
   ): Promise<void> {
     const started = now();
     running.set(name, new Set());
     return runSectionExample(docId, sectionId, {
+      background,
       backend: runtime.backend,
       provider: runtime.answerProvider,
       registry,
@@ -288,7 +303,10 @@ export function createBreakdownService(
       }
       return { status: 'pending' };
     }
-    if (coolingDown(name)) return { status: 'disabled' };
+    if (coolingDown(name))
+      throw new AppError('PROVIDER_ERROR', 'Example is cooling down.', {
+        userMessage: "Couldn't draw an example right now. Try again.",
+      });
     void startExample(docId, sectionId, name, context, request.onError);
     return { status: 'pending' };
   }
@@ -308,11 +326,11 @@ export function createBreakdownService(
   ): void {
     if (!pregenerationEnabled(options.pregenerate) || options.publicMode)
       return;
-    if (mode !== 'whole' || pregenerating.has(docId)) return;
+    if (mode !== 'whole' || pregenerated.has(passKey(docId))) return;
     const available = briefs.filter((b) => b.example === 'available');
     if (available.length === 0 || available.length > MAX_PREGENERATED_EXAMPLES)
       return;
-    pregenerating.add(docId);
+    pregenerated.add(passKey(docId));
     void (async () => {
       const llm = provider();
       if (!llm) return;
@@ -325,7 +343,8 @@ export function createBreakdownService(
       for (const { sectionId } of available) {
         const key = sectionExampleKey(docId, sectionId, llm, context.mode);
         const name = `${docId}:example:${scenarioCacheHash(key)}`;
-        if (await examples.get(key)) continue;
+        // Any stored result counts, even a `none` past its cool-down: never redraw it here.
+        if (await examples.has(key)) continue;
         if (coolingDown(name)) return;
         // A reader may have asked for this one already; wait for that run instead of doubling it.
         const inFlight = running.get(name);
@@ -333,14 +352,16 @@ export function createBreakdownService(
           await waitForSummary(inFlight, 120_000);
           continue;
         }
-        await startExample(docId, sectionId, name, context, undefined);
-        if (failedAt.has(name)) return;
+        await startExample(docId, sectionId, name, context, undefined, true);
+        if (failedAt.has(name)) {
+          // The first real failure ends the pass; a later look may retry once it cools down.
+          pregenerated.delete(passKey(docId));
+          return;
+        }
       }
-    })()
-      .catch(() => undefined)
-      .finally(() => {
-        pregenerating.delete(docId);
-      });
+    })().catch(() => {
+      pregenerated.delete(passKey(docId));
+    });
   }
 
   return { get, example };

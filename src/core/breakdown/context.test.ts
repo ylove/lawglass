@@ -116,7 +116,7 @@ describe('buildUnitContext', () => {
     expect(context.related).toHaveLength(MAX_RELATED_SECTIONS);
   });
 
-  it('adds other law read for the bill as an excerpt that cites the bill section relying on it', async () => {
+  it('adds other law read for the bill as an excerpt under its own ref: id', async () => {
     const ref: ExternalRef = {
       text: 'section 6809 of title 15',
       citation: '15 U.S.C. 6809',
@@ -139,7 +139,7 @@ describe('buildUnitContext', () => {
       unit: grants,
     });
     const [excerpt] = context.references;
-    expect(excerpt?.chunk.sectionId).toBe('sec-2/a');
+    expect(excerpt?.chunk.sectionId).toBe('ref:usc/15/6809');
     expect(excerpt?.chunk.breadcrumb).toContain('15 U.S.C. 6809');
     expect(excerpt?.chunk.text).toContain('financial institution');
   });

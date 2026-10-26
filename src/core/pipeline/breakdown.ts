@@ -1,9 +1,10 @@
 /**
  * Section by section (#276) and a per-section example (#277), as pipeline steps.
  *
- * Both run under the same budgets as an ask: one slot in the shared `ask` pool for the whole
- * step, and a provider wrapped by `limits.meter` so every model call counts toward the
- * per-minute ceiling. A cache hit takes neither.
+ * Both run under the shared budgets, one model call at a time: each call takes a slot in the
+ * `ask` pool only while it runs and counts toward the per-minute ceiling (`Limits.paced`), so a
+ * reader's question never waits out a whole run. Background work (the breakdown, examples drawn
+ * ahead) also yields to readers. A cache hit takes neither.
  */
 import { join } from 'node:path';
 import { documentContext, type DocumentContext } from '../answer/context.js';
@@ -99,43 +100,43 @@ export async function runBreakdown(
 
   return cache.getOrCompute(key, async () => {
     const limits = deps.limits ?? sharedLimits();
-    const release = await limits.acquire('ask', deps.signal);
-    try {
-      if (!(await backend.hasDocument(docId)))
-        throw new AppError('DOC_NOT_FOUND', 'The document has no index.', {
-          userMessage:
-            "This document's search index is missing. Run ingest again for its URL.",
-        });
-      const { units, omitted } = chooseBreakdownUnits(doc.sections);
-      if (units.length === 0) return undefined;
-      if (context.mode === 'excerpts') await backend.ensureReady(deps.signal);
-      const made = await generateBreakdown({
-        provider: limits.meter(deps.provider),
-        docId,
-        backend,
-        doc,
-        context,
-        units,
+    if (!(await backend.hasDocument(docId)))
+      throw new AppError('DOC_NOT_FOUND', 'The document has no index.', {
+        userMessage:
+          "This document's search index is missing. Run ingest again for its URL.",
+      });
+    const { units, omitted } = chooseBreakdownUnits(doc.sections);
+    if (units.length === 0) return undefined;
+    if (context.mode === 'excerpts') await backend.ensureReady(deps.signal);
+    const made = await generateBreakdown({
+      // Nobody is waiting on this run, so it yields to readers (`Limits.paced`).
+      provider: limits.paced(deps.provider, {
+        background: true,
         signal: deps.signal,
-        onProgress: deps.onProgress,
-      });
-      await registry.touch(docId, {
-        embedTokens: made.backendUsage.embedTokens,
-        rerankUnits: made.backendUsage.rerankUnits,
-        llmInputTokens: made.usage.inputTokens,
-        llmOutputTokens: made.usage.outputTokens,
-      });
-      if (made.briefs.length === 0) return undefined;
-      return {
-        briefs: made.briefs,
-        omitted,
-        context: context.mode,
-        provider: deps.provider.id,
-        model: deps.provider.model,
-      };
-    } finally {
-      release();
-    }
+      }),
+      docId,
+      backend,
+      doc,
+      context,
+      units,
+      signal: deps.signal,
+      onProgress: deps.onProgress,
+    });
+    await registry.touch(docId, {
+      embedTokens: made.backendUsage.embedTokens,
+      rerankUnits: made.backendUsage.rerankUnits,
+      llmInputTokens: made.usage.inputTokens,
+      llmOutputTokens: made.usage.outputTokens,
+    });
+    if (made.briefs.length === 0) return undefined;
+    return {
+      briefs: made.briefs,
+      // Parts left out by choice, plus parts whose brief could not be made or checked.
+      omitted: omitted + made.dropped,
+      context: context.mode,
+      provider: deps.provider.id,
+      model: deps.provider.model,
+    };
   });
 }
 
@@ -154,6 +155,8 @@ export interface SectionExampleDeps {
   cache?: ScenarioCache | undefined;
   now?: (() => number) | undefined;
   limits?: Limits | undefined;
+  /** Drawn ahead of time, with nobody waiting: yields to readers like a breakdown does. */
+  background?: boolean | undefined;
   signal?: AbortSignal | undefined;
   timeoutMs?: number | undefined;
 }
@@ -215,44 +218,49 @@ export async function runSectionExample(
 
   const result = await cache.getOrCompute(key, async () => {
     const limits = deps.limits ?? sharedLimits();
-    const release = await limits.acquire('ask', deps.signal);
-    try {
-      if (!(await backend.hasDocument(docId)))
-        throw new AppError('DOC_NOT_FOUND', 'The document has no index.', {
-          userMessage:
-            "This document's search index is missing. Run ingest again for its URL.",
-        });
-      if (context.mode === 'excerpts') await backend.ensureReady(deps.signal);
-      const unitContext = await buildUnitContext({
-        backend,
-        docId,
-        doc,
-        unit,
-        pool: context.mode === 'whole' ? context.hits : undefined,
+    if (!(await backend.hasDocument(docId)))
+      throw new AppError('DOC_NOT_FOUND', 'The document has no index.', {
+        userMessage:
+          "This document's search index is missing. Run ingest again for its URL.",
+      });
+    if (context.mode === 'excerpts') await backend.ensureReady(deps.signal);
+    const unitContext = await buildUnitContext({
+      backend,
+      docId,
+      doc,
+      unit,
+      pool: context.mode === 'whole' ? context.hits : undefined,
+      signal: deps.signal,
+    });
+    const hits = unitExcerpts(unitContext);
+    if (unitContext.hits.length === 0) return { status: 'none' as const };
+    const attached = await attachScenario({
+      provider: limits.paced(deps.provider, {
+        background: deps.background === true,
         signal: deps.signal,
-      });
-      const hits = unitExcerpts(unitContext);
-      if (unitContext.hits.length === 0) return { status: 'none' as const };
-      const attached = await attachScenario({
-        provider: limits.meter(deps.provider),
-        hits,
-        // The part is already bounded by `buildUnitContext`; keep every excerpt it chose.
-        whole: true,
-        docId,
-        focusSectionId: sectionId,
-        signal: deps.signal,
-        timeoutMs: deps.timeoutMs ?? SECTION_EXAMPLE_TIMEOUT_MS,
-      });
-      await registry.touch(docId, {
-        embedTokens: unitContext.usage.embedTokens,
-        rerankUnits: unitContext.usage.rerankUnits,
-        llmInputTokens: attached.usage.inputTokens,
-        llmOutputTokens: attached.usage.outputTokens,
-      });
-      return scenarioOutcome(attached.scenario);
-    } finally {
-      release();
-    }
+      }),
+      hits,
+      // The part is already bounded by `buildUnitContext`; keep every excerpt it chose.
+      whole: true,
+      docId,
+      focusSectionId: sectionId,
+      captureError: true,
+      signal: deps.signal,
+      timeoutMs: deps.timeoutMs ?? SECTION_EXAMPLE_TIMEOUT_MS,
+    });
+    await registry.touch(docId, {
+      embedTokens: unitContext.usage.embedTokens,
+      rerankUnits: unitContext.usage.rerankUnits,
+      llmInputTokens: attached.usage.inputTokens,
+      llmOutputTokens: attached.usage.outputTokens,
+    });
+    // A failure is not an answer: it is not cached, and the service backs off. Only a
+    // validation outcome ("no honest example") becomes a cached `none`.
+    if (attached.error !== undefined)
+      throw attached.error instanceof Error
+        ? attached.error
+        : new AppError('PROVIDER_ERROR');
+    return scenarioOutcome(attached.scenario);
   });
   return result.status === 'ok'
     ? { status: 'ok', scenario: result.scenario }

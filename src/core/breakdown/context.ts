@@ -39,7 +39,7 @@ export interface UnitContext {
   definitions: SearchHit[];
   /** Passages of sections the part refers to (one hop). */
   related: SearchHit[];
-  /** Other laws' text, as excerpts that cite the bill section that relies on it. */
+  /** Other laws' text, as excerpts under their own `ref:` ids. */
   references: SearchHit[];
   /** Embedding and rerank usage spent finding definitions. */
   usage: { embedTokens: number; rerankUnits: number };
@@ -145,18 +145,18 @@ export async function buildUnitContext(
     related.push(...withinBudget(live(chunks), RELATED_TOKEN_BUDGET));
   }
 
-  // Other laws read for this bill. Their excerpts cite the bill section that relies on them:
-  // that is the real, openable source, and the bill is what makes the other law matter here.
+  // Other laws read for this bill. They keep their own `ref:` id, so a citation says "this is
+  // the other law", not "the bill says it". They explain terms; the validator never lets their
+  // numbers ground a figure in an effect frame.
   const references: SearchHit[] = [];
   for (const ref of doc.externalRefs) {
     if (references.length >= MAX_REFERENCE_TEXTS) break;
-    const citing = ref.sectionIds.find((id) => ownIds.has(id));
     const text = doc.references?.find((r) => r.sectionId === ref.referenceId);
-    if (!citing || !text) continue;
+    if (!text || !ref.sectionIds.some((id) => ownIds.has(id))) continue;
     references.push(
       syntheticHit(docId, {
         key: `reference:${String(references.length)}:${text.sectionId}`,
-        sectionId: citing,
+        sectionId: text.sectionId,
         breadcrumb: `Other law read for this bill: ${text.citation}${text.heading ? ` ${text.heading}` : ''}`,
         text: text.text.slice(0, REFERENCE_CHAR_BUDGET),
       }),

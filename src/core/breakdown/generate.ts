@@ -36,8 +36,10 @@ import {
   type SearchHit,
   type Section,
   type SectionBrief,
+  walkSections,
 } from '../model/index.js';
 import { buildUnitContext, unitExcerpts } from './context.js';
+import { UNIT_RULES_VERSION } from './units.js';
 
 /** Parts per model call when the whole bill is in the prompt: each brief is short. */
 export const WHOLE_BATCH_SIZE = 10;
@@ -76,6 +78,7 @@ export const BREAKDOWN_PROMPT_VERSION = promptVersion(
     whole: WHOLE_BATCH_SIZE,
     excerpt: EXCERPT_BATCH_SIZE,
     max: MAX_BRIEF_CHARS,
+    units: UNIT_RULES_VERSION,
   }),
 );
 
@@ -96,6 +99,8 @@ export interface BreakdownInput {
 
 export interface BreakdownOutput {
   briefs: SectionBrief[];
+  /** Parts that got no brief: a batch that stayed malformed, or a brief that failed validation. */
+  dropped: number;
   usage: { inputTokens: number; outputTokens: number };
   backendUsage: { embedTokens: number; rerankUnits: number };
 }
@@ -131,9 +136,12 @@ function toBrief(
   );
   const citations = checked.citations.filter((c) => c.valid);
   const text = checked.text.trim();
+  // Whole mode lets the model cite any section of the bill, so a brief must cite its own part
+  // (or something inside it); otherwise two parts' briefs could be swapped unnoticed.
+  const own = new Set([...walkSections([unit])].map((s) => s.id));
   // A brief with no valid citation is a claim with no source; a very long one is not a brief.
   if (
-    citations.length === 0 ||
+    !citations.some((c) => own.has(c.sectionId)) ||
     checked.declined ||
     text.length === 0 ||
     text.length > MAX_BRIEF_CHARS
@@ -158,6 +166,7 @@ export async function generateBreakdown(
   const size = whole ? WHOLE_BATCH_SIZE : EXCERPT_BATCH_SIZE;
   const briefs: SectionBrief[] = [];
   const usage = { inputTokens: 0, outputTokens: 0 };
+  let dropped = 0;
   const backendUsage = { embedTokens: 0, rerankUnits: 0 };
 
   for (let i = 0; i < input.units.length; i += size) {
@@ -203,26 +212,34 @@ export async function generateBreakdown(
       prompt = built.user;
     }
 
-    let reply: BriefBatch;
-    try {
-      const result = await input.provider.generateObject({
-        system,
-        prompt,
-        schema: BriefBatch,
-        schemaName: 'section_briefs',
-        maxTokens: BATCH_MAX_TOKENS,
-        ...(whole ? { effort: wholeBillEffort() } : {}),
-        signal: input.signal,
-      });
-      usage.inputTokens += result.usage.inputTokens;
-      usage.outputTokens += result.usage.outputTokens;
-      reply = validateObject(BriefBatch, result.object);
-    } catch (error) {
-      // One malformed batch loses its parts, not the whole breakdown. Anything else (a budget,
-      // an abort, a provider outage) must stop the run.
-      if (error instanceof AppError && error.code === 'PROVIDER_BAD_OUTPUT')
-        continue;
-      throw error;
+    // One malformed reply is retried once; a batch that stays malformed loses its parts (they
+    // are counted as dropped), not the whole breakdown. Anything else (a budget, an abort, a
+    // provider outage) must stop the run.
+    let reply: BriefBatch | undefined;
+    for (let attempt = 0; attempt < 2 && !reply; attempt++) {
+      try {
+        const result = await input.provider.generateObject({
+          system,
+          prompt,
+          schema: BriefBatch,
+          schemaName: 'section_briefs',
+          maxTokens: BATCH_MAX_TOKENS,
+          ...(whole ? { effort: wholeBillEffort() } : {}),
+          signal: input.signal,
+        });
+        usage.inputTokens += result.usage.inputTokens;
+        usage.outputTokens += result.usage.outputTokens;
+        reply = validateObject(BriefBatch, result.object);
+      } catch (error) {
+        if (!(
+          error instanceof AppError && error.code === 'PROVIDER_BAD_OUTPUT'
+        ))
+          throw error;
+      }
+    }
+    if (!reply) {
+      dropped += batch.length;
+      continue;
     }
 
     // Match replies to the batch by id (a stray or repeated id is ignored), then keep the
@@ -238,8 +255,9 @@ export async function generateBreakdown(
     for (const unit of batch) {
       const brief = finished.get(unit.id);
       if (brief) briefs.push(brief);
+      else dropped++;
     }
     input.onProgress?.([...briefs]);
   }
-  return { briefs, usage, backendUsage };
+  return { briefs, dropped, usage, backendUsage };
 }

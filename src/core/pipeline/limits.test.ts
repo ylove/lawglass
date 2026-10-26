@@ -353,3 +353,103 @@ describe('environment configuration', () => {
     expect(claudeCliPool().max).toBe(1);
   });
 });
+
+describe('Limits.paced', () => {
+  const provider = {
+    id: 'mock',
+    model: 'm',
+    streamText: () => {
+      throw new Error('unused');
+    },
+    generateObject: () =>
+      Promise.resolve({
+        object: { a: 1 },
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }),
+  } as unknown as import('../model/index.js').LlmProvider;
+
+  it('holds an ask slot only during each call', async () => {
+    const limits = new Limits({
+      maxConcurrentIngest: 1,
+      maxConcurrentAsk: 2,
+      maxCallsPerMinute: 100,
+    });
+    const slow = {
+      ...provider,
+      generateObject: () => {
+        expect(limits.pool('ask').inFlight).toBe(1);
+        return Promise.resolve({
+          object: { a: 1 },
+          usage: { inputTokens: 1, outputTokens: 1 },
+        });
+      },
+    } as unknown as typeof provider;
+    const paced = limits.paced(slow, { background: true });
+    await paced.generateObject(objReq);
+    expect(limits.pool('ask').inFlight).toBe(0);
+    expect(limits.backgroundPool().inFlight).toBe(0);
+  });
+
+  it('lets background work use at most half the slots and half the ceiling', async () => {
+    const limits = new Limits({
+      maxConcurrentIngest: 1,
+      maxConcurrentAsk: 2,
+      maxCallsPerMinute: 4,
+    });
+    expect(limits.backgroundPool().max).toBe(1);
+    const background = limits.paced(provider, { background: true });
+    const reader = limits.paced(provider);
+    await background.generateObject(objReq);
+    await background.generateObject(objReq);
+    // Two of four calls are spent: background yields, the reader does not.
+    await expect(background.generateObject(objReq)).rejects.toMatchObject({
+      code: 'RATE_LIMITED',
+    });
+    await reader.generateObject(objReq);
+    await reader.generateObject(objReq);
+    await expect(reader.generateObject(objReq)).rejects.toMatchObject({
+      code: 'RATE_LIMITED',
+    });
+    expect(limits.pool('ask').inFlight).toBe(0);
+    expect(limits.backgroundPool().inFlight).toBe(0);
+  });
+
+  it('queues a second background call instead of taking the reader’s slot', async () => {
+    const limits = new Limits({
+      maxConcurrentIngest: 1,
+      maxConcurrentAsk: 2,
+      maxCallsPerMinute: 100,
+    });
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const held = {
+      ...provider,
+      generateObject: async () => {
+        await gate;
+        return { object: { a: 1 }, usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    } as unknown as typeof provider;
+    const paced = limits.paced(held, { background: true });
+    const first = paced.generateObject(objReq);
+    const second = paced.generateObject(objReq);
+    await vi.waitFor(() => {
+      expect(limits.backgroundPool().queued).toBe(1);
+    });
+    expect(limits.pool('ask').inFlight).toBe(1);
+    (await limits.acquire('ask'))();
+    open();
+    await Promise.all([first, second]);
+  });
+
+  it('counts calls in the window', () => {
+    let t = 0;
+    const ceiling = new RateCeiling(3, () => t, 1000);
+    ceiling.admit();
+    ceiling.admit();
+    expect(ceiling.used()).toBe(2);
+    t = 1500;
+    expect(ceiling.used()).toBe(0);
+  });
+});

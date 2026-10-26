@@ -1,13 +1,18 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { SectionBrief } from '../../core/model/index.js';
 import type { ApiClient } from '../api.js';
 import { AnswerText, type OpenCitation } from '../AnswerText.js';
+import { ApiError } from '../sse.js';
 import { SectionExample } from './SectionExample.js';
 
 /** How often to ask again while the server is still reading the sections. */
 export const BREAKDOWN_POLL_MS = 2000;
-/** Give up after three minutes; the summary above and the questions below still work. */
-export const BREAKDOWN_MAX_WAIT_MS = 180_000;
+/**
+ * Give up after six minutes without progress; the summary above and the questions below still
+ * work. The server may wait up to three minutes for the summary before it starts reading, so the
+ * clock restarts whenever a new part arrives.
+ */
+export const BREAKDOWN_MAX_WAIT_MS = 360_000;
 /** A long bill shows this many cards, then a button for the rest. */
 export const INITIAL_VISIBLE_BRIEFS = 6;
 
@@ -16,8 +21,8 @@ type State =
   | { kind: 'pending'; briefs: readonly SectionBrief[] }
   | { kind: 'cached'; briefs: readonly SectionBrief[]; omitted: number }
   | { kind: 'disabled' }
-  | { kind: 'timeout' }
-  | { kind: 'error' };
+  | { kind: 'timeout'; briefs: readonly SectionBrief[] }
+  | { kind: 'error'; briefs: readonly SectionBrief[] };
 
 function partLabel(brief: SectionBrief): string {
   return brief.num ? `Section ${brief.num}` : (brief.heading ?? 'This part');
@@ -116,17 +121,24 @@ export function BreakdownPanel({
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [attempt, setAttempt] = useState(0);
   const [showAll, setShowAll] = useState(false);
+  // The parts already shown, kept so a failure never takes them away.
+  const shown = useRef<readonly SectionBrief[]>([]);
 
   useEffect(() => {
     if (!enabled) return;
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const started = Date.now();
+    // Restarts whenever a new part arrives (see BREAKDOWN_MAX_WAIT_MS).
+    let lastProgress = Date.now();
     const look = () => {
       api
         .getBreakdown(docId)
         .then((r) => {
           if (!live) return;
+          if ((r.briefs?.length ?? 0) > shown.current.length) {
+            lastProgress = Date.now();
+            shown.current = r.briefs ?? [];
+          }
           if (r.status === 'cached' && r.briefs && r.briefs.length > 0) {
             setState({
               kind: 'cached',
@@ -135,17 +147,22 @@ export function BreakdownPanel({
             });
           } else if (r.status === 'disabled' || r.status === 'cached') {
             setState({ kind: 'disabled' });
-          } else if (Date.now() - started >= maxWaitMs) {
-            setState({ kind: 'timeout' });
+          } else if (Date.now() - lastProgress >= maxWaitMs) {
+            setState({ kind: 'timeout', briefs: shown.current });
           } else {
             setState({ kind: 'pending', briefs: r.briefs ?? [] });
             timer = setTimeout(look, pollMs);
           }
         })
-        .catch(() => {
+        .catch((e: unknown) => {
           if (!live) return;
-          // A blip should not hide the panel: keep trying, and only say so on the last failure.
-          if (Date.now() - started >= maxWaitMs) setState({ kind: 'error' });
+          // The server says the run failed (and is cooling down): stop and offer a retry.
+          // Any other failure may be a blip: keep trying, and only say so on the last one.
+          if (
+            (e instanceof ApiError && e.code === 'PROVIDER_ERROR') ||
+            Date.now() - lastProgress >= maxWaitMs
+          )
+            setState({ kind: 'error', briefs: shown.current });
           else timer = setTimeout(look, pollMs);
         });
     };
@@ -159,11 +176,14 @@ export function BreakdownPanel({
   if (!enabled || state.kind === 'disabled') return null;
 
   const retry = () => {
-    setState({ kind: 'loading' });
+    setState(
+      shown.current.length > 0
+        ? { kind: 'pending', briefs: shown.current }
+        : { kind: 'loading' },
+    );
     setAttempt((n) => n + 1);
   };
-  const briefs =
-    state.kind === 'cached' || state.kind === 'pending' ? state.briefs : [];
+  const briefs = state.kind === 'loading' ? [] : state.briefs;
   const visible = showAll ? briefs : briefs.slice(0, INITIAL_VISIBLE_BRIEFS);
   const reading = state.kind === 'loading' || state.kind === 'pending';
 
@@ -221,7 +241,9 @@ export function BreakdownPanel({
         <p role="alert" className="muted breakdown-note">
           {state.kind === 'timeout'
             ? 'Reading the sections is taking longer than expected.'
-            : 'The section-by-section view could not be loaded right now.'}{' '}
+            : briefs.length > 0
+              ? 'Reading the rest of the sections did not finish.'
+              : 'The section-by-section view could not be loaded right now.'}{' '}
           <button type="button" className="link-btn" onClick={retry}>
             Try again
           </button>

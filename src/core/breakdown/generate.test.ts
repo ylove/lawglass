@@ -174,28 +174,52 @@ describe('generateBreakdown in whole-bill mode', () => {
     expect(briefs.map((b) => b.sectionId)).toEqual(['sec-1', 'sec-2', 'sec-3']);
   });
 
-  it('skips a batch with malformed output but stops on any other failure', async () => {
+  it('retries a malformed batch once, then counts the parts it could not get', async () => {
     const provider = breakdownProvider(new MockProvider());
+    const good = (req: { prompt: string | readonly LlmTextPart[] }) => ({
+      briefs: listedIds(req.prompt).map((id) => ({
+        id,
+        text: `Ok. [S:${id}]`,
+        example: 'available',
+      })),
+    });
     let call = 0;
-    provider.behavior = (req) => {
-      if (call++ === 0) return { briefs: 'not an array' };
-      return {
-        briefs: listedIds(req.prompt).map((id) => ({
-          id,
-          text: `Ok. [S:${id}]`,
-          example: 'available',
-        })),
-      };
-    };
+    provider.behavior = (req) =>
+      call++ === 0 ? { briefs: 'not an array' } : good(req);
+    const recovered = await generateBreakdown(input(provider, 2));
+    expect(recovered.briefs).toHaveLength(2);
+    expect(recovered.dropped).toBe(0);
+    expect(provider.breakdownCalls).toBe(2);
+
+    // Malformed twice: the first batch's parts are lost, and counted, not silent.
+    call = 0;
+    provider.behavior = (req) => (call++ < 2 ? { briefs: 'no' } : good(req));
     const out = await generateBreakdown(input(provider, WHOLE_BATCH_SIZE + 2));
     expect(out.briefs.map((b) => b.sectionId)).toEqual(['sec-11', 'sec-12']);
+    expect(out.dropped).toBe(WHOLE_BATCH_SIZE);
+  });
 
+  it('stops on any other failure', async () => {
+    const provider = breakdownProvider(new MockProvider());
     provider.behavior = () => {
       throw new AppError('RATE_LIMITED');
     };
     await expect(generateBreakdown(input(provider, 2))).rejects.toMatchObject({
       code: 'RATE_LIMITED',
     });
+  });
+
+  it('drops a brief that cites only other parts, and counts it', async () => {
+    const provider = breakdownProvider(new MockProvider());
+    provider.behavior = () => ({
+      briefs: [
+        { id: 'sec-1', text: 'About two. [S:sec-2]', example: 'available' },
+        { id: 'sec-2', text: 'About two. [S:sec-2]', example: 'available' },
+      ],
+    });
+    const out = await generateBreakdown(input(provider, 2));
+    expect(out.briefs.map((b) => b.sectionId)).toEqual(['sec-2']);
+    expect(out.dropped).toBe(1);
   });
 
   it('stops when aborted', async () => {

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { breakdownProvider } from '../../../tests/support/breakdown-provider.js';
 import {
   makePipelineEnv,
@@ -9,7 +10,7 @@ import { makeSectionedText } from '../../../tests/synth/index.js';
 import { envVar } from '../brand.js';
 import { chooseBreakdownUnits } from '../breakdown/units.js';
 import { EXAMPLE_FAILED_NOTE } from '../breakdown/notes.js';
-import { messageText } from '../model/index.js';
+import { AppError, messageText } from '../model/index.js';
 import { ingest } from './ingest.js';
 import { Limits, resetSharedLimits, sharedLimits } from './limits.js';
 import {
@@ -136,41 +137,85 @@ describe('runBreakdown', () => {
     expect(messageText(provider.requests[0]!.prompt)).toContain('<excerpts>');
   });
 
-  it('takes one slot in the ask pool for the whole run and queues behind a full pool', async () => {
+  it('background runs leave a slot free: two documents at once never fill a 2-slot pool, and a reader is served at once', async () => {
     const limits = new Limits({
       maxConcurrentIngest: 1,
-      maxConcurrentAsk: 1,
+      maxConcurrentAsk: 2,
       maxCallsPerMinute: 100,
     });
-    const holder = await limits.acquire('ask');
+    // A second, longer bill (25 parts = three batches), so the runs overlap for several calls.
+    const lines = ['Many Parts Bill'];
+    for (let i = 1; i <= 25; i++)
+      lines.push(
+        `Section ${String(i)}. Topic ${String(i)}`,
+        `The department shall publish rule ${String(i)} for each grantee.`,
+      );
+    env.serve(
+      'https://example.gov/many.txt',
+      { bytes: new TextEncoder().encode(lines.join('\n')) },
+      'text/plain',
+    );
+    const other = (
+      await ingest('https://example.gov/many.txt', {
+        backend: env.backend,
+        registry: env.registry,
+        provider: env.provider,
+        fetcher: env.runtime.fetcher,
+        now: env.runtime.now,
+      })
+    ).doc.docId;
+
     const provider = both();
-    const run = runBreakdown(docId, deps(provider, { limits }));
-    await vi.waitFor(() => {
-      expect(limits.pool('ask').queued).toBe(1);
-    });
-    expect(provider.breakdownCalls).toBe(0);
-    holder();
-    await run;
-    expect(provider.breakdownCalls).toBe(1);
+    let peak = 0;
+    const waits: number[] = [];
+    provider.gate = async () => {
+      peak = Math.max(peak, limits.pool('ask').inFlight);
+      // A reader arrives in the middle of the runs and must not queue behind them.
+      const started = Date.now();
+      const release = await limits.acquire('ask');
+      waits.push(Date.now() - started);
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    };
+    await Promise.all([
+      runBreakdown(docId, deps(provider, { limits })),
+      runBreakdown(other, deps(provider, { limits })),
+    ]);
+    expect(provider.breakdownCalls).toBe(4);
+    // One background call at a time holds at most one of the two slots, plus the reader's.
+    expect(peak).toBe(1);
+    expect(Math.max(...waits)).toBeLessThan(5);
     expect(limits.pool('ask').inFlight).toBe(0);
+    expect(limits.backgroundPool().inFlight).toBe(0);
   });
 
-  it('charges every model call to the per-minute ceiling and fails fast past it', async () => {
+  it('charges every model call to the per-minute ceiling and refuses background work before the reader’s headroom is gone', async () => {
     const limits = new Limits({
       maxConcurrentIngest: 1,
-      maxConcurrentAsk: 1,
-      maxCallsPerMinute: 1,
+      maxConcurrentAsk: 2,
+      maxCallsPerMinute: 2,
     });
-    // A second call is needed for a second batch; force it by shrinking nothing: use two runs.
     const provider = both();
+    // One call is within the background share (half of 2); the run completes.
     await runBreakdown(docId, deps(provider, { limits }));
     expect(provider.breakdownCalls).toBe(1);
-    // The ceiling is spent, so a different (uncached) run is refused before the model is called.
+    // Half the ceiling is spent, so another background run is refused with no model call...
     vi.stubEnv(envVar('WHOLE_BILL_MAX_TOKENS'), '0');
     await expect(
       runBreakdown(docId, deps(provider, { limits })),
     ).rejects.toMatchObject({ code: 'RATE_LIMITED' });
     expect(provider.breakdownCalls).toBe(1);
+    // ...while a reader's own call still gets the other half.
+    const reader = limits.paced(provider, { background: false });
+    await expect(
+      reader.generateObject({
+        system: 's',
+        prompt: 'p',
+        schema: z.looseObject({}),
+        schemaName: 'other',
+        maxTokens: 10,
+      }),
+    ).resolves.toBeDefined();
     expect(limits.pool('ask').inFlight).toBe(0);
   });
 
@@ -227,15 +272,35 @@ describe('runSectionExample', () => {
     );
   });
 
-  it('answers none with our own sentence when the example cannot be grounded', async () => {
+  it('answers none with our own sentence when the validator rejects the example', async () => {
     const provider = both();
-    provider.scen.behavior = () => Promise.reject(new Error('x'));
+    provider.scen.behavior = () =>
+      Promise.resolve({
+        object: { not: 'a scenario' },
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }) as never;
     const result = await runSectionExample(
       docId,
       'sec-2',
       exampleDeps(provider),
     );
     expect(result).toEqual({ status: 'none', note: EXAMPLE_FAILED_NOTE });
+  });
+
+  it('does not turn a provider failure into a none: it throws and caches nothing', async () => {
+    const provider = both();
+    provider.scen.behavior = () =>
+      Promise.reject(new AppError('PROVIDER_ERROR'));
+    await expect(
+      runSectionExample(docId, 'sec-2', exampleDeps(provider)),
+    ).rejects.toMatchObject({ code: 'PROVIDER_ERROR' });
+    provider.scen.behavior = undefined;
+    const retry = await runSectionExample(
+      docId,
+      'sec-2',
+      exampleDeps(provider),
+    );
+    expect(retry.status).toBe('ok');
   });
 
   it('refuses a part that is not one of the breakdown’s units', async () => {
@@ -258,13 +323,10 @@ describe('runSectionExample', () => {
     const provider = both();
     await runSectionExample(docId, 'sec-2', exampleDeps(provider, { limits }));
     const other = unitIds.find((id) => id !== 'sec-2')!;
-    // The ceiling is spent: attachScenario swallows the failure, so the reader gets a none.
-    const refused = await runSectionExample(
-      docId,
-      other,
-      exampleDeps(provider, { limits }),
-    );
-    expect(refused.status).toBe('none');
+    // The ceiling is spent: the refusal is a failure to report, not a "no example" to cache.
+    await expect(
+      runSectionExample(docId, other, exampleDeps(provider, { limits })),
+    ).rejects.toMatchObject({ code: 'RATE_LIMITED' });
     expect(provider.scen.scenarioCalls).toBe(1);
     expect(limits.pool('ask').inFlight).toBe(0);
     expect(sharedLimits().pool('ask').inFlight).toBe(0);

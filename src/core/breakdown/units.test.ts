@@ -35,7 +35,6 @@ describe('isBoilerplate', () => {
     'Severability',
     'Rule of construction',
     'Rules of Construction',
-    'Effective date',
     'Definitions',
     'Definitions and effective date',
   ])('skips the heading "%s"', (heading) => {
@@ -72,6 +71,66 @@ describe('isBoilerplate', () => {
     expect(isBoilerplate(section('preamble-notes', 'Notes', SUBSTANTIVE))).toBe(
       false,
     );
+  });
+
+  it('skips an Effective date or Applicability part only when it is short and only states a date', () => {
+    const short = 'This act takes effect on July 1, 2027.';
+    expect(isBoilerplate(section('sec-9', 'Effective date', short))).toBe(true);
+    expect(isBoilerplate(section('sec-9', 'Applicability', short))).toBe(true);
+    const rules = `${SUBSTANTIVE} A grantee that misses a deadline under section 4 loses the grant and must repay every dollar received before the deadline passed, with interest set by the department each year.`;
+    expect(rules.length).toBeGreaterThan(200);
+    expect(isBoilerplate(section('sec-9', 'Effective date', rules))).toBe(
+      false,
+    );
+    expect(isBoilerplate(section('sec-9', 'Applicability', rules))).toBe(false);
+  });
+
+  it('keeps a headed part that merely opens with "In this section, the term"', () => {
+    const center = section(
+      'sec-6504',
+      'Establishment of Artificial Intelligence Security Center',
+      '',
+      [
+        section(
+          'sec-6504/a',
+          undefined,
+          'In this section, the term "center" means the center established under subsection (b).',
+        ),
+        section(
+          'sec-6504/b',
+          undefined,
+          'The Director shall establish a center within 90 days.',
+        ),
+      ],
+    );
+    expect(isBoilerplate(center)).toBe(false);
+    const flat = section(
+      'sec-7',
+      'Reports',
+      'In this section, the term "agency" means a federal agency. Each agency shall file a report.',
+    );
+    expect(isBoilerplate(flat)).toBe(false);
+  });
+
+  it('skips a headed part only when every subsection defines a term', () => {
+    const definitions = section('sec-2', 'Terms used in this act', '', [
+      section(
+        'sec-2/1',
+        undefined,
+        '(1) "Garden group" means a group maintaining a garden.',
+      ),
+      section('sec-2/2', undefined, '(2) "Town" includes a village.'),
+    ]);
+    expect(isBoilerplate(definitions)).toBe(true);
+    const mixed = section('sec-3', 'Terms used in this act', '', [
+      section('sec-3/1', undefined, '(1) "Town" means a town.'),
+      section(
+        'sec-3/2',
+        undefined,
+        '(2) A town shall file a report each year.',
+      ),
+    ]);
+    expect(isBoilerplate(mixed)).toBe(false);
   });
 
   it('keeps a long section that merely mentions an effective date', () => {
@@ -158,6 +217,21 @@ describe('chooseBreakdownUnits', () => {
     expect(units).toHaveLength(MAX_BREAKDOWN_UNITS);
     expect(units[0]?.id).toBe('sec-1');
     expect(omitted).toBe(7);
+  });
+
+  it('counts skips that rest on the text, but not boilerplate headings', () => {
+    const { units, omitted } = chooseBreakdownUnits([
+      section('sec-1', 'Short title', 'This act may be cited as the X Act.'),
+      section('sec-2', undefined, 'This act takes effect on July 1, 2027.'),
+      section(
+        'sec-3',
+        undefined,
+        'As used in this act, the term "town" means a town.',
+      ),
+      section('sec-4', 'Grants', SUBSTANTIVE),
+    ]);
+    expect(units.map((u) => u.id)).toEqual(['sec-4']);
+    expect(omitted).toBe(2);
   });
 
   it('returns nothing for a bill that is all boilerplate', () => {

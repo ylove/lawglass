@@ -219,3 +219,25 @@ describe('ScenarioCache', () => {
     ).toThrow();
   });
 });
+
+describe('ScenarioCache.has and section keys', () => {
+  it('has() sees a none past its cool-down, which get() hides', async () => {
+    const cache = make();
+    await cache.getOrCompute(key, () => Promise.resolve({ status: 'none' }));
+    expect(await cache.has(key)).toBe(true);
+    clock += NONE_RETRY_MS + 1;
+    expect(await cache.get(key)).toBeUndefined();
+    expect(await cache.has(key)).toBe(true);
+    expect(await cache.has({ ...key, subject: 'someone else' })).toBe(false);
+  });
+
+  it('a section key is its own entry, and section ids are case-sensitive', () => {
+    const base = { ...key, subject: '' };
+    expect(scenarioCacheHash({ ...base, sectionId: 'sec-4/b' })).not.toBe(
+      scenarioCacheHash(base),
+    );
+    expect(scenarioCacheHash({ ...base, sectionId: 'sec-4/b' })).not.toBe(
+      scenarioCacheHash({ ...base, sectionId: 'sec-4/B' }),
+    );
+  });
+});

@@ -22,6 +22,7 @@ import {
   NO_EXAMPLE_NOTE,
 } from '../core/breakdown/notes.js';
 import {
+  AppError,
   BreakdownResponse,
   ClientConfig,
   IngestEvent,
@@ -222,7 +223,7 @@ describe('GET /api/docs/:docId/breakdown', () => {
     expect(provider.breakdownCalls).toBe(1);
   });
 
-  test('a failed run backs off, then allows one new attempt', async () => {
+  test('a failed run backs off as an error the client can retry, then allows one new attempt', async () => {
     let now = Date.UTC(2026, 9, 14);
     provider.behavior = () => {
       throw new Error('boom');
@@ -230,11 +231,16 @@ describe('GET /api/docs/:docId/breakdown', () => {
     const a = app({ now: () => now });
     const docId = await ingestDoc(a);
     expect((await breakdown(a, docId)).status).toBe('pending');
-    await vi.waitFor(async () => {
-      expect((await breakdown(a, docId)).status).toBe('disabled');
+    // Not `disabled`: that would hide the panel and the parts a reader was already reading.
+    const failure = await vi.waitFor(async () => {
+      const res = await a.request(`/api/docs/${docId}/breakdown`);
+      expect(res.status).toBe(500);
+      return (await res.json()) as { error: { code: string; message: string } };
     });
+    expect(failure.error.code).toBe('PROVIDER_ERROR');
+    expect(failure.error.message).toMatch(/try again/i);
     expect(provider.breakdownCalls).toBe(1);
-    for (let i = 0; i < 3; i++) await breakdown(a, docId);
+    for (let i = 0; i < 3; i++) await a.request(`/api/docs/${docId}/breakdown`);
     expect(provider.breakdownCalls).toBe(1);
 
     provider.behavior = undefined;
@@ -335,8 +341,12 @@ describe('GET /api/docs/:docId/sections/:sectionId/example', () => {
     expect(exampleCalls('sec-2')).toBe(0);
   });
 
-  test('an example that cannot be grounded is none with its own note, and is not retried at once', async () => {
-    provider.scen.behavior = () => Promise.reject(new Error('cannot'));
+  test('an example the validator rejects is a cached none with our note, not retried at once', async () => {
+    provider.scen.behavior = () =>
+      Promise.resolve({
+        object: { not: 'a scenario' },
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }) as never;
     const a = app();
     const docId = await ingestDoc(a);
     await breakdown(a, docId);
@@ -351,6 +361,35 @@ describe('GET /api/docs/:docId/sections/:sectionId/example', () => {
     const calls = exampleCalls('sec-2');
     for (let i = 0; i < 3; i++) await example(a, docId, 'sec-2');
     expect(exampleCalls('sec-2')).toBe(calls);
+  });
+
+  test('a provider failure is not a none: it is an error, never cached, and works again once it recovers', async () => {
+    let now = Date.UTC(2026, 9, 14);
+    provider.scen.behavior = () =>
+      Promise.reject(new AppError('RATE_LIMITED', 'limit'));
+    const a = app({ now: () => now });
+    const docId = await ingestDoc(a);
+    await breakdown(a, docId);
+    await cachedBreakdown(a, docId);
+    await example(a, docId, 'sec-2');
+    const failure = await vi.waitFor(async () => {
+      const res = await a.request(`/api/docs/${docId}/sections/sec-2/example`);
+      expect(res.status).toBe(500);
+      return (await res.json()) as { error: { code: string; message: string } };
+    });
+    expect(failure.error.message).toBe(
+      "Couldn't draw an example right now. Try again.",
+    );
+    // Well past the none cool-down, with the provider back: a real example, not a stale none.
+    provider.scen.behavior = undefined;
+    now += 11 * 60_000;
+    await example(a, docId, 'sec-2');
+    const done = await vi.waitFor(async () => {
+      const r = await example(a, docId, 'sec-2');
+      expect(r.status).toBe('ok');
+      return r;
+    });
+    expect(done.scenario).toBeDefined();
   });
 
   test('an unknown part is a 404 and costs nothing', async () => {
@@ -452,6 +491,51 @@ describe('pre-generation', () => {
     const calls = exampleCalls();
     for (let i = 1; i <= MAX_PREGENERATED_EXAMPLES; i++)
       expect((await example(a, docId, `sec-${String(i)}`)).status).toBe('ok');
+    expect(exampleCalls()).toBe(calls);
+  });
+
+  test('the pass stops at the first real failure', async () => {
+    vi.stubEnv(envVar('PREGENERATE_EXAMPLES'), '1');
+    provider.scen.behavior = () =>
+      Promise.reject(new AppError('RATE_LIMITED', 'limit'));
+    env.serve('https://example.gov/five.txt', manySections(5), 'text/plain');
+    const a = app();
+    const docId = await ingestDoc(a, 'https://example.gov/five.txt');
+    await breakdown(a, docId);
+    await cachedBreakdown(a, docId);
+    await vi.waitFor(() => {
+      expect(exampleCalls()).toBeGreaterThan(0);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(exampleCalls()).toBe(1);
+  });
+
+  test('a finished pass is not repeated when the breakdown is viewed again, even past a none cool-down', async () => {
+    vi.stubEnv(envVar('PREGENERATE_EXAMPLES'), '1');
+    let now = Date.UTC(2026, 9, 14);
+    provider.scen.behavior = () =>
+      Promise.resolve({
+        object: { not: 'a scenario' },
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }) as never;
+    env.serve('https://example.gov/three.txt', manySections(3), 'text/plain');
+    const a = app({ now: () => now });
+    const docId = await ingestDoc(a, 'https://example.gov/three.txt');
+    await breakdown(a, docId);
+    await cachedBreakdown(a, docId);
+    // Each part is tried (twice per part: the generator retries rejected output once).
+    await vi.waitFor(() => {
+      expect(exampleCalls('sec-3')).toBeGreaterThan(0);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const calls = exampleCalls();
+    for (let view = 0; view < 3; view++) {
+      now += 11 * 60_000;
+      await breakdown(a, docId);
+      // A new app instance in the same process must not repeat the pass either.
+      await breakdown(app({ now: () => now }), docId);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
     expect(exampleCalls()).toBe(calls);
   });
 

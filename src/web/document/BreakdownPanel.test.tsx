@@ -205,7 +205,75 @@ describe('BreakdownPanel states', () => {
   });
 });
 
+describe('failures and slow runs', () => {
+  test('a failed run keeps the parts already shown and offers a retry', async () => {
+    const api = scripted([
+      { status: 'pending', briefs: [brief('sec-2')] },
+      new ApiError('PROVIDER_ERROR', 'Try again in a minute.'),
+    ]);
+    panel(api, { maxWaitMs: 10_000 });
+    await screen.findByText(/Reading the rest of the sections did not finish/);
+    expect(screen.getByText(/This part does sec-2/)).toBeTruthy();
+    api.spy.breakdown.mockResolvedValue({
+      status: 'cached',
+      briefs: [brief('sec-2'), brief('sec-3')],
+      omitted: 0,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await screen.findByText(/This part does sec-3/);
+    expect(screen.getByText(/This part does sec-2/)).toBeTruthy();
+  });
+
+  test('a run that keeps finishing parts is not timed out, however long it takes in all', async () => {
+    const grow = Array.from({ length: 24 }, (_, i) => ({
+      status: 'pending' as const,
+      briefs: Array.from({ length: i + 1 }, (_, j) =>
+        brief(`sec-${String(j + 1)}`),
+      ),
+    }));
+    const api = scripted([
+      ...grow,
+      {
+        status: 'cached',
+        briefs: grow[23]!.briefs,
+        omitted: 0,
+      },
+    ]);
+    // 24 polls at 5 ms is longer than the 60 ms wait, but each poll brings a new part.
+    panel(api, { pollMs: 5, maxWaitMs: 60, examplePollMs: 5 });
+    await waitFor(
+      () => {
+        expect(screen.queryByText(/Reading the rest/)).toBeNull();
+        expect(screen.getAllByRole('article').length).toBeGreaterThan(0);
+      },
+      { timeout: 3000 },
+    );
+    expect(screen.queryByText(/taking longer than expected/)).toBeNull();
+  });
+});
+
 describe('the example control', () => {
+  test('a failed example says so and offers a retry, never "not available"', async () => {
+    const api = scripted(
+      [{ status: 'cached', briefs: [brief('sec-2')] }],
+      [
+        new ApiError(
+          'PROVIDER_ERROR',
+          "Couldn't draw an example right now. Try again.",
+        ),
+      ],
+    );
+    panel(api);
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Show an example/ }),
+    );
+    await screen.findByText("Couldn't draw an example right now. Try again.");
+    expect(screen.queryByText(/not available on this server/)).toBeNull();
+    expect(
+      screen.getByRole('button', { name: /Try the example again/ }),
+    ).toBeTruthy();
+  });
+
   test('button, then a visible loader, then the strip with its footnotes', async () => {
     const mock = createMockApi({ delayMs: 0 });
     panel(mock, { maxWaitMs: 5000 });
