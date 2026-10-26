@@ -2,6 +2,7 @@ import type { AnswerWarning } from '../../core/model/index.js';
 import { AnswerBodyBoundary } from '../AnswerBodyBoundary.js';
 import { AnswerText, stripMarkers } from '../AnswerText.js';
 import { describeLocation } from '../CitationDrawer.js';
+import { ReadingLevel } from './ReadingLevel.js';
 import { ScenarioStrip } from './ScenarioStrip.js';
 import type { Phase, Turn } from './types.js';
 
@@ -78,6 +79,9 @@ export function AnswerCard({
               )}
             </AnswerBodyBoundary>
           </div>
+          {turn.phase === 'done' && turn.result && (
+            <ReadingLevel answer={turn.result} />
+          )}
           {turn.error && (
             <p role="alert" className="error">
               {turn.error}

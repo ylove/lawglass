@@ -9,6 +9,8 @@ import {
 } from '../answer/context.js';
 import { answer } from '../answer/index.js';
 import { referenceTokens } from '../answer/references.js';
+import type { AnswerLog } from '../answer/log.js';
+import type { ReadingLevelOptions } from '../answer/regenerate.js';
 import { getChip, runChip } from '../chips.js';
 import { withInlineChanges } from './inline-changes.js';
 import { readHistory } from '../history/history-store.js';
@@ -63,6 +65,8 @@ export type ChipRunner = (
     wholeBillMaxTokens?: number | undefined;
     signal?: AbortSignal | undefined;
     onToken?: ((text: string) => void) | undefined;
+    log?: AnswerLog | undefined;
+    readingLevel?: ReadingLevelOptions | undefined;
   },
 ) => Promise<{
   answer: AnswerResult;
@@ -92,6 +96,15 @@ export interface AskDeps {
    * `!publicMode`, because public mode makes no extra model call for a visitor. `timeoutMs` bounds the generation.
    */
   scenario?: { enabled?: boolean; timeoutMs?: number } | undefined;
+  /**
+   * Enforce the reading level (#285): an answer above the ceiling is regenerated once with the
+   * same model and context. Unset means off (public servers leave it off, so a visitor's
+   * question costs one model call). Goes through the metered provider, so it counts against
+   * the same budgets.
+   */
+  readingLevel?: ReadingLevelOptions | undefined;
+  /** Log line sink (dropped excerpt-talk sentences, refused regenerations). */
+  log?: AnswerLog | undefined;
   /** Concurrency and per-minute budgets. Defaults to the process-wide limits from the environment. */
   limits?: Limits | undefined;
   /** Public servers skip optional model steps, such as the delegations lede. */
@@ -335,6 +348,8 @@ async function askWithinLimits(
         signal,
         onToken: opts.onToken,
         wholeBillMaxTokens: deps.wholeBillMaxTokens,
+        log: deps.log,
+        readingLevel: deps.readingLevel,
       },
     );
     // `who-affected` always tries; `summary` only for a single-subject bill, since an omnibus
@@ -429,6 +444,9 @@ async function askWithinLimits(
     },
     signal,
     onToken: opts.onToken,
+    log: deps.log,
+    // A question about changes needs the bill's exact old and new wording.
+    readingLevel: includeDeleted ? undefined : deps.readingLevel,
   });
   // Inline excerpts have no stored chunk behind them, so citations name sections only.
   if (includeDeleted)

@@ -315,6 +315,8 @@ export async function runOutlineChip(
       context: context(allHits),
       chipInstruction: chip.answerInstruction,
       onToken: options.onToken,
+      readingLevel: options.readingLevel,
+      log: options.log,
     });
   } else {
     // Map: summarize each batch of units. The cap on units bounds the number of calls.
@@ -345,6 +347,8 @@ export async function runOutlineChip(
       chipInstruction:
         `${REDUCE_INSTRUCTION} ${chip.answerInstruction ?? ''}`.trim(),
       onToken: options.onToken,
+      readingLevel: options.readingLevel,
+      log: options.log,
     });
     const sum = [...partials, final].reduce(
       (n, r) => ({
