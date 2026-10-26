@@ -3,6 +3,7 @@ import {
   applyChangeMarks,
   changeMarkConvention,
   changeMarkJurisdiction,
+  isLegendNotFoundWarning,
 } from './change-marks.js';
 import {
   NY_LEGEND,
@@ -298,4 +299,19 @@ it('HTML enacting boilerplate stays unchanged while italic body additions remain
     .join('');
   expect(inserted).not.toMatch(/The People|bly, do enact/);
   expect(inserted).toContain('New law.');
+});
+
+describe('missing-legend warning', () => {
+  it.each([
+    ['NY', 'https://www.nyassembly.gov/leg/?bn=S04321&term=2025'],
+    ['NJ', 'https://pub.njleg.gov/bills/2024/S1000/1000_I1.HTM'],
+  ])('%s: is recognised by isLegendNotFoundWarning', (_name, url) => {
+    const lines = bracketText('(no legend printed)')
+      .split('\n')
+      .map((text) => ({ text }));
+    const { warnings } = applyChangeMarks(lines, { sourceUrl: url });
+    expect(warnings).toHaveLength(1);
+    expect(isLegendNotFoundWarning(warnings[0] ?? '')).toBe(true);
+    expect(isLegendNotFoundWarning('Some other warning.')).toBe(false);
+  });
 });

@@ -109,6 +109,21 @@ function recoveryBoundaries(lines: readonly SourceLine[]): number[] {
 }
 
 /**
+ * Warnings added when a New York or New Jersey bill has brackets but no change legend. Exported
+ * so callers (the MCP server) can recognise them by identity instead of matching prose.
+ */
+export const LEGEND_NOT_FOUND_WARNINGS = {
+  NY: "This New York bill's change legend was not found, so bracketed wording could not be marked as removed.",
+  NJ: "This New Jersey bill's change legend was not found, so bracketed wording could not be marked as removed.",
+} as const;
+
+export function isLegendNotFoundWarning(warning: string): boolean {
+  return (Object.values(LEGEND_NOT_FOUND_WARNINGS) as string[]).includes(
+    warning,
+  );
+}
+
+/**
  * One document-wide pass, before section detection. Joining lines keeps state across HTML
  * elements and PDF pages; splitting back preserves every printed coordinate. Legend text is
  * removed before scanning, including a footer inside a deletion that spans the page break.
@@ -133,9 +148,7 @@ export function applyChangeMarks<T extends SourceLine>(
       lines: [...lines],
       convention,
       warnings: text.includes('[')
-        ? [
-            `This ${jurisdiction === 'NY' ? 'New York' : 'New Jersey'} bill's change legend was not found, so bracketed wording could not be marked as removed.`,
-          ]
+        ? [LEGEND_NOT_FOUND_WARNINGS[jurisdiction]]
         : [],
     };
   const statuses: SpanStatus[] = [];
