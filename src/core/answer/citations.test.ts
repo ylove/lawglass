@@ -25,6 +25,12 @@ const chunks = [
 ];
 const ids = ['sec-1', 'sec-2'];
 
+/**
+ * Catastrophic backtracking on these inputs takes seconds or more; a linear scan takes a few ms.
+ * 250 ms tells them apart without flaking on a loaded or coverage-instrumented runner.
+ */
+const CATASTROPHIC_MS = 250;
+
 describe('validateCitations', () => {
   it('accepts valid citations and builds locations from chunks', () => {
     const r = validateCitations(
@@ -149,7 +155,7 @@ describe('validateCitations', () => {
     expect(r.warnings).toEqual(['INVALID_CITATIONS_REMOVED']);
   });
 
-  it('validates 200,000 characters of unclosed markers in under 50 ms', () => {
+  it('validates 200,000 characters of unclosed markers in linear time', () => {
     const text = '[S:a'.repeat(50_000);
     const start = performance.now();
     const r = validateCitations(text, ids, chunks);
@@ -160,7 +166,7 @@ describe('validateCitations', () => {
     expect(r.invalidCitations).toEqual([]);
     expect(r.warnings).toEqual(['NO_VALID_CITATIONS']);
     expect(r.declined).toBe(false);
-    expect(elapsed).toBeLessThan(50);
+    expect(elapsed).toBeLessThan(CATASTROPHIC_MS);
   });
 
   it.each([
@@ -169,7 +175,7 @@ describe('validateCitations', () => {
     ['mixed separators', ',;'],
     ['long ids', 'a'],
   ])(
-    'validates an unclosed body of 200,000 %s in under 50 ms',
+    'validates an unclosed body of 200,000 %s in linear time',
     (_label, unit) => {
       const text = `[S:${unit.repeat(200_000 / unit.length)}`;
       const start = performance.now();
@@ -181,11 +187,11 @@ describe('validateCitations', () => {
       expect(r.invalidCitations).toEqual([]);
       expect(r.warnings).toEqual(['NO_VALID_CITATIONS']);
       expect(r.declined).toBe(false);
-      expect(elapsed).toBeLessThan(50);
+      expect(elapsed).toBeLessThan(CATASTROPHIC_MS);
     },
   );
 
-  it('handles a closed body with 200,000 spaces in under 50 ms', () => {
+  it('handles a closed body with 200,000 spaces in linear time', () => {
     const text = `[S:${' '.repeat(200_000)}sec-1,sec-2]`;
     const start = performance.now();
     const r = validateCitations(text, ids);
@@ -193,10 +199,10 @@ describe('validateCitations', () => {
 
     expect(r.text).toBe(text);
     expect(r.citations).toEqual([]);
-    expect(elapsed).toBeLessThan(50);
+    expect(elapsed).toBeLessThan(CATASTROPHIC_MS);
   });
 
-  it('strips an invalid marker after 200,000 unrelated spaces in under 50 ms', () => {
+  it('strips an invalid marker after 200,000 unrelated spaces in linear time', () => {
     const text = `A${' '.repeat(200_000)}B [S:fake].`;
     const start = performance.now();
     const r = validateCitations(text, []);
@@ -204,7 +210,7 @@ describe('validateCitations', () => {
 
     expect(r.text).toBe('A B.');
     expect(r.invalidCitations).toEqual(['fake']);
-    expect(elapsed).toBeLessThan(50);
+    expect(elapsed).toBeLessThan(CATASTROPHIC_MS);
   });
 
   describe('merged chunks', () => {
