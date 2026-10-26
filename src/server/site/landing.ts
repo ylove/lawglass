@@ -44,7 +44,7 @@ function features(): Feature[] {
       body: "Each main part of a bill becomes a small picture: who acts, what moves, what is required or not allowed. The bill's own words sit underneath, so nothing is left to the imagination.",
       bullets: [
         'Made for readers of every level',
-        'Pictures only show what the sentence says',
+        "Picture labels use only the sentence's own words",
         'Every point links to the text behind it',
       ],
       image: '/site/in-brief.jpg',
@@ -54,12 +54,12 @@ function features(): Feature[] {
       title: 'Section by section',
       body: 'A plain brief of what each part of the bill does, with an example of how it could affect one person or business.',
       bullets: [
-        'Briefs written at about a 7th-grade level',
+        'Briefs above an 8th-grade level are rewritten',
         'Examples are clearly labelled as made up',
         'Cited to the section they describe',
       ],
       image: '/site/sections.jpg',
-      alt: `${BRAND.displayName}'s section-by-section view: a plain brief of one part of a bill, with a labelled example and a citation.`,
+      alt: `${BRAND.displayName}'s section-by-section view: simple pictures above a plain brief of one part of a bill, with numbered citations and a button to show an example.`,
     },
     {
       title: 'What changes',
@@ -70,7 +70,7 @@ function features(): Feature[] {
         'Cited to the section that changes it',
       ],
       image: '/site/changes.jpg',
-      alt: `${BRAND.displayName}'s answer to "What does it change?": the words a bill strikes and adds, marked, with a plain-language explanation and citations.`,
+      alt: `${BRAND.displayName}'s answer to "What does it change?": each place a bill changes existing law, grouped by section, in plain words with citations.`,
     },
     {
       title: 'Find where it says that',
@@ -93,7 +93,7 @@ function features(): Feature[] {
       ],
       image: '/site/history.jpg',
       frame: 'shot-narrow',
-      alt: "The How did it get here card: a bill's versions, key actions and sponsors, each linked to the official record.",
+      alt: "The How did it get here card: a bill's versions linked to the official record, its key actions, and a link to every recorded action.",
     },
     {
       title: 'Who decides later',
@@ -104,7 +104,7 @@ function features(): Feature[] {
         'Read from the text, not guessed',
       ],
       image: '/site/decides.jpg',
-      alt: `${BRAND.displayName}'s answer to "Who decides later?": the agencies and officials the bill names, and what must happen first, each with a citation.`,
+      alt: `${BRAND.displayName}'s answer to "Who decides later?": the officials the bill leaves to decide details later, and what each may decide, with citations.`,
     },
   ];
 }
