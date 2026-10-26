@@ -41,6 +41,12 @@ if (!values.mock && !(values.url && values.doc))
   );
 
 const MAX_BYTES = 200 * 1024;
+/**
+ * A real bill's In brief or section-by-section card can run to several screens. The landing
+ * page shows only the top of each, so a tall card is cut, at the end of the last list item or
+ * brief that fits, to about this many CSS pixels.
+ */
+const MAX_HEIGHT = 900;
 const MIME: Record<string, string> = {
   '.html': 'text/html',
   '.js': 'text/javascript',
@@ -114,12 +120,71 @@ async function need(
   return card;
 }
 
+/** Page coordinates of the card, cut at an item boundary when it is taller than MAX_HEIGHT. */
+async function cropFor(
+  card: Locator,
+): Promise<
+  { x: number; y: number; width: number; height: number } | undefined
+> {
+  const box = await card.boundingBox();
+  if (!box || box.height <= MAX_HEIGHT) return undefined;
+  // The scripts project has no DOM types; this is all of the element API the callback touches.
+  interface Measured {
+    getBoundingClientRect(): { top: number; bottom: number };
+  }
+  const items = await card.locator('li, article').evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const { top, bottom } = (
+        node as unknown as Measured
+      ).getBoundingClientRect();
+      return { top, bottom };
+    }),
+  );
+  // End after the last item that fits, with a little space below it but none of the next item.
+  const fits = items.filter((r) => r.bottom - box.y <= MAX_HEIGHT);
+  if (fits.length === 0)
+    return {
+      x: box.x,
+      y: box.y + (await scrollTop(card)),
+      width: box.width,
+      height: MAX_HEIGHT,
+    };
+  const end = Math.max(...fits.map((r) => r.bottom));
+  const nextTop = Math.min(
+    ...items.map((r) => r.top).filter((top) => top >= end),
+    end + 16,
+  );
+  const height = nextTop - box.y;
+  return {
+    x: box.x,
+    y: box.y + (await scrollTop(card)),
+    width: box.width,
+    height,
+  };
+}
+
+/** How far the page is scrolled: a clip is in page coordinates, a bounding box in the viewport's. */
+function scrollTop(card: Locator): Promise<number> {
+  return card
+    .page()
+    .evaluate(() => (globalThis as unknown as { scrollY: number }).scrollY);
+}
+
 async function shoot(card: Locator, file: string): Promise<void> {
   await card.scrollIntoViewIfNeeded();
   await card.page().waitForTimeout(400);
+  const clip = await cropFor(card);
   // Quality steps down until the file fits the budget.
   for (const quality of [82, 74, 66, 58]) {
-    await card.screenshot({ path: file, type: 'jpeg', quality });
+    if (clip)
+      await card.page().screenshot({
+        path: file,
+        type: 'jpeg',
+        quality,
+        clip,
+        fullPage: true,
+      });
+    else await card.screenshot({ path: file, type: 'jpeg', quality });
     const { size } = await stat(file);
     if (size <= MAX_BYTES) {
       console.log(

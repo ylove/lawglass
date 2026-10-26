@@ -118,4 +118,21 @@ describe('PicturePanels', () => {
       false,
     );
   });
+
+  test('a labelled left side next to a note also marks the row wide', () => {
+    const { container } = render(
+      <PicturePanels
+        entry={entry([
+          {
+            left: { glyphs: ['business'], label: 'Service provider' },
+            link: 'blocked',
+            carry: 'coins',
+            note: 'unless permitted issuer',
+            right: { glyphs: ['people'] },
+          },
+        ])}
+      />,
+    );
+    expect(container.firstElementChild?.hasAttribute('data-wide')).toBe(true);
+  });
 });

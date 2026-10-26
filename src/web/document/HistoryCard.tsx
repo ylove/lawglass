@@ -31,11 +31,17 @@ export function HistoryCard({
 }) {
   const versions = history ? byDate(history.versions) : [];
   const actions = history ? byDate(history.actions) : [];
-  const [firstAction, ...laterActions] = actions;
+  // Each chamber can file the same event ("Signed by President." twice on one day). The card
+  // shows date and text only, so it shows such an event once; the count below stays the record's.
+  const distinct = actions.filter(
+    (a, i) =>
+      actions.findIndex((b) => b.date === a.date && b.text === a.text) === i,
+  );
+  const [firstAction, ...laterActions] = distinct;
   const keyActions =
-    firstAction && actions.length > RECENT_ACTIONS + 1
+    firstAction && distinct.length > RECENT_ACTIONS + 1
       ? [firstAction, ...laterActions.slice(-RECENT_ACTIONS)]
-      : actions;
+      : distinct;
   const hasAmendments = (history?.amendments.length ?? 0) > 0;
   const empty = versions.length === 0 && actions.length === 0;
   // Amendments have their own card; with only those on record this one has nothing to say.
