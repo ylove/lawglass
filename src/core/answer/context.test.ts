@@ -382,12 +382,40 @@ describe('whole-bill policy', () => {
         await deleteIndexedDocument(backend, DOC);
         return found;
       });
-    await documentContext(backend, DOC, sections, { budget: 50 });
+    // The request that ran the raced scan must not treat what it read as the whole bill (#313).
+    expect(
+      await documentContext(backend, DOC, sections, { budget: 50 }),
+    ).toEqual({ mode: 'excerpts', hits: [] });
     await backend.upsertChunks(DOC, [chunk('sec-1', 0), chunk('sec-1', 1)]);
     const calls = get.mock.calls.length;
     const after = await documentContext(backend, DOC, sections, { budget: 50 });
     expect(get.mock.calls.length).toBeGreaterThan(calls);
     expect(after.hits).toHaveLength(2);
+  });
+
+  it('a cancelled request stops waiting for a shared scan at once; the scan still finishes for others (#313)', async () => {
+    const backend = new MemoryBackend();
+    const sections = [section('sec-1')];
+    await backend.upsertChunks(DOC, [chunk('sec-1', 0)]);
+    const original = backend.getChunks.bind(backend);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    vi.spyOn(backend, 'getChunks').mockImplementation(async (id, ids) => {
+      await gate;
+      return original(id, ids);
+    });
+    const controller = new AbortController();
+    const cancelled = documentContext(backend, DOC, sections, {
+      budget: 50,
+      signal: controller.signal,
+    });
+    const other = documentContext(backend, DOC, sections, { budget: 50 });
+    controller.abort();
+    await expect(cancelled).rejects.toMatchObject({ name: 'AbortError' });
+    release();
+    expect((await other).mode).toBe('whole');
   });
 
   it('shares one in-flight scan between concurrent requests and clears it on settle', async () => {
