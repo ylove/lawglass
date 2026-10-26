@@ -1,6 +1,7 @@
 // Renders answer text. While streaming, citation markers are hidden (they would flash as raw
 // `[S:...]` text); once the answer is final they become numbered superscript buttons.
 import type { ReactNode } from 'react';
+import { answerBlocks } from '../core/answer/list-items.js';
 import { CITATION_PATTERN, type Citation } from '../core/model/index.js';
 import { linkifyGov } from './linkify.js';
 
@@ -201,37 +202,6 @@ function inline(
   return root.children;
 }
 
-const LIST_ITEM = /^\s*(?:[-*]|(\d+)\.)\s+(?=\S)/;
-
-interface Block {
-  kind: 'p' | 'ul' | 'ol';
-  lines: string[];
-  start: number;
-  key: number;
-}
-
-function blocks(text: string): Block[] {
-  const result: Block[] = [];
-  let block: Block | undefined;
-  for (const [index, line] of text
-    .replace(/\r\n?/g, '\n')
-    .split('\n')
-    .entries()) {
-    if (!line.trim()) {
-      block = undefined;
-      continue;
-    }
-    const item = LIST_ITEM.exec(line);
-    const kind = item ? (item[1] === undefined ? 'ul' : 'ol') : 'p';
-    if (block?.kind !== kind) {
-      block = { kind, lines: [], start: Number(item?.[1] ?? 1), key: index };
-      result.push(block);
-    }
-    block.lines.push(item ? line.slice(item[0].length) : line);
-  }
-  return result;
-}
-
 export function AnswerText({
   text,
   citations,
@@ -247,7 +217,7 @@ export function AnswerText({
   const numbers = numberCitations(text, citations);
   return (
     <>
-      {blocks(text).map((block) => {
+      {answerBlocks(text).map((block) => {
         const key = String(block.key);
         if (block.kind !== 'p') {
           const List = block.kind;

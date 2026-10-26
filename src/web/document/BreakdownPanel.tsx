@@ -3,6 +3,7 @@ import type { SectionBrief } from '../../core/model/index.js';
 import type { ApiClient } from '../api.js';
 import { AnswerText, type OpenCitation } from '../AnswerText.js';
 import { ApiError } from '../sse.js';
+import { SERVER_COOL_DOWN_MS } from './cool-down.js';
 import { SectionExample } from './SectionExample.js';
 
 /** How often to ask again while the server is still reading the sections. */
@@ -22,6 +23,8 @@ type State =
   | { kind: 'cached'; briefs: readonly SectionBrief[]; omitted: number }
   | { kind: 'disabled' }
   | { kind: 'timeout'; briefs: readonly SectionBrief[] }
+  /** The run failed; one automatic look again is scheduled for after the server's cool-down. */
+  | { kind: 'cooling'; briefs: readonly SectionBrief[] }
   | { kind: 'error'; briefs: readonly SectionBrief[] };
 
 function partLabel(brief: SectionBrief): string {
@@ -35,6 +38,7 @@ function BriefCard({
   onOpenSection,
   examplePollMs,
   exampleMaxWaitMs,
+  coolDownMs,
 }: {
   api: ApiClient;
   docId: string;
@@ -42,6 +46,7 @@ function BriefCard({
   onOpenSection: OpenCitation;
   examplePollMs?: number | undefined;
   exampleMaxWaitMs?: number | undefined;
+  coolDownMs: number;
 }) {
   const label = partLabel(brief);
   const titleId = `brief-${brief.sectionId.replace(/[^A-Za-z0-9_-]/g, '-')}`;
@@ -68,6 +73,7 @@ function BriefCard({
           brief={brief}
           label={label}
           onOpenSection={onOpenSection}
+          coolDownMs={coolDownMs}
           {...(examplePollMs === undefined ? {} : { pollMs: examplePollMs })}
           {...(exampleMaxWaitMs === undefined
             ? {}
@@ -106,6 +112,7 @@ export function BreakdownPanel({
   maxWaitMs = BREAKDOWN_MAX_WAIT_MS,
   examplePollMs,
   exampleMaxWaitMs,
+  coolDownMs = SERVER_COOL_DOWN_MS,
 }: {
   api: ApiClient;
   docId: string;
@@ -117,12 +124,16 @@ export function BreakdownPanel({
   /** Test seams for each part's example polling. */
   examplePollMs?: number;
   exampleMaxWaitMs?: number;
+  /** How long to wait out the server's cool-down after a failed run (test seam). */
+  coolDownMs?: number;
 }) {
   const [state, setState] = useState<State>({ kind: 'loading' });
   const [attempt, setAttempt] = useState(0);
   const [showAll, setShowAll] = useState(false);
   // The parts already shown, kept so a failure never takes them away.
   const shown = useRef<readonly SectionBrief[]>([]);
+  // One failed run is retried on its own; a second failure asks the reader.
+  const autoRetried = useRef(false);
 
   useEffect(() => {
     if (!enabled) return;
@@ -158,12 +169,20 @@ export function BreakdownPanel({
         })
         .catch((e: unknown) => {
           if (!live) return;
-          // The server says the run failed (and is cooling down): stop and offer a retry.
-          // Any other failure may be a blip: keep trying, and only say so on the last one.
-          if (
-            (e instanceof ApiError && e.code === 'PROVIDER_ERROR') ||
-            Date.now() - lastProgress >= maxWaitMs
-          )
+          // The server says the run failed and is cooling down: wait it out once, then look
+          // again, rather than offer a retry that can only hit the cool-down. Any other failure
+          // may be a blip: keep trying, and only say so on the last one.
+          if (e instanceof ApiError && e.code === 'PROVIDER_ERROR') {
+            if (autoRetried.current) {
+              setState({ kind: 'error', briefs: shown.current });
+            } else {
+              autoRetried.current = true;
+              setState({ kind: 'cooling', briefs: shown.current });
+              timer = setTimeout(() => {
+                setAttempt((n) => n + 1);
+              }, coolDownMs);
+            }
+          } else if (Date.now() - lastProgress >= maxWaitMs)
             setState({ kind: 'error', briefs: shown.current });
           else timer = setTimeout(look, pollMs);
         });
@@ -173,11 +192,12 @@ export function BreakdownPanel({
       live = false;
       clearTimeout(timer);
     };
-  }, [api, docId, enabled, pollMs, maxWaitMs, attempt]);
+  }, [api, docId, enabled, pollMs, maxWaitMs, coolDownMs, attempt]);
 
   if (!enabled || state.kind === 'disabled') return null;
 
   const retry = () => {
+    autoRetried.current = false;
     setState(
       shown.current.length > 0
         ? { kind: 'pending', briefs: shown.current }
@@ -188,12 +208,13 @@ export function BreakdownPanel({
   const briefs = state.kind === 'loading' ? [] : state.briefs;
   const visible = showAll ? briefs : briefs.slice(0, INITIAL_VISIBLE_BRIEFS);
   const reading = state.kind === 'loading' || state.kind === 'pending';
+  const waiting = reading || state.kind === 'cooling';
 
   return (
     <section
       aria-labelledby="breakdown-title"
       aria-live="polite"
-      aria-busy={reading}
+      aria-busy={waiting}
       className="card breakdown"
     >
       <h3 id="breakdown-title">Section by section</h3>
@@ -216,6 +237,7 @@ export function BreakdownPanel({
               onOpenSection={onOpenSection}
               examplePollMs={examplePollMs}
               exampleMaxWaitMs={exampleMaxWaitMs}
+              coolDownMs={coolDownMs}
             />
           ))}
         </ul>
@@ -238,6 +260,14 @@ export function BreakdownPanel({
           {state.briefs.length === 1 ? 'part is' : 'parts are'} shown;{' '}
           {state.omitted} more {state.omitted === 1 ? 'is' : 'are'} not
           included. Ask a question below about anything else.
+        </p>
+      )}
+      {state.kind === 'cooling' && (
+        <p className="muted breakdown-note">
+          {briefs.length > 0
+            ? "Couldn't finish reading the rest of the sections just now."
+            : "Couldn't read the sections just now."}{' '}
+          Trying again in about a minute…
         </p>
       )}
       {(state.kind === 'timeout' || state.kind === 'error') && (

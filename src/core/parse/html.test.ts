@@ -163,6 +163,67 @@ describe('issue #85 printed headings', () => {
   });
 });
 
+describe('issue #91 wrapped headings', () => {
+  it('does not borrow body text when a heading element prints only the marker', () => {
+    const doc = parse(
+      page('<p>Sec. 2.</p><h3>(a)</h3><p>Residents shall apply.</p>'),
+    );
+    const child = doc.sections[0]!.children[0]!;
+    expect(child.num).toBe('(a)');
+    expect(child.heading).toBeUndefined();
+    expect(sectionText(child, { includeDeleted: true })).toBe(
+      '(a)\nResidents shall apply.',
+    );
+  });
+
+  it.each(['--', '—'])(
+    'joins title lines before .%s while preserving source text and ids',
+    (dash) => {
+      const body = `(1) Small business concern; small business development\n    center.${dash}The terms have their usual meanings.`;
+      const doc = parse(page(`<pre>Sec. 2.\n${body}\n(2) Next item.</pre>`));
+      expect([...walkSections(doc.sections)].map((s) => s.id)).toEqual([
+        'sec-2',
+        'sec-2/1',
+        'sec-2/2',
+      ]);
+      const child = doc.sections[0]!.children[0]!;
+      expect(child.heading).toBe(
+        `Small business concern; small business development center.${dash}`,
+      );
+      expect(sectionText(child, { includeDeleted: true })).toBe(`${body}\n`);
+    },
+  );
+
+  it('removes struck title words on every wrapped line', () => {
+    const doc = parse(
+      page(
+        '<pre>Sec. 2.\n(1) Small <del>old</del><ins>new</ins> business\n    development <del>office</del><ins>center</ins>.--The term means a center.</pre>',
+      ),
+    );
+    expect(doc.sections[0]!.children[0]!.heading).toBe(
+      'Small new business development center.--',
+    );
+    for (const chunk of chunkDocument(doc).filter(
+      (c) => c.amendmentStatus !== 'deleted',
+    )) {
+      expect(chunk.breadcrumb).not.toMatch(/old|office/);
+      expect(chunk.embedText).not.toMatch(/old|office/);
+    }
+  });
+
+  it.each([
+    '(1) An unfinished title\n(2) Another title.--Body.',
+    '(1) An unfinished title\n\nA new paragraph.--Body.',
+    '(1) The board shall prepare\n    a report.--Body.',
+  ])(
+    'does not borrow a dash from a new item, paragraph or sentence: %s',
+    (body) => {
+      const doc = parse(page(`<pre>Sec. 2.\n${body}</pre>`));
+      expect(doc.sections[0]!.children[0]!.heading).toBeUndefined();
+    },
+  );
+});
+
 /**
  * Text of every span with this status, across the whole tree, in document order. Edge
  * whitespace is trimmed: collapsing the gap a deleted span leaves moves it into the struck text.
@@ -487,6 +548,15 @@ describeWithFixture('us-s202-119-is-html', () => {
     expect(sectionText(preamble, { includeDeleted: true })).toContain('<DOC>');
     expect(textWithStatus(doc.sections, 'deleted')).toEqual([]);
     expect(textWithStatus(doc.sections, 'inserted')).toEqual([]);
+    const sections = new Map(
+      [...walkSections(doc.sections)].map((s) => [s.id, s]),
+    );
+    expect(sections.get('sec-2/2')!.heading).toBe(
+      'Commission; commodity; commodity pool; commodity trading advisor; future delivery; futures commission merchant.--',
+    );
+    expect(sections.get('sec-2/7')!.heading).toBe(
+      'Small business concern; small business development center.--',
+    );
   });
 });
 
