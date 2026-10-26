@@ -51,6 +51,11 @@ export const MAX_PREGENERATED_EXAMPLES = 8;
 export interface RequestOptions {
   /** False answers at once (HEAD, tests); default waits up to `waitMs` for a run in progress. */
   wait?: boolean;
+  /**
+   * False only reports (cached briefs, or `pending` while a run is in progress) and never starts
+   * a run or reports its cool-down. For work that follows the breakdown (pictures).
+   */
+  start?: boolean;
   signal?: AbortSignal;
   onError?: (error: unknown, ms: number) => void;
 }
@@ -190,7 +195,8 @@ export function createBreakdownService(
 
     const hit = await breakdowns.get(key);
     if (hit) {
-      if (!options.publicMode)
+      // A report-only look (pictures) must not start the examples' model calls either.
+      if (!options.publicMode && request.start !== false)
         startPregeneration(docId, hit.briefs, hit.context);
       return { status: 'cached', briefs: hit.briefs, omitted: hit.omitted };
     }
@@ -212,6 +218,7 @@ export function createBreakdownService(
         ? { status: 'pending', briefs: [...so_far] }
         : { status: 'pending' };
     }
+    if (request.start === false) return { status: 'disabled' };
     // A recent failure is an error the client can show with a retry, not "off": `disabled`
     // would hide the panel and the parts the reader was already reading.
     if (coolingDown(name))
