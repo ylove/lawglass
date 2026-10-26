@@ -98,10 +98,32 @@ describe('section numbers and ids', () => {
     expect(subsectionNumShape('(B)')).toBe('(B)');
     expect(subsectionNumShape('(ignore)')).toBeUndefined();
     expect(subsectionNumShape('(run)')).toBeUndefined();
-    for (const ok of ['(a)', '(1)', '(aa)', '(iv)', '(xii)'])
+    for (const ok of [
+      '(a)',
+      '(1)',
+      '(aa)',
+      '(iv)',
+      '(xii)',
+      '(1a)',
+      '(2A)',
+      '(b-1)',
+      '(12.5)',
+    ])
       expect(subsectionNumShape(ok)).toBe(ok);
     expect(subsectionNumShape(undefined)).toBeUndefined();
   });
+  test.each([
+    '(run)',
+    '(1run)',
+    '(run-1)',
+    '(b-run)',
+    '(12..5)',
+    '(b--1)',
+    '(1234a)',
+  ])('rejects word-bearing and malformed enumerators: %s', (value) => {
+    expect(subsectionNumShape(value)).toBeUndefined();
+  });
+
   test('level numbers allow Roman numerals and one capital, not words', () => {
     expect(levelNumberShape('II')).toBe('II');
     expect(levelNumberShape('XLI')).toBe('XLI');

@@ -63,3 +63,44 @@ test('a missing or invalid manifest is reported, not thrown', async () => {
   await writeFile(join(dir, 'manifest.json'), '{"fixtures": 3}');
   expect((await readDownloadedFixture(dir, 'x')).missing).toContain('manifest');
 });
+
+test.each([false, true])(
+  'eval verifies downloaded fingerprints (content pin: %s)',
+  async (contentPin) => {
+    const { createHash } = await import('node:crypto');
+    const { normalizedFixtureSha256 } = await import('./fixture-integrity.js');
+    const html =
+      '<article><h1>Section 1. Notices.</h1><p>Each steward shall send a notice.</p></article>';
+    const entry = {
+      name: 'pinned',
+      format: 'html' as const,
+      url: 'https://example.gov/bill.html',
+      sha256: createHash('sha256').update(html).digest('hex'),
+      bytes: Buffer.byteLength(html),
+      ...(contentPin
+        ? {
+            normalizedTextSha256: await normalizedFixtureSha256(
+              Buffer.from(html),
+              { format: 'html', url: 'https://example.gov/bill.html' },
+            ),
+          }
+        : {}),
+    };
+    await mkdir(join(dir, 'downloads'));
+    await writeFile(
+      join(dir, 'manifest.json'),
+      JSON.stringify({ fixtures: [entry] }),
+    );
+    const path = join(dir, 'downloads', 'pinned.html');
+    await writeFile(path, html);
+    expect((await readDownloadedFixture(dir, 'pinned')).fixture).toBeDefined();
+    await writeFile(path, `<script src="cache-12345.js"></script>${html}`);
+    expect(Boolean((await readDownloadedFixture(dir, 'pinned')).fixture)).toBe(
+      contentPin,
+    );
+    await writeFile(path, html.replace('steward', 'farmer'));
+    expect((await readDownloadedFixture(dir, 'pinned')).missing).toContain(
+      'fingerprint mismatch',
+    );
+  },
+);

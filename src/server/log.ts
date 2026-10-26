@@ -1,6 +1,7 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import { routePath } from 'hono/route';
 import type { AnswerLogEvent } from '../core/answer/log.js';
+import type { PictureLogEvent } from './pictures.js';
 import { providerStatusOf } from '../core/llm/shared.js';
 import { isAppError } from '../core/model/index.js';
 
@@ -126,6 +127,21 @@ export function createLogger(
       });
     }
   };
+  /** What a background picture run drew or refused (#344). Counts only, never text. */
+  function pictureEvent(e: PictureLogEvent): void {
+    write(
+      JSON.stringify({
+        t: new Date(now()).toISOString(),
+        level: 'info',
+        event: e.event,
+        status: 200,
+        count: e.count,
+        ms: 0,
+        route: `/api/docs/:docId/${e.source}/pictures`,
+        method: 'GET',
+      }) + '\n',
+    );
+  }
   /** A U.S. Code reference that could not be read at ingest. Only a citation and a code. */
   function referenceSkipped(citation: string, code: string): void {
     write(
@@ -144,6 +160,7 @@ export function createLogger(
     event,
     answerEvent,
     backgroundAnswerEvent,
+    pictureEvent,
     error,
     middleware,
     referenceSkipped,

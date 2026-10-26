@@ -149,10 +149,12 @@ export function levelNumberShape(
 
 const ROMAN_ANY =
   /^(?=.)m{0,3}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})$/i;
-/** An enumerator: digits, one or two letters, or a Roman numeral. Never a word. */
+/** Short numeric/letter subdivisions, including 1a, b-1 and 12.5; never a word. */
 function isEnumerator(text: string): boolean {
   return (
-    /^(?:\d{1,3}|[A-Za-z]{1,2})$/.test(text) ||
+    /^(?:\d{1,3}[A-Za-z]?|[A-Za-z]{1,2}|[A-Za-z]-\d{1,3}|\d{1,3}\.\d{1,3})$/.test(
+      text,
+    ) ||
     (text.length <= 8 && ROMAN_ANY.test(text))
   );
 }

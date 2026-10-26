@@ -36,6 +36,7 @@ import { lazyProvider } from '../core/llm/lazy-provider.js';
 import { SlidingWindowLimiter } from './rate-limit.js';
 import { registerLocateRoute } from './locate-route.js';
 import { registerBreakdownRoutes } from './breakdown-route.js';
+import { registerPictureRoutes } from './pictures-route.js';
 import { registerScenarioRoute } from './scenario-route.js';
 import { createSummaryService } from './summary.js';
 import { securityHeaders } from './security-headers.js';
@@ -912,13 +913,26 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       : undefined,
   });
 
-  registerBreakdownRoutes(app, runtime, {
+  const breakdown = registerBreakdownRoutes(app, runtime, {
     publicMode,
     now,
     summary,
     waitMs: options.summaryWaitMs,
     onError: (c, error, ms) => {
       log.error(c, error, ms);
+    },
+  });
+  registerPictureRoutes(app, runtime, {
+    publicMode,
+    now,
+    summary,
+    breakdown,
+    waitMs: options.summaryWaitMs,
+    onError: (c, error, ms) => {
+      log.error(c, error, ms);
+    },
+    log: (e) => {
+      log.pictureEvent(e);
     },
   });
 
