@@ -81,6 +81,7 @@ A `serve` process, a CLI command and an eval run can touch the same `~/.lawglass
 
 - **Left:** the local search store, the answer cache and eval cleanup need an interprocess lock or immutable generations.
 - **When it matters:** only when two processes share one library. The hosted preview runs a single process.
+- **Seen in tests:** `src/mcp/processes.test.ts` has two processes ingest the same bill at once. Under heavy load it can fail with `BACKEND_UNAVAILABLE`. Each process stages a complete copy of the index, and the one that renames its copy into place second finds the folder already taken.
 
 ## Research
 
