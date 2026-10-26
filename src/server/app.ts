@@ -553,6 +553,17 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
               onProgress: (p) => {
                 emit({ type: 'progress', ...stripUndefined(p) });
               },
+              // The reader sees a plain note; the operator sees why (#270).
+              onDiagnostic: (d) => {
+                log.event(c, {
+                  level: 'warn',
+                  event: d.event,
+                  status: 200,
+                  code: d.code,
+                  host: sourceHost,
+                  ms: now() - started,
+                });
+              },
             },
           );
           signal.throwIfAborted();

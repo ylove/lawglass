@@ -99,6 +99,13 @@ export interface IngestProgress {
 export interface IngestOptions {
   label?: string | undefined;
   onProgress?: ((progress: IngestProgress) => void) | undefined;
+  /**
+   * Operator diagnostics that are not reader warnings, e.g. why metadata extraction failed.
+   * Codes only: never messages, document text or provider output.
+   */
+  onDiagnostic?:
+    | ((diagnostic: { event: 'metadata_failed'; code: string }) => void)
+    | undefined;
   signal?: AbortSignal | undefined;
 }
 
@@ -565,6 +572,11 @@ async function ingestLocked(
         text: metadataText(parsed),
         signal,
       });
+      if (extracted.failureCode)
+        opts.onDiagnostic?.({
+          event: 'metadata_failed',
+          code: extracted.failureCode,
+        });
       withMetadata = {
         ...parsed,
         metadata: extracted.metadata,

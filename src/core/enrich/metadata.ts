@@ -8,6 +8,7 @@
  */
 import { z } from 'zod';
 import {
+  isAppError,
   type BillMetadata,
   type DocKind,
   type LlmProvider,
@@ -89,6 +90,11 @@ export interface MetadataResult {
   metadata: BillMetadata;
   /** Non-fatal problems: provider failure, discarded hallucinations. */
   warnings: string[];
+  /**
+   * Why extraction failed, for the operator's log only: the reader's warning stays plain words.
+   * An `AppError` code (`PROVIDER_ERROR`, `RATE_LIMITED`, ...) or `INTERNAL`; never a message.
+   */
+  failureCode?: string;
 }
 
 export interface ExtractMetadataOptions {
@@ -187,7 +193,11 @@ async function fillMetadata(
     warnings.push(
       'Some details about this document could not be read automatically, so they are left blank.',
     );
-    return { metadata: existing, warnings };
+    return {
+      metadata: existing,
+      warnings,
+      failureCode: isAppError(err) ? err.code : 'INTERNAL',
+    };
   }
 
   const merged: BillMetadata = { ...existing };

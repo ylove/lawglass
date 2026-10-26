@@ -793,6 +793,21 @@ test('ingest charges the per-minute ceiling for its metadata model call', async 
   expect(limits.pool('ingest').inFlight).toBe(0);
 });
 
+test('a failed metadata call reaches the operator diagnostic hook as a code only (#270)', async () => {
+  env.serve('https://example.gov/a.txt', textSample('One.'), 'text/plain');
+  vi.spyOn(env.provider, 'generateObject').mockRejectedValue(
+    new AppError('PROVIDER_ERROR'),
+  );
+  const seen: unknown[] = [];
+  const result = await ingest('https://example.gov/a.txt', deps(), {
+    onDiagnostic: (d) => seen.push(d),
+  });
+  expect(seen).toEqual([{ event: 'metadata_failed', code: 'PROVIDER_ERROR' }]);
+  const stored = await env.registry.getDocument(result.doc.docId);
+  expect(stored.warnings.join(' ')).toMatch(/could not be read automatically/);
+  expect(stored.warnings.join(' ')).not.toMatch(/PROVIDER_ERROR/);
+});
+
 test('an already-aborted ingest does nothing', async () => {
   const controller = new AbortController();
   controller.abort();
