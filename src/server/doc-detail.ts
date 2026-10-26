@@ -3,10 +3,8 @@
  * sidecar history. Kept apart from the Hono routes so it is testable without HTTP.
  */
 import type { CliRuntime } from '../cli/runtime.js';
-import {
-  readHistory,
-  readOfficialTitle,
-} from '../core/history/history-store.js';
+import { readHistory } from '../core/history/history-store.js';
+import { historyLinksFor } from '../core/history/links.js';
 import {
   type BillHistory,
   type DocDetail,
@@ -144,13 +142,13 @@ export async function buildDocDetail(
     () => undefined,
   );
   // parseXml keeps only the short title; the record's official title states the purpose.
-  const officialTitle = history
-    ? await readOfficialTitle(configDir, doc.docId).catch(() => undefined)
-    : undefined;
+  const officialTitle = history?.officialTitle?.trim();
   const preview: DocDetail['preview'] = officialTitle
     ? { kind: 'purpose', text: compact(officialTitle) }
     : documentPreview(doc);
   const personas = scenarioPersonasFor(doc);
+  // Computed per request, not stored, so documents cached before links existed get them too.
+  const links = historyLinksFor(doc.sourceUrl, history);
   return {
     doc: summary,
     metadata: doc.metadata,
@@ -160,6 +158,7 @@ export async function buildDocDetail(
     hasLineNumbers: hasLineNumbers(doc.sections),
     ...(doc.scan ? { scan: doc.scan } : {}),
     ...(history ? { history: truncateHistory(history) } : {}),
+    ...(links.actions || links.amendments ? { historyLinks: links } : {}),
     ...(preview ? { preview } : {}),
     ...(personas.length ? { scenarioPersonas: personas } : {}),
   };

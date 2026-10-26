@@ -162,7 +162,10 @@ test('two server processes ingesting the same document at once end with one docu
       status: string;
       doc: { doc_id: string };
     };
-    expect(payload.status).toBe('ready');
+    expect(
+      payload.status,
+      `Child payload: ${JSON.stringify(payload)}\n${r.stderr}`,
+    ).toBe('ready');
     return payload.doc.doc_id;
   });
   expect(docs[0]).toBe(docs[1]);

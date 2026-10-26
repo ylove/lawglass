@@ -94,22 +94,24 @@
       "description": "Amending the SUNY board: four bracketed deletion runs; underlined additions.",
       "format": "pdf",
       "url": "https://legislation.nysenate.gov/pdf/bills/2025/S1234",
-      "sha256": "d4ed4d410c3c1d700f1c2308c9598e906927fdc5bf1e809e1c78576d513c46ac",
+      "sha256": "666fdb6c9baa2f56058b201724d9bc5d6a7b5d2336f75e2458800dcbfc305376",
       "bytes": 4263,
       "retrievedAt": "2026-10-26",
       "jurisdiction": "New York",
-      "notes": "Amending the SUNY board: four bracketed deletion runs; underlined additions. Manually checked against rendered pages for #281/#282. The server regenerates PDF trailer IDs per request, so future downloads may have a different raw hash despite identical bill content; the strict fixture downloader saves those as .mismatch for review."
+      "notes": "Amending the SUNY board: four bracketed deletion runs; underlined additions. Manually checked against rendered pages for #281/#282. The server regenerates PDF trailer IDs per request, so future downloads may have a different raw hash despite identical bill content; the strict fixture downloader saves those as .mismatch for review. Pinned by normalized parser text because transport bytes can change on every request.",
+      "normalizedTextSha256": "f3d99a85a8a05de9529da45e624b19aa4f1354a421aef963851b6151d9da87b4"
     },
     {
       "name": "ny-s8102-2025-introduced",
       "description": "New law: adds a device-level age assurance article, no bracketed deletions.",
       "format": "pdf",
       "url": "https://legislation.nysenate.gov/pdf/bills/2025/S8102",
-      "sha256": "416874e60fbc2e8eea1266b2e70187280aa983a906ec147fb85516a337a0b4fc",
+      "sha256": "ad99f037c35961c617c1a90bf416845cf98d4930bb28cf5ab83a674817bd1287",
       "bytes": 9905,
       "retrievedAt": "2026-10-26",
       "jurisdiction": "New York",
-      "notes": "New law: adds a device-level age assurance article, no bracketed deletions. Manually checked against rendered pages for #281/#282. The server regenerates PDF trailer IDs per request, so future downloads may have a different raw hash despite identical bill content; the strict fixture downloader saves those as .mismatch for review."
+      "notes": "New law: adds a device-level age assurance article, no bracketed deletions. Manually checked against rendered pages for #281/#282. The server regenerates PDF trailer IDs per request, so future downloads may have a different raw hash despite identical bill content; the strict fixture downloader saves those as .mismatch for review. Pinned by normalized parser text because transport bytes can change on every request.",
+      "normalizedTextSha256": "d31ad628c233a16c05ca7df2dcf7ab9e6bbc7f5a9724fa9b254d9416a1140491"
     },
     {
       "name": "nj-s1446-2024-r2",
@@ -127,11 +129,12 @@
       "description": "Assembly full-text HTML, introduced S1234 as of retrieval. Four bracketed deletions; bold strike and underline tags.",
       "format": "html",
       "url": "https://nyassembly.gov/leg/?default_fld=&leg_video=&bn=S01234&term=2025&Summary=Y&Text=Y",
-      "sha256": "1d11845d1a2785eac74c4f3b1c440c23e6f3972dc5ef51d913a1fdfa9ac0ccc4",
-      "bytes": 18639,
+      "sha256": "f8093e28e7f4e282a1f8685b110f7cc2ba4b6caebb3aeb1dc8aef6cf5e05771b",
+      "bytes": 18637,
       "retrievedAt": "2026-10-26",
       "jurisdiction": "New York",
-      "notes": "Assembly full-text HTML, introduced S1234 as of retrieval. Four bracketed deletions; bold strike and underline tags. Manually checked against rendered pages for #281/#282. Assembly randomizes CSS/JS cache-buster parameters on each response, so future raw hashes may differ; the strict downloader saves .mismatch for review."
+      "notes": "Assembly full-text HTML, introduced S1234 as of retrieval. Four bracketed deletions; bold strike and underline tags. Manually checked against rendered pages for #281/#282. Assembly randomizes CSS/JS cache-buster parameters on each response, so future raw hashes may differ; the strict downloader saves .mismatch for review. Pinned by normalized parser text because transport bytes can change on every request.",
+      "normalizedTextSha256": "ca5c7d828b1200c9702d132ad4797c64fecc894ddcfd3bf409b9229d950963bc"
     },
     {
       "name": "us-code-42-1395x",
@@ -182,11 +185,12 @@
       "description": "Assembly full-text HTML for A5000: wrapped \"chapter 397 of the laws of 2021\" lines inside amended sections.",
       "format": "html",
       "url": "https://nyassembly.gov/leg/?default_fld=&leg_video=&bn=A5000&term=2025&Summary=Y&Text=Y",
-      "sha256": "7763a7f07f05ccddd5c01d669d612caca94e457a6d9902eac396d1eb8b9e7973",
-      "bytes": 20774,
+      "sha256": "40c5f809d90580eaffd489b3b7193c12dd5d3c66cd45216f5ed5c83fe204f98a",
+      "bytes": 20776,
       "retrievedAt": "2026-10-26",
       "jurisdiction": "New York",
-      "notes": "Regression for the NY structure fix (#283): prose chapter lines must not become containers. Assembly randomizes cache-buster parameters, so raw hashes may drift."
+      "notes": "Regression for the NY structure fix (#283): prose chapter lines must not become containers. Pinned by normalized parser text because transport bytes can change on every request.",
+      "normalizedTextSha256": "a38c3fb4972544ac727419bc4e98497a1e4f9ccf200d9f9ec3b9bc79e69781b2"
     },
     {
       "name": "nj-a4-2024-r2",
@@ -204,33 +208,36 @@
       "description": "Assembly full-text HTML for A7601: a sunset extender whose quoted law has its own '§ 3. This act shall take effect ... [2025] 2030'.",
       "format": "html",
       "url": "https://nyassembly.gov/leg/?default_fld=&leg_video=&bn=A07601&term=2025&Summary=Y&Text=Y",
-      "sha256": "46f2cf542bfd34cef7f1fb673d7d048e16cceef6f9f1b50a3f415f697152ace9",
+      "sha256": "f9f85cd822860bad1c05ea8329db04e26c8646371a78b10258e895bf3fe14bb5",
       "bytes": 15184,
       "retrievedAt": "2026-10-26",
       "jurisdiction": "New York",
-      "notes": "Regression for #306 review: the quoted take-effect section must not become top-level sec-3; the bill's own sections are sec-1 and sec-2. Assembly randomizes cache-buster parameters, so raw hashes may drift."
+      "notes": "Regression for #306 review: the quoted take-effect section must not become top-level sec-3; the bill's own sections are sec-1 and sec-2. Pinned by normalized parser text because transport bytes can change on every request.",
+      "normalizedTextSha256": "08a7619977886df924b7336a938ed3e607c642580a956558ec5c158a74d3bbd1"
     },
     {
       "name": "ny-s07334-2025-assembly",
       "description": "Assembly full-text HTML for S7334: 'Sections 3, 4, 5, 6, 7, 8 and 9 of chapter 18 ... read as follows' reaches the verb on the 4th line.",
       "format": "html",
       "url": "https://nyassembly.gov/leg/?default_fld=&leg_video=&bn=S07334&term=2025&Summary=Y&Text=Y",
-      "sha256": "57a0413fa6ea785bc631897f7ee7ea90c8a6b0e9738dd9a04d0d8bf22fc79afd",
+      "sha256": "f4e76016bff4255c8caca7dba39c8f17445a64810ca9f59f88175bd9b90a3a61",
       "bytes": 42099,
       "retrievedAt": "2026-10-26",
       "jurisdiction": "New York",
-      "notes": "Regression for #306 review: quoted sections 3-9 stay inside bill section 1; the bill's own sections are sec-1 to sec-3. Assembly randomizes cache-buster parameters, so raw hashes may drift."
+      "notes": "Regression for #306 review: quoted sections 3-9 stay inside bill section 1; the bill's own sections are sec-1 to sec-3. Pinned by normalized parser text because transport bytes can change on every request.",
+      "normalizedTextSha256": "db1e87203228f80d7dece591451ad4e747cfa6fad6bb2745b3ac36c92a0c7f7c"
     },
     {
       "name": "ny-a06137-2025-assembly",
       "description": "Assembly full-text HTML for A6137: bill section 10 amends 'section 11-2204' of the administrative code.",
       "format": "html",
       "url": "https://nyassembly.gov/leg/?default_fld=&leg_video=&bn=A06137&term=2025&Summary=Y&Text=Y",
-      "sha256": "826d49300a6ae578e683fb66fe67c254c83e7f820284e0c503378429d8a07531",
+      "sha256": "6ab57a371dbad963e5e63b20f0abe27800b31199c7f44f4ec57561e02e84955f",
       "bytes": 87893,
       "retrievedAt": "2026-10-26",
       "jurisdiction": "New York",
-      "notes": "Regression for #306 review: 11-2204 is not bill section 11; sec-1 to sec-27 are consecutive. Assembly randomizes cache-buster parameters, so raw hashes may drift."
+      "notes": "Regression for #306 review: 11-2204 is not bill section 11; sec-1 to sec-27 are consecutive. Pinned by normalized parser text because transport bytes can change on every request.",
+      "normalizedTextSha256": "0c7abda10f2454b9d7cfec8985c359fbb39093bd29dc5ed28e6969b6c32f39f5"
     },
     {
       "name": "nj-a170-2024-i1",

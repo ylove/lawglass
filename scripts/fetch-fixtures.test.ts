@@ -299,3 +299,43 @@ test('the announced length is checked against the budget before any byte is read
   expect(cancelled()).toBe(true);
   expect(pulled()).toBeLessThanOrEqual(1);
 });
+
+test('downloads and reuses content-pinned HTML despite transport changes, but saves changed text for review', async () => {
+  const { normalizedFixtureSha256 } =
+    await import('../src/eval/fixture-integrity.js');
+  const html =
+    '<article><h1>Section 1. Notices.</h1><p>Each steward shall send a notice.</p></article>';
+  const pinned = {
+    ...fixture,
+    format: 'html' as const,
+    normalizedTextSha256: await normalizedFixtureSha256(Buffer.from(html), {
+      format: 'html',
+      url: fixture.url,
+    }),
+  };
+  const contentManifest = { ...manifest, fixtures: [pinned] };
+  fetcher.mockResolvedValueOnce(
+    new Response(`<script src="cache-12345.js"></script>${html}`),
+  );
+  expect(await download({ manifest: contentManifest })).toMatchObject([
+    { status: 'downloaded' },
+  ]);
+  fetcher.mockClear();
+  expect(await download({ manifest: contentManifest })).toMatchObject([
+    { status: 'skipped', sha256: pinned.normalizedTextSha256 },
+  ]);
+  expect(fetcher).not.toHaveBeenCalled();
+  await writeFile(
+    join(directory, 'sample-bill.html'),
+    html.replace('steward', 'farmer'),
+  );
+  fetcher.mockResolvedValueOnce(
+    new Response(html.replace('steward', 'farmer')),
+  );
+  const result = await download({ manifest: contentManifest });
+  expect(result).toMatchObject([{ status: 'mismatch' }]);
+  expect(result[0]?.message).toContain('normalized text sha256');
+  expect(
+    await readFile(join(directory, 'sample-bill.html.mismatch'), 'utf8'),
+  ).toContain('farmer');
+});
