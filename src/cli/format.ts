@@ -118,8 +118,10 @@ export function formatList(entries: readonly RegistryEntryLike[]): string {
 
 /** One stderr line for an answer-layer event: codes and counts only. */
 export function formatAnswerLog(event: AnswerLogEvent): string {
-  return event.event === 'regeneration_refused'
-    ? `note: kept the original wording (regeneration refused: ${event.reason})`
+  if (event.event === 'regeneration_refused')
+    return `note: kept the original wording (regeneration refused: ${event.reason})`;
+  return event.event === 'excerpt_talk_reworded'
+    ? `note: reworded ${String(event.count)} cited sentence(s) that mentioned the excerpts`
     : `note: removed ${String(event.count)} sentence(s) about the excerpts`;
 }
 

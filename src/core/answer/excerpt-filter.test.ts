@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { ScriptedProvider } from '../../../tests/contracts/scripted-provider.js';
 import { DECLINE_TEXT } from '../model/index.js';
 import { answer } from './answer.js';
-import { dropExcerptTalk, talksAboutExcerpts } from './excerpt-filter.js';
+import {
+  dropExcerptTalk,
+  rewordCitedExcerptTalk,
+  talksAboutExcerpts,
+} from './excerpt-filter.js';
 import { hit } from './fixtures.js';
 
 describe('talksAboutExcerpts', () => {
@@ -55,13 +59,62 @@ describe('dropExcerptTalk', () => {
 
   it('returns the text untouched when nothing matches', () => {
     const text = 'The bill makes grants [S:a].\n\nIt starts in 2027 [S:b].';
-    expect(dropExcerptTalk(text)).toEqual({ text, dropped: [] });
+    expect(dropExcerptTalk(text)).toEqual({ text, dropped: [], reworded: 0 });
   });
 
   it('stays fast on long punctuation runs', () => {
     const text = `${'!'.repeat(50_000)}x ${'.'.repeat(50_000)}`;
     const start = Date.now();
     dropExcerptTalk(text);
+    expect(Date.now() - start).toBeLessThan(1000);
+  });
+});
+
+describe('rewordCitedExcerptTalk (live NDAA answer, v1.1.0 check)', () => {
+  it.each([
+    [
+      'The excerpt gives no deadline for that notice [S:sec-7207/b/1].',
+      'This section gives no deadline for that notice [S:sec-7207/b/1].',
+    ],
+    [
+      'The retrieved chunks do not say who pays [S:sec-3].',
+      'These sections do not say who pays [S:sec-3].',
+    ],
+    [
+      'A fee applies, but the excerpt does not specify the amount [S:sec-3].',
+      'A fee applies, but this section does not specify the amount [S:sec-3].',
+    ],
+    [
+      '- **Deadline:** Based on the excerpts, reports are due in 90 days [S:sec-4]',
+      '- **Deadline:** Reports are due in 90 days [S:sec-4]',
+    ],
+    [
+      '- **Notice:** The excerpt only covers the first notice [S:sec-5]',
+      '- **Notice:** This section only covers the first notice [S:sec-5]',
+    ],
+  ])('rewords %s', (sentence, plain) => {
+    expect(rewordCitedExcerptTalk(sentence)).toBe(plain);
+  });
+
+  it.each([
+    // No citation: the uncited filter decides, not this.
+    'The excerpt gives no deadline for that notice.',
+    // The bill's own subject matter.
+    'The excerpt must be filed with the clerk within 30 days [S:sec-2].',
+    'The agency must provide excerpts of the records to any requester [S:sec-2].',
+    'The bill lets a student quote a short excerpt from a book [S:sec-1].',
+    'The passage on fees sets the amount at $50 [S:sec-4].',
+    'The passage of the act ends the program [S:sec-9].',
+    // An opening clause that is not about the retrieval.
+    'Based on the census, the formula sets each share [S:sec-3].',
+  ])('leaves %s alone', (sentence) => {
+    expect(rewordCitedExcerptTalk(sentence)).toBe(sentence);
+  });
+
+  it('stays fast on long inputs', () => {
+    const long = `Based on the excerpts ${'x'.repeat(50_000)} the excerpt ${'excerpts '.repeat(5_000)}[S:a].`;
+    const start = Date.now();
+    rewordCitedExcerptTalk(long);
     expect(Date.now() - start).toBeLessThan(1000);
   });
 });
@@ -90,6 +143,24 @@ describe('answer() applies the filter', () => {
     expect(logs[0]).toEqual({ event: 'excerpt_talk_dropped', count: 1 });
   });
 
+  it('rewords a cited sentence, logs it, and keeps its citation', async () => {
+    const logs: unknown[] = [];
+    const r = await answer({
+      provider: new ScriptedProvider({
+        reply:
+          'Towns get grants [S:sec-1]. The excerpt gives no deadline for the grants [S:sec-1].',
+      }),
+      question: 'When are grants due?',
+      context: { hits },
+      log: (l) => logs.push(l),
+    });
+    expect(r.text).toBe(
+      'Towns get grants [S:sec-1]. This section gives no deadline for the grants [S:sec-1].',
+    );
+    expect(r.citations.map((c) => c.sectionId)).toEqual(['sec-1']);
+    expect(logs).toEqual([{ event: 'excerpt_talk_reworded', count: 1 }]);
+  });
+
   it('turns an answer that was only excerpt talk into a decline', async () => {
     const r = await answer({
       provider: new ScriptedProvider({
@@ -116,15 +187,36 @@ describe('answer() applies the filter', () => {
 
 describe('abbreviations and precision (#308 review)', () => {
   it.each([
-    'Based on the excerpts, the bill amends 42 U.S.C. 1395 to add a $50 fee [S:sec-2].',
-    'As shown in the passages from Sec. 4, the agency must report within 90 days [S:sec-4].',
-    'The excerpts provided show that the fee, e.g. for permits, is $20 [S:sec-5].',
-    'According to the passages given, the U.S. Department of Labor sets the wage [S:sec-6].',
-  ])('never alters a cited sentence: %s', (sentence) => {
-    expect(dropExcerptTalk(sentence)).toEqual({ text: sentence, dropped: [] });
-    const around = `Grants go to towns [S:a]. ${sentence} Awards are $5 [S:b].`;
-    expect(dropExcerptTalk(around).text).toBe(around);
-  });
+    [
+      'Based on the excerpts, the bill amends 42 U.S.C. 1395 to add a $50 fee [S:sec-2].',
+      'The bill amends 42 U.S.C. 1395 to add a $50 fee [S:sec-2].',
+    ],
+    [
+      'As shown in the passages from Sec. 4, the agency must report within 90 days [S:sec-4].',
+      'The agency must report within 90 days [S:sec-4].',
+    ],
+    [
+      'The excerpts provided show that the fee, e.g. for permits, is $20 [S:sec-5].',
+      'These sections show that the fee, e.g. for permits, is $20 [S:sec-5].',
+    ],
+    [
+      'According to the passages given, the U.S. Department of Labor sets the wage [S:sec-6].',
+      'The U.S. Department of Labor sets the wage [S:sec-6].',
+    ],
+  ])(
+    'never drops a cited sentence, and keeps its claim word for word: %s',
+    (sentence, plain) => {
+      expect(dropExcerptTalk(sentence)).toEqual({
+        text: plain,
+        dropped: [],
+        reworded: 1,
+      });
+      const around = `Grants go to towns [S:a]. ${sentence} Awards are $5 [S:b].`;
+      expect(dropExcerptTalk(around).text).toBe(
+        `Grants go to towns [S:a]. ${plain} Awards are $5 [S:b].`,
+      );
+    },
+  );
 
   it('drops an uncited excerpt sentence that contains U.S.C. whole, not half of it', () => {
     const out = dropExcerptTalk(

@@ -4,6 +4,7 @@
  * version, and public mode never starts a generation.
  */
 import type { AnswerLog } from '../core/answer/log.js';
+import { EXCERPT_FILTER_VERSION } from '../core/answer/excerpt-filter.js';
 import { REGENERATION_VERSION } from '../core/answer/regenerate.js';
 import { join } from 'node:path';
 import { documentContext, type ContextMode } from '../core/answer/context.js';
@@ -24,7 +25,7 @@ import { ask } from '../core/pipeline/index.js';
  * must not serve summaries whose scenarios were made the old way. Likewise the regeneration rule:
  * the cached text is the regenerated text.
  */
-export const SUMMARY_CACHE_VERSION = `${SUMMARY_PROMPT_VERSION}.${SCENARIO_PROMPT_VERSION}.${REGENERATION_VERSION}`;
+export const SUMMARY_CACHE_VERSION = `${SUMMARY_PROMPT_VERSION}.${SCENARIO_PROMPT_VERSION}.${REGENERATION_VERSION}.${EXCERPT_FILTER_VERSION}`;
 
 function summaryKeyFor(
   runtime: CliRuntime,
