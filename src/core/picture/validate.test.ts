@@ -163,4 +163,49 @@ describe('validatePictures', () => {
       { item: 2, reason: 'repeat' },
     ]);
   });
+
+  it('closes the label holes found in review: other scripts, negation, derived words', () => {
+    const items: PictureItem[] = [
+      { index: 0, text: 'Banks pay 5 dollars to the state [S:sec-1].' },
+      { index: 1, text: 'Issuers may pay interest to holders [S:sec-2].' },
+      { index: 2, text: 'No interest is paid to holders [S:sec-3].' },
+      { index: 3, text: 'Approved issuers file a bill each year [S:sec-4].' },
+    ];
+    const stamped = (item: number, label: string) =>
+      validatePictures(
+        {
+          pictures: [
+            {
+              item,
+              panels: [
+                {
+                  left: { glyphs: ['bank'] },
+                  link: 'none',
+                  stamp: { glyph: 'check', label },
+                },
+              ],
+            },
+          ],
+        },
+        items,
+      );
+    const reason = (item: number, label: string) =>
+      stamped(item, label).dropped[0]?.reason;
+    // Digits of any script count as numbers; fullwidth digits are the same digits.
+    expect(reason(0, '９９')).toBe('label-number');
+    expect(reason(0, '٩٩')).toBe('label-number');
+    expect(stamped(0, '５').entries).toHaveLength(1);
+    // A negation is allowed only when the item says one.
+    expect(reason(1, 'No')).toBe('label-negation');
+    expect(reason(1, 'No interest')).toBe('label-negation');
+    expect(reason(1, 'Un-holders')).toBe('label-negation');
+    expect(reason(1, "Can't pay")).toBe('label-negation');
+    expect(stamped(2, 'No interest').entries).toHaveLength(1);
+    // Inflections pass; other words that share a stem do not.
+    expect(reason(3, 'Billion')).toBe('label-words');
+    expect(reason(0, 'Statement')).toBe('label-words');
+    expect(stamped(3, 'Approve').entries).toHaveLength(1);
+    expect(stamped(3, 'Issuer files').entries).toHaveLength(1);
+    expect(stamped(0, 'States').entries).toHaveLength(1);
+  });
 });

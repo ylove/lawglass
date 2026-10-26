@@ -69,6 +69,12 @@ export interface PictureServiceOptions {
   cache?: PictureCache | undefined;
 }
 
+/**
+ * `PictureEntry.text` is capped by the contract; a longer item could be drawn and stored but
+ * never read back, so it would be drawn again on every look. Such an item stays text-only.
+ */
+const MAX_ITEM_TEXT = 4000;
+
 type SourceItems =
   | { status: 'ready'; items: PictureItem[] }
   | { status: 'pending' | 'none' | 'disabled' };
@@ -104,14 +110,19 @@ export function createPictureService(
     source: PictureSource,
   ): Promise<SourceItems> {
     if (source === 'summary') {
-      const summary = await options.summary.get(docId, { wait: false });
+      // Report only: asking for pictures must never start a summary run, nor fail with it.
+      const summary = await options.summary
+        .get(docId, { wait: false, start: false })
+        .catch(() => ({ status: 'disabled' as const, answer: undefined }));
       if (summary.status !== 'cached' || !summary.answer)
         return { status: summary.status === 'pending' ? 'pending' : 'none' };
-      const items = listItems(summary.answer.text);
+      const items = listItems(summary.answer.text).filter(
+        (item) => item.text.length <= MAX_ITEM_TEXT,
+      );
       return items.length > 0 ? { status: 'ready', items } : { status: 'none' };
     }
     const breakdown = await options.breakdown
-      .get(docId, { wait: false })
+      .get(docId, { wait: false, start: false })
       // A breakdown that is cooling down after a failure has nothing to draw yet.
       .catch(() => ({ status: 'disabled' as const, briefs: undefined }));
     if (breakdown.status === 'pending') return { status: 'pending' };
@@ -119,11 +130,13 @@ export function createPictureService(
       return { status: 'none' };
     return {
       status: 'ready',
-      items: breakdown.briefs.map((brief, index) => ({
-        index,
-        text: brief.text,
-        sectionId: brief.sectionId,
-      })),
+      items: breakdown.briefs
+        .map((brief, index) => ({
+          index,
+          text: brief.text,
+          sectionId: brief.sectionId,
+        }))
+        .filter((item) => item.text.length <= MAX_ITEM_TEXT),
     };
   }
 
@@ -141,6 +154,9 @@ export function createPictureService(
     onError: PictureRequestOptions['onError'],
   ): void {
     const started = now();
+    // Forget cool-downs that are over, so the map holds only recent failures.
+    for (const [other, at] of failedAt)
+      if (started - at >= FAILED_RETRY_MS) failedAt.delete(other);
     running.set(name, new Set());
     void cache
       .getOrCompute(key, async () => {

@@ -135,6 +135,23 @@ describe('config', () => {
 });
 
 describe('GET /api/docs/:docId/breakdown', () => {
+  test('start:false only reports: it starts no run and skips the cool-down error (#344)', async () => {
+    const { createBreakdownService } = await import('./breakdown.js');
+    const a = app();
+    const docId = await ingestDoc(a);
+    const service = createBreakdownService(env.runtime, { publicMode: false });
+    expect(await service.get(docId, { wait: false, start: false })).toEqual({
+      status: 'disabled',
+    });
+    // Nothing was in flight: a normal look still has to start the run.
+    expect(await service.get(docId, { wait: false })).toEqual({
+      status: 'pending',
+    });
+    expect(
+      (await service.get(docId, { wait: false, start: false })).status,
+    ).toBe('pending');
+  });
+
   test('the first look starts one run and answers pending; the next is the cached briefs', async () => {
     const a = app({ now: () => Date.now() });
     const docId = await ingestDoc(a);

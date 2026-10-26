@@ -226,6 +226,58 @@ describe('summary pictures', () => {
   });
 });
 
+describe('never a reason to make the source text', () => {
+  it('asks the summary and breakdown to report only, and never to start a run', async () => {
+    const seen: unknown[] = [];
+    const runtime = {
+      extractProvider: scriptedObjects([{ pictures: [] }]),
+    } as unknown as CliRuntime;
+    const svc = createPictureService(runtime, {
+      publicMode: false,
+      summary: {
+        get: (_id, request) => {
+          seen.push(request);
+          return Promise.resolve({ status: 'disabled' });
+        },
+      },
+      breakdown: {
+        get: (_id, request) => {
+          seen.push(request);
+          return Promise.resolve({ status: 'disabled' });
+        },
+        example: () => Promise.reject(new Error('unused')),
+      },
+      cache: new PictureCache({ dir }),
+    });
+    expect(await svc.get(DOC, 'summary')).toEqual({ status: 'none' });
+    expect(await svc.get(DOC, 'breakdown')).toEqual({ status: 'none' });
+    expect(seen).toEqual([
+      { wait: false, start: false },
+      { wait: false, start: false },
+    ]);
+  });
+
+  it('a summary that throws (an unconfigured answer provider) reads as none', async () => {
+    const { svc } = service({
+      summary: () => Promise.reject(new AppError('MISSING_KEY')),
+    });
+    expect(await svc.get(DOC, 'summary')).toEqual({ status: 'none' });
+  });
+
+  it('an item too long for the contract stays text-only instead of being redrawn on every look', async () => {
+    const provider = scriptedObjects([{ pictures: [] }]);
+    const { svc } = service({
+      provider,
+      summary: {
+        status: 'cached',
+        answer: answer(`- ${'word '.repeat(900)}[S:sec-1].`),
+      },
+    });
+    expect(await svc.get(DOC, 'summary')).toEqual({ status: 'none' });
+    expect(provider.calls).toHaveLength(0);
+  });
+});
+
 describe('breakdown pictures', () => {
   it('draws one picture per brief, tied to its part and its exact text', async () => {
     const briefs = [

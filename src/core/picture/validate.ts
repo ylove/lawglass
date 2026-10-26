@@ -16,41 +16,58 @@ export type PictureDropReason =
   | 'label-markup'
   | 'label-judgment'
   | 'label-words'
-  | 'label-number';
+  | 'label-number'
+  | 'label-negation';
 
 export interface PictureValidation {
   entries: PictureEntry[];
   dropped: { item: number; reason: PictureDropReason }[];
 }
 
-const WORD = /[\p{L}]+/gu;
-const NUMBER = /\d+(?:[.,]\d+)*/g;
+const WORD = /\p{L}+/gu;
+/** Any script's digits: after NFKC, fullwidth digits are ASCII; others still count as numbers. */
+const NUMBER = /\p{Nd}+(?:[.,]\p{Nd}+)*/gu;
+/** Words that turn a label into its opposite; a label may use one only if the item does. */
+const NEGATION =
+  /\b(?:no|not|non|un|never|none|nor|without|cannot)\b|n['’]t\b/iu;
+/**
+ * Inflections only. "Federal" may label "federally" and "Reserves" "reserve", but derivations
+ * are other words: "Billion" is not "bill", "Statement" is not "state".
+ */
+const ENDINGS = ['ally', 'ing', 'ers', 'ly', 'ed', 'es', 'er', 'al', 's', 'd'];
+
+function normalize(text: string): string {
+  return text.normalize('NFKC').toLowerCase();
+}
 
 function words(text: string): string[] {
-  return (text.toLowerCase().match(WORD) ?? []).filter((w) => w.length >= 3);
+  return normalize(text).match(WORD) ?? [];
+}
+
+/** The word and each form of it with one inflection removed, at least three letters long. */
+function stems(word: string): Set<string> {
+  const forms = new Set([word]);
+  for (const ending of ENDINGS)
+    if (word.endsWith(ending) && word.length - ending.length >= 3)
+      forms.add(word.slice(0, -ending.length));
+  return forms;
 }
 
 /**
- * Every word of three letters or more must be one of the item's words, allowing a different
- * ending: "Federal" for "federally", "Reserves" for "reserve". Shorter words ("no", "to") carry
- * no claim on their own.
+ * Every word of three letters or more must be one of the item's words, up to an inflection.
+ * Shorter words ("to", "of") carry no claim on their own, except a negation, checked apart.
  */
-function wordsFromItem(label: string, itemWords: ReadonlySet<string>): boolean {
-  return words(label).every((word) => {
-    if (itemWords.has(word)) return true;
-    for (const own of itemWords)
-      if (
-        (own.startsWith(word) || word.startsWith(own)) &&
-        Math.min(own.length, word.length) >= 4
-      )
-        return true;
-    return false;
-  });
+function wordsFromItem(label: string, itemStems: ReadonlySet<string>): boolean {
+  return words(label)
+    .filter((word) => word.length >= 3)
+    .every((word) => [...stems(word)].some((form) => itemStems.has(form)));
 }
 
 /** Every number in a label must be written the same way in the item. */
 function numbersFromItem(label: string, itemNumbers: ReadonlySet<string>) {
-  return (label.match(NUMBER) ?? []).every((n) => itemNumbers.has(n));
+  return (normalize(label).match(NUMBER) ?? []).every((n) =>
+    itemNumbers.has(n),
+  );
 }
 
 function labels(panel: PicturePanel): string[] {
@@ -70,17 +87,34 @@ function shapeIsSound(panel: PicturePanel): boolean {
   return !(panel.link === 'equals' && panel.carry);
 }
 
+interface ItemFacts {
+  stems: ReadonlySet<string>;
+  numbers: ReadonlySet<string>;
+  negated: boolean;
+}
+
+function itemFacts(text: string): ItemFacts {
+  const plain = normalize(stripCitations(text));
+  return {
+    stems: new Set(words(plain).flatMap((word) => [...stems(word)])),
+    numbers: new Set(plain.match(NUMBER) ?? []),
+    negated: NEGATION.test(plain),
+  };
+}
+
 function panelReason(
   panel: PicturePanel,
-  itemWords: ReadonlySet<string>,
-  itemNumbers: ReadonlySet<string>,
+  item: ItemFacts,
 ): PictureDropReason | undefined {
   if (!shapeIsSound(panel)) return 'shape';
   for (const label of labels(panel)) {
     if (markup(label)) return 'label-markup';
     if (evaluative(label)) return 'label-judgment';
-    if (!numbersFromItem(label, itemNumbers)) return 'label-number';
-    if (!wordsFromItem(label, itemWords)) return 'label-words';
+    if (!numbersFromItem(label, item.numbers)) return 'label-number';
+    // "No" under an item that says "may pay interest" would draw the opposite of the caption.
+    if (NEGATION.test(normalize(label)) && !item.negated)
+      return 'label-negation';
+    if (!wordsFromItem(label, item.stems)) return 'label-words';
   }
   return undefined;
 }
@@ -104,11 +138,9 @@ export function validatePictures(
       continue;
     }
     seen.add(picture.item);
-    const plain = stripCitations(item.text);
-    const itemWords = new Set(words(plain));
-    const itemNumbers = new Set(plain.match(NUMBER) ?? []);
+    const facts = itemFacts(item.text);
     const reason = picture.panels
-      .map((panel) => panelReason(panel, itemWords, itemNumbers))
+      .map((panel) => panelReason(panel, facts))
       .find((r) => r !== undefined);
     if (reason) {
       dropped.push({ item: picture.item, reason });
