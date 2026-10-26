@@ -377,6 +377,7 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
     model: 'mock-1',
     chips: CHIPS,
     scenariosEnabled: !publicMode,
+    breakdownEnabled: false,
   };
 
   const need = (docId: string): DocSummary => {

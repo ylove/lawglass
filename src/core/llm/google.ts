@@ -6,6 +6,7 @@ import {
   type ObjectRequest,
   type ProviderConfig,
   type TextRequest,
+  messageText,
 } from '../model/index.js';
 import {
   jsonSchema,
@@ -56,7 +57,7 @@ export class GoogleProvider implements LlmProvider {
         model: this.model,
         contents: req.messages.map((m) => ({
           role: m.role === 'assistant' ? 'model' : 'user',
-          parts: [{ text: m.content }],
+          parts: [{ text: messageText(m.content) }],
         })),
         config: {
           systemInstruction: req.system,

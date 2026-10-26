@@ -40,7 +40,12 @@ describe('Claude CLI isolation and lifecycle', () => {
       { type: 'text', text: 'Hello.' },
       {
         type: 'done',
-        usage: { inputTokens: 2003, outputTokens: 6 },
+        usage: {
+          inputTokens: 2003,
+          outputTokens: 6,
+          cacheReadTokens: 535,
+          cacheWriteTokens: 1466,
+        },
         stopReason: 'end_turn',
       },
     ]);

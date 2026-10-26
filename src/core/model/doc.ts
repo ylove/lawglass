@@ -207,8 +207,36 @@ export const ExternalRef = z.object({
   category: z.enum(['charter', 'local_code', 'general_law']).optional(),
   /** Sections of this document that cite it. */
   sectionIds: z.array(SectionId),
+  /** Set when the referenced text was read; the `sectionId` of its `ReferenceText`. */
+  referenceId: SectionId.optional(),
 });
 export type ExternalRef = z.infer<typeof ExternalRef>;
+
+/** Prefix of every `ReferenceText.sectionId`, so it can never collide with a bill section id. */
+export const REFERENCE_ID_PREFIX = 'ref:';
+
+/**
+ * Text of another law that this document relies on, read from an official source (for
+ * example the U.S. Code section a definition points to). It is untrusted data, like the bill,
+ * and answers cite it as `[S:<sectionId>]` the same way they cite the bill.
+ */
+export const ReferenceText = z.object({
+  /** Starts with `REFERENCE_ID_PREFIX`, e.g. "ref:usc/15/6809". */
+  sectionId: SectionId.refine((id) => id.startsWith(REFERENCE_ID_PREFIX), {
+    message: `reference ids start with "${REFERENCE_ID_PREFIX}"`,
+  }),
+  /** Normalized citation, matching `ExternalRef.citation`, e.g. "15 U.S.C. 6809". */
+  citation: z.string().min(1),
+  /** The heading as printed at the source, e.g. "§6809. Definitions". */
+  heading: z.string().optional(),
+  sourceUrl: z.url(),
+  /** The text that was read: the whole section, or the part a definition points to. */
+  text: z.string().min(1),
+  /** Terms of the bill whose meaning this text supplies, when it was read for a definition. */
+  terms: z.array(z.string().min(1)).optional(),
+  fetchedAt: z.iso.datetime(),
+});
+export type ReferenceText = z.infer<typeof ReferenceText>;
 
 /** How well each page of a scanned PDF was read. */
 export const ScanStatus = z.object({
@@ -232,6 +260,8 @@ export const NormalizedDoc = z.object({
   sections: z.array(Section),
   definitions: z.array(Definition),
   externalRefs: z.array(ExternalRef),
+  /** Other laws' text read for this document (see `ReferenceText`). Absent before v1.1. */
+  references: z.array(ReferenceText).optional(),
   /** Non-fatal problems worth showing (e.g. "line numbers not detected on page 3"). */
   warnings: z.array(z.string()),
   /** Number of pages for PDFs; absent otherwise. */

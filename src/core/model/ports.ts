@@ -130,13 +130,36 @@ export interface ProviderConfig {
 }
 
 export interface LlmUsage {
+  /** All input tokens, including any read from or written to a prompt cache. */
   inputTokens: number;
   outputTokens: number;
+  /** Of `inputTokens`, how many were read from the provider's prompt cache (when reported). */
+  cacheReadTokens?: number | undefined;
+  /** Of `inputTokens`, how many were written to the provider's prompt cache (when reported). */
+  cacheWriteTokens?: number | undefined;
+}
+
+/**
+ * One piece of a message. `cache: true` marks the end of a prefix that repeats across requests
+ * (the system rules plus a whole bill), so a provider that supports explicit prompt caching can
+ * reuse it. Providers without explicit caching join the parts in order.
+ */
+export interface LlmTextPart {
+  text: string;
+  cache?: boolean | undefined;
 }
 
 export interface LlmMessage {
   role: 'user' | 'assistant';
-  content: string;
+  /** A plain string, or ordered parts when part of the message is a cacheable prefix. */
+  content: string | readonly LlmTextPart[];
+}
+
+/** The text of a message, with any parts joined in order. */
+export function messageText(content: LlmMessage['content']): string {
+  return typeof content === 'string'
+    ? content
+    : content.map((part) => part.text).join('');
 }
 
 export interface TextRequest {
@@ -144,6 +167,11 @@ export interface TextRequest {
   messages: readonly LlmMessage[];
   maxTokens: number;
   temperature?: number | undefined;
+  /**
+   * How much reasoning to spend, for providers that support it (Anthropic `effort`). Absent:
+   * the provider default. Others ignore it.
+   */
+  effort?: 'low' | 'medium' | 'high' | undefined;
   signal?: AbortSignal | undefined;
 }
 

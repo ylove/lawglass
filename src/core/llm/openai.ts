@@ -11,6 +11,7 @@ import {
   type ObjectRequest,
   type ProviderConfig,
   type TextRequest,
+  messageText,
 } from '../model/index.js';
 import {
   jsonSchema,
@@ -109,7 +110,14 @@ export class OpenAIProvider implements LlmProvider {
       const signal = requestSignal(req.signal, this.config.timeoutMs);
       const params: ChatCompletionCreateParamsStreaming = {
         model: this.model,
-        messages: [{ role: 'system', content: req.system }, ...req.messages],
+        messages: [
+          { role: 'system', content: req.system },
+          // OpenAI caches long prefixes on its own, so cache hints only need joining.
+          ...req.messages.map((m) => ({
+            role: m.role,
+            content: messageText(m.content),
+          })),
+        ],
         ...this.tokenLimit(req.maxTokens),
         temperature: req.temperature,
         stream: true,

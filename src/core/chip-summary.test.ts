@@ -24,6 +24,7 @@ import {
   type LlmStreamEvent,
   type Section,
   type TextRequest,
+  messageText,
 } from './model/index.js';
 
 const DOC = 'd'.repeat(64);
@@ -116,7 +117,8 @@ function chunksFor(sections: readonly Section[]): Chunk[] {
 
 let backend: MemoryBackend;
 let deps: ChipDeps;
-const userOf = (req: TextRequest): string => req.messages[0]!.content;
+const userOf = (req: TextRequest): string =>
+  messageText(req.messages[0]!.content);
 const isReduce = (req: TextRequest): boolean =>
   userOf(req).includes('partial summary') ||
   userOf(req).includes('Partial summary');

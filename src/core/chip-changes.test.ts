@@ -15,6 +15,7 @@ import {
   type Section,
   type Span,
   type TextRequest,
+  messageText,
 } from './model/index.js';
 
 const DOC = 'e'.repeat(64);
@@ -37,7 +38,8 @@ const same = mark('unchanged');
 const struck = mark('deleted');
 const added = mark('inserted');
 
-const userOf = (req: TextRequest): string => req.messages[0]!.content;
+const userOf = (req: TextRequest): string =>
+  messageText(req.messages[0]!.content);
 const lastPrompt = (p: ScriptedProvider): string =>
   userOf(p.calls.at(-1) as TextRequest);
 

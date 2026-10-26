@@ -8,6 +8,7 @@ import type {
   ObjectRequest,
   Scenario,
 } from '../../src/core/model/index.js';
+import { messageText } from '../../src/core/model/index.js';
 import {
   sectionIds,
   type InjectionCase,
@@ -30,7 +31,7 @@ export function compromisedProvider(
 ): CompromisedProvider {
   const base = new ScriptedProvider({
     reply: (req) => {
-      const user = req.messages.map((m) => m.content).join('\n');
+      const user = req.messages.map((m) => messageText(m.content)).join('\n');
       return obey(c.attack, viewOf(req.system, user), {
         visible: reachedPrompt(user, c.payloadKey),
         docSectionIds: sectionIds(c),

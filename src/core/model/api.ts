@@ -13,9 +13,11 @@
  *   GET    /api/docs/:docId/summary                 -> SummaryResponse (future)
  *   POST   /api/docs/:docId/ask   AskRequest        -> SSE stream of AskEvent
  *   POST   /api/docs/:docId/scenario ScenarioRequest -> ScenarioResponse
+ *   GET    /api/docs/:docId/breakdown               -> BreakdownResponse  (v1.1)
+ *   GET    /api/docs/:docId/sections/:sectionId/example -> ScenarioResponse (v1.1)
  */
 import { z } from 'zod';
-import { AnswerResult, ChipId } from './answer.js';
+import { AnswerResult, ChipId, Citation } from './answer.js';
 import { ChunkType } from './chunk.js';
 import { BillHistory } from './history.js';
 import { Scenario } from './scenario.js';
@@ -48,6 +50,19 @@ export const ClientConfig = z.object({
   scenariosEnabled: z.boolean().default(false),
   /** Public-mode bot-check site key (Turnstile); absent when not configured. */
   turnstileSiteKey: z.string().optional(),
+  /**
+   * Whose document list `GET /api/docs` returns: `local` (everything on this machine) or
+   * `reader` (hosted modes: only what this reader added; removing takes it off their list).
+   * Absent from older servers, which behave as `local`.
+   */
+  library: z.enum(['local', 'reader']).optional(),
+  /** Example bills the homepage offers, chosen by whoever runs the server. */
+  examples: z
+    .array(z.object({ label: z.string().min(1).max(80), url: z.url() }))
+    .max(6)
+    .optional(),
+  /** "Section by section" and per-section examples. Defaults to off for older servers. */
+  breakdownEnabled: z.boolean().default(false),
 });
 export type ClientConfig = z.infer<typeof ClientConfig>;
 
@@ -160,6 +175,8 @@ export const SectionExcerpt = z.object({
   heading: z.string().optional(),
   spans: z.array(Span),
   location: SourceLocation,
+  /** Set when the section is another law's text read for this document (`ReferenceText`). */
+  reference: z.object({ citation: z.string(), url: z.url() }).optional(),
 });
 export type SectionExcerpt = z.infer<typeof SectionExcerpt>;
 
@@ -182,10 +199,37 @@ export const ScenarioRequest = z.object({
 export type ScenarioRequest = z.infer<typeof ScenarioRequest>;
 
 export const ScenarioResponse = z.object({
-  status: z.enum(['ok', 'none', 'disabled']),
+  /** `pending` (v1.1): a per-section example is being made; ask again. */
+  status: z.enum(['ok', 'none', 'disabled', 'pending']),
   scenario: Scenario.optional(),
+  /** With `none`: one plain sentence on why this part has no example. Written by our code. */
+  note: z.string().optional(),
 });
 export type ScenarioResponse = z.infer<typeof ScenarioResponse>;
+
+/**
+ * One part of the bill in plain words ("Section by section"). `text` carries `[S:]` markers
+ * validated like an answer's; `example` says whether a per-section example can be asked for.
+ */
+export const SectionBrief = z.object({
+  sectionId: SectionId,
+  num: z.string().optional(),
+  heading: z.string().optional(),
+  text: z.string(),
+  citations: z.array(Citation),
+  readingGrade: z.number().nullable(),
+  example: z.enum(['available', 'none']),
+});
+export type SectionBrief = z.infer<typeof SectionBrief>;
+
+/** Response for `GET /api/docs/:docId/breakdown`. */
+export const BreakdownResponse = z.object({
+  status: z.enum(['cached', 'pending', 'disabled']),
+  briefs: z.array(SectionBrief).optional(),
+  /** Substantive parts left out of a long bill's breakdown. */
+  omitted: z.number().int().nonnegative().optional(),
+});
+export type BreakdownResponse = z.infer<typeof BreakdownResponse>;
 
 export const RetrievedRef = z.object({
   chunkId: z.string(),
