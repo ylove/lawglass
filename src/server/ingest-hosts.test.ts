@@ -63,7 +63,7 @@ test.each([
   }).toThrow(
     expect.objectContaining({
       code: 'INVALID_INPUT',
-      userMessage: `${BRAND.displayName} currently reads U.S. federal bills (congress.gov, govinfo.gov) Ohio legislation (legislature.ohio.gov), New York bills (nysenate.gov, nyassembly.gov), and New Jersey bills (njleg.state.nj.us, pub.njleg.gov). Other states are on the roadmap.`,
+      userMessage: `${BRAND.displayName} currently reads U.S. federal bills (congress.gov, govinfo.gov), Ohio legislation (legislature.ohio.gov), New York bills (nysenate.gov, nyassembly.gov), and New Jersey bills (njleg.state.nj.us, pub.njleg.gov). Other states are on the roadmap.`,
     }),
   );
 });
