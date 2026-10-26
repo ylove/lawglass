@@ -24,6 +24,7 @@ import {
   type ScenarioCacheKey,
 } from '../scenario/scenario-cache.js';
 import { checkScenarioSubject } from '../scenario/subject.js';
+import { sharedLimits, type Limits } from './limits.js';
 
 /** Hits for the subject itself, then up to this many from the summary's cited sections. */
 const SUBJECT_HITS = 5;
@@ -41,13 +42,8 @@ export interface RunScenarioDeps {
   /** Defaults to a cache in the registry's answer-cache directory. */
   cache?: ScenarioCache | undefined;
   now?: (() => number) | undefined;
-  /**
-   * INTEGRATION POINT for the shared core limiter (concurrency and per-minute budget shared with
-   * ask, spec amendment 19; PR #229 / #181). It wraps ONLY the cache-miss computation, so hits and
-   * cool-down `none` results cost no budget, and must release on every exit. Absent: no-op.
-   * Not wired yet: the server passes nothing until #229 merges.
-   */
-  limits?: (<T>(run: () => Promise<T>) => Promise<T>) | undefined;
+  /** Concurrency and per-minute budgets, shared with asks. Defaults to the process-wide limits. */
+  limits?: Limits | undefined;
   signal?: AbortSignal | undefined;
   timeoutMs?: number | undefined;
 }
@@ -82,9 +78,11 @@ export async function runScenario(
     promptVersion: SCENARIO_SUBJECT_PROMPT_VERSION,
   };
 
-  const limited = deps.limits ?? (<T>(run: () => Promise<T>) => run());
-  const result = await cache.getOrCompute(key, () =>
-    limited(async () => {
+  const result = await cache.getOrCompute(key, async () => {
+    // Cache hits (including cool-down none results) consume neither a permit nor model budget.
+    const limits = deps.limits ?? sharedLimits();
+    const release = await limits.acquire('ask', deps.signal);
+    try {
       if (!(await backend.hasDocument(docId)))
         throw new AppError('DOC_NOT_FOUND', 'The document has no index.', {
           userMessage:
@@ -114,7 +112,7 @@ export async function runScenario(
       const hits = [...subjectHits, ...summaryHits];
 
       const attached = await attachScenario({
-        provider: deps.provider,
+        provider: limits.meter(deps.provider),
         hits,
         subject,
         docId,
@@ -140,8 +138,10 @@ export async function runScenario(
         status: 'ok' as const,
         scenario: { ...attached.scenario, frames },
       };
-    }),
-  );
+    } finally {
+      release();
+    }
+  });
   return result.status === 'ok'
     ? { status: 'ok', scenario: result.scenario }
     : { status: 'none' };

@@ -8,6 +8,7 @@
  */
 import { createHash } from 'node:crypto';
 import { ask, ingest, type PdfParser } from '../core/pipeline/index.js';
+import { batchLimits } from '../core/pipeline/limits.js';
 import { retrieve } from '../core/retrieve/index.js';
 import type { Registry } from '../core/registry.js';
 import {
@@ -227,6 +228,9 @@ async function collectRetrievals(
   return results;
 }
 
+/** Eval is a deliberate batch job, so it runs without the interactive per-minute ceiling. */
+const EVAL_LIMITS = batchLimits();
+
 async function collectAnswers(input: {
   backend: EvalBackendInput;
   docId: string;
@@ -244,6 +248,7 @@ async function collectAnswers(input: {
         provider: input.provider,
         registry: input.backend.registry,
         retrievalMode: input.mode,
+        limits: EVAL_LIMITS,
       },
     );
     outcomes.push({
@@ -309,6 +314,7 @@ export async function runEval(input: RunEvalInput): Promise<RunEvalResult> {
             now,
             maxDocs: input.fixtures.length + 1,
             parsePdf: input.parsePdf,
+            limits: EVAL_LIMITS,
           },
           { label: fixture.name },
         );

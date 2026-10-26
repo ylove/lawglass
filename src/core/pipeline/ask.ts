@@ -29,6 +29,8 @@ import {
 } from '../scenario/attach.js';
 import { withoutSyntheticChunks } from '../chip-types.js';
 import { classifyBill, wantsScenario } from '../scenario/detect.js';
+import { sharedLimits, type Limits } from './limits.js';
+import { cleanQuestion } from './question.js';
 
 /**
  * Chip dispatch seam, shaped like `runChip` from core/chips.ts. The default is
@@ -76,6 +78,8 @@ export interface AskDeps {
    * `!publicMode`, because public mode makes no extra model call for a visitor. `timeoutMs` bounds the generation.
    */
   scenario?: { enabled?: boolean; timeoutMs?: number } | undefined;
+  /** Concurrency and per-minute budgets. Defaults to the process-wide limits from the environment. */
+  limits?: Limits | undefined;
 }
 
 export type AskInput = { chipId: ChipId } | { question: string };
@@ -239,6 +243,44 @@ export async function ask(
   deps: AskDeps,
   opts: AskOptions = {},
 ): Promise<AskResult> {
+  // Validate before taking a permit: a bad question must not occupy a slot.
+  const checked: AskInput =
+    'chipId' in input ? input : { question: cleanQuestion(input.question) };
+  const limits = deps.limits ?? sharedLimits();
+  const release = await limits.acquire('ask', opts.signal);
+  let result: AskResult;
+  // Filled by `askWithinLimits` as soon as a scenario starts, so even a later failure keeps
+  // the permit until that scenario's model call has finished.
+  const started: { scenario?: Promise<unknown> } = {};
+  try {
+    // Model calls are charged to the per-minute ceiling by the metered provider.
+    result = await askWithinLimits(
+      docId,
+      checked,
+      { ...deps, provider: limits.meter(deps.provider) },
+      opts,
+      started,
+    );
+  } catch (error) {
+    if (started.scenario) void started.scenario.finally(release);
+    else release();
+    throw error;
+  }
+  if (!result.scenario) {
+    release();
+    return result;
+  }
+  // A deferred scenario is still model work: keep the permit until it settles (it never rejects).
+  return { ...result, scenario: result.scenario.finally(release) };
+}
+
+async function askWithinLimits(
+  docId: string,
+  input: AskInput,
+  deps: AskDeps,
+  opts: AskOptions,
+  started: { scenario?: Promise<unknown> },
+): Promise<AskResult> {
   const { backend, registry } = deps;
   const { signal } = opts;
   const now = deps.now ?? Date.now;
@@ -271,9 +313,18 @@ export async function ask(
       input.chipId === 'who-affected' ||
       (input.chipId === 'summary' &&
         classifyBill(doc.sections) === 'single-subject');
+    const pending = startScenario(
+      ran.answer,
+      ran.hits,
+      wanted,
+      deps,
+      undefined,
+      signal,
+    );
+    if (pending) started.scenario = pending;
     const settled = await settleScenario(
       ran.answer,
-      startScenario(ran.answer, ran.hits, wanted, deps, undefined, signal),
+      pending,
       opts.deferScenario === true,
       recorder(registry, docId),
     );
@@ -295,11 +346,8 @@ export async function ask(
     };
   }
 
-  const question = input.question.trim();
-  if (!question)
-    throw new AppError('INVALID_INPUT', 'Empty question.', {
-      userMessage: 'Enter a question to ask.',
-    });
+  // Already cleaned and length-checked by `ask`.
+  const question = input.question;
   const guard = guarded(backend, docId, signal);
 
   const mode = deps.retrievalMode ?? 'hybrid_rerank';
@@ -337,16 +385,18 @@ export async function ask(
       withoutSyntheticChunks(c, docId),
     );
 
+  const pending = startScenario(
+    result,
+    usable.filter((hit) => !hit.injected),
+    wantsScenario(question),
+    deps,
+    question,
+    signal,
+  );
+  if (pending) started.scenario = pending;
   const settled = await settleScenario(
     result,
-    startScenario(
-      result,
-      usable.filter((hit) => !hit.injected),
-      wantsScenario(question),
-      deps,
-      question,
-      signal,
-    ),
+    pending,
     opts.deferScenario === true,
     recorder(registry, docId),
   );

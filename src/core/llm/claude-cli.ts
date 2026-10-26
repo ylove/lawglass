@@ -18,6 +18,7 @@ import {
   type TextRequest,
   messageText,
 } from '../model/index.js';
+import { claudeCliPool } from '../pipeline/limits.js';
 import {
   anthropicUsage,
   jsonSchema,
@@ -94,18 +95,22 @@ export class ClaudeCliProvider implements LlmProvider {
   readonly model: string;
   private readonly spawnChild: CliSpawn;
   private readonly timeoutSignal: typeof AbortSignal.timeout | undefined;
+  private readonly removeDir: typeof rm;
 
   constructor(
     private readonly config: ProviderConfig,
     deps: {
       spawn?: CliSpawn;
       timeoutSignal?: typeof AbortSignal.timeout;
+      /** Removes the temp directory; injectable so tests can make cleanup fail. */
+      rm?: typeof rm;
     } = {},
   ) {
     if (!SAFE_MODEL.test(config.model)) throw new AppError('INVALID_INPUT');
     this.model = config.model;
     this.spawnChild = deps.spawn ?? defaultSpawn;
     this.timeoutSignal = deps.timeoutSignal;
+    this.removeDir = deps.rm ?? rm;
     // Injected subprocesses are allowed for offline CI tests; real CLI execution never is.
     if (process.env.CI && !deps.spawn) throw new AppError('PROVIDER_ERROR');
   }
@@ -117,7 +122,12 @@ export class ClaudeCliProvider implements LlmProvider {
     let lines: ReturnType<typeof createInterface> | undefined;
     let signal: AbortSignal | undefined;
     let kill: (() => void) | undefined;
+    let releaseSlot: (() => void) | undefined;
     try {
+      // Each `claude` process is heavy; cap how many run at once. Wait for the slot with only
+      // the caller's signal: the provider timeout bounds a running process, so it must start
+      // after the wait, or queued calls would time out before they begin.
+      releaseSlot = await claudeCliPool().acquire(req.signal);
       signal = requestSignal(
         req.signal,
         this.config.timeoutMs,
@@ -237,12 +247,18 @@ export class ClaudeCliProvider implements LlmProvider {
     } catch (error) {
       throw providerFailure(error);
     } finally {
-      if (kill) signal?.removeEventListener('abort', kill);
-      lines?.close();
-      if (child?.exitCode === null && child.signalCode === null)
-        child.kill('SIGKILL');
-      if (closed) await closed;
-      if (cwd) await rm(cwd, { recursive: true, force: true });
+      // The permit is released even if cleanup throws; otherwise one failed `rm` would
+      // permanently shrink the pool.
+      try {
+        if (kill) signal?.removeEventListener('abort', kill);
+        lines?.close();
+        if (child?.exitCode === null && child.signalCode === null)
+          child.kill('SIGKILL');
+        if (closed) await closed;
+        if (cwd) await this.removeDir(cwd, { recursive: true, force: true });
+      } finally {
+        releaseSlot?.();
+      }
     }
   }
 

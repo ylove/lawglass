@@ -22,6 +22,7 @@ import {
 } from '../../../tests/support/pipeline-env.js';
 import { AppError, type AnswerResult } from '../model/index.js';
 import { ingest, type IngestDeps, type IngestProgress } from './ingest.js';
+import { Limits } from './limits.js';
 
 let env: PipelineEnv;
 afterEach(async () => {
@@ -736,4 +737,69 @@ test('evicting the oldest document at the cap deletes its download and keeps the
   expect(
     JSON.parse(await readFile(join(cacheDir, 'index.json'), 'utf8')),
   ).toEqual({ [urlB]: b.doc.docId });
+});
+
+test('ingest queues beyond its concurrency limit', async () => {
+  env.serve('https://example.gov/s9001.xml', makeCongressionalBillXml());
+  let running = 0;
+  let peak = 0;
+  const releases: (() => void)[] = [];
+  const realFetch = env.runtime.fetcher;
+  const fetcher: IngestDeps['fetcher'] = async (url, options) => {
+    running += 1;
+    peak = Math.max(peak, running);
+    await new Promise<void>((r) => releases.push(r));
+    running -= 1;
+    return realFetch(url, options);
+  };
+  const limits = new Limits(
+    { maxConcurrentIngest: 1, maxConcurrentAsk: 4, maxCallsPerMinute: 100 },
+    () => 0,
+  );
+  const runs = [1, 2].map(() =>
+    ingest('https://example.gov/s9001.xml', deps({ fetcher, limits })),
+  );
+  await vi.waitFor(() => {
+    expect(running).toBe(1);
+  });
+  const state = { settled: false };
+  const all = Promise.allSettled(runs).then((r) => {
+    state.settled = true;
+    return r;
+  });
+  while (!state.settled) {
+    releases.shift()?.();
+    await new Promise((r) => setTimeout(r, 0));
+  }
+  expect((await all).map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
+  expect(peak).toBe(1);
+});
+
+test('ingest charges the per-minute ceiling for its metadata model call', async () => {
+  env.serve('https://example.gov/a.txt', textSample('One.'), 'text/plain');
+  env.serve('https://example.gov/b.txt', textSample('Two.'), 'text/plain');
+  const limits = new Limits(
+    { maxConcurrentIngest: 2, maxConcurrentAsk: 4, maxCallsPerMinute: 1 },
+    () => 0,
+  );
+  const extract = vi.spyOn(env.provider, 'generateObject');
+  await ingest('https://example.gov/a.txt', deps({ limits }));
+  expect(extract).toHaveBeenCalledTimes(1);
+  // Metadata extraction is best-effort, so the ingest still succeeds, but the second model
+  // call is refused by the ceiling before it reaches the provider.
+  await ingest('https://example.gov/b.txt', deps({ limits }));
+  expect(extract).toHaveBeenCalledTimes(1);
+  expect(limits.pool('ingest').inFlight).toBe(0);
+});
+
+test('an already-aborted ingest does nothing', async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const fetcher = vi.fn();
+  await expect(
+    ingest('https://example.gov/s9001.xml', deps({ fetcher }), {
+      signal: controller.signal,
+    }),
+  ).rejects.toBeDefined();
+  expect(fetcher).not.toHaveBeenCalled();
 });

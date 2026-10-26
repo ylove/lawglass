@@ -11,6 +11,7 @@ import {
   type SearchHit,
 } from '../model/index.js';
 import { coveredSectionIds, validateCitations } from './citations.js';
+import { createEchoGuard, echoesSystemPrompt } from './echo.js';
 import { buildPrompt } from './prompt.js';
 import { fleschKincaidGrade, stripCitations } from './readability.js';
 
@@ -70,6 +71,8 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
   }
 
   let raw = '';
+  const guard = createEchoGuard(prompt.system);
+  let streamedAny = false;
   let usage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
   let stopReason: string | null = null;
   let finished = false;
@@ -81,7 +84,12 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
   })) {
     if (event.type === 'text') {
       raw += event.text;
-      onToken?.(event.text);
+      // Never stream a recited system prompt; the final text is replaced by a decline below.
+      const safe = guard.push(event.text);
+      if (safe) {
+        streamedAny = true;
+        onToken?.(safe);
+      }
     } else {
       usage = event.usage;
       stopReason = event.stopReason;
@@ -93,7 +101,6 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
     stopReason !== null && TRUNCATION_STOP_REASONS.has(stopReason);
   if (truncated) {
     raw = `${raw.trimEnd()}…`;
-    onToken?.('…');
   }
 
   const sectionIds = new Set(
@@ -104,6 +111,33 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
     sectionIds,
     prompt.hits.map((h) => h.chunk),
   );
+  // After citation validation, so the check sees the text the user would get. The streaming
+  // guard keeps a recited run from reaching `onToken`; the final text is what callers store.
+  const echoed = echoesSystemPrompt(validated.text, prompt.system);
+  if (!echoed) {
+    // The guard may have paused streaming on a lookalike; catch the consumer up.
+    const rest = guard.withheld();
+    if (rest) onToken?.(rest);
+    if (truncated) onToken?.('…');
+  }
+  if (echoed) {
+    // Consumers that print only streamed tokens (the CLI) would otherwise show a cut-off answer.
+    onToken?.(streamedAny ? `\n${DECLINE_TEXT}` : DECLINE_TEXT);
+    return {
+      text: DECLINE_TEXT,
+      citations: [],
+      // The echo's example markers are still invented ids; report them like any other.
+      invalidCitations: validated.invalidCitations,
+      warnings:
+        validated.invalidCitations.length > 0
+          ? ['INVALID_CITATIONS_REMOVED']
+          : [],
+      declined: true,
+      readingGrade: fleschKincaidGrade(DECLINE_TEXT),
+      ...base,
+      usage,
+    };
+  }
   return {
     text: validated.text,
     citations: validated.citations,
