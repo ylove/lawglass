@@ -497,7 +497,10 @@ describe('claude subprocess budget', () => {
       ...textRequest,
       signal: first.signal,
     }).catch(() => 'aborted');
-    await settle();
+    // Wait for conditions, not fixed sleeps: spawning writes a temp file first and can be slow.
+    await vi.waitFor(() => {
+      expect(fake.calls).toHaveLength(1);
+    });
     const run2 = drain(provider, {
       ...textRequest,
       signal: second.signal,
@@ -507,9 +510,10 @@ describe('claude subprocess budget', () => {
     expect(timeoutSignal).toHaveBeenCalledTimes(1);
     expect(fake.calls).toHaveLength(1);
     first.abort();
-    await settle();
+    await vi.waitFor(() => {
+      expect(fake.calls).toHaveLength(2);
+    });
     expect(timeoutSignal).toHaveBeenCalledTimes(2);
-    expect(fake.calls).toHaveLength(2);
     second.abort();
     await Promise.all([run1, run2]);
   });
