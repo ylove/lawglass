@@ -13,6 +13,7 @@ interface EventFields {
     | 'ingest_finish'
     | 'metadata_failed'
     | 'excerpt_talk_dropped'
+    | 'excerpt_talk_reworded'
     | 'regeneration_refused';
   status: number;
   code?: string;
@@ -21,7 +22,7 @@ interface EventFields {
   docId?: string;
   host?: string;
   chunks?: number;
-  /** Sentences removed (excerpt_talk_dropped). */
+  /** Sentences removed or reworded (excerpt_talk_dropped, excerpt_talk_reworded). */
   count?: number;
 }
 

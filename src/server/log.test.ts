@@ -99,3 +99,26 @@ test('a skipped reference logs a citation and a code, and nothing else', () => {
   expect(second).toMatchObject({ citation: 'unknown', code: 'ERROR' });
   expect(lines.join('')).not.toContain('secret');
 });
+
+test('background answer events log a count or a code, never text', () => {
+  const lines: string[] = [];
+  const log = createLogger(
+    (line) => {
+      lines.push(line);
+    },
+    () => 0,
+  );
+  log.backgroundAnswerEvent({ event: 'excerpt_talk_reworded', count: 2 });
+  log.backgroundAnswerEvent({
+    event: 'regeneration_refused',
+    reason: 'TIMEOUT',
+  });
+  const [reworded, refused] = lines.map(
+    (l) => JSON.parse(l) as Record<string, unknown>,
+  );
+  expect(reworded).toMatchObject({ event: 'excerpt_talk_reworded', count: 2 });
+  expect(refused).toMatchObject({
+    event: 'regeneration_refused',
+    code: 'TIMEOUT',
+  });
+});

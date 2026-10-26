@@ -1,6 +1,6 @@
 import { expect, test } from 'vitest';
 import type { IngestResult } from '../core/pipeline/index.js';
-import { formatIngest, formatList } from './format.js';
+import { formatAnswerLog, formatIngest, formatList } from './format.js';
 
 function result(refs: number, label = 'bill'): IngestResult {
   return {
@@ -65,4 +65,16 @@ test('document-derived strings are sanitized', () => {
       } as never,
     ]),
   ).not.toMatch(/\u001b/);
+});
+
+test('answer-log notes name what happened, with counts only', () => {
+  expect(formatAnswerLog({ event: 'excerpt_talk_dropped', count: 1 })).toBe(
+    'note: removed 1 sentence(s) about the excerpts',
+  );
+  expect(formatAnswerLog({ event: 'excerpt_talk_reworded', count: 2 })).toBe(
+    'note: reworded 2 cited sentence(s) that mentioned the excerpts',
+  );
+  expect(
+    formatAnswerLog({ event: 'regeneration_refused', reason: 'NOT_SIMPLER' }),
+  ).toBe('note: kept the original wording (regeneration refused: NOT_SIMPLER)');
 });

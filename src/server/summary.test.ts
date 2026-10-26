@@ -27,6 +27,7 @@ import {
   SUMMARY_CACHE_VERSION,
   waitForSummary,
 } from './summary.js';
+import { EXCERPT_FILTER_VERSION } from '../core/answer/excerpt-filter.js';
 import { REGENERATION_VERSION } from '../core/answer/regenerate.js';
 import { forgetDocument } from '../core/answer/context.js';
 import { AnswerCache } from '../core/answer-cache.js';
@@ -302,9 +303,9 @@ describe('GET /api/docs/:docId/summary', () => {
     });
   });
 
-  test('the cache version covers the regeneration rule', () => {
-    expect(SUMMARY_CACHE_VERSION.endsWith(`.${REGENERATION_VERSION}`)).toBe(
-      true,
+  test('the cache version covers the regeneration rule and the excerpt filter', () => {
+    expect(SUMMARY_CACHE_VERSION.split('.')).toEqual(
+      expect.arrayContaining([REGENERATION_VERSION, EXCERPT_FILTER_VERSION]),
     );
   });
 
