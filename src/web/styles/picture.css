@@ -1,0 +1,156 @@
+/* Picture panels (#345): a small line drawing above a summary bullet or a section brief. Clip
+   art on purpose, to illustrate and not to decorate: thin strokes, the muted ink for the things,
+   the accent only for what links them. Colours come from tokens, so dark mode follows. */
+.brief-text ul > li.picture-item,
+.summary-text ul > li.picture-item,
+.brief-text ol > li.picture-item,
+.summary-text ol > li.picture-item {
+  /* The drawing gets the full card width; the caption below keeps the list's own indent and bullet. */
+  list-style: none;
+  margin-left: -1.5rem;
+  padding-left: 0;
+}
+.picture-item figure {
+  margin: 0.25rem 0 0.5rem;
+}
+.picture-item figcaption {
+  display: list-item;
+  list-style: disc outside;
+  margin: 0.4rem 0 0 1.5rem;
+  padding-left: 0.25rem;
+}
+.picture-item figcaption::marker {
+  color: var(--muted);
+}
+.brief-picture {
+  margin: 0 0 0.6rem;
+}
+
+.picture-panels {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9.5rem, 1fr));
+  gap: 0.5rem;
+}
+.picture-panels[data-count='1'] {
+  grid-template-columns: minmax(9.5rem, 16rem);
+}
+.pp-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  gap: 0.35rem;
+  min-width: 0;
+  padding: 0.6rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--soft);
+  color: var(--muted);
+}
+.pp-scene {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  min-width: 0;
+}
+.pp-side {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2rem;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+.pp-glyphs {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.1rem;
+}
+.pp-glyph {
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: none;
+  color: var(--ink);
+}
+.pp-glyphs[data-count='3'] .pp-glyph {
+  width: 1.4rem;
+  height: 1.4rem;
+}
+.pp-label,
+.pp-note {
+  max-width: 6rem;
+  font-size: var(--text-xs);
+  line-height: 1.2;
+  text-align: center;
+  overflow-wrap: break-word;
+}
+.pp-link {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.1rem;
+  flex: none;
+  color: var(--accent);
+}
+.pp-carry {
+  width: 1.35rem;
+  height: 1.35rem;
+}
+.pp-arrow {
+  position: relative;
+  display: inline-flex;
+}
+.pp-arrow-icon {
+  width: 1.6rem;
+  height: 1.6rem;
+}
+/* Blocked: the arrow is faded and a barred circle sits on it, so it reads without colour. */
+.pp-link[data-link='blocked'] .pp-arrow-icon {
+  opacity: 0.45;
+}
+.pp-ban {
+  position: absolute;
+  inset: 0;
+  margin: auto;
+  width: 1.5rem;
+  height: 1.5rem;
+  color: var(--err-ink);
+  background: var(--soft);
+  border-radius: 50%;
+}
+.pp-note {
+  color: var(--muted);
+}
+.pp-stamp {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  max-width: 100%;
+  padding: 0.1rem 0.45rem 0.1rem 0.3rem;
+  border: 1px solid var(--accent);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--accent);
+  font-size: var(--text-xs);
+  font-weight: 600;
+  line-height: 1.2;
+}
+.pp-stamp[data-stamp='no'] {
+  border-color: var(--err-ink);
+  color: var(--err-ink);
+}
+.pp-stamp-icon {
+  width: 1rem;
+  height: 1rem;
+  flex: none;
+}
+
+@media (max-width: 30rem) {
+  .pp-glyph {
+    width: 1.5rem;
+    height: 1.5rem;
+  }
+}
