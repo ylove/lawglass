@@ -12,10 +12,10 @@ import { makeSectionedText } from '../../tests/synth/index.js';
 import { safeFetch } from '../core/fetch/index.js';
 import { writeCache } from '../core/fetch/cache.js';
 import { createApp, type AppOptions } from './app.js';
-import { privateCookieValue, SESSION_COOKIE } from './session.js';
+import { privateCookieValue, sessionCookieName } from './session.js';
 
 const accessKey = 'k'.repeat(40);
-const cookie = `${SESSION_COOKIE}=${privateCookieValue(accessKey)}`;
+const cookie = `${sessionCookieName(4317, true)}=${privateCookieValue(accessKey)}`;
 const sourceUrl = 'https://govinfo.gov/a.txt';
 let env: PipelineEnv;
 let root: string;
@@ -27,7 +27,7 @@ beforeEach(async () => {
   await mkdir(join(root, 'assets'));
   await writeFile(join(root, 'index.html'), '<div id="root">SPA</div>');
   await writeFile(join(root, 'assets/app.js'), 'SECRET SPA BUNDLE');
-  await writeFile(join(root, 'gate.css'), 'main { color: navy; }');
+  await writeFile(join(root, 'site.css'), 'main { color: navy; }');
 });
 afterEach(async () => {
   vi.useRealTimers();
@@ -51,6 +51,21 @@ const post = (url = sourceUrl, headers: Record<string, string> = {}) => ({
   body: JSON.stringify({ url }),
 });
 
+test('private sessions keep the original cookie name, whatever the port', async () => {
+  const a = app({ sessionPort: () => 8080 });
+  const exchange = await a.request(`https://preview.example/?k=${accessKey}`);
+  const cookie = exchange.headers.get('set-cookie')?.split(';')[0] ?? '';
+  expect(cookie).toBe(
+    `${sessionCookieName(8080, true)}=${privateCookieValue(accessKey)}`,
+  );
+  const response = await a.request('https://preview.example/api/docs', {
+    headers: { cookie },
+  });
+  expect(response.status).toBe(200);
+  expect(sessionCookieName(8080, true)).toBe(sessionCookieName(4317, true));
+  expect(sessionCookieName(8080, true)).not.toContain('8080');
+});
+
 test('gate and only brand assets are accessible without a session; the full app works with an invite', async () => {
   const a = app({ publicOrigin: 'https://preview.example' });
   const gate = await a.request('http://preview.example/');
@@ -59,12 +74,13 @@ test('gate and only brand assets are accessible without a session; the full app 
   expect(html).toContain('og:title');
   expect(html).toContain('https://preview.example/');
   expect(html).not.toMatch(/og:image|<img|apple-touch-icon/);
+  expect(html).toContain('Know what a bill really says.');
   expect(html).not.toContain('SPA');
   expect((await a.request('/api/docs')).status).toBe(401);
   expect(await (await a.request('/assets/app.js')).text()).not.toContain(
     'SECRET SPA BUNDLE',
   );
-  expect((await a.request('/gate.css')).headers.get('content-type')).toContain(
+  expect((await a.request('/site.css')).headers.get('content-type')).toContain(
     'text/css',
   );
   expect((await a.request('/favicon.svg')).status).toBe(404);
@@ -93,6 +109,19 @@ test('gate and only brand assets are accessible without a session; the full app 
     body: JSON.stringify({ question: 'Who must file a report?' }),
   });
   expect(await answer.text()).toContain('"type":"done"');
+});
+
+test('the quickstart is public, also for signed-in visitors, and answers HEAD', async () => {
+  const a = app();
+  for (const headers of [{} as Record<string, string>, { cookie }]) {
+    const page = await a.request('/quickstart', { headers });
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain('on your computer');
+    expect(
+      (await a.request('/quickstart', { headers, method: 'HEAD' })).status,
+    ).toBe(200);
+  }
+  expect((await a.request('/quickstart', { method: 'POST' })).status).toBe(401);
 });
 
 test('keeps Origin, cross-site, content-type and body-size guards', async () => {
@@ -308,7 +337,7 @@ test('local ingest has no hosted deadline', async () => {
   });
   const response = await local.request(
     '/api/ingest',
-    post(sourceUrl, { cookie: `${SESSION_COOKIE}=${accessKey}` }),
+    post(sourceUrl, { cookie: `${sessionCookieName(4317)}=${accessKey}` }),
   );
   expect(await response.text()).toContain('"type":"done"');
 });

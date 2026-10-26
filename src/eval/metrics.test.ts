@@ -4,6 +4,8 @@ import {
   declineRate,
   deletedLeakageRate,
   findLeakedSpans,
+  inventedAnswerRate,
+  isEvalDecline,
   hitSectionIds,
   mean,
   p50,
@@ -155,6 +157,48 @@ describe('declineRate', () => {
   });
 });
 
+describe('eval declines', () => {
+  test.each([
+    "The excerpts don't show any tax cuts. They describe a pilot program. [S:sec-3/a]",
+    'The bill does not say who pays the local tax. It sets up a pilot program. [S:sec-3/a]',
+    'This document does not address tax cuts. [S:sec-3/a]',
+    'The provided excerpts do not specify a tax rate. [S:sec-3/a]',
+    "I couldn't find any tax cuts in the document. It describes a pilot program. [S:sec-3/a]",
+    'I couldn’t find that information in the bill.',
+    "This document doesn't address that question. It sets up a pilot program. [S:sec-3/a]",
+  ])('counts a realistic soft decline: %s', (text) => {
+    const answer = outcome({ kind: 'unanswerable', text });
+    expect(isEvalDecline(answer)).toBe(true);
+    expect(declineRate([answer])).toBe(1);
+    expect(inventedAnswerRate([answer])).toBe(0);
+  });
+
+  test.each([
+    'The bill provides tax cuts of ten percent. [S:sec-3/a]',
+    'The bill does not require employers to pay tax. [S:sec-3/a]',
+    'I found a tax exemption. [S:sec-3/a]',
+    "The program offers grants. The excerpts don't cover the tax deadline. [S:sec-3/a]",
+  ])(
+    'keeps substantive answers distinct from a no-answer lead-in: %s',
+    (text) => {
+      expect(isEvalDecline(outcome({ text }))).toBe(false);
+    },
+  );
+
+  test('reports the unanswerable non-declines separately and leaves an absent denominator undefined', () => {
+    expect(inventedAnswerRate([])).toBeUndefined();
+    expect(inventedAnswerRate([outcome({ kind: 'exact' })])).toBeUndefined();
+    const outcomes = [
+      outcome({ kind: 'unanswerable', declined: true }),
+      outcome({ kind: 'unanswerable', text: "I couldn't find it." }),
+      outcome({ kind: 'unanswerable', text: 'The rate is ten percent.' }),
+      outcome({ kind: 'exact', text: 'The rate is ten percent.' }),
+    ];
+    expect(declineRate(outcomes)).toBe(2 / 3);
+    expect(inventedAnswerRate(outcomes)).toBe(1 / 3);
+  });
+});
+
 describe('deleted-text leakage', () => {
   const struck = [
     'The harvest permit fee is twenty dollars for each steward.',
@@ -236,6 +280,57 @@ describe('deleted-text leakage', () => {
       ).toBe(0);
     },
   );
+
+  test.each([
+    'The fee used to be twenty dollars for each steward.',
+    'Previously, the harvest permit fee is twenty dollars for each steward.',
+    'The bill replaces “The harvest permit fee is twenty dollars for each steward.”',
+    'The harvest permit fee is twenty dollars for each steward. That rule is removed by the bill.',
+    'The harvest permit fee is twenty dollars for each steward. The bill no longer includes this sentence.',
+  ])(
+    'recognizes paraphrased and following-sentence acknowledgements: %s',
+    (text) => {
+      expect(findLeakedSpans(text, struck)).toEqual([]);
+    },
+  );
+
+  test.each([
+    'The bill removes the cap, so each orchard steward shall pay twenty dollars per season.',
+    'Each orchard steward shall pay twenty dollars per season. The bill removes the cap.',
+    'Each orchard steward shall pay twenty dollars per season. That rule is not removed.',
+    'Each orchard steward shall pay twenty dollars per season.\n\nThat rule is removed.',
+  ])('unrelated or negated cues cannot mask a leak: %s', (text) => {
+    const deleted = 'Each orchard steward shall pay twenty dollars per season.';
+    expect(findLeakedSpans(text, [deleted])).toEqual([deleted]);
+  });
+
+  test('live words in a different order do not make a distinctive deleted n-gram', () => {
+    expect(
+      findLeakedSpans(
+        'If the accused used force in self-defense, the prosecution must prove it.',
+        ['The person used force in self-defense.'],
+        [
+          'The accused used the force in self-defense.',
+          'A person using force in self-defense.',
+        ],
+      ),
+    ).toEqual([]);
+  });
+
+  test('checks distinctive n-grams within a longer quotation shared partly with live law', () => {
+    const deleted =
+      'The harvest permit fee is twenty dollars for each orchard steward per season.';
+    const live =
+      'The harvest permit fee is twelve dollars for each orchard steward per season.';
+    expect(findLeakedSpans(deleted, [deleted], [live])).toEqual([deleted]);
+    expect(
+      findLeakedSpans(
+        'For each orchard steward per season, the harvest permit fee is payable.',
+        [deleted],
+        [live],
+      ),
+    ).toEqual([]);
+  });
 
   test('a removed answer asserting the deleted fee as current law leaks', () => {
     expect(

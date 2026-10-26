@@ -14,7 +14,7 @@ import { createHttpApi } from '../web/api.js';
 import { envVar } from '../core/brand.js';
 import { createLauncher } from './launch.js';
 import { startServer, type RunningServer } from './serve.js';
-import { SESSION_COOKIE } from './session.js';
+import { sessionCookieName } from './session.js';
 
 let env: PipelineEnv;
 let webRoot: string;
@@ -409,11 +409,25 @@ describe('launch boundary', () => {
     );
     const response = await fetch(new URL('/api/health', server.url), {
       headers: {
-        cookie: `${SESSION_COOKIE}=${first.searchParams.get('k') ?? ''}`,
+        cookie: `${sessionCookieName(server.port)}=${first.searchParams.get('k') ?? ''}`,
       },
     });
     expect(response.status).toBe(401);
     await response.arrayBuffer();
+  });
+  test('the session cookie uses the actual port chosen by the listener', async () => {
+    server = await startServer(env.runtime, { port: 0 });
+    const response = await fetch(server.url, { redirect: 'manual' });
+    const cookie = response.headers.get('set-cookie')?.split(';')[0] ?? '';
+    expect(cookie).toBe(
+      `${sessionCookieName(server.port)}=${new URL(server.url).searchParams.get('k') ?? ''}`,
+    );
+    await response.arrayBuffer();
+    const health = await fetch(new URL('/api/health', server.url), {
+      headers: { cookie },
+    });
+    expect(health.status).toBe(200);
+    await health.arrayBuffer();
   });
   test('a public launch link names the document to open, without a key', async () => {
     const docId = 'c'.repeat(64);
@@ -551,7 +565,7 @@ test('private server permits network binds without generating a launch token', a
   expect(new URL(server.url).search).toBe('');
   const url = `http://127.0.0.1:${String(server.port)}`;
   const response = await fetch(url);
-  expect(await response.text()).toContain('This is a private preview.');
+  expect(await response.text()).toContain('Know what a bill really says.');
   const exchange = await fetch(`${url}/?k=${accessKey}`, {
     redirect: 'manual',
   });

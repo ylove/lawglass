@@ -5,7 +5,7 @@
  * Convention for empty input: a metric with no data to average returns 0, never NaN, so a
  * result row always serializes. Callers decide whether an empty denominator is worth showing.
  */
-import type { QuestionKind } from '../core/model/index.js';
+import { DECLINE_TEXT, type QuestionKind } from '../core/model/index.js';
 
 // ---------------------------------------------------------------------------------------------
 // Retrieval
@@ -120,11 +120,44 @@ export function citationValidity(outcomes: readonly AnswerOutcome[]): number {
   return valid + invalid === 0 ? 0 : valid / (valid + invalid);
 }
 
-/** Share of `unanswerable` questions whose answer was the decline sentence. */
+/** Eval accepts an explicit no-answer lead-in followed by cited context about the bill. */
+export function isEvalDecline(
+  outcome: Pick<AnswerOutcome, 'text' | 'declined'>,
+): boolean {
+  if (outcome.declined) return true;
+  const text = outcome.text
+    .replace(/[\u2018\u2019\u02bc]/g, "'")
+    .replace(/[*_]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+  if (text.startsWith(DECLINE_TEXT.toLowerCase())) return true;
+  return (
+    /^(?:(?:the|this) (?:bill|document|text|legislation)|(?:the )?(?:(?:provided|available) )?excerpts?) (?:does not|doesn't|do not|don't) (?:show|cover|address|say|specify|provide|mention|include|state|contain|discuss)\b/.test(
+      text,
+    ) ||
+    /^(?:i|we) (?:could not|couldn't|cannot|can't|did not|didn't) find\b/.test(
+      text,
+    )
+  );
+}
+
+/** Share of `unanswerable` questions whose answer explicitly declines, including soft declines. */
 export function declineRate(outcomes: readonly AnswerOutcome[]): number {
   const unanswerable = outcomes.filter((o) => o.kind === 'unanswerable');
   if (unanswerable.length === 0) return 0;
-  return unanswerable.filter((o) => o.declined).length / unanswerable.length;
+  return unanswerable.filter(isEvalDecline).length / unanswerable.length;
+}
+
+/** Heuristic proxy for invention: a non-decline on an unanswerable question, not a fact check. */
+export function inventedAnswerRate(
+  outcomes: readonly AnswerOutcome[],
+): number | undefined {
+  const unanswerable = outcomes.filter((o) => o.kind === 'unanswerable');
+  if (unanswerable.length === 0) return undefined;
+  return (
+    unanswerable.filter((o) => !isEvalDecline(o)).length / unanswerable.length
+  );
 }
 
 /** Lowercase, drop punctuation and collapse whitespace, so formatting cannot hide a copy. */
@@ -141,11 +174,19 @@ export const MIN_LEAK_WORDS = 4;
 
 /** Words that signal an answer is talking about removal rather than describing current law. */
 const REMOVAL_LANGUAGE =
-  /\b(?:remov\w*|struck|strik\w*|delet\w*|repeal\w*|eliminat\w*|no longer|omitted)\b/i;
+  /\b(?:remov\w*|struck|strik\w*|delet\w*|repeal\w*|eliminat\w*|no longer|omitted|used to be|previously|formerly|replac\w*)\b/i;
 
-/** Keep quoted sentences with their introduction or trailing removal acknowledgement. */
-function answerClaims(text: string): string[] {
-  const claims: string[] = [];
+interface AnswerClaim {
+  text: string;
+  sentence: number;
+  paragraph: number;
+}
+
+/** Keep quoted sentences intact, but keep unrelated clauses out of removal context. */
+function answerClaims(text: string): AnswerClaim[] {
+  const claims: AnswerClaim[] = [];
+  let sentence = 0;
+  let paragraph = 0;
   let start = 0;
   let quoted = false;
   for (let i = 0; i < text.length; i++) {
@@ -155,24 +196,26 @@ function answerClaims(text: string): string[] {
     else if (char === '"') quoted = !quoted;
     if (quoted) continue;
     // A single newline may just wrap a quotation. Paragraphs and list items separate claims.
-    const paragraph =
+    const paragraphBreak =
       char === '\n' && /^\s*\n|^\s*[-*]\s/.test(text.slice(i + 1));
-    if (/[.!?;]/.test(char) || paragraph) {
-      claims.push(text.slice(start, i));
+    if (/[.!?;]/.test(char) || paragraphBreak) {
+      claims.push({ text: text.slice(start, i), sentence, paragraph });
+      if (/[.!?]/.test(char) || paragraphBreak) sentence++;
+      if (paragraphBreak) paragraph++;
       start = i + 1;
     } else if (i === 0 || /\W/.test(text[i - 1] ?? '')) {
       const conjunction =
-        /^(?:but|however|yet|and(?=\s+(?:the|this|it|they|currently|now)\b))\b/i.exec(
+        /^(?:but|however|yet|so|therefore|thus|because|while|whereas|although|and(?=\s+(?:the|this|it|they|currently|now)\b))\b/i.exec(
           text.slice(i),
         );
       if (conjunction) {
-        claims.push(text.slice(start, i));
+        claims.push({ text: text.slice(start, i), sentence, paragraph });
         start = i + conjunction[0].length;
         i = start - 1;
       }
     }
   }
-  claims.push(text.slice(start));
+  claims.push({ text: text.slice(start), sentence, paragraph });
   return claims;
 }
 
@@ -187,21 +230,36 @@ function acknowledgesRemoval(context: string): boolean {
 
 /**
  * Deleted runs quoted as current law, including partial quotations of at least four words.
- * A quotation must be absent from live text to be distinctive: the old and replacement fee
- * sentences share most of their words. This is an exact-text heuristic, not a paraphrase judge.
+ * Each matching four-word run needs a word absent from live text: word order alone can
+ * distinguish a harmless paraphrase of live law. This is a conservative exact-text heuristic,
+ * not a paraphrase judge.
  */
 export function findLeakedSpans(
   answerText: string,
   struckSpans: readonly string[],
   liveTexts: readonly string[] = [],
 ): string[] {
-  const claims = answerClaims(answerText).map((claim) =>
-    normalizeForMatch(claim).split(' '),
+  const claims = answerClaims(answerText);
+  const liveWords = new Set(
+    liveTexts.flatMap((text) => normalizeForMatch(text).split(' ')),
   );
-  const live = liveTexts.map((text) => ` ${normalizeForMatch(text)} `);
   return struckSpans.filter((span) => {
     const deleted = normalizeForMatch(span).split(' ');
-    for (const words of claims) {
+    for (const claim of claims) {
+      const words = normalizeForMatch(claim.text).split(' ');
+      const following = claims
+        .filter(
+          (next) =>
+            next.sentence === claim.sentence + 1 &&
+            next.paragraph === claim.paragraph,
+        )
+        .map((next) => next.text)
+        .join(' ');
+      // A trailing acknowledgement must refer back to this rule, not a different removal.
+      const trailingAcknowledgement =
+        /\b(?:this|that|these|those|it|the quoted (?:text|sentence|rule|provision))\b/i.test(
+          following,
+        ) && acknowledgesRemoval(normalizeForMatch(following));
       for (let from = 0; from <= words.length - MIN_LEAK_WORDS; from++) {
         for (
           let source = 0;
@@ -220,13 +278,21 @@ export function findLeakedSpans(
           )
             length++;
           if (length < MIN_LEAK_WORDS) continue;
-          const quotation = ` ${words.slice(from, from + length).join(' ')} `;
-          if (live.some((text) => text.includes(quotation))) continue;
+          const quotation = words.slice(from, from + length);
+          const distinctiveRun = quotation.some(
+            (_, offset) =>
+              offset <= quotation.length - MIN_LEAK_WORDS &&
+              quotation
+                .slice(offset, offset + MIN_LEAK_WORDS)
+                .some((word) => !liveWords.has(word)),
+          );
+          if (!distinctiveRun) continue;
           const context = [
             ...words.slice(0, from),
             ...words.slice(from + length),
           ].join(' ');
-          if (!acknowledgesRemoval(context)) return true;
+          if (!acknowledgesRemoval(context) && !trailingAcknowledgement)
+            return true;
         }
       }
     }

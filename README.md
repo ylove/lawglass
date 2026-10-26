@@ -59,6 +59,13 @@ npx lawglass serve --port 4317          # local web UI; --public allows chips on
 npx lawglass mcp                        # Model Context Protocol server on stdio, for AI agents (prototype)
 ```
 
+**Install warnings.** npm may report deprecation notices for `whatwg-encoding` (through `cheerio` →
+`encoding-sniffer`) and `node-domexception` (through `@google/genai` →
+`google-auth-library` → `gaxios` → `node-fetch` → `fetch-blob`). These are harmless
+notices from transitive dependencies and do not prevent installation or use. The current
+Cheerio release and newer Google SDK still use these dependency chains; removing the
+notices awaits compatible upstream updates.
+
 Paste a bill's own page, for example:
 
 - A federal bill on congress.gov: `https://www.congress.gov/bill/119th-congress/senate-bill/202`
@@ -219,6 +226,12 @@ Caveats: 21 to 28 questions per bill means one question moves recall@5 by about 
 - **Bring your own keys.** `init` writes the config file with mode 0600. A config file that other users can read is refused: commands skip it with a warning, and `init` stops unless `--force` replaces it. Keys are read from the environment first, then that file, then a masked prompt on a TTY. Keys go only to their own provider, are not inferred from another provider's variables, and are never logged or put in error messages; SDK diagnostic logging is off: before the Pinecone SDK is constructed, `PINECONE_DEBUG` (request and response bodies) and `PINECONE_DEBUG_CURL` (the `Api-Key` header) are cleared from the process environment, in both the CLI runtime and the adapter. `.env` and fixtures are ignored by git, and CI runs Gitleaks over the full history.
 - **`claude-cli` sandboxing.** Each call runs in a fresh temporary directory holding only the system prompt file, with built-in tools disabled (`--tools ""`), all MCP servers disabled, one turn, slash commands, hooks and settings sources off, no session persistence, and no permission-bypass flag. The child sees only basic process variables plus `CLAUDE_*` and `ANTHROPIC_*`, so other providers' keys and app settings are excluded. `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are withheld too, so the CLI bills your Claude login, unless you set `LAWGLASS_CLAUDE_CLI_USE_API_KEY=1`. The model name must match `^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$`, so it cannot be read as a flag. It refuses to run for real in CI.
 
+Session cookie names include the server port so local instances do not overwrite each other’s
+sessions. Cookies are scoped by host, not port: other services on the same host (including
+`127.0.0.1`) can receive them. The name separates instances; it does not isolate the cookie.
+A hosted private preview (`serve --private`) runs one instance per host and keeps the plain name.
+Behind a proxy, the name uses the server’s listening port (for example, `8080`).
+
 ### Hosting a private preview
 
 Invite holders get the full app, including free-form questions, scenarios and live summaries.
@@ -337,12 +350,14 @@ Conventions are in [`AGENTS.md`](AGENTS.md): the frozen contracts in `src/core/m
 
 ## Roadmap
 
+Scheduled work is in [issues](https://github.com/ylove/lawglass/issues). Designed but unscheduled work, with sizes and prerequisites, is in [docs/roadmap.md](docs/roadmap.md).
+
 - **v1.5:** resolve a bill from number plus jurisdiction to a URL, then run the same pipeline.
 - **v2:** natural-language discovery search across bills.
 - **v2:** official secondary sources only (fiscal notes, nonpartisan analyses). News articles are never used.
 - Read more of the law a bill refers to. Today only U.S. Code definitions the bill borrows are read; everything else is an official link.
 - Akoma Ntoso export of the normalized document.
-- **Known gaps from the eval:** the forks/flatware miss on large bills; a sturdier signal for "is this question about what changed" ([#104](https://github.com/ylove/lawglass/issues/104)); before-and-after excerpts for one-word strikes in free-form questions ([#102](https://github.com/ylove/lawglass/issues/102)); consistent declines ([#109](https://github.com/ylove/lawglass/issues/109)); answers closer to a 7th-grade reading level, including the section-by-section briefs ([#320](https://github.com/ylove/lawglass/issues/320)).
+- **Known gaps from the eval:** the forks/flatware miss on large bills, and a sturdier signal for "is this question about what changed" ([roadmap](docs/roadmap.md#answers)).
 - **More states**, family by family: the 20 states that mark changes with strike-through and underline, like Ohio, come first ([plan](docs/jurisdictions.md)).
 - **Agent access:** run the pre-registered MCP evaluation (Lawglass tools against the same bills pasted into a model with citations and caching) before making any claim about it.
 - An open public site. The hosted preview stays invite-only until public mode has had its own review ([#180](https://github.com/ylove/lawglass/issues/180)).

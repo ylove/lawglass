@@ -141,6 +141,12 @@ export const AmendsTarget = z.object({
   name: z.string().min(1),
   jurisdiction: z.string().optional(),
   sections: z.array(z.string()),
+  /**
+   * Ids of the document's own sections that reprint amended text (struck or inserted), so a
+   * UI can link a listed number to the reprinted section and never to a section of the
+   * measure itself that happens to share the number. Absent on older cached documents.
+   */
+  sectionIds: z.array(SectionId).optional(),
 });
 export type AmendsTarget = z.infer<typeof AmendsTarget>;
 

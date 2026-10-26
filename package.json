@@ -35,6 +35,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "brand:assets": "tsx scripts/brand-assets.ts",
+    "site:shots": "tsx scripts/site-shots.ts",
     "history:canary": "tsx scripts/history-canary.ts",
     "fixtures:fetch": "tsx scripts/fetch-fixtures.ts",
     "eval:smoke": "tsx scripts/eval-smoke.ts",
@@ -88,7 +89,7 @@
     "tsup": "8.5.1",
     "tsx": "4.23.15",
     "typescript": "6.0.3",
-    "typescript-eslint": "8.71.2",
+    "typescript-eslint": "8.72.0",
     "vite": "8.3.4",
     "vitest": "5.0.5"
   }

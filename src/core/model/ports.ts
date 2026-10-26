@@ -87,6 +87,12 @@ export interface RetrievalBackend {
     docId: string,
     chunks: readonly Chunk[],
     onProgress?: (p: UpsertProgress) => void,
+    /**
+     * Cancels the upsert between embedding and upsert batches and before completion is
+     * published. A cancelled first write leaves no document visible; a cancelled update never
+     * leaves a half-written generation that reads as complete.
+     */
+    signal?: AbortSignal,
   ): Promise<{ usage: BackendUsage }>;
   search(
     req: SearchRequest,

@@ -18,6 +18,7 @@ import { MetadataHeader } from './document/MetadataHeader.js';
 import { NoticeBar } from './document/NoticeBar.js';
 import { ReferencedCard } from './document/ReferencedCard.js';
 import { FactsCard } from './document/FactsCard.js';
+import { AmendmentsCard } from './document/AmendmentsCard.js';
 import { HistoryCard } from './document/HistoryCard.js';
 import { ServerDownCard } from './document/ServerDownCard.js';
 import { SummaryPanel } from './document/SummaryPanel.js';
@@ -239,10 +240,17 @@ export function DocumentView({
         </div>
         <aside aria-label="About this bill" className="doc-aside">
           <FactsCard detail={detail} />
-          <HistoryCard history={detail.history} />
+          <HistoryCard
+            history={detail.history}
+            allActionsUrl={detail.historyLinks?.actions}
+          />
           <ReferencedCard
             externalRefs={detail.externalRefs}
             onOpenReference={openSection}
+          />
+          <AmendmentsCard
+            history={detail.history}
+            allAmendmentsUrl={detail.historyLinks?.amendments}
           />
         </aside>
       </div>

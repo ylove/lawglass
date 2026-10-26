@@ -135,6 +135,23 @@ describe('config', () => {
 });
 
 describe('GET /api/docs/:docId/breakdown', () => {
+  test('start:false only reports: it starts no run and skips the cool-down error (#344)', async () => {
+    const { createBreakdownService } = await import('./breakdown.js');
+    const a = app();
+    const docId = await ingestDoc(a);
+    const service = createBreakdownService(env.runtime, { publicMode: false });
+    expect(await service.get(docId, { wait: false, start: false })).toEqual({
+      status: 'disabled',
+    });
+    // Nothing was in flight: a normal look still has to start the run.
+    expect(await service.get(docId, { wait: false })).toEqual({
+      status: 'pending',
+    });
+    expect(
+      (await service.get(docId, { wait: false, start: false })).status,
+    ).toBe('pending');
+  });
+
   test('the first look starts one run and answers pending; the next is the cached briefs', async () => {
     const a = app({ now: () => Date.now() });
     const docId = await ingestDoc(a);
@@ -451,6 +468,38 @@ describe('pre-generation', () => {
     return state;
   }
 
+  test('a report-only look at a cached breakdown never starts drawing examples (#352 review)', async () => {
+    const { createBreakdownService } = await import('./breakdown.js');
+    const state = trackConcurrency();
+    const a = app();
+    const docId = await ingestDoc(a);
+    await breakdown(a, docId);
+    const done = await cachedBreakdown(a, docId);
+    const available =
+      done.briefs?.filter((b) => b.example === 'available').length ?? 0;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    // A fresh process (as after a restart) has not drawn this document's examples yet.
+    vi.stubEnv(envVar('PREGENERATE_EXAMPLES'), '1');
+    const service = createBreakdownService(env.runtime, { publicMode: false });
+    const before = state.started.length;
+    expect(
+      (await service.get(docId, { wait: false, start: false })).status,
+    ).toBe('cached');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(state.started).toHaveLength(before);
+    // The same look without start:false does start them, so the check above can fail. Let
+    // the pass finish, so no example is still writing when the test's directory is removed.
+    await service.get(docId, { wait: false });
+    await vi.waitFor(
+      () => {
+        expect(state.started).toHaveLength(before + available);
+        expect(state.active).toBe(0);
+      },
+      { timeout: 10_000 },
+    );
+    expect(available).toBeGreaterThan(0);
+  });
+
   test('a bill with more than the bound of available examples draws them on demand only', async () => {
     vi.stubEnv(envVar('PREGENERATE_EXAMPLES'), '1');
     const state = trackConcurrency();
@@ -494,8 +543,16 @@ describe('pre-generation', () => {
         (_, i) => `sec-${String(i + 1)}`,
       ),
     );
-    // Every one is now instant.
+    // Every one is now instant. The pass caches an example only after its model call returns, so
+    // on a slow runner the last one can still read `pending`: wait for it to land first.
     const calls = exampleCalls();
+    const last = `sec-${String(MAX_PREGENERATED_EXAMPLES)}`;
+    await vi.waitFor(
+      async () => {
+        expect((await example(a, docId, last)).status).toBe('ok');
+      },
+      { timeout: 5000 },
+    );
     for (let i = 1; i <= MAX_PREGENERATED_EXAMPLES; i++)
       expect((await example(a, docId, `sec-${String(i)}`)).status).toBe('ok');
     expect(exampleCalls()).toBe(calls);

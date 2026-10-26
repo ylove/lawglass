@@ -6,8 +6,8 @@ import {
   downloadsDirectory,
   fixtureFilename,
   readManifest,
-  verifyFixture,
 } from './fixture-manifest.js';
+import { verifyFixtureIntegrity } from '../src/eval/fixture-integrity.js';
 import type { FixtureManifest } from './fixture-manifest.js';
 
 export interface FetchSummary {
@@ -107,12 +107,15 @@ export async function fetchFixtures(options: {
           return undefined;
         throw error;
       });
-      if (existing && verifyFixture(existing, fixture).matches) {
+      if (
+        existing &&
+        (await verifyFixtureIntegrity(existing, fixture)).matches
+      ) {
         results.push({
           name: fixture.name,
           status: 'skipped',
           bytes: existing.byteLength,
-          sha256: fixture.sha256,
+          sha256: fixture.normalizedTextSha256 ?? fixture.sha256,
         });
         continue;
       }
@@ -128,7 +131,7 @@ export async function fetchFixtures(options: {
       // more (or never stops) cannot make this script buffer it. Size and hash are still
       // verified after the download.
       const data = await readWithBudget(response, fixture.bytes + BYTE_SLACK);
-      const verification = verifyFixture(data, fixture);
+      const verification = await verifyFixtureIntegrity(data, fixture);
       if (!verification.matches) {
         await writeFile(`${path}.mismatch`, data);
         results.push({
@@ -136,7 +139,7 @@ export async function fetchFixtures(options: {
           status: 'mismatch',
           bytes: verification.bytes,
           sha256: verification.sha256,
-          message: `Verification failed; saved ${path}.mismatch. Expected sha256 ${fixture.sha256}, ${String(fixture.bytes)} bytes; received sha256 ${verification.sha256}, ${String(verification.bytes)} bytes. Government sites sometimes re-render PDFs. Review the source and update fixtures/manifest.json deliberately (hash, bytes and retrievedAt).`,
+          message: `Verification failed; saved ${path}.mismatch. Expected ${fixture.normalizedTextSha256 ? 'normalized text sha256' : 'sha256'} ${fixture.normalizedTextSha256 ?? fixture.sha256}${fixture.normalizedTextSha256 ? '' : `, ${String(fixture.bytes)} bytes`}; received sha256 ${verification.sha256}, ${String(verification.bytes)} bytes. Government sites sometimes re-render PDFs. Review the source and update fixtures/manifest.json deliberately (the applicable hash, bytes and retrievedAt).`,
         });
         continue;
       }
