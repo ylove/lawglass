@@ -81,7 +81,7 @@ test('summary on arrival: preview, then summary, then cached on reload', async (
   // answer would mean a second generation was started.
   const statuses: string[] = [];
   page.on('response', (response) => {
-    if (response.url().includes('/summary')) {
+    if (new URL(response.url()).pathname.endsWith('/summary')) {
       void response.json().then((body: unknown) => {
         statuses.push(SummaryResponse.parse(body).status);
       });

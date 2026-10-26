@@ -5,7 +5,7 @@ import {
   fixturePath,
 } from '../../tests/support/fixtures.js';
 import { GoldenSet, type Section } from '../core/model/index.js';
-import { parseXml } from '../core/parse/index.js';
+import { parsePdf, parseXml } from '../core/parse/index.js';
 
 const goldenDirectory = new URL('./golden/', import.meta.url);
 
@@ -155,13 +155,16 @@ function ownText(
   return into;
 }
 
-// Local-only ground-truth check: expected ids must be real parser output with text of their
-// own. The PDF sets get the same check once parsePdf is on main (#68).
-for (const fixture of ['us-s202-119-is', 'us-hr5009-118-enr'] as const) {
+// Local-only ground-truth check: expected ids must be real parser output with text of their own.
+for (const fixture of FIXTURES) {
+  const pdf = fixture.startsWith('oh-');
   describeWithFixture(fixture, () => {
-    it('expects only sections the XML parser produces, each with its own text', () => {
-      const doc = parseXml(readFileSync(fixturePath(fixture)!), {
-        sourceUrl: 'https://www.govinfo.gov/',
+    it(`expects only sections the ${pdf ? 'PDF' : 'XML'} parser produces, each with its own text`, async () => {
+      const parse = pdf ? parsePdf : parseXml;
+      const doc = await parse(readFileSync(fixturePath(fixture)!), {
+        sourceUrl: pdf
+          ? 'https://search-prod.lis.state.oh.us/fixture.pdf'
+          : 'https://www.govinfo.gov/',
         fetchedAt: '2026-10-13T00:00:00.000Z',
       });
       const text = ownText(doc.sections);

@@ -809,7 +809,7 @@ function ordinalNumber(text: string): number | undefined {
   return found ? total : undefined;
 }
 
-function ordinal(n: number): string {
+export function ordinal(n: number): string {
   const suffix =
     n % 100 >= 11 && n % 100 <= 13
       ? 'th'
