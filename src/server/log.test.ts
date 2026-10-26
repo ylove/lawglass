@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import { expect, test } from 'vitest';
+import { providerFailure } from '../core/llm/shared.js';
 import { AppError } from '../core/model/index.js';
 import { createLogger } from './log.js';
 
@@ -121,4 +122,32 @@ test('background answer events log a count or a code, never text', () => {
     event: 'regeneration_refused',
     code: 'TIMEOUT',
   });
+});
+
+test('a provider failure logs its HTTP status and nothing else from the cause (#341)', async () => {
+  const lines: string[] = [];
+  const log = createLogger(
+    (line) => {
+      lines.push(line);
+    },
+    () => 0,
+  );
+  const app = new Hono();
+  app.use('*', log.middleware);
+  app.onError((_error, c) =>
+    c.json({ error: { code: 'PROVIDER_ERROR', message: 'Safe' } }, 502),
+  );
+  app.get('/api/docs/:docId/breakdown', () => {
+    throw providerFailure(
+      Object.assign(new Error('secret schema error'), { status: 400 }),
+    );
+  });
+  await app.request('/api/docs/d/breakdown');
+  expect(lines).toHaveLength(1);
+  expect(JSON.parse(lines[0]!)).toMatchObject({
+    event: 'refusal',
+    code: 'PROVIDER_ERROR',
+    providerStatus: 400,
+  });
+  expect(lines[0]).not.toContain('secret');
 });

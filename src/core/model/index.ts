@@ -7,6 +7,7 @@ export * from './chunk.js';
 export * from './ports.js';
 export * from './history.js';
 export * from './scenario.js';
+export * from './picture.js';
 export * from './answer.js';
 export * from './api.js';
 export * from './eval.js';
