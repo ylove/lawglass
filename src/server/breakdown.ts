@@ -195,7 +195,8 @@ export function createBreakdownService(
 
     const hit = await breakdowns.get(key);
     if (hit) {
-      if (!options.publicMode)
+      // A report-only look (pictures) must not start the examples' model calls either.
+      if (!options.publicMode && request.start !== false)
         startPregeneration(docId, hit.briefs, hit.context);
       return { status: 'cached', briefs: hit.briefs, omitted: hit.omitted };
     }

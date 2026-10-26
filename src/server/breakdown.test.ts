@@ -468,6 +468,29 @@ describe('pre-generation', () => {
     return state;
   }
 
+  test('a report-only look at a cached breakdown never starts drawing examples (#352 review)', async () => {
+    const { createBreakdownService } = await import('./breakdown.js');
+    const state = trackConcurrency();
+    const a = app();
+    const docId = await ingestDoc(a);
+    await breakdown(a, docId);
+    await cachedBreakdown(a, docId);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    // A fresh process (as after a restart) has not drawn this document's examples yet.
+    vi.stubEnv(envVar('PREGENERATE_EXAMPLES'), '1');
+    const service = createBreakdownService(env.runtime, { publicMode: false });
+    expect(
+      (await service.get(docId, { wait: false, start: false })).status,
+    ).toBe('cached');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(state.started).toEqual([]);
+    // The same look without start:false does start them, so the check above can fail.
+    await service.get(docId, { wait: false });
+    await vi.waitFor(() => {
+      expect(state.started.length).toBeGreaterThan(0);
+    });
+  });
+
   test('a bill with more than the bound of available examples draws them on demand only', async () => {
     vi.stubEnv(envVar('PREGENERATE_EXAMPLES'), '1');
     const state = trackConcurrency();

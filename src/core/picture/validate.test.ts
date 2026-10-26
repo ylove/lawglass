@@ -208,4 +208,38 @@ describe('validatePictures', () => {
     expect(stamped(3, 'Issuer files').entries).toHaveLength(1);
     expect(stamped(0, 'States').entries).toHaveLength(1);
   });
+
+  it('refuses symbols, emoji and look-alike letters, and short words the item lacks', () => {
+    const items: PictureItem[] = [
+      { index: 0, text: 'Issuers may pay interest to holders [S:sec-2].' },
+      { index: 1, text: 'Nonprofit banks pay no fee in the U.S. [S:sec-3].' },
+    ];
+    const reason = (item: number, label: string) =>
+      validatePictures(
+        {
+          pictures: [
+            {
+              item,
+              panels: [
+                {
+                  left: { glyphs: ['bank'] },
+                  link: 'none',
+                  stamp: { glyph: 'check', label },
+                },
+              ],
+            },
+          ],
+        },
+        items,
+      ).dropped[0]?.reason;
+    for (const label of ['🚫', '✗', '≠', '!', 'Nо'])
+      expect(reason(0, label)).toBe('label-chars');
+    expect(reason(0, 'X')).toBe('label-words');
+    expect(reason(0, 'US')).toBe('label-words');
+    // A hyphenated form of the item's own word is that word, not a negation.
+    expect(reason(1, 'Non-profit')).toBeUndefined();
+    expect(reason(1, 'U.S.')).toBeUndefined();
+    expect(reason(1, 'No fee')).toBeUndefined();
+    expect(reason(0, 'Pay to holders')).toBeUndefined();
+  });
 });

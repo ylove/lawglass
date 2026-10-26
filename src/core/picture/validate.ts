@@ -17,7 +17,8 @@ export type PictureDropReason =
   | 'label-judgment'
   | 'label-words'
   | 'label-number'
-  | 'label-negation';
+  | 'label-negation'
+  | 'label-chars';
 
 export interface PictureValidation {
   entries: PictureEntry[];
@@ -25,6 +26,30 @@ export interface PictureValidation {
 }
 
 const WORD = /\p{L}+/gu;
+/**
+ * What a label may be made of, after NFKC: Latin letters, digits and plain punctuation. No
+ * emoji or symbols ("🚫", "≠", "✗" all say something on their own), and no look-alike letters
+ * from other scripts ("Nо" with a Cyrillic о is not "No").
+ */
+const LABEL_CHARS = /^[\p{Script=Latin}\p{Nd} .,'’%$&/:()-]+$/u;
+/** Words too small to make a claim; any other word must come from the item. */
+const FUNCTION_WORDS = new Set([
+  'a',
+  'an',
+  'and',
+  'at',
+  'by',
+  'for',
+  'from',
+  'in',
+  'of',
+  'on',
+  'or',
+  'per',
+  'the',
+  'to',
+  'with',
+]);
 /** Any script's digits: after NFKC, fullwidth digits are ASCII; others still count as numbers. */
 const NUMBER = /\p{Nd}+(?:[.,]\p{Nd}+)*/gu;
 /** Words that turn a label into its opposite; a label may use one only if the item does. */
@@ -54,13 +79,25 @@ function stems(word: string): Set<string> {
 }
 
 /**
- * Every word of three letters or more must be one of the item's words, up to an inflection.
- * Shorter words ("to", "of") carry no claim on their own, except a negation, checked apart.
+ * Every word must be one of the item's words, up to an inflection, apart from a few function
+ * words. A one-letter "X" or a two-letter "US" says something only if the item does.
  */
 function wordsFromItem(label: string, itemStems: ReadonlySet<string>): boolean {
   return words(label)
-    .filter((word) => word.length >= 3)
+    .filter((word) => !FUNCTION_WORDS.has(word))
     .every((word) => [...stems(word)].some((form) => itemStems.has(form)));
+}
+
+/**
+ * "Non-profit" for an item that says "nonprofit" is the same word, not a negation: a hyphenated
+ * pair is joined when the joined word is one of the item's.
+ */
+function joinItemCompounds(label: string, itemStems: ReadonlySet<string>) {
+  return normalize(label).replace(
+    /(\p{L}+)-(\p{L}+)/gu,
+    (pair: string, a: string, b: string) =>
+      itemStems.has(a + b) ? a + b : pair,
+  );
 }
 
 /** Every number in a label must be written the same way in the item. */
@@ -107,9 +144,11 @@ function panelReason(
   item: ItemFacts,
 ): PictureDropReason | undefined {
   if (!shapeIsSound(panel)) return 'shape';
-  for (const label of labels(panel)) {
-    if (markup(label)) return 'label-markup';
-    if (evaluative(label)) return 'label-judgment';
+  for (const raw of labels(panel)) {
+    if (markup(raw)) return 'label-markup';
+    if (!LABEL_CHARS.test(raw.normalize('NFKC'))) return 'label-chars';
+    const label = joinItemCompounds(raw, item.stems);
+    if (evaluative(raw)) return 'label-judgment';
     if (!numbersFromItem(label, item.numbers)) return 'label-number';
     // "No" under an item that says "may pay interest" would draw the opposite of the caption.
     if (NEGATION.test(normalize(label)) && !item.negated)
