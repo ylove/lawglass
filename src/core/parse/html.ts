@@ -1,3 +1,4 @@
+import { ASSEMBLY_HOSTS } from '../fetch/new-york.js';
 import { createHash } from 'node:crypto';
 import { load, type CheerioAPI } from 'cheerio';
 import { z } from 'zod';
@@ -875,7 +876,7 @@ function parseHtmlDocument(
   // section detection; HTML citations remain section-only under the spec.
   if (
     changeMarkJurisdiction(options) === 'NY' &&
-    new URL(options.sourceUrl).hostname.endsWith('nyassembly.gov')
+    ASSEMBLY_HOSTS.has(new URL(options.sourceUrl).hostname)
   ) {
     for (const line of sourceLines) {
       const gutter = /^\s{0,8}\d{1,3}\s{2,}/.exec(line.text)?.[0];

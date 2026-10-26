@@ -29,12 +29,12 @@ const context = {
   sourceUrl: 'https://legislation.nysenate.gov/bill',
   fetchedAt: '2026-10-25T00:00:00.000Z',
 };
-for (const [legend, sourceUrl] of [
-  [NY_LEGEND, context.sourceUrl],
-  [NJ_LEGEND, 'https://pub.njleg.gov/bill'],
+for (const [state, legend, sourceUrl] of [
+  ['NY', NY_LEGEND, context.sourceUrl],
+  ['NJ', NJ_LEGEND, 'https://pub.njleg.gov/bill'],
 ] as const) {
   test.each(['text', 'html'] as const)(
-    '%s: verified legend deletes replaced cross-references on ' + sourceUrl,
+    `%s: a verified ${state} legend deletes replaced cross-references`,
     (format) => {
       const text = `${legend}\nSection 1. Pursuant to [section 12] section 14 and [42 U.S.C. 1395] 42 U.S.C. 1396. See [3] and [123 N.Y.2d 456] and [§ 12].`;
       const doc =

@@ -1,7 +1,11 @@
 import { AppError } from '../model/index.js';
 
 const SENATE_HOSTS = new Set(['nysenate.gov', 'www.nysenate.gov']);
-const ASSEMBLY_HOSTS = new Set(['nyassembly.gov', 'www.nyassembly.gov']);
+/** Exact hosts only: a suffix check would also accept a lookalike such as `evilnyassembly.gov`. */
+export const ASSEMBLY_HOSTS: ReadonlySet<string> = new Set([
+  'nyassembly.gov',
+  'www.nyassembly.gov',
+]);
 const PDF_HOST = 'legislation.nysenate.gov';
 export const NEW_YORK_HOSTS = [...SENATE_HOSTS, ...ASSEMBLY_HOSTS, PDF_HOST];
 export interface NewYorkResolution {
