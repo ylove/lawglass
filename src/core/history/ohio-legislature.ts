@@ -32,12 +32,12 @@ import { trimEndWhile } from '../trim.js';
 const LANDING_HOST = 'www.legislature.ohio.gov';
 const API_HOST = 'search-prod.lis.state.oh.us';
 const VERSION = /^[0-9]{2}_[A-Z]{2}$/;
-const BILL = '(?:hb|sb|hjr|sjr|hcr|scr|hr|sr)[1-9][0-9]{0,5}';
+export const OHIO_BILL = '(?:hb|sb|hjr|sjr|hcr|scr|hr|sr)[1-9][0-9]{0,5}';
 const LANDING = new RegExp(
-  `^/legislation/([1-9][0-9]{0,2})/(${BILL})(?:/(?:status|documents|committee))?/?$`,
+  `^/legislation/([1-9][0-9]{0,2})/(${OHIO_BILL})(?:/(?:status|documents|committee))?/?$`,
 );
 const TEXT = new RegExp(
-  `^/api/v2/general_assembly_([1-9][0-9]{0,2})/legislation/(${BILL})/([0-9]{2}_[A-Z]{2})/pdf/?$`,
+  `^/api/v2/general_assembly_([1-9][0-9]{0,2})/legislation/(${OHIO_BILL})/([0-9]{2}_[A-Z]{2})/pdf/?$`,
 );
 
 export interface OhioPlan extends HistoryPlan {

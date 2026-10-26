@@ -8,6 +8,12 @@ import { z } from 'zod';
 import { HttpsUrl } from './doc.js';
 
 export const BillHistory = z.object({
+  /**
+   * The record's official title ("To create example grants ..."), plain text. Federal records
+   * only; it states the bill's purpose, so the preview prefers it. Capped at the history
+   * adapters' text limit so one long title can never make a whole history unreadable.
+   */
+  officialTitle: z.string().max(2000).optional(),
   /** The official summary, e.g. from the Congressional Research Service. */
   officialSummary: z
     .object({

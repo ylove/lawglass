@@ -206,8 +206,6 @@ async function saveHistory(
       deps.registry.configDir,
       doc.docId,
       attachment.record.history,
-      undefined,
-      attachment.record.officialTitle,
     );
   } catch {
     doc.warnings.push(HISTORY_UNAVAILABLE);
