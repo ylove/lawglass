@@ -33,6 +33,7 @@ describe('detectAmends', () => {
       name: 'City Charter',
       jurisdiction: 'Ohio',
       sections: ['3', '46-3'],
+      sectionIds: ['sec-3', 'sec-46-3'],
     });
   });
 
@@ -48,6 +49,7 @@ describe('detectAmends', () => {
     expect(detectAmends(sections, meta(null, null))).toEqual({
       name: 'Columbus City Charter',
       sections: ['3', '7'],
+      sectionIds: ['sec-3'],
     });
   });
 
@@ -122,6 +124,7 @@ describe('enrichDocument amends', () => {
     expect(doc.metadata.amends).toEqual({
       name: 'City Charter',
       sections: ['3'],
+      sectionIds: ['sec-3'],
     });
     expect(doc.externalRefs).toEqual([]);
   });

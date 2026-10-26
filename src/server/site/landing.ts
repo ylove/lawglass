@@ -87,7 +87,7 @@ function features(): Feature[] {
       title: 'How it got here',
       body: 'Versions, key actions, sponsors and the laws a bill refers to, from the official record, with links to the full history.',
       bullets: [
-        'Amendments listed with their sponsors',
+        'Amendments grouped by sponsor',
         'Versions linked to the official record',
         'People named only when the record names them',
       ],

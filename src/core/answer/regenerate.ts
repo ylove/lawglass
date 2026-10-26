@@ -11,9 +11,8 @@
  * with word counts. That kept leaking (swapped values, an appended uncited claim), because a
  * paraphrase of an answer carries no evidence of its own. Regenerating reads the bill again.
  *
- * Skipped, because a plainer retelling could swap old and new wording or say less than the
- * bill: declines, truncated answers, answers to questions about changes, and answers citing
- * struck or inserted text.
+ * Declines, truncated answers and questions about changes are skipped. Other answers may
+ * cite amended text, but the second attempt must pass the amended-wording guard.
  */
 import { createHash } from 'node:crypto';
 import { envVar } from '../brand.js';
@@ -24,7 +23,10 @@ import type {
   SearchHit,
 } from '../model/index.js';
 import type { AnswerInput } from './answer.js';
-import { coveredSectionIds } from './citations.js';
+import {
+  AMENDED_WORDING_VERSION,
+  preservesAmendedWording,
+} from './amended-wording.js';
 
 /**
  * Background and cached outputs (the on-arrival summary) are regenerated above this grade.
@@ -94,7 +96,7 @@ export const PLAIN_LANGUAGE_INSTRUCTION =
 
 /** Changes with the regeneration instruction, so cached text from the old rule can be told apart. */
 export const REGENERATION_VERSION = createHash('sha256')
-  .update(PLAIN_LANGUAGE_INSTRUCTION)
+  .update(JSON.stringify([PLAIN_LANGUAGE_INSTRUCTION, AMENDED_WORDING_VERSION]))
   .digest('hex')
   .slice(0, 12);
 
@@ -103,6 +105,7 @@ export type RegenerationRefusal =
   | 'NO_CITATION'
   | 'DROPPED_SECTION'
   | 'NEW_WARNING'
+  | 'AMENDED_WORDING'
   | 'NOT_SIMPLER'
   | 'TIMEOUT';
 
@@ -112,25 +115,6 @@ const WORSE_WARNINGS: readonly AnswerWarning[] = [
   'INVALID_CITATIONS_REMOVED',
   'TRUNCATED',
 ];
-
-/**
- * Whether a plainer retelling could swap old and new wording: the answer cites a section whose
- * text is struck or inserted. (Questions and chips about changes are excluded by the caller.)
- */
-export function citesAmendedText(
-  result: Pick<AnswerResult, 'citations'>,
-  hits: readonly SearchHit[],
-): boolean {
-  const cited = new Set(
-    result.citations.filter((c) => c.valid).map((c) => c.sectionId),
-  );
-  return hits.some(
-    (hit) =>
-      coveredSectionIds(hit.chunk).some((id) => cited.has(id)) &&
-      (hit.chunk.amendmentStatus !== 'unchanged' ||
-        /\[(?:struck|inserted)\]/.test(hit.chunk.text)),
-  );
-}
 
 function addUsage(a: LlmUsage, b: LlmUsage): LlmUsage {
   const sum = (x?: number, y?: number): number | undefined =>
@@ -147,8 +131,15 @@ function addUsage(a: LlmUsage, b: LlmUsage): LlmUsage {
 
 /** Why `second` may not replace `first`, or null when it may. Pure. */
 export function refuseRegeneration(
-  first: AnswerResult,
-  second: AnswerResult,
+  first: Pick<
+    AnswerResult,
+    'text' | 'citations' | 'declined' | 'warnings' | 'readingGrade'
+  >,
+  second: Pick<
+    AnswerResult,
+    'text' | 'citations' | 'declined' | 'warnings' | 'readingGrade'
+  >,
+  hits: readonly SearchHit[] = [],
 ): RegenerationRefusal | null {
   if (second.declined && !first.declined) return 'DECLINED';
   if (!second.citations.some((c) => c.valid)) return 'NO_CITATION';
@@ -166,6 +157,7 @@ export function refuseRegeneration(
     )
   )
     return 'NEW_WARNING';
+  if (!preservesAmendedWording(first, second, hits)) return 'AMENDED_WORDING';
   if (
     second.readingGrade === null ||
     first.readingGrade === null ||
@@ -200,11 +192,7 @@ export async function regenerateForReadingLevel(
     first.declined ||
     first.simplified === true ||
     first.warnings.includes('TRUNCATED') ||
-    input.exactWording === true ||
-    citesAmendedText(first, [
-      ...input.context.hits,
-      ...(input.context.definitions ?? []),
-    ])
+    input.exactWording === true
   )
     return first;
   input.signal?.throwIfAborted();
@@ -243,7 +231,10 @@ export async function regenerateForReadingLevel(
   }
 
   const usage = addUsage(first.usage, second.usage);
-  const refusal = refuseRegeneration(first, second);
+  const refusal = refuseRegeneration(first, second, [
+    ...input.context.hits,
+    ...(input.context.definitions ?? []),
+  ]);
   if (refusal) {
     input.log?.({ event: 'regeneration_refused', reason: refusal });
     return { ...first, usage };

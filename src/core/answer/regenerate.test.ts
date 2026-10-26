@@ -11,6 +11,7 @@ import {
 } from '../model/index.js';
 import { answer } from './answer.js';
 import { hit } from './fixtures.js';
+import { trustMarkers } from './markers.js';
 import { fleschKincaidGrade } from './readability.js';
 import {
   DEFAULT_INTERACTIVE_GRADE_MAX,
@@ -18,7 +19,6 @@ import {
   interactiveReadingGradeCeiling,
   PLAIN_LANGUAGE_INSTRUCTION,
   REGENERATION_VERSION,
-  citesAmendedText,
   readingGradeCeiling,
   refuseRegeneration,
 } from './regenerate.js';
@@ -354,17 +354,6 @@ describe('regeneration', () => {
     it('for an answer about changes (exactWording)', async () => {
       await skipped({ exactWording: true });
     });
-    it.each([
-      { amendmentStatus: 'inserted' as const },
-      { amendmentStatus: 'deleted' as const },
-      { text: 'Pay [struck]$5[/struck] [inserted]$7[/inserted].' },
-    ])('when the answer cites amended text %#', async (over) => {
-      await skipped({
-        context: {
-          hits: [hit({ id: 'c1', sectionId: 'sec-1', text: 'x', ...over })],
-        },
-      });
-    });
     it('but not when only an uncited section is amended', async () => {
       const provider = twoStep(HARD, EASY);
       await answer({
@@ -465,20 +454,34 @@ describe('refuseRegeneration', () => {
   });
 });
 
-describe('citesAmendedText', () => {
-  it('ignores invalid citations', () => {
-    expect(
-      citesAmendedText(
-        { citations: [{ sectionId: 'sec-1', valid: false, chunkIds: [] }] },
-        [
-          hit({
-            id: 'c',
-            sectionId: 'sec-1',
-            text: 'x',
-            amendmentStatus: 'deleted',
-          }),
-        ],
-      ),
-    ).toBe(false);
+describe('regeneration with amended text', () => {
+  it.each([
+    ['Towns get ten years [S:sec-1].', true],
+    ['Towns get fifteen years [S:sec-1].', false],
+    ['Towns get time [S:sec-1].', false],
+  ])('checks the amended wording of %s', async (second, accepted) => {
+    const first = `${HARD} Towns receive ten years [S:sec-1].`;
+    const amended = hit({
+      id: 'amended',
+      sectionId: 'sec-1',
+      text: 'Towns get [struck]fifteen years[/struck] [inserted]ten years[/inserted].',
+      amendmentStatus: 'inserted',
+    });
+    trustMarkers(amended.chunk);
+    const provider = twoStep(first, second);
+    const log: AnswerLogEvent[] = [];
+    const result = await answer({
+      ...base,
+      context: { hits: [amended] },
+      provider,
+      log: (event) => log.push(event),
+    });
+    expect(provider.calls).toHaveLength(2);
+    expect(result.text).toBe(accepted ? second : first);
+    expect(result.usage.inputTokens).toBe(2);
+    if (!accepted)
+      expect(log).toEqual([
+        { event: 'regeneration_refused', reason: 'AMENDED_WORDING' },
+      ]);
   });
 });

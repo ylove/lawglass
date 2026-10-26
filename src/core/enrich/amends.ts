@@ -36,7 +36,14 @@ function hasNumberedDescendant(section: Section): boolean {
 export function restatedCharterSections(
   sections: readonly Section[],
 ): string[] {
-  const nums: string[] = [];
+  return restatedCharterSectionEntries(sections).map((e) => e.num);
+}
+
+/** Same sections as `restatedCharterSections`, with their ids for linking. */
+function restatedCharterSectionEntries(
+  sections: readonly Section[],
+): { id: Section['id']; num: string }[] {
+  const nums: { id: Section['id']; num: string }[] = [];
   for (const section of walkSections(sections)) {
     const num =
       section.num === undefined ? undefined : normalizeSectionNum(section.num);
@@ -45,7 +52,7 @@ export function restatedCharterSections(
       hasMarks(section) &&
       !hasNumberedDescendant(section)
     )
-      nums.push(num);
+      nums.push({ id: section.id, num });
   }
   return nums;
 }
@@ -98,9 +105,11 @@ export function detectAmends(
   const listed = amending.flatMap((m) =>
     m.sectionNum === undefined ? [] : [m.sectionNum],
   );
+  const restatedIds = restatedCharterSectionEntries(sections).map((e) => e.id);
   return {
     name: charterName(city),
     ...(metadata.jurisdiction ? { jurisdiction: metadata.jurisdiction } : {}),
     sections: [...new Set([...listed, ...restatedCharterSections(sections)])],
+    ...(restatedIds.length > 0 ? { sectionIds: restatedIds } : {}),
   };
 }

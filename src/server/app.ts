@@ -914,6 +914,9 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   });
 
   const breakdown = registerBreakdownRoutes(app, runtime, {
+    log: (e) => {
+      log.backgroundBreakdownEvent(e);
+    },
     publicMode,
     now,
     summary,

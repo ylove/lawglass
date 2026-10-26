@@ -32,11 +32,16 @@ function normalizeSectionNumber(num: string): string {
 function findOutlineItem(
   outline: readonly OutlineItem[],
   section: string,
+  restatedIds?: readonly string[],
 ): OutlineItem | undefined {
   const wanted = normalizeSectionNumber(section);
   const matches = outline.filter(
     (item) =>
-      item.num !== undefined && normalizeSectionNumber(item.num) === wanted,
+      item.num !== undefined &&
+      normalizeSectionNumber(item.num) === wanted &&
+      // When the parser says which sections reprint charter text, the measure's own sections
+      // are out of the running even if they share the number. Older documents lack the ids.
+      (restatedIds === undefined || restatedIds.includes(item.id)),
   );
   // Two sections with one number means the measure's own section shares it with the amended
   // text, and the outline cannot say which is which. Not linking beats opening the wrong one.
@@ -114,7 +119,9 @@ export function MetadataHeader({
   // Only local measures get the line: a state bill that amends a city charter is still a bill,
   // and the line would name the charter alone even when the bill amends other laws too.
   const amends =
-    m.docKind && m.docKind in DOC_KIND_LABELS ? m.amends : undefined;
+    m.docKind && Object.hasOwn(DOC_KIND_LABELS, m.docKind)
+      ? m.amends
+      : undefined;
   const rows: [string, ReactNode][] = [];
   if (m.billNumber) rows.push(['Number', m.billNumber]);
   // The kind line already names the jurisdiction, so the row would only repeat it.
@@ -139,7 +146,7 @@ export function MetadataHeader({
               {amends.sections.length === 1 ? '§' : '§§'}{' '}
               {amends.sections.map((section, i) => {
                 const item = onOpenSection
-                  ? findOutlineItem(detail.outline, section)
+                  ? findOutlineItem(detail.outline, section, amends.sectionIds)
                   : undefined;
                 return (
                   <span key={`${section}-${String(i)}`}>
