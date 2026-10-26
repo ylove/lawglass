@@ -411,10 +411,30 @@ describe('ordinary legal wording is not a verdict (#312)', () => {
       'jurisdiction lies with the district court',
     ],
     ['The clerk sends a true copy [S:s]', 'a true copy of the order'],
-    ['It applies after a jury verdict [S:s]', 'after a verdict of the jury'],
+    [
+      'It applies after a jury verdict [S:s]',
+      'after the jury verdict is entered',
+    ],
+    ['The agency corrects the record [S:s]', 'the agency corrected the record'],
   ])('%s', (text, bill) => {
     expect(hasVerdictLanguage(text, bill)).toBe(false);
   });
+  it.each([
+    ['This is true [S:s]', 'the clerk sends a true copy'],
+    ['That is correct [S:s]', 'the clerk files a corrected copy'],
+    [
+      'The bill confirms your claim [S:s]',
+      'Senate confirmation of the nominee',
+    ],
+    ['The sponsor lies about this [S:s]', 'a lien on the property'],
+    ['This is false [S:s]', 'whoever falsely represents a fact'],
+    ['This is accurate [S:s]', 'keep accurate records'],
+  ])(
+    'a verdict is caught when the section uses the word another way: %s',
+    (text, bill) => {
+      expect(hasVerdictLanguage(text, bill)).toBe(true);
+    },
+  );
   it('still catches the same words when the section does not use them, and strict phrases always', () => {
     expect(hasVerdictLanguage('This is true [S:s]', 'a fee of $50')).toBe(true);
     expect(

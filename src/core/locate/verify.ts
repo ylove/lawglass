@@ -217,15 +217,42 @@ export function quoteLabel(
 const VERDICT =
   /\b(?:untrue|incorrect(?:ly)?|inaccurate(?:ly)?|misleading|misinformation|myth|wrong|fact[- ]?check\w*|debunk\w*)\b|\b(?:the|this|that|your)\s+(?:claim|statement|sentence)\s+(?:is|was|isn't|is not)\b|\bmatches\s+(?:the\s+)?(?:bill|claim|sentence)\b|\bbacks?\s+(?:this|that|it)\s+up\b|^\s*(?:yes|no),|["“]\s*(?:true|false|correct|accurate|right)\s*["”]/;
 
-/** Verdict words that are also ordinary legal vocabulary, with the stem the bill must share. */
-const AMBIGUOUS =
-  /\b(true|false|correct(?:ly)?|accurate(?:ly)?|lies?|verdicts?|confirm\w*)\b/g;
-const stemOf = (word: string): string =>
-  word.startsWith('confirm')
-    ? 'confirm'
-    : word.startsWith('lie')
-      ? 'lie'
-      : word.replace(/ly$/, '').replace(/s$/, '');
+/**
+ * Verdict words that are also ordinary legal vocabulary, as whole-word families. A family is the
+ * word's inflections only: never a bare prefix, which would let "lien" vouch for "lies".
+ */
+const AMBIGUOUS_FAMILIES: readonly (readonly string[])[] = [
+  ['true'],
+  ['false', 'falsely'],
+  ['correct', 'corrects', 'corrected', 'correcting', 'correctly'],
+  ['accurate', 'accurately'],
+  ['lie', 'lies'],
+  ['verdict', 'verdicts'],
+  ['confirm', 'confirms', 'confirmed', 'confirming'],
+];
+const FAMILY_OF = new Map(
+  AMBIGUOUS_FAMILIES.flatMap((family) => family.map((w) => [w, family])),
+);
+
+/**
+ * An ambiguous word is legal vocabulary, not a verdict, only when the explanation uses it the
+ * way the section does: the word (any inflection) next to the same neighbouring word. "Confirm
+ * the nominee" passes on "shall confirm the nominee"; "This is true" fails even on "a true copy".
+ */
+function usedAsInBill(
+  words: readonly string[],
+  i: number,
+  bill: string,
+): boolean {
+  const family = FAMILY_OF.get(words[i] ?? '') ?? [];
+  const before = words[i - 1];
+  const after = words[i + 1];
+  return family.some(
+    (form) =>
+      (before !== undefined && bill.includes(` ${before} ${form} `)) ||
+      (after !== undefined && bill.includes(` ${form} ${after} `)),
+  );
+}
 
 /** Look-alike letters that would hide a verdict word from the check. */
 const CONFUSABLES: Record<string, string> = Object.fromEntries(
@@ -277,10 +304,11 @@ export function hasVerdictLanguage(text: string, billText: string): boolean {
     },
   );
   if (VERDICT.test(unquoted)) return true;
-  // An ambiguous word passes only when the section uses a word with the same stem.
-  for (const [word] of unquoted.matchAll(AMBIGUOUS))
-    if (!bill.includes(` ${stemOf(word)}`)) return true;
-  return false;
+  // An ambiguous word passes only when the section uses it with the same neighbour (#312).
+  const words = wordsOf(unquoted).trim().split(' ');
+  return words.some(
+    (word, i) => FAMILY_OF.has(word) && !usedAsInBill(words, i, bill),
+  );
 }
 
 export function verifySelection(
