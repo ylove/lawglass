@@ -56,6 +56,7 @@ import {
   READER_COOKIE_MAX_AGE_S,
   ReaderLibrary,
 } from './readers.js';
+import { quickstartHtml } from './gate.js';
 import { createSessionToken, localSession, readAccessKey } from './session.js';
 
 export interface PublicLimits {
@@ -264,6 +265,19 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
         415,
       );
     await next();
+  });
+
+  // The quickstart is public in every mode and registered before the session check and the SPA
+  // fallback, so neither gates nor swallows it. It contains no per-user data.
+  app.on(['GET', 'HEAD'], '/quickstart', async (c, next) => {
+    // A key in the query string still goes through the session exchange (and its redirect).
+    if (c.req.query('k') !== undefined) return next();
+    return c.html(
+      await quickstartHtml(
+        options.publicOrigin ?? process.env[envVar('PUBLIC_ORIGIN')],
+        options.webRoot,
+      ),
+    );
   });
 
   if (!publicMode) {

@@ -27,7 +27,7 @@ beforeEach(async () => {
   await mkdir(join(root, 'assets'));
   await writeFile(join(root, 'index.html'), '<div id="root">SPA</div>');
   await writeFile(join(root, 'assets/app.js'), 'SECRET SPA BUNDLE');
-  await writeFile(join(root, 'gate.css'), 'main { color: navy; }');
+  await writeFile(join(root, 'site.css'), 'main { color: navy; }');
 });
 afterEach(async () => {
   vi.useRealTimers();
@@ -59,12 +59,13 @@ test('gate and only brand assets are accessible without a session; the full app 
   expect(html).toContain('og:title');
   expect(html).toContain('https://preview.example/');
   expect(html).not.toMatch(/og:image|<img|apple-touch-icon/);
+  expect(html).toContain('Know what a bill really says.');
   expect(html).not.toContain('SPA');
   expect((await a.request('/api/docs')).status).toBe(401);
   expect(await (await a.request('/assets/app.js')).text()).not.toContain(
     'SECRET SPA BUNDLE',
   );
-  expect((await a.request('/gate.css')).headers.get('content-type')).toContain(
+  expect((await a.request('/site.css')).headers.get('content-type')).toContain(
     'text/css',
   );
   expect((await a.request('/favicon.svg')).status).toBe(404);
@@ -93,6 +94,19 @@ test('gate and only brand assets are accessible without a session; the full app 
     body: JSON.stringify({ question: 'Who must file a report?' }),
   });
   expect(await answer.text()).toContain('"type":"done"');
+});
+
+test('the quickstart is public, also for signed-in visitors, and answers HEAD', async () => {
+  const a = app();
+  for (const headers of [{} as Record<string, string>, { cookie }]) {
+    const page = await a.request('/quickstart', { headers });
+    expect(page.status).toBe(200);
+    expect(await page.text()).toContain('on your computer');
+    expect(
+      (await a.request('/quickstart', { headers, method: 'HEAD' })).status,
+    ).toBe(200);
+  }
+  expect((await a.request('/quickstart', { method: 'POST' })).status).toBe(401);
 });
 
 test('keeps Origin, cross-site, content-type and body-size guards', async () => {

@@ -1049,3 +1049,9 @@ describe('HTTP security boundary', () => {
     ).toBe(403);
   });
 });
+
+test('the quickstart is served in local mode even without a session cookie', async () => {
+  const res = await app({ sessionToken: 'local-token' }).request('/quickstart');
+  expect(res.status).toBe(200);
+  expect(await res.text()).toContain('on your computer');
+});

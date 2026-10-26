@@ -126,7 +126,7 @@ async function main(): Promise<void> {
     assert.equal(gate.status, 200);
     assert.match(
       await gate.text(),
-      /private preview/i,
+      /know what a bill really says/i,
       'the gate page is shown without a session',
     );
     assert.equal(

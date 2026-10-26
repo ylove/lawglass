@@ -551,7 +551,7 @@ test('private server permits network binds without generating a launch token', a
   expect(new URL(server.url).search).toBe('');
   const url = `http://127.0.0.1:${String(server.port)}`;
   const response = await fetch(url);
-  expect(await response.text()).toContain('This is a private preview.');
+  expect(await response.text()).toContain('Know what a bill really says.');
   const exchange = await fetch(`${url}/?k=${accessKey}`, {
     redirect: 'manual',
   });

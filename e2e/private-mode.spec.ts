@@ -31,11 +31,14 @@ test('private preview gate, invite exchange and hosted ingest policy', async ({
     const gate = await page.goto(origin.origin);
     expect(gate?.status()).toBe(200);
     await expect(
-      page.getByRole('heading', { name: BRAND.displayName }),
+      page.getByRole('heading', {
+        level: 1,
+        name: 'Know what a bill really says.',
+      }),
     ).toBeVisible();
     await expect(page.locator('meta[property="og:title"]')).toHaveAttribute(
       'content',
-      BRAND.displayName,
+      `${BRAND.displayName}: know what a bill really says`,
     );
     await expect(page.locator('#root')).toHaveCount(0);
     await expect(page.locator('script')).toHaveCount(0);
@@ -43,6 +46,14 @@ test('private preview gate, invite exchange and hosted ingest policy', async ({
     const gatedDoc = await page.goto(`${origin.origin}/doc/${'a'.repeat(64)}`);
     expect(gatedDoc?.status()).toBe(200);
     await expect(page.locator('#root')).toHaveCount(0);
+    // The quickstart is public and styled by the same allowlisted stylesheet (cspGuard fails on
+    // any violation).
+    const quickstart = await page.goto(`${origin.origin}/quickstart`);
+    expect(quickstart?.status()).toBe(200);
+    await expect(
+      page.getByRole('heading', { level: 1, name: /on your computer/ }),
+    ).toBeVisible();
+    await expect(page.locator('script')).toHaveCount(0);
     const denied = await context.request.get(`${origin.origin}/api/docs`);
     expect(denied.status()).toBe(401);
     expect(await denied.json()).toMatchObject({
