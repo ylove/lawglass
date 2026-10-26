@@ -48,7 +48,7 @@ function features(): Feature[] {
         'Every point links to the text behind it',
       ],
       image: '/site/in-brief.jpg',
-      alt: `${BRAND.displayName}'s In brief card: a short summary, then each main part shown as a simple picture with the bill's words underneath.`,
+      alt: `${BRAND.displayName}'s In brief card: a short summary, then a main part of the bill shown as simple pictures with the bill's words underneath.`,
     },
     {
       title: 'Section by section',
@@ -65,8 +65,8 @@ function features(): Feature[] {
       title: 'What changes',
       body: `Most bills rewrite existing law. ${BRAND.displayName} reads which words a bill strikes and which it adds, and explains the change in plain words. Struck text is never presented as the law.`,
       bullets: [
-        'Struck and added words marked, not just colored',
-        'Before and after wording shown for each change',
+        'Changes grouped by the section that makes them',
+        'Struck and added words marked in the source, not just colored',
         'Cited to the section that changes it',
       ],
       image: '/site/changes.jpg',
