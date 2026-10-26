@@ -34,11 +34,17 @@ A panel shows who or what is on the left, how it relates to the right, and an op
 - link "equals": the left must be backed by, or match, what is on the right. Example: reserves of at least 1 to 1 is coins equals money, bank and document.
 - link "blocked": the left may not give or do this to the right. Example: no interest paid to holders is bank, blocked, carry percent, person.
 - link "none": only the left side, usually with a stamp.
-- stamp "seal": approved or licensed; put who approves in its label, for example "Federal" or "State". "check": allowed or required. "no": not allowed. "calendar" or "clock": when. "warning": a penalty or a risk.
+- stamp: a badge on the left side. It always says something about the left side itself, never about anyone else. "seal": the left side is approved or licensed; put who approves in its label, for example "Federal" or "State". "check": the left side may or must do this. "no": the left side may not. "calendar" or "clock": when the left side must act. "warning": the left side faces a penalty or a risk.
 - note: one or two words on the link, for example "monthly".
 - label: one or two words under a side, for example "Issuer".
 
-When an item lists several cases, draw one panel per case and keep the same glyphs, so only the difference changes. Example: issuers can be bank subsidiaries, federally approved or state approved is three panels of bank, to, carry coins, person, with no stamp, a seal labelled "Federal", and a seal labelled "State".
+Who goes where:
+- The left side is whoever the item says must act, may act, or is approved. A regulator, an approving agency or a law goes on the left only when it is the one acting. When the item is about who may do something, the one who may do it is on the left and the approver is named in the seal's label.
+- Arrows point the way things really move. A company that must report to a regulator is business, to, carry document, government. Money a bill provides for an agency is money, to, government; the agency does not give it.
+- A duty to report or disclose something is drawn as the report: whoever reports, to, carry document, whoever receives it. Never draw what is being reported as if it happened.
+- If you are not sure who acts or which way something moves, skip the item.
+
+When an item lists several cases, draw one panel per case and keep the same glyphs, so only the difference changes. Example: issuers can be bank subsidiaries, federally approved or state approved is three panels with the issuer on the left each time: bank, to, carry coins, person, with no stamp; then business, to, carry coins, person, with a seal labelled "Federal"; then the same with a seal labelled "State". The government is the approver here, never the issuer.
 
 Rules:
 - Show only what the item says. Never add a person, thing, number, time, place or name the item does not mention.
