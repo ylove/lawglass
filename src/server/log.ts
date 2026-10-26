@@ -1,5 +1,6 @@
 import type { Context, MiddlewareHandler } from 'hono';
 import { routePath } from 'hono/route';
+import type { BriefRegenerationEvent } from '../core/breakdown/generate.js';
 import type { AnswerLogEvent } from '../core/answer/log.js';
 import { providerStatusOf } from '../core/llm/shared.js';
 import { isAppError } from '../core/model/index.js';
@@ -57,6 +58,21 @@ export function createLogger(
           ? { event: e.event, code: e.reason }
           : { event: e.event, count: e.count }),
         route: '/api/docs/:docId/summary',
+        method: 'GET',
+      }) + '\n',
+    );
+  }
+  function backgroundBreakdownEvent(e: BriefRegenerationEvent): void {
+    write(
+      JSON.stringify({
+        t: new Date(now()).toISOString(),
+        level: 'info',
+        status: 200,
+        ms: 0,
+        event: e.event,
+        rewritten: e.rewritten,
+        refused: e.refused,
+        route: '/api/docs/:docId/breakdown',
         method: 'GET',
       }) + '\n',
     );
@@ -144,6 +160,7 @@ export function createLogger(
     event,
     answerEvent,
     backgroundAnswerEvent,
+    backgroundBreakdownEvent,
     error,
     middleware,
     referenceSkipped,

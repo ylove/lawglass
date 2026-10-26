@@ -886,6 +886,9 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   });
 
   registerBreakdownRoutes(app, runtime, {
+    log: (e) => {
+      log.backgroundBreakdownEvent(e);
+    },
     publicMode,
     now,
     summary,
