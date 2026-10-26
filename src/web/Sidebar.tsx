@@ -7,12 +7,15 @@ export function Sidebar({
   onSelect,
   onAdd,
   onRemove,
+  perReader = false,
 }: {
   docs: DocSummary[];
   selectedId: string | null;
   onSelect: (docId: string) => void;
   onAdd: () => void;
   onRemove: (docId: string) => void;
+  /** Hosted servers: removing only takes a document off this reader's list. */
+  perReader?: boolean;
 }) {
   const [confirming, setConfirming] = useState<string | null>(null);
   // Only meaningful at narrow widths, where the list collapses behind a disclosure button.
@@ -72,7 +75,11 @@ export function Sidebar({
                     aria-label={`Confirm removing ${d.label}`}
                     className="confirm"
                   >
-                    <span>Remove this document?</span>
+                    <span>
+                      {perReader
+                        ? 'Remove this from your list? It stays available to others.'
+                        : 'Remove this document?'}
+                    </span>
                     <button
                       type="button"
                       className="btn danger"
@@ -97,12 +104,16 @@ export function Sidebar({
                   <button
                     type="button"
                     className="link-btn"
-                    aria-label={`Remove ${d.label}`}
+                    aria-label={
+                      perReader
+                        ? `Remove ${d.label} from my list`
+                        : `Remove ${d.label}`
+                    }
                     onClick={() => {
                       setConfirming(d.docId);
                     }}
                   >
-                    Remove
+                    {perReader ? 'Remove from my list' : 'Remove'}
                   </button>
                 )}
               </li>

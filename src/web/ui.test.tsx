@@ -6,8 +6,9 @@ import {
   waitFor,
   within,
 } from '@testing-library/react';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test } from 'vitest';
 import { BRAND } from '../core/brand.js';
+import { SAMPLE_PATH, visit } from '../../tests/support/web-routes.js';
 import { App } from './App.js';
 import type { ApiClient } from './api.js';
 import { numberCitations, stripMarkers } from './AnswerText.js';
@@ -16,6 +17,10 @@ import { validateUrl } from './Ingest.js';
 import { createMockApi } from './mock-api.js';
 import { ApiError } from './sse.js';
 
+beforeEach(() => {
+  // These suites exercise an open document; the homepage has its own tests.
+  visit(SAMPLE_PATH);
+});
 afterEach(cleanup);
 
 const mock = (publicMode = false): ApiClient =>
@@ -668,6 +673,7 @@ describe('ingest flow', () => {
     broken.ingest = async function* () {
       throw new Error('internal detail');
     };
+    visit(SAMPLE_PATH);
     await startIngest(broken);
     fireEvent.change(input(), {
       target: { value: 'https://example.gov/e.pdf' },
@@ -703,15 +709,23 @@ describe('sidebar and shell', () => {
     expect(toggle.getAttribute('aria-expanded')).toBe('true');
     expect(panel.classList.contains('open')).toBe(true);
     fireEvent.click(within(panel).getByRole('button', { name: 'Add a bill' }));
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    // The homepage has no sidebar; the list is in the main column.
     await screen.findByRole('heading', { name: 'Add a bill' });
-    fireEvent.click(toggle);
+    expect(
+      screen.queryByRole('button', { name: /^Your documents/ }),
+    ).toBeNull();
     fireEvent.click(
-      within(panel).getByRole('button', {
+      screen.getByRole('link', { name: /Clean Water Infrastructure Act/ }),
+    );
+    await ready();
+    const again = screen.getByRole('button', { name: 'Your documents (1)' });
+    fireEvent.click(again);
+    fireEvent.click(
+      screen.getByRole('button', {
         name: /^Clean Water Infrastructure Act\s+HB 214$/,
       }),
     );
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(again.getAttribute('aria-expanded')).toBe('false');
   });
 
   test('remove asks first; keeping it changes nothing; confirming removes and shows ingest', async () => {
@@ -734,7 +748,7 @@ describe('sidebar and shell', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: 'Yes, remove' }));
     await screen.findByRole('heading', { name: 'Add a bill' });
-    expect(screen.getByText('Nothing loaded yet.')).toBeTruthy();
+    expect(screen.getByText(/Nothing here yet/)).toBeTruthy();
   });
 
   test('a failed removal is reported and the document stays', async () => {
