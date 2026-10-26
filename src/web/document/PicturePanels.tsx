@@ -18,7 +18,7 @@ function Side({ side }: { side: PictureSide }) {
       <div className="pp-glyphs" data-count={side.glyphs.length}>
         {side.glyphs.map((glyph, i) => {
           const Icon = GLYPH_ICONS[glyph];
-          return <Icon key={i} className="pp-glyph" strokeWidth={1.6} />;
+          return <Icon key={i} className="pp-glyph" strokeWidth={1.75} />;
         })}
       </div>
       {/* Labels come from the model: always a text node, never markup. */}
@@ -39,7 +39,7 @@ function Link({ panel }: { panel: PicturePanel }) {
   const Mark = panel.link === 'blocked' ? ArrowRight : LINK_ICONS[panel.link];
   return (
     <div className="pp-link" data-link={panel.link}>
-      {Carry && <Carry className="pp-carry" strokeWidth={1.6} />}
+      {Carry && <Carry className="pp-carry" strokeWidth={1.75} />}
       <span className="pp-arrow">
         <Mark className="pp-arrow-icon" strokeWidth={2} />
         {/* Not allowed is a barred circle over a dimmed arrow: the shape says it, not the colour. */}
@@ -58,10 +58,15 @@ function Link({ panel }: { panel: PicturePanel }) {
  * is hidden from assistive technology; the caption underneath carries the meaning.
  */
 export function PicturePanels({ entry }: { entry: PictureEntry }) {
+  // Panels with 2+ glyphs on both sides are too wide to pair up on a phone; the CSS gives them a row each.
+  const wide = entry.panels.some(
+    (p) => p.left.glyphs.length > 1 && (p.right?.glyphs.length ?? 0) > 1,
+  );
   return (
     <div
       className="picture-panels"
       data-count={entry.panels.length}
+      data-wide={wide || undefined}
       aria-hidden="true"
     >
       {entry.panels.map((panel, i) => {

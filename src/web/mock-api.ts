@@ -372,27 +372,30 @@ const SAMPLE_BRIEFS: readonly {
   },
 ];
 
-/** Pictures for the sample briefs; the report brief (sec-5) stays plain text. */
+/**
+ * Pictures for the sample briefs; the report brief (sec-5) stays plain text. As on the server,
+ * every label is made of words from the brief's own text.
+ */
 const BRIEF_PICTURE_PANELS: Record<string, PictureEntry['panels']> = {
   'sec-4/b': [
     {
-      left: { glyphs: ['water'], label: 'Lead lines' },
+      left: { glyphs: ['water'], label: 'Lead line' },
       link: 'to',
-      right: { glyphs: ['calendar'], label: '10 years' },
+      right: { glyphs: ['calendar'], label: 'Ten years' },
     },
     {
       left: { glyphs: ['business'], label: 'Utility' },
       link: 'to',
       carry: 'mail',
-      right: { glyphs: ['house'], label: 'Households' },
+      right: { glyphs: ['house'], label: 'Household' },
     },
   ],
   'sec-6': [
     {
-      left: { glyphs: ['business'], label: 'Late utility' },
+      left: { glyphs: ['business'], label: 'Utility' },
       link: 'to',
       carry: 'money',
-      right: { glyphs: ['government'], label: '$1,000 a day' },
+      right: { glyphs: ['government'], label: '$1,000' },
     },
   ],
 };
@@ -400,8 +403,8 @@ const BRIEF_PICTURE_PANELS: Record<string, PictureEntry['panels']> = {
 /**
  * Pictures for the sample summary's bullets, in the grammar of core/model/picture.ts. The first
  * two follow the product owner's examples (one source, three kinds of approval; money that must
- * equal an amount set aside, plus a monthly-style report). The last bullet has no picture, so
- * the page also shows an item that stays plain text.
+ * equal an amount set aside, plus a yearly report). The last bullet has no picture, so the page
+ * also shows an item that stays plain text. Labels use only words of the bullet they illustrate.
  */
 const SUMMARY_PICTURE_PANELS: readonly PictureEntry['panels'][] = [
   [
@@ -409,19 +412,19 @@ const SUMMARY_PICTURE_PANELS: readonly PictureEntry['panels'][] = [
       left: { glyphs: ['government'], label: 'City' },
       link: 'to',
       carry: 'water',
-      right: { glyphs: ['house'], label: 'Homes' },
+      right: { glyphs: ['house'] },
     },
     {
       left: { glyphs: ['business'], label: 'Private' },
       link: 'to',
       carry: 'water',
-      right: { glyphs: ['house'], label: 'Homes' },
+      right: { glyphs: ['house'] },
     },
     {
-      left: { glyphs: ['business'], label: 'Approved' },
+      left: { glyphs: ['business'], label: 'Companies' },
       link: 'to',
       carry: 'water',
-      right: { glyphs: ['house'], label: 'Homes' },
+      right: { glyphs: ['house'] },
       stamp: { glyph: 'seal', label: 'State' },
     },
   ],
@@ -429,7 +432,7 @@ const SUMMARY_PICTURE_PANELS: readonly PictureEntry['panels'][] = [
     {
       left: { glyphs: ['coins'], label: 'Set aside' },
       link: 'equals',
-      right: { glyphs: ['money', 'water'], label: 'Cost of work' },
+      right: { glyphs: ['money'], label: 'Cost' },
     },
     {
       left: { glyphs: ['calendar'], label: 'Every year' },
@@ -440,15 +443,15 @@ const SUMMARY_PICTURE_PANELS: readonly PictureEntry['panels'][] = [
   ],
   [
     {
-      left: { glyphs: ['water', 'calendar'], label: '10 years' },
+      left: { glyphs: ['water', 'calendar'], label: 'Ten years' },
       link: 'none',
-      stamp: { glyph: 'clock', label: 'Deadline' },
+      stamp: { glyph: 'clock' },
     },
     {
       left: { glyphs: ['business'], label: 'Late' },
       link: 'to',
       carry: 'money',
-      right: { glyphs: ['government'], label: '$1,000 a day' },
+      right: { glyphs: ['government'], label: '$1,000' },
     },
   ],
 ];

@@ -92,4 +92,30 @@ describe('PicturePanels', () => {
     expect(container.querySelector('[data-link="equals"] .pp-ban')).toBeNull();
     expect(container.querySelectorAll('.pp-arrow-icon')).toHaveLength(2);
   });
+
+  test('a panel with 2+ glyphs on both sides marks the row wide', () => {
+    const wide = render(
+      <PicturePanels
+        entry={entry([
+          {
+            left: { glyphs: ['coins', 'money'] },
+            link: 'equals',
+            right: { glyphs: ['bank', 'vault'] },
+          },
+        ])}
+      />,
+    );
+    expect(wide.container.firstElementChild?.hasAttribute('data-wide')).toBe(
+      true,
+    );
+    cleanup();
+    const narrow = render(
+      <PicturePanels
+        entry={entry([{ left: { glyphs: ['coins', 'money'] }, link: 'none' }])}
+      />,
+    );
+    expect(narrow.container.firstElementChild?.hasAttribute('data-wide')).toBe(
+      false,
+    );
+  });
 });
