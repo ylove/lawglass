@@ -150,7 +150,9 @@ export function BreakdownPanel({
           } else if (Date.now() - lastProgress >= maxWaitMs) {
             setState({ kind: 'timeout', briefs: shown.current });
           } else {
-            setState({ kind: 'pending', briefs: r.briefs ?? [] });
+            // A reply with fewer parts than are already shown (a retry restarting) must not
+            // replace the cards the reader is looking at.
+            setState({ kind: 'pending', briefs: shown.current });
             timer = setTimeout(look, pollMs);
           }
         })
@@ -232,9 +234,10 @@ export function BreakdownPanel({
       {reading && <Skeleton count={briefs.length > 0 ? 1 : 3} />}
       {state.kind === 'cached' && state.omitted > 0 && (
         <p className="muted breakdown-note">
-          This covers the first {state.briefs.length} parts of the bill.{' '}
-          {state.omitted} more {state.omitted === 1 ? 'part is' : 'parts are'}{' '}
-          not included. Ask a question below about anything else.
+          {state.briefs.length}{' '}
+          {state.briefs.length === 1 ? 'part is' : 'parts are'} shown;{' '}
+          {state.omitted} more {state.omitted === 1 ? 'is' : 'are'} not
+          included. Ask a question below about anything else.
         </p>
       )}
       {(state.kind === 'timeout' || state.kind === 'error') && (

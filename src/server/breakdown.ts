@@ -345,7 +345,11 @@ export function createBreakdownService(
         const name = `${docId}:example:${scenarioCacheHash(key)}`;
         // Any stored result counts, even a `none` past its cool-down: never redraw it here.
         if (await examples.has(key)) continue;
-        if (coolingDown(name)) return;
+        if (coolingDown(name)) {
+          // Ended early: let a later look try the rest once it has cooled down.
+          pregenerated.delete(passKey(docId));
+          return;
+        }
         // A reader may have asked for this one already; wait for that run instead of doubling it.
         const inFlight = running.get(name);
         if (inFlight) {

@@ -165,11 +165,18 @@ describe('GET /api/docs/:docId/breakdown', () => {
   test('concurrent first looks share one run', async () => {
     const a = app();
     const docId = await ingestDoc(a);
+    // Hold the model call until all three looks have returned, so none can see a finished run.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    provider.gate = () => held;
     const results = await Promise.all([
       breakdown(a, docId),
       breakdown(a, docId),
       breakdown(a, docId),
     ]);
+    release();
     expect(results.map((r) => r.status)).toEqual([
       'pending',
       'pending',

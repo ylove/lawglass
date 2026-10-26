@@ -127,6 +127,10 @@ export interface LimitsConfig {
   maxConcurrentIngest: number;
   maxConcurrentAsk: number;
   maxCallsPerMinute: number;
+  /** How long background work waits for per-minute headroom before giving up. Default 65 s. */
+  backgroundWaitMs?: number;
+  /** How often it looks again. Default 1 s. */
+  backgroundPollMs?: number;
 }
 
 /**
@@ -140,6 +144,8 @@ export class Limits {
   private readonly pools: Record<WorkKind, Semaphore>;
   private readonly background: Semaphore;
   private readonly ceiling: RateCeiling;
+  private readonly backgroundWaitMs: number;
+  private readonly backgroundPollMs: number;
 
   constructor(config: LimitsConfig, now: () => number = Date.now) {
     this.pools = {
@@ -150,6 +156,8 @@ export class Limits {
       Math.max(1, Math.floor(config.maxConcurrentAsk * BACKGROUND_SHARE)),
     );
     this.ceiling = new RateCeiling(config.maxCallsPerMinute, now);
+    this.backgroundWaitMs = config.backgroundWaitMs ?? 65_000;
+    this.backgroundPollMs = config.backgroundPollMs ?? 1000;
   }
 
   /** In-flight and queued background calls, for tests. */
@@ -180,12 +188,21 @@ export class Limits {
       },
       streamText: (req) => metered.streamText(req),
       generateObject: async (req) => {
+        // Either the job's own signal or the request's ends the wait for a slot.
+        const signals = [options.signal, req.signal].filter(
+          (s): s is AbortSignal => s !== undefined,
+        );
+        const signal =
+          signals.length > 0 ? AbortSignal.any(signals) : undefined;
         const releaseBackground = background
-          ? await this.background.acquire(options.signal)
+          ? await this.background.acquire(signal)
           : undefined;
         let releaseAsk: (() => void) | undefined;
         try {
-          releaseAsk = await this.acquire('ask', options.signal);
+          // Nobody is waiting on background work, so it waits for headroom (the window frees
+          // as old calls age out) instead of failing a run that has already paid for batches.
+          if (background) await this.waitForHeadroom(share, signal);
+          releaseAsk = await this.acquire('ask', signal);
           if (background && this.ceiling.used() >= share)
             throw new AppError(
               'RATE_LIMITED',
@@ -198,6 +215,19 @@ export class Limits {
         }
       },
     };
+  }
+
+  private async waitForHeadroom(
+    share: number,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    const deadline = Date.now() + this.backgroundWaitMs;
+    while (this.ceiling.used() >= share && Date.now() < deadline) {
+      signal?.throwIfAborted();
+      await new Promise((resolve) =>
+        setTimeout(resolve, this.backgroundPollMs),
+      );
+    }
   }
 
   pool(kind: WorkKind): Semaphore {

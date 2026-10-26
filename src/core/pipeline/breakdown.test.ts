@@ -194,6 +194,7 @@ describe('runBreakdown', () => {
       maxConcurrentIngest: 1,
       maxConcurrentAsk: 2,
       maxCallsPerMinute: 2,
+      backgroundWaitMs: 0,
     });
     const provider = both();
     // One call is within the background share (half of 2); the run completes.

@@ -395,6 +395,7 @@ describe('Limits.paced', () => {
       maxConcurrentIngest: 1,
       maxConcurrentAsk: 2,
       maxCallsPerMinute: 4,
+      backgroundWaitMs: 0,
     });
     expect(limits.backgroundPool().max).toBe(1);
     const background = limits.paced(provider, { background: true });
@@ -436,8 +437,8 @@ describe('Limits.paced', () => {
     const second = paced.generateObject(objReq);
     await vi.waitFor(() => {
       expect(limits.backgroundPool().queued).toBe(1);
+      expect(limits.pool('ask').inFlight).toBe(1);
     });
-    expect(limits.pool('ask').inFlight).toBe(1);
     (await limits.acquire('ask'))();
     open();
     await Promise.all([first, second]);
@@ -451,5 +452,91 @@ describe('Limits.paced', () => {
     expect(ceiling.used()).toBe(2);
     t = 1500;
     expect(ceiling.used()).toBe(0);
+  });
+
+  it('makes background work wait for the window to free instead of failing', async () => {
+    let t = 0;
+    const limits = new Limits(
+      {
+        maxConcurrentIngest: 1,
+        maxConcurrentAsk: 2,
+        maxCallsPerMinute: 2,
+        backgroundWaitMs: 5000,
+        backgroundPollMs: 5,
+      },
+      () => t,
+    );
+    const background = limits.paced(provider, { background: true });
+    await background.generateObject(objReq); // used 1 of share 1
+    const second = background.generateObject(objReq);
+    let done = false;
+    void second.then(() => {
+      done = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    expect(done).toBe(false);
+    // The minute passes: the first call ages out and the waiting call goes through.
+    t += 61_000;
+    await second;
+    expect(done).toBe(true);
+  });
+
+  it('gives up with RATE_LIMITED after the wait bound, and stops waiting when aborted', async () => {
+    const limits = new Limits(
+      {
+        maxConcurrentIngest: 1,
+        maxConcurrentAsk: 2,
+        maxCallsPerMinute: 2,
+        backgroundWaitMs: 30,
+        backgroundPollMs: 5,
+      },
+      () => 0,
+    );
+    const background = limits.paced(provider, { background: true });
+    await background.generateObject(objReq);
+    await expect(background.generateObject(objReq)).rejects.toMatchObject({
+      code: 'RATE_LIMITED',
+    });
+    const controller = new AbortController();
+    const pending = limits
+      .paced(provider, { background: true })
+      .generateObject({ ...objReq, signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    expect(limits.pool('ask').inFlight).toBe(0);
+    expect(limits.backgroundPool().inFlight).toBe(0);
+  });
+
+  it('a request signal ends the wait for a busy background slot', async () => {
+    const limits = new Limits({
+      maxConcurrentIngest: 1,
+      maxConcurrentAsk: 2,
+      maxCallsPerMinute: 100,
+    });
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const held = {
+      ...provider,
+      generateObject: async () => {
+        await gate;
+        return { object: { a: 1 }, usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    } as unknown as typeof provider;
+    const paced = limits.paced(held, { background: true });
+    const first = paced.generateObject(objReq);
+    const controller = new AbortController();
+    const queued = paced.generateObject({
+      ...objReq,
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => {
+      expect(limits.backgroundPool().queued).toBe(1);
+    });
+    controller.abort();
+    await expect(queued).rejects.toThrow();
+    open();
+    await first;
   });
 });

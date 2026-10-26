@@ -133,7 +133,9 @@ describe('BreakdownPanel states', () => {
     panel(api);
     await screen.findByText(/This part does sec-1\./);
     expect(screen.getAllByRole('article')).toHaveLength(INITIAL_VISIBLE_BRIEFS);
-    expect(screen.getByText(/4 more parts are not included/)).toBeTruthy();
+    expect(
+      screen.getByText(/9 parts are shown; 4 more are not included/),
+    ).toBeTruthy();
     fireEvent.click(
       screen.getByRole('button', {
         name: `Show all ${String(many.length)} sections`,
@@ -148,7 +150,7 @@ describe('BreakdownPanel states', () => {
       { status: 'cached', briefs: [brief('sec-2')], omitted: 1 },
     ]);
     panel(api);
-    await screen.findByText(/1 more part is not included/);
+    await screen.findByText(/1 part is shown; 1 more is not included/);
   });
 
   test('disabled, and enabled=false, render nothing and ask nothing', async () => {
@@ -206,6 +208,22 @@ describe('BreakdownPanel states', () => {
 });
 
 describe('failures and slow runs', () => {
+  test('a retry that restarts with fewer parts never takes shown cards away', async () => {
+    const api = scripted([
+      { status: 'pending', briefs: [brief('sec-2'), brief('sec-3')] },
+      new ApiError('PROVIDER_ERROR', 'Try again in a minute.'),
+    ]);
+    panel(api, { maxWaitMs: 10_000 });
+    await screen.findByText(/did not finish/);
+    api.spy.breakdown.mockResolvedValue({ status: 'pending', briefs: [] });
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => {
+      expect(api.spy.breakdown.mock.calls.length).toBeGreaterThan(2);
+    });
+    expect(screen.getByText(/This part does sec-2/)).toBeTruthy();
+    expect(screen.getByText(/This part does sec-3/)).toBeTruthy();
+  });
+
   test('a failed run keeps the parts already shown and offers a retry', async () => {
     const api = scripted([
       { status: 'pending', briefs: [brief('sec-2')] },
