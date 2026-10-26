@@ -41,6 +41,12 @@ if (!values.mock && !(values.url && values.doc))
   );
 
 const MAX_BYTES = 200 * 1024;
+/**
+ * A real bill's In brief or section-by-section card can run to several screens. The landing
+ * page shows only the top of each, so a tall card is cut, at the end of the last list item or
+ * brief that fits, to about this many CSS pixels.
+ */
+const MAX_HEIGHT = 900;
 const MIME: Record<string, string> = {
   '.html': 'text/html',
   '.js': 'text/javascript',
@@ -114,12 +120,49 @@ async function need(
   return card;
 }
 
+/** Page coordinates of the card, cut at an item boundary when it is taller than MAX_HEIGHT. */
+async function cropFor(
+  card: Locator,
+): Promise<
+  { x: number; y: number; width: number; height: number } | undefined
+> {
+  const box = await card.boundingBox();
+  if (!box || box.height <= MAX_HEIGHT) return undefined;
+  // The scripts project has no DOM types; this is all of the element API the callback touches.
+  interface Measured {
+    getBoundingClientRect(): { bottom: number };
+  }
+  const items = await card
+    .locator('li, article')
+    .evaluateAll((nodes) =>
+      nodes.map(
+        (node) => (node as unknown as Measured).getBoundingClientRect().bottom,
+      ),
+    );
+  // The last item that ends inside the budget, plus a little of the card's padding below it.
+  const ends = items.filter((bottom) => bottom - box.y <= MAX_HEIGHT);
+  const height = ends.length > 0 ? Math.max(...ends) - box.y + 16 : MAX_HEIGHT;
+  const scrollY = await card
+    .page()
+    .evaluate(() => (globalThis as unknown as { scrollY: number }).scrollY);
+  return { x: box.x, y: box.y + scrollY, width: box.width, height };
+}
+
 async function shoot(card: Locator, file: string): Promise<void> {
   await card.scrollIntoViewIfNeeded();
   await card.page().waitForTimeout(400);
+  const clip = await cropFor(card);
   // Quality steps down until the file fits the budget.
   for (const quality of [82, 74, 66, 58]) {
-    await card.screenshot({ path: file, type: 'jpeg', quality });
+    if (clip)
+      await card.page().screenshot({
+        path: file,
+        type: 'jpeg',
+        quality,
+        clip,
+        fullPage: true,
+      });
+    else await card.screenshot({ path: file, type: 'jpeg', quality });
     const { size } = await stat(file);
     if (size <= MAX_BYTES) {
       console.log(
