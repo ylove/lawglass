@@ -220,7 +220,13 @@ export async function createPackedApp(): Promise<PackedApp> {
   const root = await mkdtemp(join(tmpdir(), 'packed-app-'));
   const home = join(root, 'home');
   const installDir = join(root, 'install');
-  const env = isolatedEnvironment(process.env, home);
+  const env = {
+    ...isolatedEnvironment(process.env, home),
+    // The mock costs nothing, but background work (pictures, examples) still waits for headroom
+    // under the default 30 calls a minute. One server serves every e2e spec, so lift the ceiling
+    // rather than let a spec's result depend on how many calls the earlier ones made.
+    [envVar('MAX_CALLS_PER_MINUTE')]: '600',
+  };
   const servers: PackedServer[] = [];
   const dispose = async () => {
     try {

@@ -92,7 +92,10 @@ export async function makePipelineEnv(
     serve: (url, sample, contentType = 'application/octet-stream') => {
       pages.set(url, { bytes: sample.bytes, contentType });
     },
-    cleanup: () => rm(dir, { recursive: true, force: true }),
+    // A background cache write can land while the directory is being removed (ENOTEMPTY on a
+    // loaded runner); fs.rm retries that case itself.
+    cleanup: () =>
+      rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }),
   };
 }
 
