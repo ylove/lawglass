@@ -364,6 +364,22 @@ describe('document flow', () => {
     expect(chip.getAttribute('aria-disabled')).toBe('false');
   });
 
+  test('the delegations answer shows its groups as headings over lists', async () => {
+    render(<App api={mock()} />);
+    await ready();
+    fireEvent.click(screen.getByRole('button', { name: 'Who decides later?' }));
+    for (const heading of [
+      'Decided later by',
+      'Depends on',
+      'Takes effect when',
+    ])
+      expect((await screen.findByText(heading)).tagName).toBe('STRONG');
+    expect(screen.getAllByRole('list').length).toBeGreaterThanOrEqual(1);
+    expect(
+      (await screen.findAllByRole('button', { name: /^Source \d+$/ })).length,
+    ).toBeGreaterThan(1);
+  });
+
   test('a TRUNCATED warning is explained in plain language', async () => {
     const api = mock();
     const real = api.ask.bind(api);
@@ -481,7 +497,7 @@ describe('document flow', () => {
     const chips = within(
       screen.getByRole('group', { name: 'What would you like to know?' }),
     ).getAllByRole('button');
-    expect(chips).toHaveLength(9);
+    expect(chips).toHaveLength(10);
     for (const c of chips) expect(c.tagName).toBe('BUTTON');
   });
 

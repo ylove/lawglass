@@ -9,6 +9,7 @@ import type {
   BillMetadata,
   Citation,
   Definition,
+  ExternalRef,
   ScanStatus,
   LlmProvider,
   RetrievalBackend,
@@ -28,6 +29,8 @@ export interface ChipDoc {
   definitions?: readonly Definition[] | undefined;
   /** U.S. Code text read for definitions the bill borrows; shown beside the bill (issue #275). */
   references?: readonly ReferenceText[] | undefined;
+  /** Laws the bill cites, reused by `delegations` so it does not re-detect them. */
+  externalRefs?: readonly ExternalRef[] | undefined;
   /** The stored official record, read by `history`. Absent when none was fetched. */
   history?: BillHistory | undefined;
   /** Per-page read quality for scanned PDFs; `what-changes` will not claim "no changes" on a doubtful one. */
@@ -36,7 +39,13 @@ export interface ChipDoc {
 
 export interface ChipDeps {
   backend: RetrievalBackend;
+  /**
+   * May be a lazy provider (`lazyProvider`) whose `id` throws MISSING_KEY when no key is
+   * configured. Chips with an optional model step (`delegations`) catch that and answer without it.
+   */
   provider: LlmProvider;
+  /** Public servers make no model call beyond the chip's own answer; `delegations` skips its lede. */
+  publicMode?: boolean | undefined;
   doc: ChipDoc;
 }
 
