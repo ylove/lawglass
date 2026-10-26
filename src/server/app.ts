@@ -57,6 +57,7 @@ import {
   READER_COOKIE_MAX_AGE_S,
   ReaderLibrary,
 } from './readers.js';
+import { gateAssets, quickstartHtml } from './gate.js';
 import { createSessionToken, localSession, readAccessKey } from './session.js';
 
 export interface PublicLimits {
@@ -269,6 +270,19 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     await next();
   });
 
+  // The quickstart is public in every mode and registered before the session check and the SPA
+  // fallback, so neither gates nor swallows it. It contains no per-user data.
+  app.on(['GET', 'HEAD'], '/quickstart', async (c, next) => {
+    // A key in the query string still goes through the session exchange (and its redirect).
+    if (c.req.query('k') !== undefined) return next();
+    return c.html(
+      await quickstartHtml(
+        options.publicOrigin ?? process.env[envVar('PUBLIC_ORIGIN')],
+        options.webRoot,
+      ),
+    );
+  });
+
   if (!publicMode) {
     const token = privateMode
       ? readAccessKey(
@@ -279,6 +293,16 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       : (options.sessionToken ?? createSessionToken());
     const publicOrigin =
       options.publicOrigin ?? process.env[envVar('PUBLIC_ORIGIN')];
+    // Local mode has no gate page, but /quickstart still needs its stylesheet, fonts and images
+    // before sign-in. Only the exact public allowlist is served; a ?k= request is left to the
+    // session middleware so the key exchange keeps running first. (Private mode serves the same
+    // allowlist from inside localSession, and public mode has no session at all.)
+    if (!privateMode && options.webRoot) {
+      const publicAssets = gateAssets(options.webRoot);
+      const unlessKeyExchange: MiddlewareHandler = (c, next) =>
+        c.req.query('k') === undefined ? publicAssets(c, next) : next();
+      app.use('*', unlessKeyExchange);
+    }
     app.use(
       '*',
       localSession(token, {

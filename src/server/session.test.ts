@@ -227,7 +227,7 @@ describe('private session', () => {
     });
     const page = await a.request('/');
     expect(page.status).toBe(200);
-    expect(await page.text()).toContain('This is a private preview.');
+    expect(await page.text()).toContain('Know what a bill really says.');
     expect((await a.request('/', { method: 'POST' })).status).toBe(401);
   });
   test('requires a key of at least 32 characters without echoing its value', async () => {
