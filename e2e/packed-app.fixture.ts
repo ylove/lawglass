@@ -1,4 +1,4 @@
-import { test as base, expect } from '@playwright/test';
+import { test as base, expect, type Page } from '@playwright/test';
 import { createPackedApp, type PackedApp } from '../scripts/packed-app.js';
 
 export const test = base.extend<
@@ -26,37 +26,52 @@ export const test = base.extend<
   baseURL: async ({ packedUrl }, use) => {
     await use(new URL(packedUrl).origin);
   },
-  // Fails any test during which the browser reports a Content-Security-Policy violation.
+  // Fails any test during which any page of the browser context reports a Content-Security-Policy
+  // violation. Violations go to Node through a context-level binding, so they survive navigations,
+  // reloads and popups; an in-page array would be reset by each of those.
   cspGuard: [
-    async ({ page }, use) => {
+    async ({ context }, use) => {
       const violations: string[] = [];
-      page.on('console', (message) => {
-        if (/content security policy/i.test(message.text()))
-          violations.push(`console: ${message.text()}`);
+      await context.exposeBinding('reportCspViolation', (_source, report) => {
+        violations.push(`violation: ${String(report)}`);
       });
-      page.on('pageerror', (error) => {
-        if (/content security policy/i.test(error.message))
-          violations.push(`pageerror: ${error.message}`);
+      // A function, not a string: Playwright evaluates strings with eval(), which CSP would flag.
+      await context.addInitScript(() => {
+        // The e2e project has no DOM types; this is all of the browser API the script touches.
+        const browser = globalThis as unknown as {
+          reportCspViolation?: (text: string) => void;
+          document: {
+            addEventListener(
+              type: string,
+              listener: (event: {
+                violatedDirective: string;
+                blockedURI: string;
+              }) => void,
+            ): void;
+          };
+        };
+        browser.document.addEventListener(
+          'securitypolicyviolation',
+          (event) => {
+            browser.reportCspViolation?.(
+              `${event.violatedDirective} blocked ${event.blockedURI}`,
+            );
+          },
+        );
       });
-      await page.addInitScript({
-        content: `window.__cspViolations = [];
-document.addEventListener('securitypolicyviolation', (event) => {
-  window.__cspViolations.push(event.violatedDirective + ' blocked ' + event.blockedURI);
-});`,
-      });
+      const watch = (page: Page) => {
+        page.on('console', (message) => {
+          if (/content security policy/i.test(message.text()))
+            violations.push(`console: ${message.text()}`);
+        });
+        page.on('pageerror', (error) => {
+          if (/content security policy/i.test(error.message))
+            violations.push(`pageerror: ${error.message}`);
+        });
+      };
+      context.pages().forEach(watch);
+      context.on('page', watch);
       await use(undefined);
-      for (const p of page.context().pages()) {
-        if (p.isClosed()) continue;
-        const recorded = await p
-          // A function, not a string: Playwright evaluates strings with eval(), which CSP would flag.
-          .evaluate(
-            () =>
-              (globalThis as unknown as { __cspViolations?: string[] })
-                .__cspViolations ?? [],
-          )
-          .catch((): string[] => []);
-        violations.push(...recorded.map((v) => `violation: ${v}`));
-      }
       expect(violations, 'CSP violations').toEqual([]);
     },
     { auto: true },

@@ -6,7 +6,11 @@ test('packed UI: document, streamed chip, citation, blocked address, removal', a
   page,
   packedApp,
 }) => {
-  await page.goto('/');
+  const home = await page.goto('/');
+  // The CSP guard in the fixture only means something if the policy is really served.
+  const policy = home?.headers()['content-security-policy'] ?? '';
+  expect(policy).toContain("default-src 'self'");
+  expect(policy).toContain("script-src 'self'");
   // A visitor lands on the homepage, never inside a document.
   await expect(page).toHaveURL(/\/$/);
   await expect(
