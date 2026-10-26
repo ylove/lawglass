@@ -290,6 +290,8 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       scenariosEnabled: !publicMode,
       // Served once Section by section lands (#276).
       breakdownEnabled: false,
+      // Served once Find where it says that lands (#295).
+      locateEnabled: false,
     };
     return c.json(config);
   });

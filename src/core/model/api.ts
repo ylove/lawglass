@@ -15,6 +15,8 @@
  *   POST   /api/docs/:docId/scenario ScenarioRequest -> ScenarioResponse
  *   GET    /api/docs/:docId/breakdown               -> BreakdownResponse  (v1.1)
  *   GET    /api/docs/:docId/sections/:sectionId/example -> ScenarioResponse (v1.1)
+ *   POST   /api/docs/:docId/locate  LocateRequest    -> LocateResponse     (v1.1)
+ *   POST   /api/docs/:docId/locate/versions LocateRequest -> LocateVersionsResponse (v1.1)
  */
 import { z } from 'zod';
 import { AnswerResult, ChipId, Citation } from './answer.js';
@@ -63,6 +65,8 @@ export const ClientConfig = z.object({
     .optional(),
   /** "Section by section" and per-section examples. Defaults to off for older servers. */
   breakdownEnabled: z.boolean().default(false),
+  /** "Find where it says that". Defaults to off for older servers. */
+  locateEnabled: z.boolean().default(false),
 });
 export type ClientConfig = z.infer<typeof ClientConfig>;
 
@@ -260,3 +264,79 @@ export const SummaryResponse = z.object({
   answer: AnswerResult.optional(),
 });
 export type SummaryResponse = z.infer<typeof SummaryResponse>;
+
+// ---------------------------------------------------------------------------------------------
+// "Find where it says that" (v1.1, #295): a reader pastes someone else's sentence about the bill
+// (a press release, a headline, a post) and gets the passage that addresses it. The quoted words
+// are always copied from the section's own spans, never written by the model, and the label is
+// computed from span status, never chosen by the model. There is no true/false verdict.
+// ---------------------------------------------------------------------------------------------
+
+export const LocateRequest = z.object({
+  text: z.string().trim().min(3).max(500),
+  /** Public-mode bot check token (Turnstile). */
+  turnstileToken: z.string().optional(),
+});
+export type LocateRequest = z.infer<typeof LocateRequest>;
+
+/**
+ * What the matching words are, read from their spans: `added` (inserted by this bill), `removed`
+ * (struck by this bill), `changed` (both), `existing` (current law the bill reprints unchanged;
+ * only for bills that mark their changes), `in-bill` (the bill's own text, no change marks).
+ */
+export const LocateLabel = z.enum([
+  'added',
+  'removed',
+  'changed',
+  'existing',
+  'in-bill',
+]);
+export type LocateLabel = z.infer<typeof LocateLabel>;
+
+export const LocateMatch = z.object({
+  sectionId: SectionId,
+  breadcrumb: z.string(),
+  /** The exact words with their status, copied from the section's spans. */
+  quote: z.array(Span).min(1),
+  label: LocateLabel,
+  /** One plain sentence on what the passage says, with `[S:]` markers validated like an answer. */
+  explanation: z.string(),
+  citations: z.array(Citation),
+  /** A condition, exception or "subject to" the passage carries, in plain words. */
+  conditions: z.string().optional(),
+  /** The law the passage changes, as the bill names it, e.g. "42 U.S.C. 1395". */
+  amends: z.string().optional(),
+  location: SourceLocation,
+});
+export type LocateMatch = z.infer<typeof LocateMatch>;
+
+export const LocateResponse = z.object({
+  /** `not-found`: no passage addresses the sentence. Never shown as "false". */
+  status: z.enum(['found', 'not-found', 'disabled']),
+  /** Best first, at most 3. */
+  matches: z.array(LocateMatch).max(3),
+  /** With `not-found`: what the bill does say on the topic, cited, when it says anything. */
+  note: z.string().optional(),
+  noteCitations: z.array(Citation).optional(),
+  readingGrade: z.number().nullable().optional(),
+  provider: z.string(),
+  model: z.string(),
+});
+export type LocateResponse = z.infer<typeof LocateResponse>;
+
+/** "Check earlier versions": plain text matching across the official versions, no model call. */
+export const LocateVersionsResponse = z.object({
+  status: z.enum(['ok', 'unavailable', 'disabled']),
+  versions: z.array(
+    z.object({
+      label: z.string(),
+      date: z.string().optional(),
+      url: z.url(),
+      /** How much of the sentence's wording this version contains, 0..1. */
+      overlap: z.number().min(0).max(1),
+      /** The best-matching passage in that version, as printed (plain text). */
+      excerpt: z.string().optional(),
+    }),
+  ),
+});
+export type LocateVersionsResponse = z.infer<typeof LocateVersionsResponse>;
