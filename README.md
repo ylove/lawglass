@@ -14,17 +14,18 @@ _The demo shows a real federal bill, S. 202 of the 119th Congress, answered by C
 
 - **A summary the moment you open a bill.** You never start with a blank page. You see the official title first, then a plain-language summary of what the bill does, with citations.
 - **It reads the whole bill.** Most bills fit in one prompt, so Lawglass gives the model the entire text, not a handful of excerpts. Very large bills, such as a defense authorization act, use search over the text, plus the sections the matching passages refer to.
+- **Pictures.** Each main part of the summary, and each section brief, can come with a simple picture: who acts, what moves, what is required or not allowed. The bill's own words sit underneath. A small model arranges icons from a fixed set and sees only the sentence it illustrates, and every label is checked against that sentence's words. How the icons are arranged is still the model's work, so the words underneath are what counts.
 - **Section by section.** Each part of the bill gets one to three plain sentences with citations, and a "Show an example" button.
 - **"What it could mean for one person."** Short illustrated stories show how a bill, or one section of it, might land on one made-up person. Numbers about that person, such as an income, are invented, and each one is labeled as an example. Every claim about what the bill does is cited to its text, and any rate or amount comes from the bill itself.
 - **What the bill changes.** Many bills work by editing existing law. Lawglass tells struck-out (removed) text from newly added text, shows a before and after, and never reads removed words as current law.
 - **Who it affects, and when.** Ask who is covered, what the penalties are, when it takes effect, how much money is involved, and what its terms mean.
 - **"Who decides later?"** Many bills leave the details to an agency or official: "the Secretary shall prescribe regulations". Lawglass lists who decides what, what the bill depends on, and what has to happen before it takes effect. The list is read from the text itself, without a model. A one-line summary above it is written by the model and dropped whole if any sentence lacks a valid citation.
 - **The laws it refers to, as official links.** Citations such as "15 U.S.C. 6809", a Public Law or an Ohio Revised Code section become links to the official source, with a note like "Federal law · mentioned in 3 sections". When the bill borrows a definition from the U.S. Code, Lawglass reads that definition, so answers can use it and cite it.
-- **"How did it get here?"** For federal bills (from GovInfo) and Ohio bills (from the legislature's own API), see the stages, the committees and the versions, drawn from official records. A person or committee is named only when the record names them, never guessed. Strike-through in an introduced bill is the bill rewriting current law, and Lawglass does not call it an amendment by a legislator.
+- **"How did it get here?"** For federal bills (from GovInfo) and Ohio bills (from the legislature's own API), see the stages, the committees and the versions, drawn from official records, with a link to every recorded action. Amendments have a card of their own, grouped by sponsor when there are many. A person or committee is named only when the record names them, never guessed. Strike-through in an introduced bill is the bill rewriting current law, and Lawglass does not call it an amendment by a legislator.
 - **Sponsors, with links to their official pages** where the evidence supports the link. Otherwise you get clearly labeled search links.
 - **“Find where it says that.”** Paste a sentence from a headline, press release or post. Get verified source words, a label showing whether they are added, removed or unchanged, plain context and a copyable receipt with the section, version and official link. Check wording in earlier official versions without a model call.
 - **Questions in your own words.** Ask "Does this raise my taxes?" or "What does the bill cross out?" and get an answer with citations.
-- **Plain language, measured.** Every answer shows its reading grade. When the summary reads above 8th grade, Lawglass asks again for simpler wording and keeps the new answer only if it still cites everything the first one did. Answers about struck or added text, declines and exact-wording answers are left as they are.
+- **Plain language, measured.** Every answer shows its reading grade. When the summary or a section brief reads above 8th grade, Lawglass asks again for simpler wording and keeps the new answer only if it still cites everything the first one did. For bills that amend law, the rewrite is also refused if it brings in wording that the bill strikes or drops a new number it adds. Declines and exact-wording answers are left as they are.
 - **Federal, Ohio, New York and New Jersey bills.** Paste a bill's page on congress.gov, the Ohio legislature's site, the New York Senate or Assembly site, or the New Jersey legislature's site. New York and New Jersey mark removed words with brackets, and Lawglass reads them as removed. [Adding the other 47 states](docs/jurisdictions.md) is planned state by state.
 - **A home for your documents.** The homepage takes a new link and lists the bills you have opened. On a shared server, each visitor sees only their own list.
 
@@ -38,7 +39,7 @@ Lawglass is built so you do not have to take its word for anything.
 
 ## Quick start
 
-Requires Node.js 22.13 or newer.
+Requires Node.js 22.13 or newer. A step-by-step version, from cloning to your first bill, is at [lawglass.xyz/quickstart](https://lawglass.xyz/quickstart).
 
 > Not on npm yet (publishing waits on [#7](https://github.com/ylove/lawglass/issues/7)). Until then, download the tarball attached to the [latest release](https://github.com/ylove/lawglass/releases/latest) (or build your own with `npm pack`) and replace `npx lawglass` below with `npx --package ./lawglass-<version>.tgz lawglass`.
 
@@ -245,7 +246,7 @@ Set `LAWGLASS_ACCESS_KEY` to a random secret of at least 32 characters and keep 
 hosting platform's secret manager. Set `LAWGLASS_PUBLIC_ORIGIN` to your HTTPS origin, then
 send invited people `https://your-host.example/?k=<access key>`. The link creates a secure
 30-day browser session. Rotating the key revokes existing sessions. People without an invite
-see a preview page.
+see the public site: a landing page about Lawglass and a `/quickstart` page, both script-free.
 
 Use the local backend and a configured Anthropic, OpenAI or Google provider; hosted modes
 refuse `claude-cli` and the test-only `mock` provider. `--private` and `--public` are mutually

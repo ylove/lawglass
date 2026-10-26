@@ -52,6 +52,12 @@ The server side exists: `POST /api/docs/:docId/scenario` and the suggested perso
 
 - **Left to build:** a "How does this affect…?" strip with 3 to 5 suggested people and a "Someone else…" field, each result shown as its own example. See spec amendment 17.
 
+### Warn when an answer mixes cited and uncited sentences ([#219](https://github.com/ylove/lawglass/issues/219)), M
+
+Measured before building: a detector that flags a sentence without a citation, skipping lead-ins, disclaimers and limitation sentences, fired on 3 of 6 real cached answers and 9 of 21 injection-eval replies. The real flags were all overview sentences ("This bill sets defense policy and funding for fiscal year 2025.") before cited bullets. Exempting openers would reopen the hole the warning is for.
+
+- **Next step:** cite overview sentences (prompt rule 2) and re-measure on 50 or more recorded live answers.
+
 ## Hosting and security
 
 ### Public mode, hardened ([#180](https://github.com/ylove/lawglass/issues/180)), L
@@ -62,7 +68,6 @@ The hosted preview runs in private mode: anyone without an invite link gets the 
 - **Left:**
   - real Turnstile verification;
   - failing closed at startup;
-  - refusing the claude-cli and mock providers in `--public`;
   - a bounded, per-/64 rate limiter in place of the unbounded per-address map;
   - caps on open SSE streams;
   - a per-visitor daily budget;
@@ -76,6 +81,7 @@ A `serve` process, a CLI command and an eval run can touch the same `~/.lawglass
 
 - **Left:** the local search store, the answer cache and eval cleanup need an interprocess lock or immutable generations.
 - **When it matters:** only when two processes share one library. The hosted preview runs a single process.
+- **Seen in tests:** `src/mcp/processes.test.ts` has two processes ingest the same bill at once. Under heavy load it can fail with `BACKEND_UNAVAILABLE`. Each process stages a complete copy of the index, and the one that renames its copy into place second finds the folder already taken.
 
 ## Research
 
