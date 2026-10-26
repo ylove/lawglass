@@ -95,6 +95,8 @@ const IRC =
 // Case-sensitive on purpose: "of the Social Security Act", never "of this act".
 const NAMED_ACT =
   /\bsections?\s+(\d+[A-Za-z]?)(?:\([A-Za-z0-9]+\))*\s+of\s+the\s+((?:[A-Z][A-Za-z'’-]*\s+){1,6}Act(?:\s+of\s+\d{4})?)/g;
+const NY_LAW =
+  /\bsection\s+(\d+[a-z]?(?:-[a-z0-9]+)*)\s+of\s+the\s+((?:[a-z]+\s+){1,6}law)\b/gi;
 const PUBLIC_LAW =
   /\b(?:Public\s+Law|Pub\.\s*L\.|P\.\s*L\.)\s*(?:No\.\s*)?(\d{1,3})\s*[-–]\s*(\d{1,4})/gi;
 // "H.B. 110 of the 134th General Assembly": another enactment's section, never ours.
@@ -256,6 +258,13 @@ export function findExternalMatches(
     add(m, `26 U.S.C. ${m[1] ?? ''}`, 'us_code');
   for (const m of text.matchAll(NAMED_ACT))
     add(m, `${(m[2] ?? '').trim()} § ${m[1] ?? ''}`, 'other');
+  if (options.jurisdiction === 'New York')
+    for (const m of text.matchAll(NY_LAW))
+      add(
+        m,
+        `New York ${(m[2] ?? '').toLowerCase()} § ${m[1] ?? ''}`,
+        'state_code',
+      );
   for (const m of text.matchAll(PUBLIC_LAW))
     add(m, `Public Law ${m[1] ?? ''}-${m[2] ?? ''}`, 'public_law');
   for (const m of text.matchAll(CFR))
@@ -505,7 +514,7 @@ export function findInternalRefs(
   index: SectionIndex,
   options: ExternalOptions = {},
 ): string[] {
-  const external = findExternalMatches(text);
+  const external = findExternalMatches(text, options);
   const ids: string[] = [];
   const push = (id: string | undefined): void => {
     if (id !== undefined && id !== fromSectionId && !ids.includes(id))

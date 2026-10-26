@@ -1,3 +1,4 @@
+import { assertNewYorkFetch } from '../fetch/new-york.js';
 import { BRAND } from '../brand.js';
 import { readParseLimits } from '../parse/limits.js';
 import { MemoryBackend } from '../../../tests/contracts/memory-backend.js';
@@ -818,4 +819,78 @@ test('an already-aborted ingest does nothing', async () => {
     }),
   ).rejects.toBeDefined();
   expect(fetcher).not.toHaveBeenCalled();
+});
+
+test('NY latest pages fetch current Assembly full text, never the blocked Senate landing page', async () => {
+  const { bracketHtml } = await import('../../../tests/synth/brackets.js');
+  const textUrl = 'https://nyassembly.gov/leg/?bn=S04321&term=2025&Text=Y';
+  env.serve(
+    textUrl,
+    { bytes: Buffer.from(`<h3 id="jump_to_Text">Text</h3>${bracketHtml()}`) },
+    'text/html',
+  );
+  const fetcher = vi.fn(env.runtime.fetcher);
+  const result = await ingest(
+    'https://www.nysenate.gov/legislation/bills/2025/S4321',
+    deps({ fetcher }),
+  );
+  expect(env.fetches).toEqual([textUrl]);
+  expect(fetcher).toHaveBeenCalledWith(
+    textUrl,
+    expect.objectContaining({
+      refresh: true,
+      validateUrl: assertNewYorkFetch,
+    }),
+  );
+  expect(result.normalized.metadata).toMatchObject({
+    jurisdiction: 'New York',
+    version: 'Amended (A)',
+    billNumber: 'S. 4321A',
+  });
+  expect(result.stats.deletedSpanCount).toBeGreaterThan(0);
+  const stored = await env.registry.getDocument(result.doc.docId);
+  expect(stored.metadata.version).toBe('Amended (A)');
+});
+
+test.each([
+  'https://www.nysenate.gov/legislation/bills/2025/S4321A',
+  'https://www.nysenate.gov/legislation/bills/2025/S4321/amendment/A',
+  'https://nyassembly.gov/leg/?bn=S04321A&term=2025&Summary=Y',
+  'https://legislation.nysenate.gov/pdf/bills/2025/S4321A',
+])('NY named version uses its PDF for %s', async (url) => {
+  const { bracketPdf } = await import('../../../tests/synth/brackets.js');
+  const textUrl = 'https://legislation.nysenate.gov/pdf/bills/2025/S4321A';
+  env.serve(textUrl, { bytes: await bracketPdf() }, 'application/pdf');
+  const result = await ingest(url, deps());
+  expect(env.fetches).toEqual([textUrl]);
+  expect(result.normalized.metadata).toMatchObject({
+    billNumber: 'S. 4321A',
+    version: 'Amended (A)',
+  });
+  expect(result.stats.deletedSpanCount).toBeGreaterThan(0);
+});
+
+test('NY source errors do not fall back to a different version', async () => {
+  await expect(
+    ingest('https://www.nysenate.gov/legislation/bills/2025/S4321A', deps()),
+  ).rejects.toMatchObject({ code: 'FETCH_FAILED' });
+  expect(env.fetches).toEqual([
+    'https://legislation.nysenate.gov/pdf/bills/2025/S4321A',
+  ]);
+});
+
+test('NY fetched final URLs are revalidated even with an injected fetcher', async () => {
+  const { bracketHtml } = await import('../../../tests/synth/brackets.js');
+  const textUrl = 'https://nyassembly.gov/leg/?bn=S04321&term=2025&Text=Y';
+  env.serve(textUrl, { bytes: Buffer.from(bracketHtml()) }, 'text/html');
+  const fetcher: IngestDeps['fetcher'] = async (url, options) => ({
+    ...(await env.runtime.fetcher(url, options)),
+    finalUrl: 'https://evil.example/bill',
+  });
+  await expect(
+    ingest(
+      'https://www.nysenate.gov/legislation/bills/2025/S4321',
+      deps({ fetcher }),
+    ),
+  ).rejects.toMatchObject({ code: 'SSRF_BLOCKED' });
 });

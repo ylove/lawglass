@@ -16,7 +16,7 @@ export const manifestSchema = z.strictObject({
         sha256: z.string().regex(/^[a-f0-9]{64}$/),
         bytes: z.number().int().nonnegative(),
         retrievedAt: z.iso.date(),
-        jurisdiction: z.enum(['US Congress', 'Ohio']),
+        jurisdiction: z.enum(['US Congress', 'Ohio', 'New York', 'New Jersey']),
         notes: z.string().min(1),
       }),
     )
