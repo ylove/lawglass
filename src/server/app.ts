@@ -31,6 +31,7 @@ import type { RegistryEntry } from '../core/registry.js';
 import { buildDocDetail } from './doc-detail.js';
 import { CHIP_LABELS } from './chips.js';
 import { SlidingWindowLimiter } from './rate-limit.js';
+import { registerLocateRoute } from './locate-route.js';
 import { registerScenarioRoute } from './scenario-route.js';
 import { createSummaryService } from './summary.js';
 import { securityHeaders } from './security-headers.js';
@@ -291,8 +292,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       scenariosEnabled: !publicMode,
       // Served once Section by section lands (#276).
       breakdownEnabled: false,
-      // Served once Find where it says that lands (#295).
-      locateEnabled: false,
+      locateEnabled: !publicMode,
     };
     return c.json(config);
   });
@@ -658,6 +658,15 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   });
 
   registerScenarioRoute(app, runtime, { publicMode, now });
+  registerLocateRoute(app, runtime, {
+    publicMode,
+    rateLimit: (c) => questions.take(clientIp(c)),
+    validateUrl: hosted
+      ? (url) => {
+          checkIngestFetchHost(url, hosts);
+        }
+      : undefined,
+  });
 
   app.all('/api/*', (c) =>
     c.json(
