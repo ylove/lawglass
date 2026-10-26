@@ -9,7 +9,9 @@ import { envVar } from '../brand.js';
 import { getChip, runChip } from '../chips.js';
 import { INSTRUCTIONS_NOTE } from '../chip-runner.js';
 import { answerCacheKey } from '../answer-cache.js';
+import { forgetDocument } from '../answer/context.js';
 import { SYSTEM_PROMPT, WHOLE_SYSTEM_PROMPT } from '../answer/prompt.js';
+import { SUMMARY_WHOLE_INSTRUCTION } from '../chip-summary.js';
 import {
   AskEvent,
   EMPTY_METADATA,
@@ -310,4 +312,68 @@ describe('whole effort override', () => {
     );
     expect(requests()[0]?.effort).toBe('high');
   });
+});
+
+it('names whole-mode blocks <part>, consistently with the prompt, and keeps citations valid', async () => {
+  const result = await ask(
+    DOC,
+    { question: 'Who can apply?' },
+    { backend, registry, provider },
+  );
+  const req = requests()[0]!;
+  const bill = messageText(req.messages[0]!.content);
+  expect(bill).toContain('<part id="1" section="sec-1"');
+  expect(bill).not.toContain('<excerpt');
+  expect(WHOLE_SYSTEM_PROMPT).toContain('<part id="1" section=');
+  expect(WHOLE_SYSTEM_PROMPT).not.toContain('text block');
+  expect(WHOLE_SYSTEM_PROMPT).not.toContain('<excerpt');
+  expect(result.answer.citations.some((c) => c.valid)).toBe(true);
+});
+
+it('declines a whole-mode bill with no live chunks instead of sending an empty bill', async () => {
+  const struckOnly = new MemoryBackend();
+  await struckOnly.upsertChunks(
+    DOC,
+    chunks.map((c) => ({ ...c, amendmentStatus: 'deleted' as const })),
+  );
+  const result = await ask(
+    DOC,
+    { question: 'Who can apply?' },
+    { backend: struckOnly, registry, provider },
+  );
+  expect(requests()).toHaveLength(0);
+  expect(result.answer.declined).toBe(true);
+});
+
+it('the whole-bill summary never asks about removals it cannot see', async () => {
+  await runChip(getChip('summary'), DOC, { backend, provider, doc });
+  const task = messageText(requests()[0]!.messages[0]!.content);
+  expect(task).not.toMatch(/removes|struck/);
+  expect(SUMMARY_WHOLE_INSTRUCTION).not.toMatch(/remove|struck/i);
+});
+
+it('scans the bill once per document: later questions, chips and scenarios do not refetch', async () => {
+  const getChunks = vi.spyOn(backend, 'getChunks');
+  await ask(DOC, { question: 'One?' }, { backend, registry, provider });
+  const first = getChunks.mock.calls.length;
+  expect(first).toBeGreaterThan(0);
+  await ask(DOC, { question: 'Two?' }, { backend, registry, provider });
+  await runChip(getChip('money'), DOC, { backend, provider, doc });
+  await runScenario(DOC, 'a librarian', {
+    backend,
+    registry,
+    provider: scenarioProvider(provider),
+  });
+  expect(getChunks.mock.calls.length).toBe(first);
+});
+
+it('serves a cached scenario when the scan fails', async () => {
+  const scenarios = scenarioProvider(provider);
+  const deps = { backend, registry, provider: scenarios };
+  const first = await runScenario(DOC, 'a librarian', deps);
+  expect(first.status).toBe('ok');
+  forgetDocument(backend, DOC);
+  vi.spyOn(backend, 'getChunks').mockRejectedValue(new Error('transient'));
+  const again = await runScenario(DOC, 'a librarian', deps);
+  expect(again).toEqual(first);
 });

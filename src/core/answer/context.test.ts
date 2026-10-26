@@ -7,6 +7,8 @@ import {
   documentContext,
   documentHits,
   estimatedTokens,
+  forgetDocument,
+  MEMO_OWNER,
   wholeBillBudget,
   wholeBillEffort,
 } from './context.js';
@@ -166,5 +168,120 @@ describe('whole-bill policy', () => {
         controller.signal,
       ),
     ).rejects.toThrow();
+  });
+
+  it('memoizes the scan per document and backend, evicts on removal and is bounded', async () => {
+    const backend = new MemoryBackend();
+    await backend.upsertChunks(DOC, [chunk('sec-1', 0)]);
+    const get = vi.spyOn(backend, 'getChunks');
+    const sections = [section('sec-1')];
+    const first = await documentContext(backend, DOC, sections, { budget: 50 });
+    const calls = get.mock.calls.length;
+    expect(calls).toBeGreaterThan(0);
+    // Different budgets and the deleted-text view reuse the same scan.
+    await documentContext(backend, DOC, sections, { budget: 5 });
+    await documentContext(backend, DOC, sections, {
+      budget: 50,
+      includeDeleted: true,
+    });
+    expect(get.mock.calls.length).toBe(calls);
+    // A wrapper that names the real backend as its owner shares the memo.
+    const wrapper = Object.assign(Object.create(backend) as MemoryBackend, {
+      [MEMO_OWNER]: backend,
+    });
+    expect(
+      (await documentContext(wrapper, DOC, sections, { budget: 50 })).hits,
+    ).toEqual(first.hits);
+    expect(get.mock.calls.length).toBe(calls);
+    // Another store never sees this memo.
+    const other = new MemoryBackend();
+    await other.upsertChunks(DOC, [chunk('sec-1', 0), chunk('sec-1', 1)]);
+    expect(
+      (await documentContext(other, DOC, sections, { budget: 50 })).hits,
+    ).toHaveLength(2);
+    forgetDocument(backend, DOC);
+    await documentContext(backend, DOC, sections, { budget: 50 });
+    expect(get.mock.calls.length).toBeGreaterThan(calls);
+    // Past the document cap, the least recently used scan is dropped.
+    const many = Array.from(
+      { length: 20 },
+      (_, n) => 'f'.repeat(63) + n.toString(16).padStart(1, '0'),
+    );
+    for (const id of many) {
+      await backend.upsertChunks(id, [
+        { ...chunk('sec-1', 0), docId: id, id: makeChunkId(id, 'sec-1', 0) },
+      ]);
+      await documentContext(backend, id, sections, { budget: 50 });
+    }
+    get.mockClear();
+    await documentContext(backend, many[0]!, sections, { budget: 50 });
+    expect(get).toHaveBeenCalled();
+    get.mockClear();
+    await documentContext(backend, many[19]!, sections, { budget: 50 });
+    expect(get).not.toHaveBeenCalled();
+  });
+
+  it('does not memoize a failed scan', async () => {
+    const backend = new MemoryBackend();
+    await backend.upsertChunks(DOC, [chunk('sec-1', 0)]);
+    const sections = [section('sec-1')];
+    const get = vi
+      .spyOn(backend, 'getChunks')
+      .mockRejectedValueOnce(new Error('transient'));
+    await expect(
+      documentContext(backend, DOC, sections, { budget: 50 }),
+    ).rejects.toThrow('transient');
+    expect(
+      (await documentContext(backend, DOC, sections, { budget: 50 })).hits,
+    ).toHaveLength(1);
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it('reads a bill of small sections in one round trip', async () => {
+    const backend = new MemoryBackend();
+    const sections = Array.from({ length: 300 }, (_, n) => ({
+      ...section(`sec-${String(n)}`),
+      spans: [
+        { text: 'Short rule. '.repeat(10), status: 'unchanged' as const },
+      ],
+    }));
+    await backend.upsertChunks(
+      DOC,
+      sections.flatMap((s) => [chunk(s.id, 0), chunk(s.id, 1)]),
+    );
+    const get = vi.spyOn(backend, 'getChunks');
+    const hits = await documentHits(backend, DOC, sections);
+    expect(hits).toHaveLength(600);
+    // 300 sections x 6 probes = 1,800 ids = four 500-id batches issued together, one round.
+    expect(get.mock.calls.length).toBeLessThanOrEqual(4);
+    const sizes = get.mock.calls.reduce((n, [, ids]) => n + ids.length, 0);
+    expect(sizes).toBeLessThanOrEqual(300 * 8);
+  });
+
+  it('trims the overlap that chunks of one section repeat, keeping every chunk citable', async () => {
+    const backend = new MemoryBackend();
+    const tail = 'and the clerk shall keep the notice on file for two years';
+    const a = {
+      ...chunk('sec-1', 0),
+      text: `The board meets monthly ${tail}`,
+      tokenCount: 40,
+    };
+    const b = {
+      ...chunk('sec-1', 1),
+      text: `${tail} unless a court orders otherwise.`,
+      tokenCount: 40,
+    };
+    const other = { ...chunk('sec-2', 0), text: `${tail} elsewhere.` };
+    await backend.upsertChunks(DOC, [a, b, other]);
+    const sections = [section('sec-1'), section('sec-2')];
+    const { hits } = await documentContext(backend, DOC, sections, {
+      budget: 1000,
+    });
+    expect(hits.map((h) => h.chunk.id)).toEqual([a.id, b.id, other.id]);
+    expect(hits[0]!.chunk.text).toBe(a.text);
+    expect(hits[1]!.chunk.text).toBe('unless a court orders otherwise.');
+    expect(hits[1]!.chunk.tokenCount).toBeLessThan(40);
+    // Another section's chunk is never trimmed against this one.
+    expect(hits[2]!.chunk.text).toBe(other.text);
   });
 });

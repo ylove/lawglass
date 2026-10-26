@@ -4,7 +4,7 @@
  * version, and public mode never starts a generation.
  */
 import { join } from 'node:path';
-import { documentContext } from '../core/answer/context.js';
+import { documentContext, type ContextMode } from '../core/answer/context.js';
 import type { CliRuntime } from '../cli/runtime.js';
 import {
   AnswerCache,
@@ -22,14 +22,12 @@ import { ask } from '../core/pipeline/index.js';
  */
 export const SUMMARY_CACHE_VERSION = `${SUMMARY_PROMPT_VERSION}.${SCENARIO_PROMPT_VERSION}`;
 
-/** The automatic summary and targeted scenarios must look up exactly the same answer key. */
-export async function summaryCacheKey(
+function summaryKeyFor(
   runtime: CliRuntime,
   docId: string,
-  provider = runtime.answerProvider,
-): Promise<AnswerCacheKey> {
-  const doc = await runtime.registry.getDocument(docId);
-  const context = await documentContext(runtime.backend, docId, doc.sections);
+  provider: { id: string; model: string },
+  context: ContextMode,
+): AnswerCacheKey {
   return {
     docId,
     chipId: 'summary',
@@ -37,8 +35,37 @@ export async function summaryCacheKey(
     model: provider.model,
     endpoint: runtime.answerEndpoint,
     promptVersion: SUMMARY_CACHE_VERSION,
-    context: context.mode,
+    context,
   };
+}
+
+/** The automatic summary and targeted scenarios must look up exactly the same answer key. */
+export async function summaryCacheKey(
+  runtime: CliRuntime,
+  docId: string,
+  provider = runtime.answerProvider,
+  signal?: AbortSignal,
+): Promise<AnswerCacheKey> {
+  const doc = await runtime.registry.getDocument(docId);
+  const context = await documentContext(runtime.backend, docId, doc.sections, {
+    signal,
+  });
+  return summaryKeyFor(runtime, docId, provider, context.mode);
+}
+
+/**
+ * Both keys a summary could be stored under. When the whole-bill scan that picks between them
+ * fails (a transient backend error), a cached summary under either key is still good to serve:
+ * the lookup then needs no backend at all.
+ */
+export function summaryCacheKeysWithoutScan(
+  runtime: CliRuntime,
+  docId: string,
+  provider = runtime.answerProvider,
+): AnswerCacheKey[] {
+  return (['whole', 'excerpts'] as const).map((mode) =>
+    summaryKeyFor(runtime, docId, provider, mode),
+  );
 }
 
 /**
@@ -163,7 +190,23 @@ export function createSummaryService(
         if (options.publicMode) return { status: 'disabled' };
         throw error;
       }
-      const key = await summaryCacheKey(runtime, docId, provider);
+      let key: AnswerCacheKey;
+      try {
+        key = await summaryCacheKey(runtime, docId, provider, request.signal);
+      } catch (error) {
+        // The scan only decides which key to read. If it failed, a cached summary under
+        // either key is still a valid answer, so serve it rather than fail a cache hit.
+        if (request.signal?.aborted) throw error;
+        for (const candidate of summaryCacheKeysWithoutScan(
+          runtime,
+          docId,
+          provider,
+        )) {
+          const cached = await cache.get(candidate);
+          if (cached) return { status: 'cached', answer: cached };
+        }
+        throw error;
+      }
       const hit = await cache.get(key);
       if (hit) return { status: 'cached', answer: hit };
       // Public mode serves cache hits only: an anonymous visitor never spends the host's money.

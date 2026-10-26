@@ -2,7 +2,11 @@
  * The shared ask pipeline: retrieve -> answer -> record usage. Used by the CLI, the server
  * (#29) and eval (#32).
  */
-import { documentContext } from '../answer/context.js';
+import {
+  documentContext,
+  forgetDocument,
+  MEMO_OWNER,
+} from '../answer/context.js';
 import { answer } from '../answer/index.js';
 import { getChip, runChip } from '../chips.js';
 import { withInlineChanges } from './inline-changes.js';
@@ -169,8 +173,13 @@ function guarded(
       await ensure();
       return backend.rerank(req);
     },
-    deleteDocument: (id) => backend.deleteDocument(id),
-  };
+    deleteDocument: async (id) => {
+      forgetDocument(backend, id);
+      await backend.deleteDocument(id);
+    },
+    // The per-ask wrapper must share the real backend's whole-bill scan memo.
+    [MEMO_OWNER]: backend,
+  } as RetrievalBackend;
   return { backend: wrapped, used: () => checked !== undefined };
 }
 

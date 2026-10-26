@@ -42,14 +42,15 @@ function systemPrompt(whole: boolean): string {
   // injection defenses. No question or chip can change the system prefix and break cache hits.
   const source = whole ? "the bill's full text" : 'the excerpts';
   const document = whole ? 'the bill' : 'the document';
-  const block = whole ? 'text block' : 'excerpt';
-  const aBlock = whole ? 'a text block' : 'an excerpt';
-  const blocks = whole ? 'text blocks' : 'excerpts';
+  // Whole mode names its tag <part> so the rule 9 ban on "excerpt" never collides with markup.
+  const block = whole ? 'part' : 'excerpt';
+  const aBlock = whole ? 'a part' : 'an excerpt';
+  const blocks = whole ? 'parts' : 'excerpts';
   return `You explain legislation to ordinary people. You answer questions about one bill or law using only ${source}.
 
 How ${source} ${whole ? 'looks' : 'look'}
 The user message has these parts: <document> (the bill's title and number, if known), ${whole ? '<bill> (the full text you may use)' : '<excerpts> (the text you may use)'}, <task> (an optional instruction from the app, which you should follow), and <question> (what the reader asked).
-${whole ? 'Each text block has section, heading and status attributes, and page and lines when known.' : 'Each excerpt looks like this: <excerpt id="1" section="..." heading="..." status="..." page="..." lines="...">text</excerpt>'}
+${whole ? 'Each part looks like this: <part id="1" section="..." heading="..." status="..." page="..." lines="...">text</part>' : 'Each excerpt looks like this: <excerpt id="1" section="..." heading="..." status="..." page="..." lines="...">text</excerpt>'}
 - "id" is only a counter. Never cite it.
 - "section" is the section id you cite.
 - "heading" is the path to the ${block}, such as "Sec. 4 > (b) Eligibility". It is context, not part of the text.
@@ -119,12 +120,13 @@ function lineRange(
 }
 
 /**
- * One hit as `<excerpt ...>`. `id` is a short ordinal (the chunk id is long noise the model
+ * One hit as `<excerpt ...>` (`<part ...>` when reading the whole bill). `id` is a short ordinal (the chunk id is long noise the model
  * might cite by mistake). `page`/`lines` are omitted when the source has none.
  */
 export function formatExcerpt(
   hit: SearchHit,
   id: string = hit.chunk.id,
+  tag: 'excerpt' | 'part' = 'excerpt',
 ): string {
   const c = hit.chunk;
   const attrs: [string, string][] = [
@@ -139,7 +141,7 @@ export function formatExcerpt(
   const lines = lineRange(c.lineStart, c.lineEnd);
   if (lines) attrs.push(['lines', lines]);
   const attrText = attrs.map(([k, v]) => `${k}="${escapeXml(v)}"`).join(' ');
-  return `<excerpt ${attrText}>${escapeText(promptText(c))}</excerpt>`;
+  return `<${tag} ${attrText}>${escapeText(promptText(c))}</${tag}>`;
 }
 
 /** Hits followed by injected definitions, de-duplicated by chunk id (first occurrence wins). */
@@ -198,7 +200,13 @@ export function buildPrompt(input: BuildPromptInput): BuiltPrompt;
 export function buildPrompt(input: BuildPromptInput): BuiltPrompt {
   const hits = mergeContext(input.hits, input.definitions);
   const excerpts = hits
-    .map((h, i) => formatExcerpt(h, String(i + 1)))
+    .map((h, i) =>
+      formatExcerpt(
+        h,
+        String(i + 1),
+        input.mode === 'whole' ? 'part' : 'excerpt',
+      ),
+    )
     .join('\n');
   const chip = input.chipInstruction
     ? `<task>${escapeText(input.chipInstruction)}</task>\n`

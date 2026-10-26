@@ -58,8 +58,9 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
     chipInstruction: input.chipInstruction,
   });
 
-  // Nothing to ground an answer in: decline without spending a model call.
-  if (prompt.hits.length === 0 && context.mode !== 'whole') {
+  // Nothing to ground an answer in (in either mode, e.g. a bill with no live text): decline
+  // without spending a model call.
+  if (prompt.hits.length === 0) {
     onToken?.(DECLINE_TEXT);
     return {
       text: DECLINE_TEXT,

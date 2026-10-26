@@ -19,7 +19,7 @@ import {
 } from './chip-changes.js';
 import { runHistoryChip } from './chip-history.js';
 import { WHAT_CHANGES_BY_INSTRUCTION } from './chips.js';
-import { runOutlineChip } from './chip-summary.js';
+import { runOutlineChip, SUMMARY_WHOLE_INSTRUCTION } from './chip-summary.js';
 import {
   appendNote,
   type ChipDeps,
@@ -139,7 +139,10 @@ async function runWholeChip(
     provider: deps.provider,
     question: chip.label,
     context: { ...context, metadata: deps.doc.metadata },
-    chipInstruction: chip.answerInstruction,
+    chipInstruction:
+      chip.id === 'summary'
+        ? SUMMARY_WHOLE_INSTRUCTION
+        : chip.answerInstruction,
     signal: options.signal,
     onToken: options.onToken,
     maxTokens: options.maxTokens,

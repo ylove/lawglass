@@ -26,6 +26,7 @@ import {
   SUMMARY_CACHE_VERSION,
   waitForSummary,
 } from './summary.js';
+import { forgetDocument } from '../core/answer/context.js';
 import { AnswerCache } from '../core/answer-cache.js';
 import { SUMMARY_PROMPT_VERSION } from '../core/chip-summary.js';
 
@@ -570,4 +571,37 @@ test('summary cache follows the context decision when the budget changes', async
   vi.unstubAllEnvs();
   expect((await summary(a, docId)).answer?.context).toBe('whole');
   expect(provider.state.calls).toBe(secondCalls);
+});
+
+test('a cached summary is still served when the whole-bill scan fails', async () => {
+  const provider = countingProvider(env.provider);
+  Object.assign(env.runtime, { answerProvider: provider });
+  const a = app();
+  const docId = await ingestDoc(a);
+  await summary(a, docId);
+  const done = await settled(a, docId);
+  expect(done.status).toBe('cached');
+  const calls = provider.state.calls;
+  // A cold process memo plus a transient backend error: the cache must still answer.
+  forgetDocument(env.runtime.backend, docId);
+  vi.spyOn(env.runtime.backend, 'getChunks').mockRejectedValue(
+    new Error('transient'),
+  );
+  const again = await summary(a, docId);
+  expect(again.status).toBe('cached');
+  expect(again.answer).toEqual(done.answer);
+  expect(provider.state.calls).toBe(calls);
+});
+
+test('cached summaries and repeat polls need no backend scan once the mode is known', async () => {
+  const provider = countingProvider(env.provider);
+  Object.assign(env.runtime, { answerProvider: provider });
+  const a = app();
+  const docId = await ingestDoc(a);
+  await summary(a, docId);
+  await settled(a, docId);
+  const get = vi.spyOn(env.runtime.backend, 'getChunks');
+  await summary(a, docId);
+  await summary(a, docId);
+  expect(get).not.toHaveBeenCalled();
 });

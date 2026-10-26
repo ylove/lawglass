@@ -416,15 +416,15 @@ describe('answer', () => {
   });
 });
 
-it('whole context never takes the empty-retrieval shortcut', async () => {
-  const provider = new ScriptedProvider({ reply: DECLINE_TEXT });
+it('declines without a model call when whole mode has no live text to read', async () => {
+  const provider = new ScriptedProvider({ reply: 'Invented answer.' });
   const result = await answer({
     provider,
     question: 'What does it say?',
     context: { mode: 'whole', hits: [] },
   });
-  expect(provider.calls).toHaveLength(1);
-  expect(result.context).toBe('whole');
+  expect(provider.calls).toHaveLength(0);
   expect(result.declined).toBe(true);
-  expect(result.warnings).toEqual([]);
+  expect(result.text).toBe(DECLINE_TEXT);
+  expect(result.warnings).toEqual(['NO_RELEVANT_EXCERPTS']);
 });

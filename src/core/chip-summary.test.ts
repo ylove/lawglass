@@ -12,6 +12,7 @@ import {
   OUTLINE_CHAR_BUDGET,
   REDUCE_INSTRUCTION,
   SUMMARY_PROMPT_VERSION,
+  SUMMARY_WHOLE_INSTRUCTION,
   allOrAbort,
   buildOutline,
   chooseMapUnits,
@@ -39,6 +40,7 @@ it('derives the summary cache version from the question, single-call, map and re
     promptVersion(
       chip.label,
       chip.answerInstruction!,
+      SUMMARY_WHOLE_INSTRUCTION,
       MAP_INSTRUCTION,
       REDUCE_INSTRUCTION,
     ),
