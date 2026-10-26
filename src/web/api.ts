@@ -3,6 +3,9 @@
 /// <reference types="vite/client" />
 import { z } from 'zod';
 import {
+  LocateResponse,
+  LocateVersionsResponse,
+  type LocateRequest,
   AskEvent,
   ClientConfig,
   DocDetail,
@@ -41,6 +44,16 @@ export interface ApiClient {
     req: ScenarioRequest,
     signal?: AbortSignal,
   ): Promise<ScenarioResponse>;
+  locate(
+    docId: string,
+    req: LocateRequest,
+    signal?: AbortSignal,
+  ): Promise<LocateResponse>;
+  locateVersions(
+    docId: string,
+    req: LocateRequest,
+    signal?: AbortSignal,
+  ): Promise<LocateVersionsResponse>;
   ingest(req: IngestRequest, signal?: AbortSignal): AsyncIterable<IngestEvent>;
   ask(
     docId: string,
@@ -183,6 +196,25 @@ export function createHttpApi(options: HttpApiOptions = {}): ApiClient {
   const docPath = (docId: string) => `/api/docs/${encodeURIComponent(docId)}`;
 
   return {
+    locate: (docId, req, signal) =>
+      request(`${docPath(docId)}/locate`, LocateResponse, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(req),
+        ...(signal ? { signal } : {}),
+      }),
+    locateVersions: (docId, req, signal) =>
+      request(
+        `${docPath(docId)}/locate/versions`,
+        LocateVersionsResponse,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(req),
+          ...(signal ? { signal } : {}),
+        },
+        Math.max(defaultTimeout, 60_000),
+      ),
     getConfig: () => request('/api/config', ClientConfig),
     listDocs: () => request('/api/docs', z.array(DocSummary)),
     getDoc: (docId) => request(docPath(docId), DocDetail),

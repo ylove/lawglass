@@ -378,7 +378,7 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
     chips: CHIPS,
     scenariosEnabled: !publicMode,
     breakdownEnabled: false,
-    locateEnabled: false,
+    locateEnabled: !publicMode,
   };
 
   const need = (docId: string): DocSummary => {
@@ -439,6 +439,78 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
 
   return {
     mock: true,
+    async locate(docId, req, signal) {
+      need(docId);
+      await sleep(delay, signal);
+      if (publicMode)
+        return {
+          status: 'disabled',
+          matches: [],
+          provider: 'mock',
+          model: 'mock-1',
+        };
+      if (/not found|space|unicorn/i.test(req.text))
+        return {
+          status: 'not-found',
+          matches: [],
+          provider: 'mock',
+          model: 'mock-1',
+          note: 'The bill sets a deadline for replacing lead pipes [S:sec-4/b].',
+          noteCitations: buildAnswer(need(docId), '[S:sec-4/b]', false)
+            .citations,
+        };
+      return {
+        status: 'found',
+        provider: 'mock',
+        model: 'mock-1',
+        readingGrade: 7,
+        matches: [
+          {
+            sectionId: 'sec-4/b',
+            breadcrumb: SECTIONS[2]?.breadcrumb ?? 'Section 4(b)',
+            quote: [{ text: 'within fifteen years', status: 'deleted' }],
+            label: 'removed',
+            explanation:
+              'The bill removes the fifteen-year deadline [S:sec-4/b].',
+            citations: buildAnswer(need(docId), '[S:sec-4/b]', false).citations,
+            location: { pageStart: 3, lineStart: 5, lineEnd: 12 },
+          },
+          {
+            sectionId: 'sec-6',
+            breadcrumb: SECTIONS[3]?.breadcrumb ?? 'Section 6',
+            quote: SECTIONS[3]?.spans ?? [],
+            label: 'existing',
+            explanation:
+              'The bill keeps the daily fine for a late utility [S:sec-6].',
+            citations: buildAnswer(need(docId), '[S:sec-6]', false).citations,
+            location: { pageStart: 4, lineStart: 1, lineEnd: 3 },
+          },
+        ],
+      };
+    },
+    async locateVersions(docId, _req, signal) {
+      need(docId);
+      await sleep(delay, signal);
+      return {
+        status: publicMode ? 'disabled' : 'ok',
+        versions: publicMode
+          ? []
+          : SAMPLE_HISTORY.versions.flatMap((v) =>
+              v.url
+                ? [
+                    {
+                      label: v.label,
+                      ...(v.date ? { date: v.date } : {}),
+                      url: v.url,
+                      overlap: 0.8,
+                      excerpt:
+                        'A utility shall replace each lead service line within fifteen years.',
+                    },
+                  ]
+                : [],
+            ),
+      };
+    },
     getConfig: () => Promise.resolve(config),
     listDocs: () => Promise.resolve([...docs.values()]),
 
