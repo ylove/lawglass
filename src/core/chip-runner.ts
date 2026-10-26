@@ -40,6 +40,7 @@ import {
 } from './model/index.js';
 import { MAX_INJECTED_DEFINITIONS } from './retrieve/index.js';
 import { findDefinitionsToInject } from './retrieve/definitions.js';
+import { findReferencedSections } from './retrieve/references.js';
 import {
   DEFAULT_TOP_K,
   RERANK_MAX_CANDIDATES,
@@ -273,9 +274,21 @@ async function runRetrieveChip(
   });
   backendUsage = addUsage(backendUsage, injection.usage);
   const rankedIds = new Set(ranked.map((h) => h.chunk.id));
-  const injected = injection.definitions
+  const definitions = injection.definitions
     .filter((h) => !rankedIds.has(h.chunk.id))
     .slice(0, MAX_INJECTED_DEFINITIONS);
+  // One hop of the bill's own cross-references, so "described in section 3" can be answered (#274).
+  const shown = new Set([...ranked, ...definitions].map((h) => h.chunk.id));
+  const followed = (
+    await findReferencedSections({
+      backend: deps.backend,
+      docId,
+      hits: ranked,
+      includeDeleted: chip.retrieval?.includeDeleted ?? false,
+      signal: options.signal,
+    })
+  ).filter((h) => !shown.has(h.chunk.id));
+  const injected = [...definitions, ...followed];
 
   const result = await answer({
     provider: deps.provider,
