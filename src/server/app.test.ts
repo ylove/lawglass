@@ -1,5 +1,5 @@
 import { createApp as createRawApp } from './app.js';
-import { SESSION_COOKIE } from './session.js';
+import { sessionCookieName } from './session.js';
 import { MemoryBackend } from '../../tests/contracts/memory-backend.js';
 import { ScriptedProvider } from '../../tests/contracts/scripted-provider.js';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -882,7 +882,7 @@ describe('HTTP security boundary', () => {
     return { a, provider, backend };
   };
   const securityToken = 'a'.repeat(43);
-  const cookie = `${SESSION_COOKIE}=${securityToken}`;
+  const cookie = `${sessionCookieName(4317)}=${securityToken}`;
 
   test.each([
     '127.0.0.2',
@@ -981,7 +981,7 @@ describe('HTTP security boundary', () => {
     const { a } = secureApp();
     for (const headers of [
       new Headers(),
-      new Headers({ cookie: `${SESSION_COOKIE}=wrong` }),
+      new Headers({ cookie: `${sessionCookieName(4317)}=wrong` }),
     ]) {
       const response = await a.request(path, { headers });
       expect(response.status).toBe(401);

@@ -60,12 +60,14 @@ export async function startServer(
     options.publicMode || options.privateMode
       ? undefined
       : createSessionToken();
+  let port = options.port ?? runtime.port;
   const app = createApp(runtime, {
     webRoot: defaultWebRoot(),
     ...options,
     localOnly:
       !options.publicMode && !options.privateMode && isLoopbackAddress(host),
     sessionToken,
+    sessionPort: () => port,
   });
   const server = await new Promise<Server>((resolve, reject) => {
     const s = nodeServe(
@@ -85,7 +87,7 @@ export async function startServer(
     });
   });
   const address = server.address();
-  const port = typeof address === 'object' && address ? address.port : 0;
+  port = typeof address === 'object' && address ? address.port : 0;
   const boundHost =
     typeof address === 'object' && address ? address.address : host;
   const urlHost = isIP(boundHost) === 6 ? `[${boundHost}]` : boundHost;

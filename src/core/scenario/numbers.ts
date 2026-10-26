@@ -27,6 +27,16 @@ const BASE = `(?:${SMALL.join('|')}|(?:${TENS.join('|')})(?:[ -](?:${SMALL.slice
 const HUNDREDS = `(?:${BASE}(?: +hundred(?: +and)?(?: +${BASE})?)?)`;
 const SPELLED = `${HUNDREDS}(?: +(?:thousand|million|billion)(?: +and)?(?: +${HUNDREDS})?)*`;
 const DIGITS = '(?:\\d{1,3}(?:,\\d{3})+|\\d+)(?:\\.\\d+)?|\\.\\d+';
+const NUMERAL = `[+-]?(?:${DIGITS})(?:e[+-]?\\d+)?`;
+const SCALE = '\\s*(?:[KMB]\\b|(?:thousand|million|billion)\\b)';
+// Mirror the parser's heading paths, subdivision markers and collision suffixes.
+const ID_HEADING =
+  '(?:sec-\\d+(?:\\.\\d+)*[a-z]?(?:-[a-z0-9]+)*|(?:article|chapter)-[a-z0-9]+|preamble)';
+const SECTION_ID = new RegExp(
+  `(?<![\\w/-])${ID_HEADING}(?:~\\d+)?(?:/(?:${ID_HEADING}|[a-z0-9]+(?:[.-][a-z0-9]+)*)(?:~\\d+)?)*(?![\\w/~\\-]|\\.\\d)`,
+  'gi',
+);
+const FOLLOWING_UNIT = new RegExp(`^[\\s-]*(?:${UNIT})`, 'i');
 
 /**
  * Quantities with no numeral to parse ("a grand", "tenfold", "2x", non-Latin digits).
@@ -132,6 +142,12 @@ export function numberTokens(
     .replace(ORDINAL_DATE, (m) => ' '.repeat(m.length))
     .replace(ORDINAL_COMPOUND, (m) => ' '.repeat(m.length))
     .replace(ORDINAL_LABEL, (m) => ' '.repeat(m.length))
+    .replace(SECTION_ID, (match, offset: number, source: string) =>
+      // A unit makes "sec-500 dollars" an amount, not a section label.
+      FOLLOWING_UNIT.test(source.slice(offset + match.length))
+        ? match
+        : ' '.repeat(match.length),
+    )
     .replace(
       /\b(?:Section|Sec\.|Form)\s+\d+(?:\.\d+)*\b|§\s*\d+(?:\.\d+)*/gi,
       (match) => ' '.repeat(match.length),
@@ -140,10 +156,28 @@ export function numberTokens(
     `${NOT_AFTER_WORD_OR_DOT}(?<currency>\\$)?(?<amount>[+-]?(?:${DIGITS})(?:e[+-]?\\d+)?(?:st|nd|rd|th)?|${SPELLED}|${[...WORDS.keys()].filter((w) => w.endsWith('th') || ['first', 'second', 'third'].includes(w)).join('|')}|doubles?)(?<scale>\\s*(?:[KMB]\\b|(?:thousand|million|billion)\\b))?(?!\\w|\\.\\d|,\\d)(?:[\\s-]*(?<unit>${UNIT}))?`,
     'gi',
   );
+  // Explicit currency or a unit still signals a quantity when letters touch the digits.
+  // Keep the ordinary token boundaries for labels such as "abc123" and numeric ordinals.
+  const quantities = [
+    new RegExp(
+      `(?<currency>\\$)(?<amount>${NUMERAL})(?<scale>\\s*(?:[KMB]|(?:thousand|million|billion)\\b))?(?!\\d|\\.\\d|,\\d)(?:[\\s-]*(?<unit>${UNIT}))?`,
+      'gi',
+    ),
+    new RegExp(
+      `(?<![\\d.,])(?<amount>(?:(?<![A-Za-z])[+-])?(?:${DIGITS})(?:e[+-]?\\d+)?)(?<scale>${SCALE})?[\\s-]*(?<unit>${UNIT})`,
+      'gi',
+    ),
+  ];
   const numbers: NumberToken[] = [];
   if (FOREIGN_DIGIT.test(normalized) || ROMAN_GLYPH.test(text))
     numbers.push({ value: NaN, unit: '', start: 0, end: 0 });
-  for (const match of normalized.matchAll(pattern)) {
+  // Read explicit quantities first so a partial ordinary match cannot hide the whole amount.
+  for (const match of [...quantities, pattern].flatMap((p) => [
+    ...normalized.matchAll(p),
+  ])) {
+    const start = match.index;
+    const end = start + match[0].length;
+    if (numbers.some((n) => n.start < end && start < n.end)) continue;
     const { amount = '', currency, unit, scale } = match.groups ?? {};
     // Code-validated setup labels ("second job") may use ordinal words.
     if (options.ignoreOrdinals && ORDINAL_WORD.test(amount)) continue;
@@ -159,8 +193,8 @@ export function numberTokens(
     numbers.push({
       value: value * (scale ? (SCALES[scale.trim().toLowerCase()] ?? 1) : 1),
       unit: normalizeUnit(currency ?? unit ?? ''),
-      start: match.index,
-      end: match.index + match[0].length,
+      start,
+      end,
     });
   }
   for (const match of normalized.matchAll(UNPARSEABLE_QUANTITY)) {

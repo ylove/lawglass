@@ -5,7 +5,7 @@ import {
   createSessionToken,
   localSession,
   matchesSessionToken,
-  SESSION_COOKIE,
+  sessionCookieName,
 } from './session.js';
 
 vi.mock('node:crypto', async (importOriginal) => {
@@ -23,7 +23,7 @@ beforeEach(() => {
 const token = 'a'.repeat(43);
 const app = () => {
   const a = new Hono();
-  a.use('*', localSession(token));
+  a.use('*', localSession(token, { port: 4317 }));
   a.get('/api/health', (c) => c.json({ ok: true }));
   a.get('*', (c) =>
     c.html('<title>Application</title>', 200, {
@@ -70,7 +70,7 @@ describe('local session gate', () => {
       'http://127.0.0.1/document?x=1',
     );
     expect(response.headers.get('set-cookie')).toBe(
-      `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict`,
+      `${sessionCookieName(4317)}=${token}; Path=/; HttpOnly; SameSite=Strict`,
     );
     expect(response.headers.get('referrer-policy')).toBe('no-referrer');
     expect(response.headers.get('cache-control')).toBe('no-store');
@@ -82,11 +82,40 @@ describe('local session gate', () => {
     expect(await asset.text()).toContain('Application');
     expect(asset.headers.get('cache-control')).toBe('no-store');
   });
+  test('keeps two ports authenticated with both cookies present and refuses the other port alone', async () => {
+    const first = app();
+    const second = new Hono();
+    const secondToken = 'b'.repeat(43);
+    second.use('*', localSession(secondToken, { port: 4318 }));
+    second.get('/api/health', (c) => c.json({ ok: true }));
+    const cookies = [];
+    for (const [instance, port, key] of [
+      [first, 4317, token],
+      [second, 4318, secondToken],
+    ] as const) {
+      const response = await instance.request(
+        `http://127.0.0.1:${String(port)}/?k=${key}`,
+      );
+      const cookie = response.headers.get('set-cookie')?.split(';')[0];
+      expect(cookie).toBe(`${sessionCookieName(port)}=${key}`);
+      cookies.push(cookie);
+    }
+    for (const instance of [first, second]) {
+      const response = await instance.request('/api/health', {
+        headers: { cookie: cookies.join('; ') },
+      });
+      expect(response.status).toBe(200);
+    }
+    const response = await first.request('/api/health', {
+      headers: { cookie: `${sessionCookieName(4318)}=${token}` },
+    });
+    expect(response.status).toBe(401);
+  });
   test.each([
     undefined,
-    `${SESSION_COOKIE}=wrong`,
-    `${SESSION_COOKIE}=${'b'.repeat(43)}`,
-    `${SESSION_COOKIE}=%`,
+    `${sessionCookieName(4317)}=wrong`,
+    `${sessionCookieName(4317)}=${'b'.repeat(43)}`,
+    `${sessionCookieName(4317)}=%`,
     'unrelated=valid',
   ])('missing or wrong cookie gets 401 JSON: %s', async (cookie) => {
     const response = await app().request('/api/health', {
@@ -119,19 +148,19 @@ describe('local session gate', () => {
     expect(
       (
         await a.request('/api/health?k=wrong', {
-          headers: { cookie: `${SESSION_COOKIE}=${token}` },
+          headers: { cookie: `${sessionCookieName(4317)}=${token}` },
         })
       ).status,
     ).toBe(200);
   });
   test('a cookie from another launch is refused', async () => {
     const a = new Hono();
-    a.use('*', localSession('b'.repeat(43)));
+    a.use('*', localSession('b'.repeat(43), { port: 4317 }));
     a.get('/api/health', (c) => c.json({ ok: true }));
     expect(
       (
         await a.request('/api/health', {
-          headers: { cookie: `${SESSION_COOKIE}=${token}` },
+          headers: { cookie: `${sessionCookieName(4317)}=${token}` },
         })
       ).status,
     ).toBe(401);
@@ -141,7 +170,7 @@ describe('local session gate', () => {
 describe('private session', () => {
   const privateApp = () => {
     const a = new Hono();
-    a.use('*', localSession(token, { privateMode: true }));
+    a.use('*', localSession(token, { port: 4317, privateMode: true }));
     a.get('/api/health', (c) => c.json({ ok: true }));
     a.get('*', (c) => c.html('<title>Application</title>'));
     return a;
@@ -161,7 +190,7 @@ describe('private session', () => {
     );
     expect(response.headers.get('location')).toBe('/doc?x=1&q=a%26b');
     const cookie = response.headers.get('set-cookie')!;
-    expect(cookie).toContain(`${SESSION_COOKIE}=${expected}`);
+    expect(cookie).toContain(`${sessionCookieName(4317, true)}=${expected}`);
     for (const attribute of [
       'HttpOnly',
       'SameSite=Strict',
@@ -177,7 +206,7 @@ describe('private session', () => {
     expect(
       (
         await a.request('/api/health', {
-          headers: { cookie: `${SESSION_COOKIE}=${token}` },
+          headers: { cookie: `${sessionCookieName(4317, true)}=${token}` },
         })
       ).status,
     ).toBe(401);
