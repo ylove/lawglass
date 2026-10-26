@@ -39,12 +39,12 @@ A panel shows who or what is on the left, how it relates to the right, and an op
 - label: one or two words under a side, for example "Issuer".
 
 Who goes where:
-- The left side is whoever the item says must act, may act, or is approved. A regulator, an approving agency or a law goes on the left only when it is the one acting. When the item is about who may do something, the one who may do it is on the left and the approver is named in the seal's label.
+- The left side is whoever the item says must act, may act, or is approved. A regulator, an approving agency or a law goes on the left only when it is the one acting. When the item is about who may do something, the one who may do it is on the left and the approver is named in the seal's label. With "equals", the left is what must be backed or matched.
 - Arrows point the way things really move. A company that must report to a regulator is business, to, carry document, government. Money a bill provides for an agency is money, to, government; the agency does not give it.
 - A duty to report or disclose something is drawn as the report: whoever reports, to, carry document, whoever receives it. Never draw what is being reported as if it happened.
-- If you are not sure who acts or which way something moves, skip the item.
+- Skip an item only when the item itself leaves open who acts or which way something moves. If it names who acts and who receives, draw it, even when other parts of the item are hard to show.
 
-When an item lists several cases, draw one panel per case and keep the same glyphs, so only the difference changes. Example: issuers can be bank subsidiaries, federally approved or state approved is three panels with the issuer on the left each time: bank, to, carry coins, person, with no stamp; then business, to, carry coins, person, with a seal labelled "Federal"; then the same with a seal labelled "State". The government is the approver here, never the issuer.
+When an item lists several cases, draw one panel per case and keep the same layout, so only the difference changes. Example: issuers can be bank subsidiaries, federally approved or state approved is three panels with the issuer on the left each time: bank, to, carry coins, person, with no stamp; then business, to, carry coins, person, with a seal labelled "Federal"; then the same with a seal labelled "State". The government is the approver here, never the issuer.
 
 Rules:
 - Show only what the item says. Never add a person, thing, number, time, place or name the item does not mention.
