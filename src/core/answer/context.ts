@@ -299,17 +299,18 @@ function startScan(
       });
     const hits = await documentHits(backend, docId, sections);
     if (!coversEverySection(hits, sections)) return undefined;
-    if ((memo.generation.get(docId) ?? 0) === started) {
-      memo.scans.set(docId, hits);
-      let total = 0;
-      for (const h of memo.scans.values()) total += tokensOf(h);
-      for (const key of memo.scans.keys()) {
-        if (memo.scans.size <= MEMO_MAX_DOCUMENTS && total <= MEMO_MAX_TOKENS)
-          break;
-        if (key === docId) continue;
-        total -= tokensOf(memo.scans.get(key) ?? []);
-        memo.scans.delete(key);
-      }
+    // A delete or re-ingest ran under the scan: what it read may be half of either version, so
+    // nobody, not even the requests waiting on this scan, may treat it as the whole bill.
+    if ((memo.generation.get(docId) ?? 0) !== started) return undefined;
+    memo.scans.set(docId, hits);
+    let total = 0;
+    for (const h of memo.scans.values()) total += tokensOf(h);
+    for (const key of memo.scans.keys()) {
+      if (memo.scans.size <= MEMO_MAX_DOCUMENTS && total <= MEMO_MAX_TOKENS)
+        break;
+      if (key === docId) continue;
+      total -= tokensOf(memo.scans.get(key) ?? []);
+      memo.scans.delete(key);
     }
     return hits;
   })();
@@ -337,10 +338,47 @@ async function scanned(
     memo.scans.set(docId, known);
     return known;
   }
-  const hits = await (memo.inflight.get(docId) ??
-    startScan(backend, memo, docId, sections));
+  const hits = await untilAborted(
+    memo.inflight.get(docId) ?? startScan(backend, memo, docId, sections),
+    signal,
+  );
   signal?.throwIfAborted();
   return hits;
+}
+
+/**
+ * Wait for a shared promise, but stop waiting as soon as this caller's request is cancelled.
+ * The shared work keeps running for the others; this caller releases its permit right away.
+ */
+function untilAborted<T>(
+  shared: Promise<T>,
+  signal: AbortSignal | undefined,
+): Promise<T> {
+  if (!signal) return shared;
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(
+        signal.reason instanceof Error
+          ? signal.reason
+          : new DOMException('The operation was aborted.', 'AbortError'),
+      );
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+    shared.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
 }
 
 export async function documentContext(
