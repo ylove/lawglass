@@ -181,11 +181,14 @@ export type LlmStreamEvent =
 
 export interface ObjectRequest<T> {
   system: string;
-  prompt: string;
+  /** A plain string, or ordered parts when part of the prompt is a cacheable prefix (v1.1). */
+  prompt: string | readonly LlmTextPart[];
   schema: z.ZodType<T>;
   /** Short name for the schema (used by providers that need a tool/function name). */
   schemaName: string;
   maxTokens: number;
+  /** Reasoning-effort hint, as on `TextRequest`. */
+  effort?: 'low' | 'medium' | 'high' | undefined;
   signal?: AbortSignal | undefined;
 }
 

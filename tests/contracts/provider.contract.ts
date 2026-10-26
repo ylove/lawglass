@@ -90,6 +90,28 @@ export function describeProviderContract(
         expect(usage.outputTokens).toBeGreaterThanOrEqual(0);
       });
 
+      it('returns a schema-valid object for a prompt made of ordered parts', async () => {
+        const p = await makeProvider();
+        const schema = z.object({
+          billNumber: z.string().nullable(),
+          sponsors: z.array(z.string()).nullable(),
+        });
+        const { object } = await p.generateObject({
+          system: 'Extract fields. Return null for anything not stated.',
+          prompt: [
+            {
+              text: 'Text: "S. 202. Introduced by Senator Example." ',
+              cache: true,
+            },
+            { text: 'Extract billNumber and sponsors.' },
+          ],
+          schema,
+          schemaName: 'bill_fields',
+          maxTokens: 200,
+        });
+        expect(schema.safeParse(object).success).toBe(true);
+      });
+
       it('rejects when the signal is already aborted', async () => {
         const p = await makeProvider();
         const ac = new AbortController();

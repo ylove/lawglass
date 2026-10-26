@@ -51,6 +51,21 @@ export function describeHttpProvider(
     }),
   );
   describe(`${name} recorded HTTP`, () => {
+    it('sends every structured-prompt part, in order, as text', async () => {
+      const replay = httpReplay([{ body: asset(`${name}-object.json`) }]);
+      await make(replay.fetch).generateObject({
+        ...objectRequest,
+        prompt: [
+          { text: 'PART-ONE the bill. ', cache: true },
+          { text: 'PART-TWO the task.' },
+        ],
+      });
+      const sent = await replay.requests[0]!.text();
+      expect(sent.indexOf('PART-ONE')).toBeGreaterThanOrEqual(0);
+      expect(sent.indexOf('PART-ONE')).toBeLessThan(sent.indexOf('PART-TWO'));
+      expect(sent).not.toContain('[object Object]');
+    });
+
     it('sends every message part, in order, and reports cached input when the provider does', async () => {
       const cachedUsage = {
         anthropic: (sse: string) =>

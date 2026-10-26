@@ -95,7 +95,7 @@ export class GoogleProvider implements LlmProvider {
       const signal = requestSignal(req.signal, this.config.timeoutMs);
       const result = await this.client.models.generateContent({
         model: this.model,
-        contents: req.prompt,
+        contents: messageText(req.prompt),
         config: {
           systemInstruction: req.system,
           maxOutputTokens: req.maxTokens,
