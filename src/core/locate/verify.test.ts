@@ -5,7 +5,12 @@ import {
   type SearchHit,
   type Span,
 } from '../model/index.js';
-import { quoteLabel, verifyQuote, verifySelection } from './verify.js';
+import {
+  hasVerdictLanguage,
+  quoteLabel,
+  verifyQuote,
+  verifySelection,
+} from './verify.js';
 import type { Selection } from './prompt.js';
 
 const spans: Span[] = [
@@ -90,7 +95,8 @@ describe('source quote verification', () => {
     [['unchanged'], true, 'existing'],
     [['unchanged'], false, 'in-bill'],
     [['unchanged', 'inserted'], true, 'added'],
-    [['unchanged', 'deleted'], false, 'removed'],
+    [['unchanged', 'deleted'], false, 'changed'],
+    [['deleted', 'deleted'], true, 'removed'],
     [['unchanged', 'inserted', 'deleted'], false, 'changed'],
   ] as [Span['status'][], boolean, string][])(
     'labels %j, marked=%s as %s',
@@ -311,5 +317,85 @@ describe('review fixes', () => {
       h,
     ).matches[0]!;
     expect(m.explanation).toContain('"false statement"');
+  });
+});
+
+describe('second review fixes', () => {
+  it('does not stitch separate struck runs into a phrase', () => {
+    const { d, h } = edited(
+      [
+        { text: 'The agency ', status: 'unchanged' },
+        { text: 'may not ', status: 'deleted' },
+        { text: 'shall ', status: 'inserted' },
+        { text: 'delay the review. The office shall ', status: 'unchanged' },
+        { text: 'deport residents', status: 'deleted' },
+        { text: 'notify residents', status: 'inserted' },
+      ],
+      'deleted',
+    );
+    expect(
+      verifySelection(selection('may not deport residents'), d, h).matches,
+    ).toEqual([]);
+    expect(
+      verifySelection(selection('deport residents'), d, h).matches[0]!.label,
+    ).toBe('removed');
+  });
+  it('labels live words around a pure deletion as changed, never removed', () => {
+    const { d, h } = edited([
+      { text: 'The fee is ', status: 'unchanged' },
+      { text: 'not ', status: 'deleted' },
+      { text: 'due monthly.', status: 'unchanged' },
+    ]);
+    expect(
+      verifySelection(selection('fee is due monthly'), d, h).matches[0]!.label,
+    ).toBe('changed');
+  });
+  it('prefers the copy inside the chunk text when there are no page or line numbers', () => {
+    const { d, h } = edited(
+      [
+        { text: 'The Secretary shall publish rules. ', status: 'unchanged' },
+        { text: 'The Secretary shall publish a list.', status: 'inserted' },
+      ],
+      'inserted',
+    );
+    h[0]!.chunk.text = 'The Secretary shall publish a list.';
+    expect(
+      verifySelection(selection('The Secretary shall publish'), d, h)
+        .matches[0]!.label,
+    ).toBe('added');
+  });
+  it.each([
+    'Verdict: "TRUE" [S:s].',
+    'ＴＲＵＥ [S:s]',
+    'TR\u200bUE [S:s]',
+    '\u0422rue [S:s]',
+    'Yes, the bill confirms that [S:s]',
+    'That is wrong [S:s]',
+    'This is a lie [S:s]',
+    'Your sentence matches the bill exactly [S:s]',
+  ])('catches bypass "%s"', (text) => {
+    expect(
+      hasVerdictLanguage(text, 'Nothing shall be construed as a correction.'),
+    ).toBe(true);
+  });
+  it('still allows ordinary legal wording and whole quoted bill phrases', () => {
+    expect(hasVerdictLanguage('No state may charge a fee [S:s]', 'x')).toBe(
+      false,
+    );
+    expect(
+      hasVerdictLanguage(
+        'It bans a "false statement" [S:s]',
+        'a false statement',
+      ),
+    ).toBe(false);
+    expect(
+      hasVerdictLanguage('It bans a "false" [S:s]', 'a false statement'),
+    ).toBe(true);
+  });
+  it('rejects a quote that starts mid-token after punctuation', () => {
+    const s: Span[] = [
+      { text: 'employees-shall report a loss.', status: 'unchanged' },
+    ];
+    expect(verifyQuote(s, '-shall report a loss')).toEqual([]);
   });
 });

@@ -81,3 +81,15 @@ it('falls back to plain text for missing or rejected Markdown support', async ()
   await copyReceipt({ plain: 'receipt 2', markdown: 'receipt 2' });
   expect(writeText).toHaveBeenLastCalledWith('receipt 2');
 });
+it('skips struck spaces and keeps spacing outside the removal brackets', async () => {
+  const { detail, match } = await fixture();
+  match.quote = [
+    { text: 'alpha ', status: 'unchanged' },
+    { text: ' ', status: 'deleted' },
+    { text: 'may not ', status: 'deleted' },
+    { text: 'beta', status: 'unchanged' },
+  ];
+  expect(buildReceipt(match, detail).plain).toContain(
+    '"alpha [removed: may not] beta"',
+  );
+});

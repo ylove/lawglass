@@ -48,6 +48,8 @@ export interface QuoteRange {
   pageEnd?: number | undefined;
   lineStart?: number | undefined;
   lineEnd?: number | undefined;
+  /** The chunk's own text, a verbatim slice of the section the model saw. */
+  text?: string | undefined;
 }
 
 const MIN_QUOTE_CHARS = 12;
@@ -105,17 +107,17 @@ export function verifyQuote(
     needle.length < MIN_QUOTE_CHARS &&
     needle.split(' ').length < MIN_QUOTE_WORDS;
   if (short && needle !== source.text.trim()) return [];
-  const matches: Span[][] = [];
+  const matches: { parts: Span[]; at: number }[] = [];
   for (
     let at = source.text.indexOf(needle);
     at >= 0;
     at = source.text.indexOf(needle, at + 1)
   ) {
-    const first = needle.charAt(0),
-      last = needle.charAt(needle.length - 1);
+    // Never start or end inside a word, even when the quote itself starts with punctuation
+    // ("-shall report" inside "employees-shall report").
     if (
-      (isWordChar(first) && isWordChar(source.text[at - 1])) ||
-      (isWordChar(last) && isWordChar(source.text[at + needle.length]))
+      isWordChar(source.text[at - 1]) ||
+      isWordChar(source.text[at + needle.length])
     )
       continue;
     const start = source.starts[at],
@@ -136,6 +138,19 @@ export function verifyQuote(
     const lo = picked[0]?.index,
       hi = picked.at(-1)?.index;
     if (lo === undefined || hi === undefined) continue;
+    // Deleted view: the model saw each struck run as its own passage, so a quote must sit in
+    // one run. Separate runs (live words between them) must not be stitched into a new phrase.
+    if (
+      view === 'deleted' &&
+      picked.some((p, i) => {
+        const prev = picked[i - 1];
+        return (
+          prev !== undefined &&
+          spans.slice(prev.index + 1, p.index).some(hasText)
+        );
+      })
+    )
+      continue;
     // In live view, struck words between the first and last matched span belong to the edit.
     const parts =
       view === 'live'
@@ -149,14 +164,24 @@ export function verifyQuote(
                 : [];
           })
         : picked.map((p) => p.span);
-    matches.push(parts);
+    matches.push({ parts, at });
   }
-  return (
-    matches.find((m) => m.every((p) => inRange(p, range))) ?? matches[0] ?? []
-  );
+  // Repeated wording: prefer the copy inside the chunk's own text, then its printed range.
+  const chunk = range?.text ? normalized(range.text.trim()).text : '';
+  const window = chunk ? source.text.indexOf(chunk) : -1;
+  const inWindow = (m: { at: number }): boolean =>
+    window >= 0 && m.at >= window && m.at < window + chunk.length;
+  const ranged = (m: { parts: Span[] }): boolean =>
+    m.parts.every((p) => inRange(p, range));
+  const best =
+    matches.find((m) => inWindow(m) && ranged(m)) ??
+    matches.find(inWindow) ??
+    matches.find(ranged) ??
+    matches[0];
+  return best?.parts ?? [];
 }
 
-/** Unchanged context does not cancel a change. Only both changed statuses mean changed. */
+/** Label from what the quote shows: all struck is removed; struck plus live is changed. */
 export function quoteLabel(
   spans: readonly Span[],
   marked: boolean,
@@ -164,13 +189,16 @@ export function quoteLabel(
   // Whitespace between words carries no wording, so a stray struck space is not a removal.
   const real = spans.filter(hasText);
   const added = real.some((s) => s.status === 'inserted'),
-    removed = real.some((s) => s.status === 'deleted');
-  return added && removed
+    removed = real.some((s) => s.status === 'deleted'),
+    current = real.some((s) => s.status !== 'deleted');
+  // `removed` only when every quoted word is struck. Live words around a struck gap are
+  // current text that the bill edits, so the quote is `changed`, never `removed`.
+  return removed && current
     ? 'changed'
-    : added
-      ? 'added'
-      : removed
-        ? 'removed'
+    : removed
+      ? 'removed'
+      : added
+        ? 'added'
         : marked
           ? 'existing'
           : 'in-bill';
@@ -182,14 +210,56 @@ export function quoteLabel(
  * "false statement" can be quoted.
  */
 const VERDICT =
-  /\b(?:true|untrue|false|correct(?:ly)?|incorrect(?:ly)?|accurate(?:ly)?|inaccurate(?:ly)?|misleading|misinformation|myth|fact[- ]?check\w*|debunk\w*)\b|\b(?:the|this|that|your)\s+(?:claim|statement|sentence)\s+(?:is|was|isn't|is not)\b/i;
+  /\b(?:true|untrue|false|correct(?:ly)?|incorrect(?:ly)?|accurate(?:ly)?|inaccurate(?:ly)?|misleading|misinformation|myth|wrong|lies?|verdict|confirm\w*|fact[- ]?check\w*|debunk\w*)\b|\b(?:the|this|that|your)\s+(?:claim|statement|sentence)\s+(?:is|was|isn't|is not)\b|\bmatches\s+(?:the\s+)?(?:bill|claim|sentence)\b|\bbacks?\s+(?:this|that|it)\s+up\b|^\s*(?:yes|no),/;
+
+/** Look-alike letters that would hide a verdict word from the check. */
+const CONFUSABLES: Record<string, string> = Object.fromEntries(
+  Object.entries({
+    a: 'аα',
+    e: 'еε',
+    o: 'оο',
+    p: 'рρ',
+    c: 'с',
+    y: 'у',
+    x: 'хχ',
+    k: 'кκ',
+    t: 'тτ',
+    h: 'н',
+    b: 'в',
+    m: 'м',
+    i: 'іι',
+    j: 'ј',
+    s: 'ѕ',
+    u: 'υ',
+    v: 'ν',
+  }).flatMap(([latin, others]) => Array.from(others).map((c) => [c, latin])),
+);
+
+/** NFKC, no invisible characters, look-alikes folded to Latin, lower case. For checking only. */
+function fold(text: string): string {
+  return Array.from(
+    text
+      .normalize('NFKC')
+      .replace(/[\p{Cf}\p{Default_Ignorable_Code_Point}]/gu, '')
+      .toLowerCase(),
+  )
+    .map((c) => CONFUSABLES[c] ?? c)
+    .join('');
+}
+const wordsOf = (text: string): string =>
+  ` ${fold(text)
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .trim()} `;
 
 export function hasVerdictLanguage(text: string, billText: string): boolean {
-  const bill = normalized(billText).text.toLowerCase();
-  const unquoted = text.replace(
+  const bill = wordsOf(billText);
+  // A quoted phrase is exempt only when it is two or more whole words that occur in the bill.
+  const unquoted = fold(text).replace(
     /["“]([^"“”]{1,200})["”]/g,
-    (whole, inner: string) =>
-      bill.includes(normalized(inner).text.toLowerCase()) ? ' ' : whole,
+    (whole, inner: string) => {
+      const phrase = wordsOf(inner);
+      return phrase.trim().includes(' ') && bill.includes(phrase) ? ' ' : whole;
+    },
   );
   return VERDICT.test(unquoted);
 }

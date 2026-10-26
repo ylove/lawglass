@@ -9,7 +9,14 @@ export function buildReceipt(
   detail: DocDetail,
 ): { plain: string; markdown: string } {
   const quote = match.quote
-    .map((s) => (s.status === 'deleted' ? `[removed: ${s.text}]` : s.text))
+    .map((s) => {
+      if (s.status !== 'deleted') return s.text;
+      // A struck space is not wording; spacing stays outside the brackets.
+      const core = s.text.trim();
+      if (!core) return '';
+      const lead = s.text.slice(0, s.text.indexOf(core));
+      return `${lead}[removed: ${core}]${s.text.slice(lead.length + core.length)}`;
+    })
     .join('');
   const bill =
     detail.doc.billNumber ??
