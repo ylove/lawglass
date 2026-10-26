@@ -60,22 +60,52 @@ export function changeMarkConvention(
     : 'default';
 }
 
-/**
- * Narrow literal exceptions: editorial [sic]/[Reserved], explicit statute/reporter citations,
- * and a numeric citation introduced by "see"/"citation". Bare numbers remain deletions:
- * changing [3] to 4 is common legislative drafting. Explicit strike markup always wins.
- * No plain-text heuristic can disambiguate every possible literal square bracket.
+/** Under a verified legend, even a bracketed citation is old law. Only editorial labels
+ * are literal. The NJ fixture prints [Second Reprint] on its cover, outside the law text.
+ * Explicit strike markup still wins, including on an otherwise literal label.
  */
-function literalBracket(body: string, before: string): boolean {
+function literalBracket(body: string): boolean {
   const text = body.replace(/\s+/g, ' ').trim();
   return (
     /^(?:sic|reserved)\.?$/i.test(text) ||
-    /^(?:(?:First|Second|Third|Fourth|Fifth) Reprint|\d+R)$/i.test(text) ||
-    /^(?:\d+\s+U\.?\s*S\.?\s*C\.?\s+\d+[a-z]?(?:[-.]\d+[a-z]?)*(?:\([a-z0-9]+\))*|\d+\s+(?:N\.Y\.(?:S\.)?|N\.J\.|A\.|F\.|S\.Ct\.)(?:\d+d)?\s+\d+(?:[-–,]\s*\d+)*(?:\s+\(\d{4}\))?|(?:see\s+)?(?:section|§)\s*\d+[a-z]?(?:-[a-z0-9]+)*(?:\([a-z0-9]+\))*)$/i.test(
-      text,
-    ) ||
-    (/^\d+(?:[ ,–-]\d+)*$/.test(text) && /\b(?:see|citation)\s*$/i.test(before))
+    /^(?:First|Second|Third|Fourth|Fifth) Reprint$/i.test(text)
   );
+}
+
+/** NY prints this cover boilerplate underlined/italic even when it amends existing law. */
+export function newYorkEnactingClause(
+  text: string,
+): { start: number; end: number } | undefined {
+  const match =
+    /^[ \t]*The\s+People\s+of\s+the\s+State\s+of\s+New\s+York,\s*represented\s+in\s+Senate\s+and\s+Assem(?:-\s*)?bly,\s*do\s+enact\s+as\s+follows:/m.exec(
+      text.slice(0, 2000),
+    );
+  const firstSection =
+    /^[ \t]*(?:Section\s+\d|§\s*\d)/m.exec(text)?.index ?? text.length;
+  return match && match.index < firstSection
+    ? { start: match.index, end: match.index + match[0].length }
+    : undefined;
+}
+
+/** Recovery boundaries apply only to unmatched openings, never to balanced deletions. */
+function recoveryBoundaries(lines: readonly SourceLine[]): number[] {
+  const boundaries: number[] = [];
+  let offset = 0;
+  let previousPage: number | undefined;
+  for (const line of lines) {
+    if (
+      !line.text.trim() ||
+      line.text.includes('\f') ||
+      /^\s*(?:(?:Section|Sec\.)\s+\d+(?:[.:-]|\s)|§\s*\d+)/i.test(line.text) ||
+      (previousPage !== undefined &&
+        line.page !== undefined &&
+        line.page !== previousPage)
+    )
+      boundaries.push(offset);
+    previousPage = line.page;
+    offset += line.text.length + 1;
+  }
+  return boundaries;
 }
 
 /**
@@ -93,17 +123,32 @@ export function applyChangeMarks<T extends SourceLine>(
   convention: ChangeMarkConvention;
   warnings: string[];
 } {
-  if (!changeMarkJurisdiction(context))
+  const jurisdiction = changeMarkJurisdiction(context);
+  if (!jurisdiction)
     return { lines: [...lines], convention: 'default', warnings: [] };
   const text = lines.map((line) => line.text).join('\n');
   const convention = changeMarkConvention(legendText ?? text, context);
   if (convention === 'default')
-    return { lines: [...lines], convention, warnings: [] };
+    return {
+      lines: [...lines],
+      convention,
+      warnings: text.includes('[')
+        ? [
+            `This ${jurisdiction === 'NY' ? 'New York' : 'New Jersey'} bill's change legend was not found, so bracketed wording could not be marked as removed.`,
+          ]
+        : [],
+    };
   const statuses: SpanStatus[] = [];
   for (const line of lines) {
     for (let at = 0; at < line.text.length; at++)
       statuses.push(line.statuses?.[at] ?? 'unchanged');
     statuses.push('unchanged');
+  }
+  if (jurisdiction === 'NY') {
+    const clause = newYorkEnactingClause(text);
+    if (clause)
+      for (let at = clause.start; at < clause.end; at++)
+        if (statuses[at] === 'inserted') statuses[at] = 'unchanged';
   }
   const removed = new Uint8Array(text.length);
   const legend = legendFor(context);
@@ -113,6 +158,7 @@ export function applyChangeMarks<T extends SourceLine>(
     removed.fill(1, match.index, match.index + match[0].length);
   const warnings: string[] = [];
   const stack: number[] = [];
+  const pairs: { start: number; end: number }[] = [];
   let unmatchedClosing = false;
   const mark = (start: number, end: number): void => {
     for (let at = start; at < end; at++)
@@ -125,25 +171,27 @@ export function applyChangeMarks<T extends SourceLine>(
       const start = stack.pop();
       if (start === undefined) {
         unmatchedClosing = true;
-      } else if (
-        stack.length === 0 &&
-        !literalBracket(
-          text.slice(start + 1, at),
-          text.slice(Math.max(0, start - 20), start),
-        )
-      ) {
-        mark(start, at + 1);
-        // Plain-text committee bracket notation. PDF/HTML superscripts are removed as
-        // typography before this pass. Matching digits outside brackets are not law text.
-        if (changeMarkJurisdiction(context) === 'NJ') {
-          const left = /[¹²³⁴⁵⁶⁷⁸⁹0-9]$/.exec(
-            text.slice(Math.max(0, start - 1), start),
-          )?.[0];
-          if (left && text[at + 1] === left) {
-            mark(start - 1, start);
-            mark(at + 1, at + 2);
-          }
-        }
+      } else pairs.push({ start, end: at + 1 });
+    }
+  }
+  // Process enclosing pairs first. Balanced deletions inside an unmatched opening still
+  // apply independently, but nested pairs never rescan/re-mark a large enclosing deletion.
+  let deletedThrough = 0;
+  for (const { start, end } of pairs.sort((a, b) => a.start - b.start)) {
+    if (
+      start < deletedThrough ||
+      literalBracket(text.slice(start + 1, end - 1))
+    )
+      continue;
+    mark(start, end);
+    deletedThrough = end;
+    // PDF/HTML superscripts are removed before this pass. Matching plain-text committee
+    // digits outside brackets are not law text.
+    if (jurisdiction === 'NJ') {
+      const left = text[start - 1];
+      if (left && /[¹²³⁴⁵⁶⁷⁸⁹0-9]/.test(left) && text[end] === left) {
+        mark(start - 1, start);
+        mark(end, end + 1);
       }
     }
   }
@@ -152,9 +200,18 @@ export function applyChangeMarks<T extends SourceLine>(
       'An unmatched closing amendment bracket was found; check the original document.',
     );
   if (stack.length) {
-    mark(stack[0] ?? 0, text.length);
+    const boundaries = recoveryBoundaries(lines);
+    let boundaryIndex = 0;
+    let recoveredThrough = 0;
+    for (const start of stack) {
+      if (start < recoveredThrough) continue;
+      while ((boundaries[boundaryIndex] ?? text.length) <= start)
+        boundaryIndex++;
+      recoveredThrough = boundaries[boundaryIndex] ?? text.length;
+      mark(start, recoveredThrough);
+    }
     warnings.push(
-      'An amendment bracket was not closed. Text from that bracket onward is treated as deleted; check the original document.',
+      'An amendment bracket was not closed. Text is treated as deleted only up to the next section, page or paragraph boundary (or the document end); check the original document.',
     );
   }
   let offset = 0;

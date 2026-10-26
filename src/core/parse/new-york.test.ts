@@ -83,3 +83,34 @@ test('refuses an Assembly summary or error response without the text block', () 
     parseHtml('<h3>Summary</h3><p>Bill not found</p>', context),
   ).toThrow(/no full bill text/);
 });
+
+test.each([
+  'Section 1. STATE OF NEW YORK, COUNTY OF KINGS. A notary jurat.',
+  'A federal bill.\n' +
+    'Federal provisions. '.repeat(180) +
+    '\nSTATE OF NEW YORK\nIN SENATE\n' +
+    NY_LEGEND,
+  'STATE OF NEW YORK\nIN SENATE\nSection 1. No legend.',
+  'STATE OF NEW YORK\n' + NY_LEGEND + '\nSection 1. No chamber header.',
+])('does not label federal prose as a structured NY bill: %s', (text) => {
+  expect(
+    newYorkMetadata(text, { sourceUrl: 'https://www.congress.gov/bill' }),
+  ).toMatchObject({ jurisdiction: null, source: 'none' });
+  expect(
+    newYorkMetadata(text, { sourceUrl: 'https://www.congress.gov/bill' })
+      .docKind,
+  ).toBeUndefined();
+});
+
+test('recognizes a mirrored NY bill only from its opening state/chamber header and full legend', () => {
+  expect(
+    newYorkMetadata(
+      bracketText().replace('S. 4321--A', 'S. 4321--A\nIN SENATE'),
+      { sourceUrl: 'https://example.gov/bill' },
+    ),
+  ).toMatchObject({
+    jurisdiction: 'New York',
+    billNumber: 'S. 4321A',
+    source: 'structured',
+  });
+});

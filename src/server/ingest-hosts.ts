@@ -38,6 +38,12 @@ export function checkIngestFetchHost(
   url: URL,
   hosts: ReadonlySet<string>,
 ): void {
+  // Senate landing pages are pasted inputs only; the resolver maps them to text hosts.
+  if (url.hostname === 'nysenate.gov' || url.hostname === 'www.nysenate.gov')
+    throw new AppError(
+      'INVALID_INPUT',
+      'The New York Senate landing page must be resolved to an official full-text source before fetching.',
+    );
   if (hosts.has(url.hostname)) return;
   // Sponsor enrichment permits these exact published directory files, never arbitrary paths.
   if ((Object.values(LEGISLATORS_URLS) as string[]).includes(url.href)) return;

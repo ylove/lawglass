@@ -74,6 +74,16 @@ for (const name of ['ny-s1234-2025-introduced', 'ny-s1234-2025-assembly']) {
       ])
         expect(inserted).toContain(phrase);
     });
+    it('keeps the printed enacting clause unchanged without a spurious whole-line rule warning', () => {
+      const enacting = spans(doc()).filter((s) =>
+        /The\s+People|bly, do enact/.test(s.text),
+      );
+      expect(enacting.length).toBeGreaterThan(0);
+      expect(enacting.every((s) => s.status === 'unchanged')).toBe(true);
+      expect(doc().warnings.join(' ')).not.toContain(
+        'one rule marks the whole line',
+      );
+    });
     it('never leaks the repealed trustee count into current text, headings or indexed chunks', () => {
       const current = [...walkSections(doc().sections)]
         .map(

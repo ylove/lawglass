@@ -18,7 +18,7 @@ export function bracketText(legend = NY_LEGEND): string {
     '1. The notice [old (including [nested] punctuation),',
     'Section 99. Repealed heading',
     'continues across the page] is replaced.',
-    '(a) [Reserved] and [sic] remain; see [42 U.S.C. 1983] and [123 N.Y.2d 456].',
+    '(a) [Reserved] and [sic] remain; replace [42 U.S.C. 1983] and [123 N.Y.2d 456].',
     '(i) A value changes from [3] to 4.',
     '§ 2. Effective date.',
   ].join('\n');
@@ -86,15 +86,33 @@ export async function bracketPdf(
     draw(first, 'EXPLANATION--Matter in italics (underscored) is new;', 660);
     draw(first, 'matter in brackets [ ] is old law to be omitted.', 645);
   }
-  draw(first, 'Section 1. Notices.', 610, 1);
-  draw(first, '1. The [old wording', 590, 2);
-  draw(first, 'Section 99. Repealed heading', 570, 3);
+  if (legend !== 'NJ') {
+    for (const [text, y] of [
+      ['The People of the State of New York,', 630],
+      ['represented in Senate and Assembly, do enact as follows:', 615],
+    ] as const) {
+      first.drawText(text, { x: 72, y, size: 10, font: italic });
+      first.drawLine({
+        start: { x: 72, y: y - 2 },
+        end: { x: 72 + text.length * 6, y: y - 2 },
+        thickness: 0.6,
+      });
+    }
+  }
+  draw(first, 'Section 1. Notices.', 590, 1);
+  draw(first, '1. The [old wording', 570, 2);
+  draw(first, 'Section 99. Repealed heading', 550, 3);
   if (legend === 'NJ') {
-    first.drawText('1', { x: 110, y: 595, size: 6, font });
+    first.drawText('1', { x: 110, y: 575, size: 6, font });
     second.drawText('1', { x: 156, y: 645, size: 6, font });
   }
   draw(second, 'continues here] now applies.', 640, 4);
-  draw(second, '(a) [Reserved] and [sic]; see [42 U.S.C. 1983].', 620, 5);
+  draw(
+    second,
+    '(a) [Reserved] [sic]; [section 12] section 14; see [42 U.S.C. 1983].',
+    620,
+    5,
+  );
   draw(second, '(i) New wording: ', 600, 6);
   second.drawText('italic addition', {
     x: 168,

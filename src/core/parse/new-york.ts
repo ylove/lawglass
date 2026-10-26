@@ -5,6 +5,7 @@ import {
 } from './sections.js';
 import {
   changeMarkJurisdiction,
+  changeMarkConvention,
   type ChangeMarkContext,
 } from './change-marks.js';
 
@@ -27,13 +28,18 @@ export function newYorkMetadata(
   text: string,
   context: ChangeMarkContext,
 ): BillMetadata {
-  if (
-    changeMarkJurisdiction(context) !== 'NY' &&
-    !text.includes('STATE OF NEW YORK')
-  )
-    return { ...EMPTY_METADATA };
-  // The cover and first running header suffice. Never search bill prose for a sponsor/title.
-  const opening = text.slice(0, 12_000);
+  // A mention in a jurat or quoted law is not a bill header. Mirrors need both a
+  // state/chamber header near the start and the complete NY amendment legend.
+  const opening = text.slice(0, 2000);
+  const nyHost =
+    changeMarkJurisdiction({ sourceUrl: context.sourceUrl }) === 'NY';
+  const nyHeader =
+    /^[ \t]*STATE OF NEW YORK[ \t]*$/m.test(opening) &&
+    /^[ \t]*IN (?:SENATE|ASSEMBLY)[ \t]*$/m.test(opening) &&
+    changeMarkConvention(text, { ...context, jurisdiction: 'New York' }) ===
+      'bracket-underline';
+  if (!nyHost && !nyHeader) return { ...EMPTY_METADATA };
+  // Never search bill prose for a sponsor/title.
   const compact = opening.replace(/\s+/g, ' ');
   const titleStart = compact.indexOf('AN ACT ');
   const titleEnd = compact.indexOf(

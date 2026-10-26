@@ -102,8 +102,9 @@ for (const format of ['text', 'html', 'pdf'] as const) {
           : await parsePdf(await bracketPdf(), options);
     const deleted = removed(doc);
     expect(deleted).toContain('old');
+    expect(deleted).toContain('[42 U.S.C. 1983]');
     expect(deleted).toContain('Section 99. Repealed heading');
-    expect(deleted).not.toMatch(/Reserved|sic|U\.S\.C\.|N\.Y\.|EXPLANATION/);
+    expect(deleted).not.toMatch(/Reserved|sic|EXPLANATION/);
     const sections = [...walkSections(doc.sections)];
     expect(sections.map((s) => s.id)).not.toContain('sec-99');
     expect(sections.some((s) => s.id === 'sec-1/1/a/i')).toBe(true);
@@ -221,7 +222,8 @@ it('a bracketed whole section or repealed citation clause is not mistaken for a 
   );
   expect(removed(doc)).toContain('[Section 99. Repealed text.]');
   expect(removed(doc)).toContain('[42 U.S.C. 1983 is repealed]');
-  expect(removed(doc)).not.toMatch(/section 3\(a\)|123 N\.Y/);
+  expect(removed(doc)).toContain('[section 3(a)]');
+  expect(removed(doc)).toContain('[123 N.Y.2d 456]');
   expect([...walkSections(doc.sections)].map((s) => s.id)).not.toContain(
     'sec-99',
   );
@@ -234,4 +236,66 @@ it('a legend hidden in page noise cannot activate italic or bracket amendments',
   );
   expect(removed(doc)).toBe('');
   expect(spans(doc).some((s) => s.status === 'inserted')).toBe(false);
+});
+
+it.each(['§ 2. Effective date.', 'Section 2. Effective date.', '', '\f'])(
+  'bounds an unclosed bracket at a later section or paragraph: %s',
+  (boundary) => {
+    const doc = parseText(
+      `${NY_LEGEND}\nSection 1. Keep [old\ncontinued old\n${boundary}\nCurrent law.\n§ 3. Later law [obsolete] replacement.`,
+      options,
+    );
+    expect(removed(doc)).toContain('[old');
+    expect(removed(doc)).toContain('continued old');
+    expect(removed(doc)).toContain('[obsolete]');
+    expect(removed(doc)).not.toMatch(/Effective date|Current law|Later law/);
+    expect([...walkSections(doc.sections)].map((s) => s.id)).toContain('sec-3');
+    expect(doc.warnings.join(' ')).toMatch(/not closed.*boundary/);
+  },
+);
+
+it('bounds an unclosed PDF bracket at the next page, preserving coordinates', () => {
+  const result = applyChangeMarks(
+    [
+      { text: NY_LEGEND, page: 1 },
+      { text: 'Section 1. [old', page: 1 },
+      { text: 'Current law.', page: 2 },
+    ],
+    options,
+  );
+  expect(result.lines.find((l) => l.page === 2)).toMatchObject({
+    text: 'Current law.',
+    statuses: Array(12).fill('unchanged'),
+  });
+  expect(result.warnings.join(' ')).toMatch(/not closed.*boundary/);
+});
+
+it.each(['NY', 'NJ'] as const)(
+  '%s: keeps only editorial labels literal; doubtful brackets are deleted',
+  (state) => {
+    const doc = parseText(
+      `${state === 'NY' ? NY_LEGEND : NJ_LEGEND}\nSection 1. [Reserved] [sic] [First Reprint] [Second Reprint] [citation 12] [1R].`,
+      {
+        ...options,
+        sourceUrl:
+          state === 'NY' ? options.sourceUrl : 'https://pub.njleg.gov/bill',
+      },
+    );
+    expect(removed(doc)).toContain('[citation 12]');
+    expect(removed(doc)).toContain('[1R]');
+    expect(removed(doc)).not.toMatch(/Reserved|sic|Reprint/);
+  },
+);
+
+it('HTML enacting boilerplate stays unchanged while italic body additions remain inserted', () => {
+  const doc = parseHtml(
+    `<p>${NY_LEGEND}</p><p><u><i>The  People of the State of New York, represented in Senate and Assem-\nbly, do enact as follows:</i></u></p><p>Section 1. <i>New law.</i></p>`,
+    options,
+  );
+  const inserted = spans(doc)
+    .filter((s) => s.status === 'inserted')
+    .map((s) => s.text)
+    .join('');
+  expect(inserted).not.toMatch(/The People|bly, do enact/);
+  expect(inserted).toContain('New law.');
 });

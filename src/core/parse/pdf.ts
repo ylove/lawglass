@@ -380,7 +380,9 @@ export async function parsePdf(
     }
   }
   const sectionOptions = jurisdictionSections(options);
-  const layout = layoutPages(pages);
+  const layout = layoutPages(pages, {
+    newYorkBill: jurisdiction === 'NY' && convention === 'bracket-underline',
+  });
   const marked = applyChangeMarks(layout.lines, options, rawText);
   warnings.push(...marked.warnings);
   warnings.push(...layout.warnings);

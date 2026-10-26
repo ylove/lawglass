@@ -41,7 +41,9 @@ amendment letter and printed sponsors are read deterministically.
 The parser has two internal policies, `default` and `bracket-underline`. The latter
 requires an exact NY/NJ source host or an explicit parser jurisdiction **and** the
 matching full legend. Whitespace may wrap anywhere in the sentence. Without that
-legend the existing markup/geometry rules remain in force.
+legend the existing markup/geometry rules remain in force. When brackets are present
+on a NY/NJ source without its full legend, a warning explains that bracketed wording
+could not be marked as removed.
 
 The verified legends are:
 
@@ -52,8 +54,9 @@ Legend sentences are removed before scanning. A stack matches nested brackets
 across elements, lines and pages. The entire outer run, including brackets, becomes
 `deleted` before section detection, so deleted section numbers/headings cannot
 name current sections. Existing strike/deletion status takes precedence over
-insertions. An unclosed bracket marks the remainder deleted and warns; an unmatched
-closing bracket warns.
+insertions. An unclosed bracket deletes only up to the next section heading,
+page break or blank paragraph (or document end) and warns. Balanced deletions still
+cross section headings and pages. An unmatched closing bracket warns.
 
 NY's legend makes underline and italic/oblique text additions. NJ's legend says
 **underline only**: its ordinary italic enacting clause stays unchanged. PDF italic
@@ -63,11 +66,12 @@ superscript-amendment legend is present; plain-text `1[…]1` and `²[…]²` pa
 included with the deleted run. Superscript numbers identify committee changes,
 not additional law text.
 
-Literal exceptions are deliberately finite: `[Reserved]`, `[sic]`, reprint labels,
-explicit statute/reporter citations (for example `[42 U.S.C. 1983]` and
-`[123 N.Y.2d 456]`), and numeric citations immediately introduced by `see` or
-`citation`. Bare `[3]` remains a deletion: changing a number is ordinary bill
-drafting. An outer deletion still deletes nested literal brackets. Arbitrary
+Literal exceptions are deliberately finite: `[Reserved]`, `[sic]`, and named
+reprint labels. The NJ fixture prints `[Second Reprint]` on its cover. Bracketed
+statute/reporter citations, section references and numbers are deletions under a
+verified legend, including `[section 12]`, `[42 U.S.C. 1395]` and `see [3]`:
+replacing a cross-reference is ordinary bill drafting. An outer deletion still
+deletes nested literal brackets. Arbitrary
 square-bracket prose cannot be distinguished perfectly from a deletion once
 bold/typographic evidence has been lost; this rule is not a universal classifier.
 Plain text supports bracket deletions but cannot recover absent underline/italic
@@ -96,8 +100,10 @@ and that repealed wording does not reach current chunks/headings. S8102 adds a n
 General Business Law article and has no repealed wording; its definitions are
 underlined and parse as inserted.
 
-S1234 also has five visually underlined insertion runs (including its enacting
-clause): all five are recovered. NJ has ten visually underlined insertion runs;
+S1234 has four substantive underlined insertion runs: all four are recovered.
+Its styled opening enacting clause stays unchanged in PDF and HTML. Only that
+recognized cover boilerplate is exempt from the PDF whole-line rule warning;
+unrelated table/border warnings remain active. NJ has ten visually underlined insertion runs;
 all ten are recovered, with one additional false positive: the unmarked fragment
 `down payment assistanc`. This is a limitation in the pre-existing PDF underline
 geometry. The twelve bracket deletions do not depend on that geometry. S8102's
@@ -118,6 +124,27 @@ These changing raw bytes also mean a refreshed latest URL can acquire a new raw
 SHA-256 document ID despite identical legislative text. Semantic deduplication is
 outside this change; the raw-byte identity contract is preserved.
 
-Existing PDF warnings remain visible, including NY's whole-line enacting-clause
-underline warning and NJ's unnumbered cover warning. Scans without a usable text
-layer retain the existing scan failure. No contracts in `src/core/model/` changed.
+Other PDF warnings remain visible, including NJ's unnumbered cover warning.
+Scans without a usable text layer retain the existing scan failure. No contracts
+in `src/core/model/` changed.
+
+## Review regressions (#292)
+
+NY metadata requires an official NY host, or a state/chamber header in the first
+2,000 characters together with the full NY legend. A federal document mentioning
+`STATE OF NEW YORK`, including a notary jurat, keeps empty metadata. A parser
+jurisdiction hint alone cannot establish structured NY metadata.
+
+Senate landing hosts (`nysenate.gov`, `www.nysenate.gov`) remain accepted pasted
+inputs for the resolver but are rejected by the fetch-host check. Assembly and
+`legislation.nysenate.gov` remain official text fetch hosts.
+
+`tests/synth/brackets.test.ts` covers replaced section/statute/reporter/numeric
+references under both legends, missing-legend NY warnings in text/HTML/PDF, and
+NY PDF enacting boilerplate. Adjacent parser tests cover metadata scoping,
+unclosed-bracket recovery with preserved later sections/coordinates, editorial
+labels, HTML boilerplate and unrelated PDF rule warnings. Host-policy tests
+separately exercise pasted and fetched Senate URLs. These tests use no network
+or downloaded legislation. The local fixture tests still assert every deletion
+run against the manual list above; the recount after the fixes remains 4/4, 4/4,
+0/0 and 12/12, with zero deletion false positives.

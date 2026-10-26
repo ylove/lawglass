@@ -3,6 +3,7 @@
  * headers and footers, and join each line's items into text with per-character amendment
  * statuses. Pure functions; pdf.ts feeds them PDF.js output.
  */
+import { newYorkEnactingClause } from './change-marks.js';
 import type { SpanStatus } from '../model/index.js';
 import {
   markLine,
@@ -420,7 +421,10 @@ function commonStarts(lines: readonly TextLine[], share: number): number[] {
  * join text. Pages are processed in order and lines top to bottom, which is reading order for
  * single-column legislation; a page that looks like two columns gets a warning.
  */
-export function layoutPages(pages: readonly PageContent[]): PageLayoutResult {
+export function layoutPages(
+  pages: readonly PageContent[],
+  { newYorkBill = false }: { newYorkBill?: boolean } = {},
+): PageLayoutResult {
   const warnings: string[] = [];
   const pageItems = pages.map((page) => withoutOverprint(page.items));
   const pageBands = pageItems.map((items) => detectBand(items));
@@ -476,16 +480,32 @@ export function layoutPages(pages: readonly PageContent[]): PageLayoutResult {
           (x) => Math.abs((line.items[0]?.x ?? 0) - x) <= LAYOUT.bandTolerance,
         );
 
+  const enacting = newYorkBill
+    ? newYorkEnactingClause(
+        laidOut
+          .flatMap(({ lines }) =>
+            lines.map((line) => joinLine(line.items, []).text),
+          )
+          .join('\n'),
+      )
+    : undefined;
+  let offset = 0;
   const lines: StyledLine[] = [];
   for (const { page, lines: pageLines } of laidOut) {
     const flagged = new Map<MarkIssue, (number | undefined)[]>();
     for (const line of pageLines) {
       const marks = markLine(line.items, page.segments, page.widths);
+      const joined = joinLine(line.items, marks.statuses);
+      const enactingLine =
+        enacting &&
+        offset < enacting.end &&
+        offset + joined.text.length > enacting.start;
+      offset += joined.text.length + 1;
       for (const issue of marks.issues) {
-        if (issue === 'whole-line' && inBody(line)) continue;
+        // NY's underlined cover enacting clause is deliberate boilerplate, not a border.
+        if (issue === 'whole-line' && (inBody(line) || enactingLine)) continue;
         flagged.set(issue, [...(flagged.get(issue) ?? []), line.number]);
       }
-      const joined = joinLine(line.items, marks.statuses);
       if (!joined.text) continue;
       lines.push({
         page: page.page,
