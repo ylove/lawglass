@@ -50,6 +50,28 @@ export function describeProviderContract(
         }
       });
 
+      it('accepts a message made of ordered parts with a cache hint', async () => {
+        const p = await makeProvider();
+        const events: LlmStreamEvent[] = [];
+        for await (const e of p.streamText({
+          system: 'Reply with one short sentence.',
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { text: 'Some shared context. ', cache: true },
+                { text: 'Say hello.' },
+              ],
+            },
+          ],
+          maxTokens: 50,
+        })) {
+          events.push(e);
+        }
+        expect(events.filter((e) => e.type === 'done')).toHaveLength(1);
+        expect(events.at(-1)?.type).toBe('done');
+      });
+
       it('returns a schema-valid object from generateObject', async () => {
         const p = await makeProvider();
         const schema = z.object({

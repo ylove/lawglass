@@ -6,6 +6,7 @@ import {
   type ObjectRequest,
   type ProviderConfig,
   type TextRequest,
+  type LlmUsage,
   messageText,
 } from '../model/index.js';
 import {
@@ -18,12 +19,15 @@ import {
   ZERO_LLM_USAGE,
 } from './shared.js';
 
-function usageOf(result: GenerateContentResponse) {
+function usageOf(result: GenerateContentResponse): LlmUsage {
+  // Gemini caches repeated prefixes implicitly and reports the reused part.
+  const cached = result.usageMetadata?.cachedContentTokenCount ?? 0;
   return {
     inputTokens: result.usageMetadata?.promptTokenCount ?? 0,
     outputTokens:
       (result.usageMetadata?.candidatesTokenCount ?? 0) +
       (result.usageMetadata?.thoughtsTokenCount ?? 0),
+    ...(cached > 0 ? { cacheReadTokens: cached } : {}),
   };
 }
 
