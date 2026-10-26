@@ -88,19 +88,8 @@ test('private preview gate, invite exchange and hosted ingest policy', async ({
       httpOnly: true,
       sameSite: 'Strict',
     });
-    // Mock mode gives a document to open: /doc/<id> survives a reload and the logo goes home.
-    await page.goto(`${origin.origin}/?mock=1`);
-    await page
-      .getByRole('region', { name: 'Your documents' })
-      .getByRole('link', { name: /Clean Water/ })
-      .click();
-    await expect(page).toHaveURL(/\/doc\/[a-f0-9]{64}\?mock=1$/);
-    await page.reload();
-    await expect(
-      page.getByRole('heading', { name: 'Clean Water Infrastructure Act' }),
-    ).toBeVisible();
-    await page.getByRole('link', { name: `${BRAND.displayName} home` }).click();
-    await expect(page).toHaveURL(`${origin.origin}/?mock=1`);
+    // /doc/<id> reloads and the logo are covered by legislation.spec.ts; a production build
+    // never enables ?mock=1, so this spec has no document to open.
     await page.goto(origin.origin);
     await page
       .getByRole('textbox', { name: /url|address|link/i })
