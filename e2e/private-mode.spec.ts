@@ -1,7 +1,40 @@
+import type { Page } from '@playwright/test';
 import { BRAND, envVar } from '../src/core/brand.js';
 import { test, expect } from './packed-app.fixture.js';
 
 const ACCESS_KEY = 'e'.repeat(40);
+
+// The only places a public page may send a reader outside the site: the hosted contact form,
+// the author's LinkedIn and the source on GitHub. Compared without the query and fragment.
+const ALLOWED_EXTERNAL = [
+  'https://www.vouchnetworks.org/contact',
+  'https://linkedin.com/in/yitzjordan',
+  'https://github.com/ylove/lawglass',
+];
+
+/** Every link that leaves the site, as origin plus path, with the `rel` it opens under. */
+async function externalLinks(page: Page) {
+  return page.locator('a[href]').evaluateAll((anchors) =>
+    anchors
+      .map((a) => ({
+        url: new URL((a as HTMLAnchorElement).href),
+        rel: a.getAttribute('rel') ?? '',
+      }))
+      .filter(({ url }) => url.origin !== location.origin)
+      .map(({ url, rel }) => ({ destination: url.origin + url.pathname, rel })),
+  );
+}
+
+// The quickstart also sends readers to nodejs.org, to install what the steps need.
+async function expectOnlyAllowedLinks(page: Page, extra: string[] = []) {
+  const links = await externalLinks(page);
+  expect(links.length).toBeGreaterThan(0);
+  for (const { destination, rel } of links) {
+    expect([...ALLOWED_EXTERNAL, ...extra]).toContain(destination);
+    expect(rel).toContain('noopener');
+  }
+  return new Set(links.map((link) => link.destination));
+}
 
 // The inherited CSP guard checks both the gate and the app. Skip the local session exchange:
 // this test must begin with a fresh, unauthenticated browser.
@@ -42,6 +75,10 @@ test('private preview gate, invite exchange and hosted ingest policy', async ({
     );
     await expect(page.locator('#root')).toHaveCount(0);
     await expect(page.locator('script')).toHaveCount(0);
+    // All three destinations are offered, and nothing else leaves the site.
+    expect(await expectOnlyAllowedLinks(page)).toEqual(
+      new Set(ALLOWED_EXTERNAL),
+    );
     // A document address is gated like everything else: it gets the gate page, not the app.
     const gatedDoc = await page.goto(`${origin.origin}/doc/${'a'.repeat(64)}`);
     expect(gatedDoc?.status()).toBe(200);
@@ -54,6 +91,11 @@ test('private preview gate, invite exchange and hosted ingest policy', async ({
       page.getByRole('heading', { level: 1, name: /on your computer/ }),
     ).toBeVisible();
     await expect(page.locator('script')).toHaveCount(0);
+    // Numbered steps, each with its own heading.
+    const steps = page.locator('ol.qs-steps > li');
+    expect(await steps.count()).toBeGreaterThanOrEqual(3);
+    await expect(steps.locator('h2')).toHaveCount(await steps.count());
+    await expectOnlyAllowedLinks(page, ['https://nodejs.org/']);
     const denied = await context.request.get(`${origin.origin}/api/docs`);
     expect(denied.status()).toBe(401);
     expect(await denied.json()).toMatchObject({
