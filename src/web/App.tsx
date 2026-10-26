@@ -40,6 +40,8 @@ export function App({ api: provided }: { api?: ApiClient }) {
   // The address bar is the source of truth for what is open: `/` is home, `/doc/<id>` a document.
   const [path, setPath] = useState(() => window.location.pathname);
   const selected = parseDocPath(path);
+  // Counts navigations so focus can follow each one (the clicked link may no longer exist).
+  const [navigations, setNavigations] = useState(0);
   const [loading, setLoading] = useState(true);
   const [problem, setProblem] = useState<string | null>(null);
   // True when the first requests could not reach the server at all (not a server-side error).
@@ -55,6 +57,7 @@ export function App({ api: provided }: { api?: ApiClient }) {
     const onPop = () => {
       setPath(window.location.pathname);
       setNotice(null);
+      setNavigations((n) => n + 1);
     };
     window.addEventListener('popstate', onPop);
     return () => {
@@ -68,7 +71,14 @@ export function App({ api: provided }: { api?: ApiClient }) {
       window.history.pushState({}, '', target);
     setPath(to);
     setNotice(null);
+    setNavigations((n) => n + 1);
   }, []);
+
+  // After a route change, move focus to the page's main region (named by the bill title on a
+  // document page) so keyboard and screen reader users start at the new content.
+  useEffect(() => {
+    if (navigations > 0) document.getElementById('main')?.focus();
+  }, [navigations]);
 
   useEffect(() => {
     let live = true;

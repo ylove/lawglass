@@ -217,15 +217,6 @@ describe.each([
     const one = await a.ingest(urls.a);
     const two = await b.ingest(urls.b);
     await b.request(`/api/docs/${two.doc.docId}`, { method: 'DELETE' });
-    if (mode === 'public') {
-      // Public servers refuse ingests at the cap rather than evicting.
-      const res = await a.request('/api/ingest', {
-        method: 'POST',
-        body: JSON.stringify({ url: urls.c }),
-      });
-      expect(res.status).toBe(403);
-      return;
-    }
     await a.ingest(urls.c);
     const left = (await env.registry.list()).map((e) => e.docId).sort();
     expect(left).toContain(one.doc.docId);
@@ -234,6 +225,37 @@ describe.each([
     expect((await a.list()).map((d) => d.docId)).toContain(one.doc.docId);
     // The evicted document silently drops out of any list that still named it.
     expect((await b.list()).map((d) => d.docId)).not.toContain(two.doc.docId);
+  });
+});
+
+describe('public mode at the document cap', () => {
+  test('reuse is always allowed, unlisted documents are reclaimed, and only a fully listed store refuses', async () => {
+    const app = publicApp();
+    const a = browser(app, undefined, false);
+    const b = browser(app, undefined, false);
+    const one = await a.ingest(urls.a);
+    const two = await b.ingest(urls.b);
+    // Full, and both documents are listed: a new address is refused...
+    const refused = await a.request('/api/ingest', {
+      method: 'POST',
+      body: JSON.stringify({ url: urls.c }),
+    });
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({
+      error: { code: 'DOC_CAP_REACHED' },
+    });
+    // ...but an address already in the store is not.
+    expect((await b.ingest(urls.a)).stats.reused).toBe(true);
+    expect(await env.registry.list()).toHaveLength(2);
+
+    // Once nobody lists a document, its space is reclaimed for the new one.
+    await a.request(`/api/docs/${one.doc.docId}`, { method: 'DELETE' });
+    await b.request(`/api/docs/${one.doc.docId}`, { method: 'DELETE' });
+    await a.ingest(urls.c);
+    const left = (await env.registry.list()).map((e) => e.docId);
+    expect(left).not.toContain(one.doc.docId);
+    expect(left).toContain(two.doc.docId);
+    expect(left).toHaveLength(2);
   });
 });
 

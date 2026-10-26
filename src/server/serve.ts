@@ -31,6 +31,8 @@ export interface StartServerOptions extends AppOptions {
   port?: number;
   /** Defaults to loopback. Anything else exposes the server to the network. */
   host?: string;
+  /** Page the launch link opens (e.g. `/doc/<id>`); defaults to the homepage. */
+  openPath?: string;
 }
 
 export interface RunningServer {
@@ -89,7 +91,7 @@ export async function startServer(
   const urlHost = isIP(boundHost) === 6 ? `[${boundHost}]` : boundHost;
   return {
     port,
-    url: `http://${urlHost}:${String(port)}${sessionToken ? `/?k=${sessionToken}` : ''}`,
+    url: `http://${urlHost}:${String(port)}${sessionToken ? `${options.openPath ?? '/'}?k=${sessionToken}` : ''}`,
     close: () =>
       new Promise((resolve) => {
         server.closeAllConnections();

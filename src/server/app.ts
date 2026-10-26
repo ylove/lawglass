@@ -561,6 +561,35 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     if (!limiter.take(ip)) throw new AppError('RATE_LIMITED');
   }
 
+  /**
+   * Public servers never evict a document someone still lists, but a full store must not stay
+   * full forever: removing from a list leaves the shared copy. So at the cap, an address that is
+   * already loaded is always allowed (it adds nothing), documents no reader lists are reclaimed
+   * oldest first, and only when every document is listed is the ingest refused.
+   */
+  async function makeRoomForIngest(url: string): Promise<boolean> {
+    const entries = await runtime.registry.list();
+    const excess = entries.length + ingestsInFlight - limits.maxDocs + 1;
+    if (excess <= 0 || entries.some((e) => e.sourceUrl === url)) return true;
+    const listed = readers ? await readers.listedDocIds() : new Set<string>();
+    // Other backends' entries are left alone: only their own backend can delete the index.
+    const reclaimable = entries
+      .filter((e) => !listed.has(e.docId) && e.backend === runtime.backend.kind)
+      .sort(
+        (a, b) =>
+          a.lastUsedAt.localeCompare(b.lastUsedAt) ||
+          a.ingestedAt.localeCompare(b.ingestedAt) ||
+          a.docId.localeCompare(b.docId),
+      )
+      .slice(0, excess);
+    if (reclaimable.length < excess) return false;
+    for (const old of reclaimable) {
+      await runtime.backend.deleteDocument(old.docId);
+      await runtime.registry.remove(old.docId);
+    }
+    return true;
+  }
+
   app.post('/api/ingest', async (c) => {
     const body = await parseBody(
       c,
@@ -576,10 +605,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       });
     if (hosted) checkIngestHost(body.url, hosts);
     await guardPublic(c, ingests, body.turnstileToken);
-    if (
-      publicMode &&
-      (await runtime.registry.list()).length + ingestsInFlight >= limits.maxDocs
-    )
+    if (publicMode && !(await makeRoomForIngest(body.url)))
       throw new AppError('DOC_CAP_REACHED');
 
     // Resource policy reaches both the default parser and runtime-injected parsers.

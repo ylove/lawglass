@@ -164,6 +164,36 @@ describe('homepage', () => {
   });
 });
 
+describe('focus after navigation', () => {
+  test('opening a document, the logo and back/forward all move focus to main', async () => {
+    render(<App api={mock()} />);
+    const open = await screen.findByRole('link', { name: /Clean Water/ });
+    open.focus();
+    fireEvent.click(open);
+    await screen.findByRole('heading', { name: SAMPLE });
+    expect(document.activeElement).toBe(screen.getByRole('main'));
+
+    fireEvent.click(
+      screen.getByRole('link', { name: `${BRAND.displayName} home` }),
+    );
+    await screen.findByText('Understand any bill, line by line.');
+    expect(document.activeElement).toBe(screen.getByRole('main'));
+
+    (document.activeElement as HTMLElement).blur();
+    act(() => {
+      window.history.back();
+    });
+    await screen.findByRole('heading', { name: SAMPLE });
+    expect(document.activeElement).toBe(screen.getByRole('main'));
+  });
+
+  test('the first page load does not steal focus', async () => {
+    render(<App api={mock()} />);
+    await screen.findByText('Understand any bill, line by line.');
+    expect(document.activeElement).toBe(document.body);
+  });
+});
+
 describe('examples', () => {
   test('clicking an example starts reading that address', async () => {
     render(<App api={mock()} />);

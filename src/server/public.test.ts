@@ -245,13 +245,14 @@ describe('caps', () => {
     expect((await env.registry.list()).map((e) => e.docId).sort()).toEqual(
       [first, second].sort(),
     );
+    // An address already in the store adds nothing, so it is allowed at the cap.
     const res = await post(a, '/api/ingest', {
       url: 'https://govinfo.gov/a.txt',
     });
-    expect(res.status).toBe(403);
-    expect(await res.json()).toMatchObject({
-      error: { code: 'DOC_CAP_REACHED' },
-    });
+    expect(res.status).toBe(200);
+    expect(await events(res, IngestEvent)).toContainEqual(
+      expect.objectContaining({ type: 'done' }),
+    );
   });
 
   test('the global document cap refuses further ingests without evicting', async () => {
