@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { envVar } from './brand.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryBackend } from '../../tests/contracts/memory-backend.js';
 import { ScriptedProvider } from '../../tests/contracts/scripted-provider.js';
 import {
@@ -445,7 +446,7 @@ describe('what-changes without amendment marks', () => {
       sparseWeight: 0.75,
       includeDeleted: false,
     });
-    expect(promptOf()).toContain("the bill's instructions for changing");
+    expect(promptOf()).toContain('The bill contains instructions for changing');
     expect(run.mode).toBe('hybrid');
     expect(run.answer.text.endsWith(INSTRUCTIONS_NOTE)).toBe(true);
   });
@@ -614,3 +615,7 @@ describe('interleave', () => {
     expect(interleave([])).toEqual([]);
   });
 });
+
+// These tests pin the retained retrieval/outline strategies.
+beforeEach(() => vi.stubEnv(envVar('WHOLE_BILL_MAX_TOKENS'), '0'));
+afterEach(() => vi.unstubAllEnvs());

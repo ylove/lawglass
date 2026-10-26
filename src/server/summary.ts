@@ -4,6 +4,7 @@
  * version, and public mode never starts a generation.
  */
 import { join } from 'node:path';
+import { documentContext } from '../core/answer/context.js';
 import type { CliRuntime } from '../cli/runtime.js';
 import {
   AnswerCache,
@@ -20,6 +21,25 @@ import { ask } from '../core/pipeline/index.js';
  * must not serve summaries whose scenarios were made the old way.
  */
 export const SUMMARY_CACHE_VERSION = `${SUMMARY_PROMPT_VERSION}.${SCENARIO_PROMPT_VERSION}`;
+
+/** The automatic summary and targeted scenarios must look up exactly the same answer key. */
+export async function summaryCacheKey(
+  runtime: CliRuntime,
+  docId: string,
+  provider = runtime.answerProvider,
+): Promise<AnswerCacheKey> {
+  const doc = await runtime.registry.getDocument(docId);
+  const context = await documentContext(runtime.backend, docId, doc.sections);
+  return {
+    docId,
+    chipId: 'summary',
+    provider: provider.id,
+    model: provider.model,
+    endpoint: runtime.answerEndpoint,
+    promptVersion: SUMMARY_CACHE_VERSION,
+    context: context.mode,
+  };
+}
 
 /**
  * After a summary run ends without a cacheable answer (a decline, a failed call), wait this
@@ -143,14 +163,7 @@ export function createSummaryService(
         if (options.publicMode) return { status: 'disabled' };
         throw error;
       }
-      const key: AnswerCacheKey = {
-        docId,
-        chipId: 'summary',
-        provider: provider.id,
-        model: provider.model,
-        endpoint: runtime.answerEndpoint,
-        promptVersion: SUMMARY_CACHE_VERSION,
-      };
+      const key = await summaryCacheKey(runtime, docId, provider);
       const hit = await cache.get(key);
       if (hit) return { status: 'cached', answer: hit };
       // Public mode serves cache hits only: an anonymous visitor never spends the host's money.

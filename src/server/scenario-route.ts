@@ -12,7 +12,7 @@ import {
   type ScenarioResponse,
 } from '../core/model/index.js';
 import { runScenario } from '../core/pipeline/index.js';
-import { SUMMARY_CACHE_VERSION } from './summary.js';
+import { summaryCacheKey } from './summary.js';
 
 export function registerScenarioRoute(
   app: Hono,
@@ -49,14 +49,9 @@ export function registerScenarioRoute(
       signal: c.req.raw.signal,
       // Passages the cached summary cited anchor the example in what the reader already saw.
       summaryChunkIds: async () => {
-        const summary = await answers.get({
-          docId,
-          chipId: 'summary',
-          provider: provider.id,
-          model: provider.model,
-          endpoint: runtime.answerEndpoint,
-          promptVersion: SUMMARY_CACHE_VERSION,
-        });
+        const summary = await answers.get(
+          await summaryCacheKey(runtime, docId),
+        );
         return (summary?.citations ?? [])
           .filter((citation) => citation.valid)
           .flatMap((citation) => citation.chunkIds);

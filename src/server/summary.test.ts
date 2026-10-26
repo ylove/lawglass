@@ -1,3 +1,4 @@
+import { envVar } from '../core/brand.js';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Hono } from 'hono';
@@ -36,6 +37,7 @@ beforeEach(async () => {
   env.serve(URL_A, makeSectionedText(), 'text/plain');
 });
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await env.cleanup();
 });
 
@@ -220,6 +222,7 @@ describe('GET /api/docs/:docId/summary', () => {
       dir: join(env.registry.configDir, 'cache', 'answers'),
     });
     const key = {
+      context: 'whole' as const,
       docId,
       chipId: 'summary' as const,
       provider: env.provider.id,
@@ -549,4 +552,22 @@ describe('summary long-poll', () => {
     provider.state.release();
     await settled(a, docId);
   });
+});
+
+test('summary cache follows the context decision when the budget changes', async () => {
+  const provider = countingProvider(env.provider);
+  Object.assign(env.runtime, { answerProvider: provider });
+  const a = app();
+  const docId = await ingestDoc(a);
+  await summary(a, docId);
+  expect((await settled(a, docId)).answer?.context).toBe('whole');
+  const firstCalls = provider.state.calls;
+  vi.stubEnv(envVar('WHOLE_BILL_MAX_TOKENS'), '0');
+  expect(await summary(a, docId)).toEqual({ status: 'pending' });
+  expect((await settled(a, docId)).answer?.context).toBe('excerpts');
+  const secondCalls = provider.state.calls;
+  expect(secondCalls).toBeGreaterThan(firstCalls);
+  vi.unstubAllEnvs();
+  expect((await summary(a, docId)).answer?.context).toBe('whole');
+  expect(provider.state.calls).toBe(secondCalls);
 });

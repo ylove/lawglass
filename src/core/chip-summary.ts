@@ -354,6 +354,8 @@ export async function runOutlineChip(
       : final.warnings;
   const finished: AnswerResult = {
     ...final,
+    // Map calls still read excerpts even if every partial is declined before reduction.
+    ...(allHits.length > 0 ? { context: 'excerpts' as const } : {}),
     warnings,
     citations: final.citations.map((c) =>
       c.valid ? (real.get(c.sectionId) ?? withoutSyntheticChunks(c, docId)) : c,

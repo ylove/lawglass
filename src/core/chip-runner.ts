@@ -10,6 +10,7 @@
  *   definitions   every definition chunk, document-wide ones first, capped and counted
  *   retrieve      one `retrieve()` per query, merged, reranked once, then `answer()`
  */
+import { documentContext } from './answer/context.js';
 import { answer, fleschKincaidGrade } from './answer/index.js';
 import {
   hasAmendmentMarks,
@@ -65,8 +66,10 @@ export async function runChip(
           options.onToken,
         );
       return runMetadataChip(chip, deps.doc.metadata, options.onToken);
-    case 'outline':
-      return runOutlineChip(chip, docId, deps, options);
+    case 'outline': {
+      const whole = await runWholeChip(chip, docId, deps, options);
+      return whole ?? runOutlineChip(chip, docId, deps, options);
+    }
     case 'definitions':
       return runDefinitionsChip(chip, docId, deps, options);
     case 'extract':
@@ -88,6 +91,13 @@ export async function runChip(
         ) {
           return runChangesChip(chip, docId, deps, options);
         }
+        const whole = await runWholeChip(
+          WHAT_CHANGES_BY_INSTRUCTION,
+          docId,
+          deps,
+          options,
+        );
+        if (whole) return whole;
         const run = await runRetrieveChip(
           WHAT_CHANGES_BY_INSTRUCTION,
           docId,
@@ -101,8 +111,45 @@ export async function runChip(
           answer: appendNote(run.answer, INSTRUCTIONS_NOTE, options.onToken),
         };
       }
-      return runRetrieveChip(chip, docId, deps, options);
+      return (
+        (await runWholeChip(chip, docId, deps, options)) ??
+        runRetrieveChip(chip, docId, deps, options)
+      );
   }
+}
+
+/** Whole-mode chips share one prefix; only their trusted task and question differ. */
+async function runWholeChip(
+  chip: ChipDefinition,
+  docId: string,
+  deps: ChipDeps,
+  options: RunChipOptions,
+): Promise<ChipRun | undefined> {
+  const context = await documentContext(
+    deps.backend,
+    docId,
+    deps.doc.sections,
+    {
+      budget: options.wholeBillMaxTokens,
+      signal: options.signal,
+    },
+  );
+  if (context.mode !== 'whole') return undefined;
+  const result = await answer({
+    provider: deps.provider,
+    question: chip.label,
+    context: { ...context, metadata: deps.doc.metadata },
+    chipInstruction: chip.answerInstruction,
+    signal: options.signal,
+    onToken: options.onToken,
+    maxTokens: options.maxTokens,
+  });
+  return {
+    answer: result,
+    hits: context.hits,
+    mode: 'whole',
+    backendUsage: ZERO_USAGE,
+  };
 }
 
 // ---------------------------------------------------------------------------------------------

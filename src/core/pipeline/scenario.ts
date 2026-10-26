@@ -7,8 +7,12 @@
  * as-is. The subject is untrusted and is checked before any model call.
  */
 import { join } from 'node:path';
+import { documentContext } from '../answer/context.js';
+import { WHOLE_PROMPT_VERSION } from '../answer/prompt.js';
 import {
   AppError,
+  ZERO_USAGE,
+  type BackendUsage,
   type LlmProvider,
   type RetrievalBackend,
   type RetrievalMode,
@@ -62,7 +66,10 @@ export async function runScenario(
   const { subject } = checked;
   const { registry, backend } = deps;
   // Also proves the document exists (DOC_NOT_FOUND).
-  await registry.getDocument(docId);
+  const doc = await registry.getDocument(docId);
+  const context = await documentContext(backend, docId, doc.sections, {
+    signal: deps.signal,
+  });
   const cache =
     deps.cache ??
     new ScenarioCache({
@@ -75,7 +82,7 @@ export async function runScenario(
     subject,
     provider: deps.provider.id,
     model: deps.provider.model,
-    promptVersion: SCENARIO_SUBJECT_PROMPT_VERSION,
+    promptVersion: `${SCENARIO_SUBJECT_PROMPT_VERSION}.${context.mode}.${context.mode === 'whole' ? WHOLE_PROMPT_VERSION : ''}`,
   };
 
   const result = await cache.getOrCompute(key, async () => {
@@ -88,40 +95,46 @@ export async function runScenario(
           userMessage:
             "This document's search index is missing. Run ingest again for its URL.",
         });
-      await backend.ensureReady(deps.signal);
-      const retrieved = await retrieve(backend, {
-        docId,
-        query: subject,
-        mode: deps.retrievalMode ?? 'hybrid_rerank',
-        includeDeleted: false,
-        signal: deps.signal,
-      });
-      const subjectHits = retrieved.hits
-        .filter((hit) => hit.chunk.amendmentStatus !== 'deleted')
-        .slice(0, SUBJECT_HITS);
-      const have = new Set(subjectHits.map((hit) => hit.chunk.id));
-      const summaryIds = ((await deps.summaryChunkIds?.()) ?? []).filter(
-        (id) => !have.has(id),
-      );
-      const summaryHits: SearchHit[] = (
-        summaryIds.length ? await backend.getChunks(docId, summaryIds) : []
-      )
-        .slice(0, SUMMARY_HITS)
-        .map((chunk) => ({ chunk, score: 0 }));
-      // The subject's own passages come first: they are what the example is about.
-      const hits = [...subjectHits, ...summaryHits];
+      let hits = context.hits;
+      let backendUsage: BackendUsage = ZERO_USAGE;
+      if (context.mode === 'excerpts') {
+        await backend.ensureReady(deps.signal);
+        const retrieved = await retrieve(backend, {
+          docId,
+          query: subject,
+          mode: deps.retrievalMode ?? 'hybrid_rerank',
+          includeDeleted: false,
+          signal: deps.signal,
+        });
+        backendUsage = retrieved.usage;
+        const subjectHits = retrieved.hits
+          .filter((hit) => hit.chunk.amendmentStatus !== 'deleted')
+          .slice(0, SUBJECT_HITS);
+        const have = new Set(subjectHits.map((hit) => hit.chunk.id));
+        const summaryIds = ((await deps.summaryChunkIds?.()) ?? []).filter(
+          (id) => !have.has(id),
+        );
+        const summaryHits: SearchHit[] = (
+          summaryIds.length ? await backend.getChunks(docId, summaryIds) : []
+        )
+          .slice(0, SUMMARY_HITS)
+          .map((chunk) => ({ chunk, score: 0 }));
+        // The subject's own passages come first: they are what the example is about.
+        hits = [...subjectHits, ...summaryHits];
+      }
 
       const attached = await attachScenario({
         provider: limits.meter(deps.provider),
         hits,
+        whole: context.mode === 'whole',
         subject,
         docId,
         signal: deps.signal,
         timeoutMs: deps.timeoutMs,
       });
       await registry.touch(docId, {
-        embedTokens: retrieved.usage.embedTokens,
-        rerankUnits: retrieved.usage.rerankUnits,
+        embedTokens: backendUsage.embedTokens,
+        rerankUnits: backendUsage.rerankUnits,
         llmInputTokens: attached.usage.inputTokens,
         llmOutputTokens: attached.usage.outputTokens,
       });

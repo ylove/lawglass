@@ -4,6 +4,7 @@ import { DECLINE_TEXT } from '../model/index.js';
 import { INJECTION_SAMPLES, hit } from './fixtures.js';
 import {
   SYSTEM_PROMPT,
+  WHOLE_SYSTEM_PROMPT,
   buildPrompt,
   escapeXml,
   formatExcerpt,
@@ -204,4 +205,21 @@ describe('buildPrompt', () => {
     });
     expect(p.user).not.toContain('<document');
   });
+});
+
+// Rule 9 has to name the forbidden words. No other whole-mode wording calls the bill excerpts.
+it('describes full text in whole mode and keeps the reader-facing language rule in both modes', () => {
+  const rule =
+    'Never mention excerpts, passages, chunks, or what you were or were not shown.';
+  for (const prompt of [SYSTEM_PROMPT, WHOLE_SYSTEM_PROMPT])
+    expect(prompt).toContain(rule);
+  expect(WHOLE_SYSTEM_PROMPT.replace(rule, '')).not.toMatch(/excerpt/i);
+  expect(WHOLE_SYSTEM_PROMPT).toContain("the bill's full text");
+  expect(WHOLE_SYSTEM_PROMPT).toContain(
+    '3. If the bill does not answer the question',
+  );
+  expect(WHOLE_SYSTEM_PROMPT).toContain(DECLINE_TEXT);
+  expect(WHOLE_SYSTEM_PROMPT).toContain(
+    'The bill does not say how much the grants will be.',
+  );
 });

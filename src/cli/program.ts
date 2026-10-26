@@ -231,12 +231,13 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
     .command('ask <doc> [question]')
     .description('ask about a document by label or doc-id prefix')
     .option('--chip <id>', 'ask a predefined question chip')
+    .option('--json', 'output the answer as JSON')
     .option('--backend <backend>', 'retrieval backend (pinecone or local)')
     .action(
       async (
         doc: string,
         question: string | undefined,
-        options: BackendOption & { chip?: string },
+        options: BackendOption & { chip?: string; json?: boolean },
       ) => {
         if ((question === undefined) === (options.chip === undefined))
           throw new AppError('INVALID_INPUT', 'Need a question or --chip.', {
@@ -272,11 +273,16 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
           },
           {
             onToken: (text) => {
+              if (options.json) return;
               // Only the history chip's text was escaped by our code; model text prints unchanged.
               write(safeText(isHistoryChip ? unescapeRecordText(text) : text));
             },
           },
         );
+        if (options.json) {
+          write(`${JSON.stringify(result.answer, null, 2)}\n`);
+          return;
+        }
         const normalized = await runtime.registry.getDocument(entry.docId);
         write(`\n${formatAskFooter(result, normalized)}`);
       },

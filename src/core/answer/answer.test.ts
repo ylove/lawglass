@@ -209,22 +209,27 @@ describe('answer', () => {
   }
   const usage = { inputTokens: 1, outputTokens: 1 };
 
-  it.each([
-    'max_tokens',
-    'model_context_window_exceeded',
-    'length',
-    'MAX_TOKENS',
-  ])(
-    'adds an ellipsis and TRUNCATED for stop reason %s',
-    async (stopReason) => {
+  it.each(
+    [
+      'max_tokens',
+      'model_context_window_exceeded',
+      'length',
+      'MAX_TOKENS',
+    ].flatMap((stopReason) =>
+      (['whole', 'excerpts'] as const).map((mode) => ({ stopReason, mode })),
+    ),
+  )(
+    'adds an ellipsis and TRUNCATED for $stopReason in $mode mode',
+    async ({ stopReason, mode }) => {
       const r = await answer({
         provider: scripted([
           { type: 'text', text: 'Grants go to towns [S:sec-1] and ' },
           { type: 'done', usage, stopReason },
         ]),
         question: 'q',
-        context: { hits },
+        context: { hits, mode },
       });
+      expect(r.context).toBe(mode);
       expect(r.text).toBe('Grants go to towns [S:sec-1] and…');
       expect(r.warnings).toEqual(['TRUNCATED']);
       expect(AnswerResult.safeParse(r).success).toBe(true);
@@ -409,4 +414,17 @@ describe('answer', () => {
     expect(result.declined).toBe(false);
     expect(result.text).toContain('Towns get grants');
   });
+});
+
+it('whole context never takes the empty-retrieval shortcut', async () => {
+  const provider = new ScriptedProvider({ reply: DECLINE_TEXT });
+  const result = await answer({
+    provider,
+    question: 'What does it say?',
+    context: { mode: 'whole', hits: [] },
+  });
+  expect(provider.calls).toHaveLength(1);
+  expect(result.context).toBe('whole');
+  expect(result.declined).toBe(true);
+  expect(result.warnings).toEqual([]);
 });
