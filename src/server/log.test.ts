@@ -151,3 +151,24 @@ test('a provider failure logs its HTTP status and nothing else from the cause (#
   });
   expect(lines[0]).not.toContain('secret');
 });
+
+test('picture runs log a count and the route template, never text (#344)', () => {
+  const lines: string[] = [];
+  const log = createLogger(
+    (line) => {
+      lines.push(line);
+    },
+    () => 0,
+  );
+  log.pictureEvent({ event: 'pictures_made', source: 'breakdown', count: 4 });
+  expect(JSON.parse(lines[0]!)).toEqual({
+    t: new Date(0).toISOString(),
+    level: 'info',
+    event: 'pictures_made',
+    status: 200,
+    count: 4,
+    ms: 0,
+    route: '/api/docs/:docId/breakdown/pictures',
+    method: 'GET',
+  });
+});
