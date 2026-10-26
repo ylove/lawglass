@@ -23,8 +23,10 @@ export const GUARD_RUN_WORDS = 8;
 export function normalizeWords(text: string): string[] {
   // Default_Ignorable covers variation selectors, U+034F, tag characters, U+3164 and the like;
   // stripInvisibles adds the bidi/zero-width set. Both go before tokenizing so none can split a word.
-  return stripInvisibles(text.normalize('NFKC'))
-    .replace(/\p{Default_Ignorable_Code_Point}/gu, '')
+  // NFKD then dropping combining marks (\p{M}) also defeats a stray accent or mark that would
+  // otherwise split a word; it folds accents the same way for the prompt and the reply.
+  return stripInvisibles(text.normalize('NFKD'))
+    .replace(/[\p{Default_Ignorable_Code_Point}\p{M}]/gu, '')
     .replace(/\[S:[^\]]*\]/g, ' ')
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, ' ')

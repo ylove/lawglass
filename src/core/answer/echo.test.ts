@@ -166,6 +166,7 @@ describe('default-ignorable characters and huge events', () => {
     ['Hangul filler', '\u3164'],
     ['halfwidth Hangul filler', '\uffa0'],
     ['Mongolian vowel separator', '\u180e'],
+    ['combining acute accent', '\u0301'],
   ])('is not evaded by a %s inside every word', (_name, ch) => {
     const disguised = run
       .map((w) => `${w.slice(0, 2)}${ch}${w.slice(2)}`)

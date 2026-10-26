@@ -126,8 +126,12 @@ export async function answer(input: AnswerInput): Promise<AnswerResult> {
     return {
       text: DECLINE_TEXT,
       citations: [],
-      invalidCitations: [],
-      warnings: [],
+      // The echo's example markers are still invented ids; report them like any other.
+      invalidCitations: validated.invalidCitations,
+      warnings:
+        validated.invalidCitations.length > 0
+          ? ['INVALID_CITATIONS_REMOVED']
+          : [],
       declined: true,
       readingGrade: fleschKincaidGrade(DECLINE_TEXT),
       ...base,

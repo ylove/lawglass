@@ -8,7 +8,7 @@
  */
 import { createHash } from 'node:crypto';
 import { ask, ingest, type PdfParser } from '../core/pipeline/index.js';
-import { Limits, limitsConfigFromEnv } from '../core/pipeline/limits.js';
+import { batchLimits } from '../core/pipeline/limits.js';
 import { retrieve } from '../core/retrieve/index.js';
 import type { Registry } from '../core/registry.js';
 import {
@@ -228,14 +228,8 @@ async function collectRetrievals(
   return results;
 }
 
-/**
- * Eval is a deliberate batch job: sequential real-provider calls would trip the interactive
- * 30/min ceiling. Concurrency stays at the configured values; only the ceiling is lifted.
- */
-const EVAL_LIMITS = new Limits({
-  ...limitsConfigFromEnv(),
-  maxCallsPerMinute: Number.MAX_SAFE_INTEGER,
-});
+/** Eval is a deliberate batch job, so it runs without the interactive per-minute ceiling. */
+const EVAL_LIMITS = batchLimits();
 
 async function collectAnswers(input: {
   backend: EvalBackendInput;

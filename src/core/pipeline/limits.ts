@@ -229,3 +229,15 @@ export function claudeCliPool(): Semaphore {
 export function resetClaudeCliPool(): void {
   cliPool = undefined;
 }
+
+/**
+ * Limits for deliberate batch jobs (the eval harnesses): sequential real-provider calls would
+ * trip the interactive per-minute ceiling. Concurrency stays at the configured values; only the
+ * ceiling is lifted.
+ */
+export function batchLimits(env: NodeJS.ProcessEnv = process.env): Limits {
+  return new Limits({
+    ...limitsConfigFromEnv(env),
+    maxCallsPerMinute: Number.MAX_SAFE_INTEGER,
+  });
+}
