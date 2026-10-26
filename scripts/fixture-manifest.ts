@@ -2,23 +2,28 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
+import { FixtureIntegrity } from '../src/eval/fixture-integrity.js';
 
 export const manifestSchema = z.strictObject({
   $comment: z.string().min(1),
   fixtures: z
     .array(
-      z.strictObject({
+      FixtureIntegrity.extend({
         // Names become filenames, so reject separators and traversal components.
         name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
         description: z.string().min(1),
-        format: z.enum(['xml', 'pdf', 'html', 'text']),
-        url: z.url({ protocol: /^https?$/ }),
-        sha256: z.string().regex(/^[a-f0-9]{64}$/),
-        bytes: z.number().int().nonnegative(),
         retrievedAt: z.iso.date(),
         jurisdiction: z.enum(['US Congress', 'Ohio', 'New York', 'New Jersey']),
         notes: z.string().min(1),
-      }),
+      })
+        .strict()
+        .refine(
+          (fixture) =>
+            !fixture.normalizedTextSha256 ||
+            fixture.format === 'html' ||
+            fixture.format === 'pdf',
+          'Normalized text fingerprints require HTML or PDF',
+        ),
     )
     .min(1)
     .refine(

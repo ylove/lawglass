@@ -2,8 +2,8 @@
 import { readFileSync } from 'node:fs';
 import { beforeAll, expect, it } from 'vitest';
 import {
-  describeWithFixture,
-  fixturePath,
+  describeWithFixtureAsync as describeWithFixture,
+  fixturePathAsync as fixturePath,
 } from '../../../tests/support/fixtures.js';
 import { readManifest } from '../../../scripts/fixture-manifest.js';
 import { parsePdf } from './pdf.js';
@@ -37,7 +37,7 @@ function load(name: string): () => NormalizedDoc {
   let doc: NormalizedDoc;
   beforeAll(async () => {
     const fixture = readManifest().fixtures.find((f) => f.name === name)!;
-    const bytes = readFileSync(fixturePath(name)!);
+    const bytes = readFileSync((await fixturePath(name))!);
     const context = {
       sourceUrl: fixture.url,
       fetchedAt: '2026-10-25T00:00:00.000Z',
@@ -51,7 +51,7 @@ function load(name: string): () => NormalizedDoc {
 }
 const nyDeleted = ['[fifteen]', '[non-voting]', '[and]', '[non-voting]'];
 for (const name of ['ny-s1234-2025-introduced', 'ny-s1234-2025-assembly']) {
-  describeWithFixture(name, () => {
+  await describeWithFixture(name, () => {
     const doc = load(name);
     it('finds all 4 manually counted deletions and no false positives', () => {
       expect(deletionRuns(doc())).toEqual(nyDeleted);
@@ -101,7 +101,7 @@ for (const name of ['ny-s1234-2025-introduced', 'ny-s1234-2025-assembly']) {
     });
   });
 }
-describeWithFixture('ny-s8102-2025-introduced', () => {
+await describeWithFixture('ny-s8102-2025-introduced', () => {
   const doc = load('ny-s8102-2025-introduced');
   it('new-law article has zero deletions and its new definitions are inserted', () => {
     expect(deletionRuns(doc())).toEqual([]);
@@ -140,7 +140,7 @@ describeWithFixture('ny-s8102-2025-introduced', () => {
     ).toBe(true);
   });
 });
-describeWithFixture('nj-s1446-2024-r2', () => {
+await describeWithFixture('nj-s1446-2024-r2', () => {
   const doc = load('nj-s1446-2024-r2');
   it('finds all 12 manually counted runs, including superscript committee brackets, without cover/header/legend false positives', () => {
     const ids = [...walkSections(doc().sections)].map((s) => s.id);
@@ -205,7 +205,7 @@ const insertedRuns = (doc: NormalizedDoc): string[] => {
   if (current) runs.push(normalize(current));
   return runs;
 };
-describeWithFixture('nj-s1000-2024-r1', () => {
+await describeWithFixture('nj-s1000-2024-r1', () => {
   const doc = load('nj-s1000-2024-r1');
   it('finds both counted deletions, all 5 underlined runs and no reprint-header false positive', () => {
     expect(deletionRuns(doc())).toEqual(['[deaf]', '[of a]']);
@@ -230,7 +230,7 @@ describeWithFixture('nj-s1000-2024-r1', () => {
     ]);
   });
 });
-describeWithFixture('nj-s1000-2026-i1', () => {
+await describeWithFixture('nj-s1000-2026-i1', () => {
   const doc = load('nj-s1000-2026-i1');
   it('reads an underline-only amendment with nested subsections', () => {
     expect(deletionRuns(doc())).toEqual([]);
@@ -254,7 +254,7 @@ describeWithFixture('nj-s1000-2026-i1', () => {
     });
   });
 });
-describeWithFixture('nj-a3000-2026-i1', () => {
+await describeWithFixture('nj-a3000-2026-i1', () => {
   const doc = load('nj-a3000-2026-i1');
   it('a new-law bill has no change marks at all', () => {
     expect(deletionRuns(doc())).toEqual([]);
@@ -270,7 +270,7 @@ describeWithFixture('nj-a3000-2026-i1', () => {
     );
   });
 });
-describeWithFixture('ny-a5000-2025-assembly', () => {
+await describeWithFixture('ny-a5000-2025-assembly', () => {
   const doc = load('ny-a5000-2025-assembly');
   it('bill sections are the only containers; wrapped chapter lines are prose', () => {
     expect(doc().sections.map((s) => s.id)).toEqual([
@@ -288,7 +288,7 @@ describeWithFixture('ny-a5000-2025-assembly', () => {
   });
 });
 
-describeWithFixture('nj-a4-2024-r2', () => {
+await describeWithFixture('nj-a4-2024-r2', () => {
   const doc = load('nj-a4-2024-r2');
   it('keeps all 39 bill sections; quoted statute sections are containers inside them', () => {
     const top = doc()
@@ -321,7 +321,7 @@ const topLevel = (doc: NormalizedDoc) =>
 const range = (count: number) =>
   Array.from({ length: count }, (_, i) => `sec-${String(i + 1)}`);
 
-describeWithFixture('ny-a07601-2025-assembly', () => {
+await describeWithFixture('ny-a07601-2025-assembly', () => {
   const doc = load('ny-a07601-2025-assembly');
   it('the quoted "§ 3. This act shall take effect" stays inside bill section 1', () => {
     expect(topLevel(doc())).toEqual(['sec-1', 'sec-2']);
@@ -333,21 +333,21 @@ describeWithFixture('ny-a07601-2025-assembly', () => {
   });
 });
 
-describeWithFixture('ny-s07334-2025-assembly', () => {
+await describeWithFixture('ny-s07334-2025-assembly', () => {
   const doc = load('ny-s07334-2025-assembly');
   it('sections quoted from chapter 18 stay inside bill section 1', () => {
     expect(topLevel(doc())).toEqual(['sec-1', 'sec-2', 'sec-3']);
   });
 });
 
-describeWithFixture('ny-a06137-2025-assembly', () => {
+await describeWithFixture('ny-a06137-2025-assembly', () => {
   const doc = load('ny-a06137-2025-assembly');
   it('"section 11-2204" does not hide bill section 11', () => {
     expect(topLevel(doc())).toEqual(range(27));
   });
 });
 
-describeWithFixture('nj-a170-2024-i1', () => {
+await describeWithFixture('nj-a170-2024-i1', () => {
   const doc = load('nj-a170-2024-i1');
   it('opens bill section 7 on the first line of page 6', () => {
     expect(topLevel(doc())).toEqual([...range(7), 'article-statement']);

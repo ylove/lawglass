@@ -38,7 +38,7 @@ const run: EvalRun = {
 
 const input: ReportInput = {
   run,
-  extras: [{}, { removalAcknowledgedRate: 0.5 }],
+  extras: [{}, { removalAcknowledgedRate: 0.5, inventedAnswerRate: 0 }],
   pending: [{ backend: 'pinecone', reason: 'no key' }],
   skipped: [{ fixture: 'fx', backend: 'local', reason: 'bad pdf' }],
   golden: [{ fixture: 'fx', frozenAtCommit: null }],
@@ -55,7 +55,7 @@ test("states the commit, models, freeze state, and every row's backend, mode and
   );
   expect(md).toContain('| local | hybrid (weighted) |');
   expect(md).toContain(
-    '| local | hybrid (weighted) | anthropic | some-model | 95.0% | 100.0% | 0.0% | n/a | 2 | 50.0% |',
+    '| local | hybrid (weighted) | anthropic | some-model | 95.0% | 100.0% | 0.0% | 0.0% | n/a | 2 | 50.0% |',
   );
 });
 
@@ -95,4 +95,16 @@ test('answer rows without provider details are flagged rather than blank', () =>
   });
   expect(md).toContain('| ? | ? |');
   expect(md).toContain('| n/a | 2 | n/a |');
+});
+
+test('documents the heuristic definitions and preserves missing invention scores as n/a', () => {
+  const md = renderResults(input);
+  expect(md).toContain('Invented answer rate');
+  expect(md).toContain('explicit soft declines');
+  expect(md).toContain('not an independent fact check');
+  expect(md).toContain('all answers as its denominator');
+  expect(md).toContain('not comparable with earlier');
+  expect(renderResults({ ...input, extras: [] })).toContain(
+    '| 95.0% | 100.0% | n/a |',
+  );
 });
