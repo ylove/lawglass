@@ -128,6 +128,32 @@ describe('GET /api/docs/:docId/summary', () => {
     expect(provider.state.calls).toBeGreaterThan(0);
   });
 
+  test('start:false only reports: no run is started, and a cached summary is still served (#344)', async () => {
+    const { createSummaryService } = await import('./summary.js');
+    const a = app();
+    const docId = await ingestDoc(a);
+    const provider = countingProvider(env.provider);
+    Object.assign(env.runtime, { answerProvider: provider });
+    const service = createSummaryService(env.runtime, { publicMode: false });
+    expect(await service.get(docId, { wait: false, start: false })).toEqual({
+      status: 'disabled',
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(provider.state.calls).toBe(0);
+    expect(await service.get(docId)).toEqual({ status: 'pending' });
+    expect(
+      (await service.get(docId, { wait: false, start: false })).status,
+    ).toBe('pending');
+    await vi.waitFor(
+      async () => {
+        expect(
+          (await service.get(docId, { wait: false, start: false })).status,
+        ).toBe('cached');
+      },
+      { timeout: 5000 },
+    );
+  });
+
   test('a second open, even from a fresh server, makes zero model calls', async () => {
     const provider = countingProvider(env.provider);
     Object.assign(env.runtime, { answerProvider: provider });
@@ -193,11 +219,13 @@ describe('GET /api/docs/:docId/summary', () => {
         r.json(),
       ),
     ]);
-    expect([x.status, y.status, (z as SummaryResponse).status]).toEqual([
-      'pending',
-      'cached',
-      'pending',
-    ]);
+    // Which request starts the run and which one waits for it depends on scheduling (reads
+    // take no registry lock); what matters is that every answer is pending or the cached
+    // summary, and that the three share one run.
+    const statuses = [x.status, y.status, (z as SummaryResponse).status];
+    expect(statuses).toContain('pending');
+    for (const status of statuses)
+      expect(['pending', 'cached']).toContain(status);
     await settled(a, docId);
     expect(chips).toHaveBeenCalledTimes(1);
   });

@@ -570,6 +570,9 @@ describe('PR 143 grounding regressions', () => {
     'Sec. 2 requires a form',
     'Form 1040',
     '§ 2 requires a form',
+    'The rule applies (sec-1)',
+    'See sec-12',
+    'See sec-4/b',
   ])('allows qualitative label %s', (caption) => {
     expect(
       checkFrame({ ...exampleScenario().frames[1]!, caption }).dropped,
@@ -586,11 +589,35 @@ describe('PR 143 grounding regressions', () => {
     'doubles the tax',
     '$2M',
     '$3B',
+    'tax4 percent',
+    'fee500 dollars',
+    'rate4%',
+    '$500fee',
+    'sec-500 dollars',
   ])('audits undeclared numeric form %s', (caption) => {
     expect(
       checkFrame({ ...exampleScenario().frames[1]!, caption }).dropped,
     ).toEqual([{ frameIndex: 1, reason: 'figure' }]);
   });
+  it.each([
+    ['tax4 percent', 4, 'percent', 'The rate is 4 percent.'],
+    ['fee500 dollars', 500, 'USD', 'The fee is $500.'],
+    ['rate4%', 4, 'percent', 'The rate is 4 percent.'],
+    ['$500fee', 500, 'USD', 'The fee is $500.'],
+  ] as const)(
+    'accepts the glued quantity %s only with a matching declared, cited figure',
+    (caption, value, unit, citedText) => {
+      const frame = {
+        ...exampleScenario().frames[1]!,
+        caption,
+        figures: [{ source: 'bill' as const, value, unit }],
+      };
+      expect(checkFrame(frame, citedText).dropped).toEqual([]);
+      expect(checkFrame(frame, 'The bill requires a form.').dropped).toEqual([
+        { frameIndex: 1, reason: 'figure' },
+      ]);
+    },
+  );
   it('grounds decimal scales when the full value and unit match', () => {
     const frame = {
       ...exampleScenario().frames[1]!,

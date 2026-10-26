@@ -114,6 +114,79 @@ describe('Registry', () => {
     expect((await readdir(dir)).filter((f) => f.endsWith('.tmp'))).toEqual([]);
   });
 
+  it.each([false, true])(
+    'reads an absent registry without writes (directory exists: %s)',
+    async (exists) => {
+      if (exists) await mkdir(dir, { mode: 0o700 });
+      const write = vi
+        .fn<() => Promise<never>>()
+        .mockRejectedValue(
+          Object.assign(new Error('Read-only filesystem'), { code: 'EROFS' }),
+        );
+      const open = vi.fn(nodeFs.open);
+      const registry = new Registry(dir, {
+        fs: {
+          ...nodeFs,
+          open,
+          mkdir: write,
+          chmod: write,
+          rename: write,
+          unlink: write,
+          link: write,
+        },
+      });
+      expect(await registry.list()).toEqual([]);
+      expect(await registry.evictionCandidates(0)).toEqual([]);
+      expect(await registry.isRegistered(id('a'))).toBe(false);
+      await expect(
+        registry.findByLabelOrPrefix('missing'),
+      ).rejects.toMatchObject({ code: 'DOC_NOT_FOUND' });
+      await expect(registry.getDocument(id('a'))).rejects.toMatchObject({
+        code: 'DOC_NOT_FOUND',
+      });
+      expect(write).not.toHaveBeenCalled();
+      expect(
+        open.mock.calls.every(([path]) => path === join(dir, 'registry.json')),
+      ).toBe(true);
+      if (exists) expect(await readdir(dir)).toEqual([]);
+      else await expect(stat(dir)).rejects.toMatchObject({ code: 'ENOENT' });
+    },
+  );
+
+  it('reads an existing registry and document on a read-only filesystem without taking a lock', async () => {
+    const writer = new Registry(dir);
+    const entry = await writer.add(doc(id('a')), {
+      label: 'one',
+      backend: 'local',
+    });
+    const write = vi
+      .fn<() => Promise<never>>()
+      .mockRejectedValue(
+        Object.assign(new Error('Read-only filesystem'), { code: 'EROFS' }),
+      );
+    const open = vi.fn(nodeFs.open);
+    const reader = new Registry(dir, {
+      fs: {
+        ...nodeFs,
+        open,
+        mkdir: write,
+        chmod: write,
+        rename: write,
+        unlink: write,
+        link: write,
+      },
+    });
+    expect(await reader.list()).toEqual([entry]);
+    expect(await reader.findByLabelOrPrefix('one')).toEqual(entry);
+    expect(await reader.evictionCandidates(0)).toEqual([entry]);
+    expect(await reader.isRegistered(id('a'))).toBe(true);
+    expect(await reader.getDocument(id('a'))).toEqual(doc(id('a')));
+    expect(write).not.toHaveBeenCalled();
+    expect(
+      open.mock.calls.every(([path]) => !String(path).endsWith('.lock')),
+    ).toBe(true);
+  });
+
   it('list is empty with no registry; re-adding the same doc is a no-op', async () => {
     const r = new Registry(dir);
     expect(await r.list()).toEqual([]);
@@ -363,7 +436,7 @@ describe('Registry', () => {
 
   it('breaks a stale lock file left by a crashed process', async () => {
     const r = new Registry(dir);
-    await r.list();
+    await mkdir(dir, { recursive: true, mode: 0o700 });
     const lock = join(dir, 'registry.json.lock');
     await writeFile(lock, '', { mode: 0o600 });
     const old = new Date(Date.now() - 60_000);
@@ -610,7 +683,7 @@ describe('Registry lock ownership', () => {
 
   it('still breaks a genuinely stale lock and records who broke it', async () => {
     const registry = new Registry(dir);
-    await registry.list();
+    await mkdir(dir, { recursive: true, mode: 0o700 });
     await writeFile(lockPath(), 'crashed-process-owner', { mode: 0o600 });
     const old = new Date(Date.now() - 60_000);
     await utimes(lockPath(), old, old);

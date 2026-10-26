@@ -370,15 +370,20 @@ describe('withoutOverprint (review finding 6)', () => {
     ]);
   });
 
-  it('reads overprinted text once in the laid-out line', () => {
-    const bold = page(1, [
-      item('Section 1. The quick fox.', 72, 700),
-      item('Section 1. The quick fox.', 72.3, 700),
-    ]);
-    expect(layoutPages([bold]).lines.map(({ text }) => text)).toEqual([
-      'Section 1. The quick fox.',
-    ]);
-  });
+  it.each([2, 3, 5])(
+    'reads %s-fold overprinted text once in the laid-out line',
+    (count) => {
+      const bold = page(
+        1,
+        Array.from({ length: count }, (_, index) =>
+          item('Section 1. The quick fox.', 72 + index * 0.2, 700),
+        ),
+      );
+      expect(layoutPages([bold]).lines.map(({ text }) => text)).toEqual([
+        'Section 1. The quick fox.',
+      ]);
+    },
+  );
 });
 
 describe('hasColumnGutter (review finding 5)', () => {
@@ -409,9 +414,69 @@ describe('hasColumnGutter (review finding 5)', () => {
       'Page 1 looks like it has two columns (or a table); its lines are read straight across, so text there may be out of order.',
     );
   });
+
+  it('warns about justified 12pt columns separated by an 18pt gutter', () => {
+    const columns = [0, 1, 2, 3].map((index) => [
+      item('A justified line in the left column.', 72, 600 - index * 14, {
+        fontSize: 12,
+        width: 225,
+      }),
+      item('A justified line in the right column.', 315, 600 - index * 14, {
+        fontSize: 12,
+        width: 225,
+      }),
+    ]);
+    expect(hasColumnGutter(columns)).toBe(true);
+    expect(layoutPages([page(1, columns.flat())]).warnings.join(' ')).toContain(
+      'two columns (or a table)',
+    );
+  });
+
+  it('keeps ordinary justified word spacing below a gutter', () => {
+    const lines = [0, 1, 2, 3].map((index) => [
+      item('A justified phrase', 72, 600 - index * 14, {
+        fontSize: 12,
+        width: 120,
+      }),
+      item('continues here.', 201, 600 - index * 14, {
+        fontSize: 12,
+        width: 90,
+      }),
+    ]);
+    expect(hasColumnGutter(lines)).toBe(false);
+  });
 });
 
 describe('heavy, hairline and whole-line rules in the layout', () => {
+  it('warns when a whole-width rule under a lone unnumbered line could be a border', () => {
+    const result = layoutPages([
+      page(
+        1,
+        [item('Fee table', 72, 600)],
+        [{ x0: 72, x1: 126, y: 598.6, thickness: 0.6 }],
+      ),
+    ]);
+    expect(result.lines[0]!.statuses).toEqual(Array(9).fill('inserted'));
+    expect(result.warnings).toEqual([
+      'Line numbers were not found in this PDF; citations use page numbers only.',
+      'Page 1: one rule marks the whole line outside the body text; it may be a table or border rule rather than an amendment, so check it.',
+    ]);
+  });
+
+  it('accepts a shared body indent established by two unnumbered lines', () => {
+    const result = layoutPages([
+      page(
+        1,
+        [item('First body line', 72, 600), item('Next body line', 72, 586)],
+        [{ x0: 72, x1: 162, y: 598.6, thickness: 0.6 }],
+      ),
+    ]);
+    expect(result.lines[0]!.statuses).not.toContain('unchanged');
+    expect(result.warnings).toEqual([
+      'Line numbers were not found in this PDF; citations use page numbers only.',
+    ]);
+  });
+
   it('names lines with rules too heavy or too thin to be marks', () => {
     const content = numberedPage(1, ['brown fox', 'lazy dog', 'plain']);
     content.segments = [

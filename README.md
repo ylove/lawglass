@@ -59,6 +59,13 @@ npx lawglass serve --port 4317          # local web UI; --public allows chips on
 npx lawglass mcp                        # Model Context Protocol server on stdio, for AI agents (prototype)
 ```
 
+**Install warnings.** npm may report deprecation notices for `whatwg-encoding` (through `cheerio` →
+`encoding-sniffer`) and `node-domexception` (through `@google/genai` →
+`google-auth-library` → `gaxios` → `node-fetch` → `fetch-blob`). These are harmless
+notices from transitive dependencies and do not prevent installation or use. The current
+Cheerio release and newer Google SDK still use these dependency chains; removing the
+notices awaits compatible upstream updates.
+
 Paste a bill's own page, for example:
 
 - A federal bill on congress.gov: `https://www.congress.gov/bill/119th-congress/senate-bill/202`
@@ -199,7 +206,7 @@ What this shows, plainly:
 
 **Answers** (all 119 questions, Claude Sonnet 5.5, [`eval/results-answers.md`](eval/results-answers.md)): every citation pointed at a section the model was shown, on all five bills. 13 of 15 unanswerable questions got the exact decline sentence; the other two said the bill does not cover the question and then described what it does cover. On HB 62, the only bill with struck text, no answer stated repealed text as current law (the final run's leakage check flagged one answer; answers are not stored, so the questions were asked again and every flagged answer was read: all were false positives). Mean reading grade is 8.5 to 10.2, above the grade-7 target. The full analysis, including what changed because of it, is in [docs/eval-analysis.md](docs/eval-analysis.md). Pinecone `hybrid_rerank` rows are in the table above; the full Pinecone table is in [`eval/results-pinecone.md`](eval/results-pinecone.md). Each table records the commit, models and golden-set freeze it came from. Per-question ranks for every mode are written to `eval/runs/*.json`, and `eval compare` lists the questions where two modes disagree ([details](docs/eval.md)).
 
-Caveats: 21 to 28 questions per bill means one question moves recall@5 by about 0.05. Ranks are chunk ranks (the first chunk whose section, or an ancestor or descendant, is expected). Two questions name their section numbers outright (hb62-03, sb203-08), and some paraphrases reuse rare words from the text, which makes them easier for BM25.
+Caveats: 21 to 28 questions per bill means one question moves recall@5 by about 0.05. Ranks are chunk ranks (the first chunk whose section, or an ancestor or descendant, is expected). Two questions name their section numbers outright (hb62-03, sb203-08), and some paraphrases reuse rare source tokens (hr5009-09, hr5009-12, sb113-13/14, s202-18), which makes them easier for BM25. Removal questions outside HB 62 ask about repeal wording rather than struck spans.
 
 ### Security notes
 
@@ -218,6 +225,12 @@ Caveats: 21 to 28 questions per bill means one question moves recall@5 by about 
 - **MCP server** (`lawglass mcp`, a prototype). Stdio only, local backend, no model calls and no keys. Document text comes back inside a per-response wrapper labelled as untrusted data, struck and inserted words carry markers with a per-response id, and citation fields are checked against strict shapes so document words cannot leak outside the wrapper. When change marks could not be read (an unread scan, or a missing bracket legend) the text is reported as `unknown`, never as current law. See [decision 0013](docs/decisions/0013-agent-access.md).
 - **Bring your own keys.** `init` writes the config file with mode 0600. A config file that other users can read is refused: commands skip it with a warning, and `init` stops unless `--force` replaces it. Keys are read from the environment first, then that file, then a masked prompt on a TTY. Keys go only to their own provider, are not inferred from another provider's variables, and are never logged or put in error messages; SDK diagnostic logging is off: before the Pinecone SDK is constructed, `PINECONE_DEBUG` (request and response bodies) and `PINECONE_DEBUG_CURL` (the `Api-Key` header) are cleared from the process environment, in both the CLI runtime and the adapter. `.env` and fixtures are ignored by git, and CI runs Gitleaks over the full history.
 - **`claude-cli` sandboxing.** Each call runs in a fresh temporary directory holding only the system prompt file, with built-in tools disabled (`--tools ""`), all MCP servers disabled, one turn, slash commands, hooks and settings sources off, no session persistence, and no permission-bypass flag. The child sees only basic process variables plus `CLAUDE_*` and `ANTHROPIC_*`, so other providers' keys and app settings are excluded. `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` are withheld too, so the CLI bills your Claude login, unless you set `LAWGLASS_CLAUDE_CLI_USE_API_KEY=1`. The model name must match `^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$`, so it cannot be read as a flag. It refuses to run for real in CI.
+
+Session cookie names include the server port so local instances do not overwrite each other’s
+sessions. Cookies are scoped by host, not port: other services on the same host (including
+`127.0.0.1`) can receive them. The name separates instances; it does not isolate the cookie.
+A hosted private preview (`serve --private`) runs one instance per host and keeps the plain name.
+Behind a proxy, the name uses the server’s listening port (for example, `8080`).
 
 ### Hosting a private preview
 
@@ -337,12 +350,14 @@ Conventions are in [`AGENTS.md`](AGENTS.md): the frozen contracts in `src/core/m
 
 ## Roadmap
 
+Scheduled work is in [issues](https://github.com/ylove/lawglass/issues). Designed but unscheduled work, with sizes and prerequisites, is in [docs/roadmap.md](docs/roadmap.md).
+
 - **v1.5:** resolve a bill from number plus jurisdiction to a URL, then run the same pipeline.
 - **v2:** natural-language discovery search across bills.
 - **v2:** official secondary sources only (fiscal notes, nonpartisan analyses). News articles are never used.
 - Read more of the law a bill refers to. Today only U.S. Code definitions the bill borrows are read; everything else is an official link.
 - Akoma Ntoso export of the normalized document.
-- **Known gaps from the eval:** the forks/flatware miss on large bills; a sturdier signal for "is this question about what changed" ([#104](https://github.com/ylove/lawglass/issues/104)); before-and-after excerpts for one-word strikes in free-form questions ([#102](https://github.com/ylove/lawglass/issues/102)); consistent declines ([#109](https://github.com/ylove/lawglass/issues/109)); answers closer to a 7th-grade reading level, including the section-by-section briefs ([#320](https://github.com/ylove/lawglass/issues/320)).
+- **Known gaps from the eval:** the forks/flatware miss on large bills, and a sturdier signal for "is this question about what changed" ([roadmap](docs/roadmap.md#answers)).
 - **More states**, family by family: the 20 states that mark changes with strike-through and underline, like Ohio, come first ([plan](docs/jurisdictions.md)).
 - **Agent access:** run the pre-registered MCP evaluation (Lawglass tools against the same bills pasted into a model with citations and caching) before making any claim about it.
 - An open public site. The hosted preview stays invite-only until public mode has had its own review ([#180](https://github.com/ylove/lawglass/issues/180)).

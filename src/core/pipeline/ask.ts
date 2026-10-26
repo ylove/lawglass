@@ -179,8 +179,8 @@ function guarded(
     kind: backend.kind,
     ensureReady: (s) => backend.ensureReady(s),
     hasDocument: (id) => backend.hasDocument(id),
-    upsertChunks: (id, chunks, onProgress) =>
-      backend.upsertChunks(id, chunks, onProgress),
+    upsertChunks: (id, chunks, onProgress, s) =>
+      backend.upsertChunks(id, chunks, onProgress, s),
     search: async (req) => {
       await ensure();
       return backend.search(req);

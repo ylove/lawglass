@@ -40,6 +40,7 @@ import {
   citationValidity,
   declineRate,
   deletedLeakageRate,
+  inventedAnswerRate,
   mean,
   p50,
   recallAtK,
@@ -109,6 +110,7 @@ export interface SkippedFixture {
 
 /** Numbers that are not part of the frozen `EvalRow` but belong in the report next to it. */
 export interface RowExtras {
+  inventedAnswerRate?: number | undefined;
   removalAcknowledgedRate?: number | undefined;
 }
 
@@ -268,7 +270,7 @@ export function scoreAnswers(
   outcomes: readonly AnswerOutcome[],
   struckSpans: readonly string[],
   liveTexts: readonly string[] = [],
-): { metrics: AnswerMetrics; removalAcknowledgedRate: number | undefined } {
+): { metrics: AnswerMetrics } & RowExtras {
   const grades = summarizeGrades(outcomes.map((o) => o.readingGrade));
   return {
     metrics: {
@@ -279,6 +281,7 @@ export function scoreAnswers(
       answersAboveGrade9: grades.above9,
     },
     removalAcknowledgedRate: removalAcknowledgedRate(outcomes),
+    inventedAnswerRate: inventedAnswerRate(outcomes),
   };
 }
 
@@ -353,7 +356,10 @@ export async function runEval(input: RunEvalInput): Promise<RunEvalResult> {
             row.answers = scored.metrics;
             row.provider = input.answerProvider.id;
             row.model = input.answerProvider.model;
-            extra = { removalAcknowledgedRate: scored.removalAcknowledgedRate };
+            extra = {
+              removalAcknowledgedRate: scored.removalAcknowledgedRate,
+              inventedAnswerRate: scored.inventedAnswerRate,
+            };
           }
           rows.push(row);
           extras.push(extra);

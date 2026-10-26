@@ -471,3 +471,12 @@ test('trusted proxy hops count from the right and fall back for absent or short 
     expect(turnstile).toHaveBeenLastCalledWith(undefined, expected);
   }
 });
+
+test('the quickstart is served in public mode without a web root', async () => {
+  const res = await publicApp().request('/quickstart');
+  expect(res.status).toBe(200);
+  expect(await res.text()).toContain('on your computer');
+  expect(
+    (await publicApp().request('/quickstart', { method: 'HEAD' })).status,
+  ).toBe(200);
+});

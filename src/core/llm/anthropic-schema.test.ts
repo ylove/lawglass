@@ -6,6 +6,7 @@ import { httpReplay, KEY } from '../../../tests/llm/http.js';
 import { BriefBatch } from '../breakdown/generate.js';
 import { ExtractedMetadata } from '../enrich/metadata.js';
 import { Selection } from '../locate/prompt.js';
+import { PictureSet } from '../picture/prompt.js';
 import { AppError, Scenario } from '../model/index.js';
 import { AnthropicProvider } from './anthropic.js';
 import {
@@ -19,6 +20,7 @@ const SENT_SCHEMAS: Record<string, z.ZodType> = {
   scenario: Scenario,
   locate: Selection,
   bill_metadata: ExtractedMetadata,
+  pictures: PictureSet,
 };
 
 /** A recorded Messages API reply whose text is `text`. */

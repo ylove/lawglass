@@ -58,6 +58,8 @@ test.each([
   { url: 'not a URL' },
   { url: 'file:///tmp/document' },
   { sha256: 'bad' },
+  { normalizedTextSha256: 'bad' },
+  { normalizedTextSha256: 'a'.repeat(64), format: 'text' },
   { sha256: 'A'.repeat(64) },
   { bytes: -1 },
   { bytes: 1.5 },
