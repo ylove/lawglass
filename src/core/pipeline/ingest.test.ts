@@ -22,7 +22,7 @@ import {
   type PipelineEnv,
 } from '../../../tests/support/pipeline-env.js';
 import { documentContext } from '../answer/context.js';
-import { AppError, type AnswerResult } from '../model/index.js';
+import { AppError, messageText, type AnswerResult } from '../model/index.js';
 import { ingest, type IngestDeps, type IngestProgress } from './ingest.js';
 import { Limits } from './limits.js';
 
@@ -556,7 +556,7 @@ test('metadata text does not repeat header lines that the body already starts wi
   const seen: string[] = [];
   const real = env.provider.generateObject.bind(env.provider);
   vi.spyOn(env.provider, 'generateObject').mockImplementation((req) => {
-    seen.push(req.prompt);
+    seen.push(messageText(req.prompt));
     return real(req);
   });
   env.serve(

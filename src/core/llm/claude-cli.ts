@@ -268,7 +268,7 @@ export class ClaudeCliProvider implements LlmProvider {
     let usage = ZERO_LLM_USAGE;
     for await (const event of this.streamText({
       system: `${req.system}\nReturn only JSON matching this schema: ${JSON.stringify(schema)}`,
-      messages: [{ role: 'user', content: req.prompt }],
+      messages: [{ role: 'user', content: messageText(req.prompt) }],
       maxTokens: req.maxTokens,
       signal: req.signal,
     })) {
