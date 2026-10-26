@@ -14,9 +14,13 @@ describe('BillHistory.officialTitle', () => {
     ).toBe('To create grants.');
   });
 
-  it('is capped so one long title cannot make a whole history unreadable', () => {
+  it("accepts every title the adapters write (2,000 characters plus the sanitizer's ellipsis)", () => {
+    const sanitized = `${'x'.repeat(2000)}…`;
     expect(
-      BillHistory.safeParse({ ...history, officialTitle: 'x'.repeat(2001) })
+      BillHistory.parse({ ...history, officialTitle: sanitized }).officialTitle,
+    ).toBe(sanitized);
+    expect(
+      BillHistory.safeParse({ ...history, officialTitle: 'x'.repeat(4001) })
         .success,
     ).toBe(false);
   });
