@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { AnswerResult, DocDetail } from '../../core/model/index.js';
 import type { ApiClient } from '../api.js';
+import { linkifyGov } from '../linkify.js';
 import { AnswerText, type OpenCitation } from '../AnswerText.js';
 import { ScenarioStrip } from './ScenarioStrip.js';
 
@@ -107,7 +108,9 @@ export function SummaryPanel({
         ) : (
           // Never an empty page: the preview (or at least a placeholder) is always here.
           <p className="summary-preview">
-            {preview?.text ?? 'A plain-language summary is on its way.'}
+            {preview
+              ? linkifyGov(preview.text, 'preview')
+              : 'A plain-language summary is on its way.'}
           </p>
         )}
         {(state.kind === 'loading' || state.kind === 'pending') && (
@@ -147,7 +150,7 @@ export function SummaryPanel({
           <details className="official-summary">
             <summary>Official summary ({officialSummary.source})</summary>
             {/* Untrusted text from an outside source: rendered as plain text only. */}
-            <p>{officialSummary.text}</p>
+            <p>{linkifyGov(officialSummary.text, 'official')}</p>
             <a
               href={officialSummary.url}
               target="_blank"

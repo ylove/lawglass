@@ -37,7 +37,7 @@ export function ReferencedCard({
 }) {
   if (externalRefs.length === 0) return null;
   return (
-    <section aria-labelledby="refs-title" className="card">
+    <section aria-labelledby="refs-title" className="card refs">
       <h3 id="refs-title">Referenced, not loaded</h3>
       <p className="muted">
         This document mentions other laws. They are not loaded here, so answers

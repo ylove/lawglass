@@ -2,6 +2,7 @@
 // `[S:...]` text); once the answer is final they become numbered superscript buttons.
 import type { ReactNode } from 'react';
 import { CITATION_PATTERN, type Citation } from '../core/model/index.js';
+import { linkifyGov } from './linkify.js';
 
 const MARKER = new RegExp(CITATION_PATTERN.source, 'g');
 const MAX_EMPHASIS_DEPTH = 3;
@@ -77,9 +78,17 @@ function inline(
   // Track deeper delimiters without creating nested elements, so their closers also stay literal.
   const literalMarkers: string[] = [];
   const current = () => stack.at(-1) ?? root;
+  let linkRuns = 0;
   const flush = (frame: Frame) => {
     if (frame.text.length > 0) {
-      frame.children.push(frame.text.join(''));
+      // .gov URLs become links here, after the text is joined, so a URL split across pending
+      // pieces is still seen whole.
+      frame.children.push(
+        ...linkifyGov(
+          frame.text.join(''),
+          `${keyPrefix}-t${String(linkRuns++)}`,
+        ),
+      );
       frame.text = [];
     }
   };

@@ -1,12 +1,8 @@
 /* Summary on arrival, the scenario strip, the history timeline and the server-down card. */
 .summary-preview {
   margin: 0 0 0.75rem;
-  font-size: 1.35rem;
-  line-height: 1.45;
 }
 .summary-text {
-  font-size: 1.2rem;
-  line-height: 1.55;
   overflow-wrap: anywhere;
 }
 .summary-note {
