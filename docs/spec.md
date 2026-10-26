@@ -181,7 +181,16 @@ These override the original text below, and the earlier amendments, where they c
 
 30. **Picture panels (§3.3, §5.9).** Issues #343 to #345. Each list item of the summary, and each section-by-section brief, may carry a picture drawn from a closed grammar, with the item's own text as its caption.
     - **Grammar.** One to three panels. Each panel has a left side of one to three glyphs from a closed set of 61 neutral ids (no faces, flags, party colours or weapons) and an optional short label, then a link (`to`, `both`, `equals`, `blocked`, `none`), an optional carried glyph and note, an optional right side, and an optional stamp (`seal`, `check`, `no`, `calendar`, `clock`, `warning`) with a short label.
-    - **Drawing.** The extract model (Claude Haiku on Anthropic) sees only the items' plain text, never the bill, so a picture cannot show what its caption does not say. One structured call per summary and per batch of up to 10 briefs, paced as background work.
+    - **Drawing.** The extract model (Claude Haiku on Anthropic) sees only the items' plain text, never the bill, so a picture can draw only on its caption. One structured call per summary and per batch of up to 10 briefs, paced as background work.
+    - **Roles (#372).** Words alone don't make a picture faithful. The prompt fixes the roles:
+      - a stamp is always about the left side;
+      - the one who acts, may act or is approved goes on the left, and the approver goes in a seal's label;
+      - arrows follow the real flow;
+      - a duty to report is drawn as the report;
+      - an item that leaves the roles open is skipped.
+
+      The checks below can't verify roles, so each release's content pass reads every picture against its caption.
+
     - **Checks (deterministic).** A picture is dropped whole if a panel's shape is unsound, or if any label or note uses a word (up to an inflection) or number the item does not, adds a negation the item lacks, carries markup or a judgment, or is not plain Latin text with a letter or digit. Items that cannot be drawn honestly stay text.
     - **Cache and serving.** Cached beside the answer cache, keyed by a hash of the source text, provider, model and prompt version, so new text gets new pictures. `GET /api/docs/:docId/summary/pictures` and `/breakdown/pictures` return `cached`, `pending`, `none` or `disabled`. Asking for pictures never starts a summary or breakdown run. A failure reads as `none`. Public mode serves cache hits only.
     - **UI.** A picture item becomes a card: panels on top, the item's text and citations as the caption. A picture is attached only when its item index (or section) and text match exactly. The art is `aria-hidden`; labels render as text.
