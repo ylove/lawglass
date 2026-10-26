@@ -280,7 +280,9 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
-      - run: npx playwright install --with-deps chromium
+      # No --with-deps: the runner image already has Chrome's shared libraries, and the apt step
+      # only adds optional fonts from a mirror that has stalled for over 8 minutes.
+      - run: npx playwright install chromium
         timeout-minutes: 8
       - run: npm run test:e2e
       - name: Upload failure traces
