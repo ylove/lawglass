@@ -10,7 +10,9 @@ import type {
 import type { ApiClient } from './api.js';
 import { CitationDrawer } from './CitationDrawer.js';
 import { AnswerCard } from './document/AnswerCard.js';
+import { LocateCard } from './document/LocateCard.js';
 import { AskForm } from './document/AskForm.js';
+import { BreakdownPanel } from './document/BreakdownPanel.js';
 import { ChipRow } from './document/ChipRow.js';
 import { MetadataHeader } from './document/MetadataHeader.js';
 import { NoticeBar } from './document/NoticeBar.js';
@@ -175,6 +177,12 @@ export function DocumentView({
             publicMode={config.publicMode}
             onOpenSection={openSection}
           />
+          <BreakdownPanel
+            api={api}
+            docId={docId}
+            enabled={config.breakdownEnabled}
+            onOpenSection={openSection}
+          />
           <ChipRow
             chips={config.chips}
             busy={busy}
@@ -189,6 +197,14 @@ export function DocumentView({
               onAsk={(q) => {
                 void run({ question: q }, q);
               }}
+            />
+          )}
+          {config.locateEnabled && !config.publicMode && (
+            <LocateCard
+              key={docId}
+              api={api}
+              detail={detail}
+              onOpenSection={openSection}
             />
           )}
           <AnswerCard

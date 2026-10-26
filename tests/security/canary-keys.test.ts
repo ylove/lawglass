@@ -301,45 +301,54 @@ describe('web server: SSE and JSON bodies', () => {
     },
   );
 
-  it('does not echo a key carried by a non-AppError from the fetcher or backend', async () => {
-    const docId = await ingestedDocId();
-    const leak = (): never => {
-      throw new Error(`boom ${CANARIES.join(' ')}`, {
-        cause: new Error(KEYS.openai),
-      });
-    };
-    const app = createApp(
-      runtimeWith({
-        fetcher: leak,
-        backend: new Proxy(env.backend, {
-          get(target, property, receiver) {
-            return property === 'search' || property === 'upsertChunks'
-              ? leak
-              : (Reflect.get(target, property, receiver) as unknown);
-          },
+  it.each(['0', '100000'])(
+    'does not echo a key carried by a non-AppError from the fetcher or backend (budget %s)',
+    async (budget) => {
+      vi.stubEnv(envVar('WHOLE_BILL_MAX_TOKENS'), budget);
+      const docId = await ingestedDocId();
+      const leak = (): never => {
+        throw new Error(`boom ${CANARIES.join(' ')}`, {
+          cause: new Error(KEYS.openai),
+        });
+      };
+      const app = createApp(
+        runtimeWith({
+          fetcher: leak,
+          backend: new Proxy(env.backend, {
+            get(target, property, receiver) {
+              return property === 'search' ||
+                property === 'getChunks' ||
+                property === 'upsertChunks'
+                ? leak
+                : (Reflect.get(target, property, receiver) as unknown);
+            },
+          }),
         }),
-      }),
-      { localOnly: false },
-    );
-    const ingest = await sseText(
-      await app.request('/api/ingest', post({ url: OTHER })),
-    );
-    expect(ingest).toContain('"type":"error"');
-    expectNoCanary('ingest SSE', ingest);
-    const ask = await sseText(
-      await app.request(
-        `/api/docs/${docId}/ask`,
-        post({ question: 'Grants?' }),
-      ),
-    );
-    expect(ask).toContain('"type":"error"');
-    expectNoCanary('ask SSE', ask);
-    for await (const event of readSseEvents(
-      await app.request(`/api/docs/${docId}/ask`, post({ question: 'Again?' })),
-      AskEvent,
-    ))
-      expectNoCanary('parsed event', JSON.stringify(event));
-  });
+        { localOnly: false },
+      );
+      const ingest = await sseText(
+        await app.request('/api/ingest', post({ url: OTHER })),
+      );
+      expect(ingest).toContain('"type":"error"');
+      expectNoCanary('ingest SSE', ingest);
+      const ask = await sseText(
+        await app.request(
+          `/api/docs/${docId}/ask`,
+          post({ question: 'Grants?' }),
+        ),
+      );
+      expect(ask).toContain('"type":"error"');
+      expectNoCanary('ask SSE', ask);
+      for await (const event of readSseEvents(
+        await app.request(
+          `/api/docs/${docId}/ask`,
+          post({ question: 'Again?' }),
+        ),
+        AskEvent,
+      ))
+        expectNoCanary('parsed event', JSON.stringify(event));
+    },
+  );
 
   it('keeps a failing Pinecone backend (key in headers and cause) out of the response', async () => {
     const docId = await ingestedDocId();

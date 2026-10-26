@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import * as nodeFs from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { z } from 'zod';
+import { WHOLE_PROMPT_VERSION } from './answer/prompt.js';
 import { AnswerResult, ChipId, NormalizedDoc } from './model/index.js';
 import {
   configFileSystem,
@@ -24,6 +25,7 @@ const Key = z.object({
   /** Canonical non-secret endpoint identity; see `endpointIdentity`. Never a key or a path. */
   endpoint: component,
   promptVersion: component,
+  context: z.enum(['whole', 'excerpts']).optional(),
 });
 export type AnswerCacheKey = z.infer<typeof Key>;
 
@@ -33,12 +35,23 @@ function validatedKey(key: AnswerCacheKey): AnswerCacheKey {
   return parsed.data;
 }
 
-/** sha256(docId|chipId|provider|model|endpoint|promptVersion), per ADR 0008. */
+/** ADR 0008 + 0015: context and whole-mode rules are part of the answer identity. */
 export function answerCacheKey(key: AnswerCacheKey): string {
-  const { docId, chipId, provider, model, endpoint, promptVersion } =
+  const { docId, chipId, provider, model, endpoint, promptVersion, context } =
     validatedKey(key);
   return createHash('sha256')
-    .update([docId, chipId, provider, model, endpoint, promptVersion].join('|'))
+    .update(
+      [
+        docId,
+        chipId,
+        provider,
+        model,
+        endpoint,
+        promptVersion,
+        context ?? 'excerpts',
+        ...(context === 'whole' ? [WHOLE_PROMPT_VERSION] : []),
+      ].join('|'),
+    )
     .digest('hex');
 }
 

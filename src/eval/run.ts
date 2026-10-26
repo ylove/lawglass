@@ -247,6 +247,7 @@ async function collectAnswers(input: {
         backend: input.backend.backend,
         provider: input.provider,
         registry: input.backend.registry,
+        wholeBillMaxTokens: 0,
         retrievalMode: input.mode,
         limits: EVAL_LIMITS,
       },

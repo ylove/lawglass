@@ -744,7 +744,9 @@ describe('review fixes', () => {
   });
 
   describe('adversarial input stays fast', () => {
-    const bound = 2000;
+    // These inputs would take minutes under quadratic backtracking; the bound only has to tell
+    // that apart from linear time on a slow, coverage-instrumented CI runner (2 s flaked there).
+    const bound = 8000;
     const timed = (text: string): number => {
       const start = performance.now();
       extractDelegations([sec('s', text)]);
@@ -840,6 +842,7 @@ describe('afterLastConjunction', () => {
   it('is linear on a long run with no comma or semicolon', () => {
     const started = performance.now();
     afterLastConjunction('if '.repeat(60_000));
-    expect(performance.now() - started).toBeLessThan(100);
+    // Quadratic work on 60k repeats takes many seconds; 500 ms leaves room for a loaded runner.
+    expect(performance.now() - started).toBeLessThan(500);
   });
 });

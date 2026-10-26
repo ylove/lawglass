@@ -2,6 +2,11 @@
  * The shared ask pipeline: retrieve -> answer -> record usage. Used by the CLI, the server
  * (#29) and eval (#32).
  */
+import {
+  documentContext,
+  deleteIndexedDocument,
+  MEMO_OWNER,
+} from '../answer/context.js';
 import { answer } from '../answer/index.js';
 import { getChip, runChip } from '../chips.js';
 import { withInlineChanges } from './inline-changes.js';
@@ -9,6 +14,7 @@ import { readHistory } from '../history/history-store.js';
 import { asksAboutChanges, retrieve } from '../retrieve/index.js';
 import {
   AppError,
+  ZERO_USAGE,
   type AnswerResult,
   type ChipId,
   type BackendUsage,
@@ -49,6 +55,7 @@ export type ChipRunner = (
     };
   },
   opts: {
+    wholeBillMaxTokens?: number | undefined;
     signal?: AbortSignal | undefined;
     onToken?: ((text: string) => void) | undefined;
   },
@@ -57,7 +64,7 @@ export type ChipRunner = (
   hits: readonly (SearchHit & { injected?: boolean })[];
   backendUsage: BackendUsage;
   /** The retrieval mode the chip actually used; 'none' for chips that don't retrieve. */
-  mode?: RetrievalMode | 'none';
+  mode?: RetrievalMode | 'none' | 'whole';
 }>;
 
 /** Runs the real chip strategies from core/chips.ts. */
@@ -65,6 +72,8 @@ export const defaultChipRunner: ChipRunner = (chipId, docId, ctx, opts) =>
   runChip(getChip(chipId), docId, ctx, opts);
 
 export interface AskDeps {
+  /** 0 keeps the retrieval evaluation on excerpts. */
+  wholeBillMaxTokens?: number | undefined;
   backend: RetrievalBackend;
   provider: LlmProvider;
   registry: Registry;
@@ -101,7 +110,7 @@ export interface AskResult {
   scenario?: Promise<Scenario | undefined>;
   refs: RetrievedRef[];
   /** 'none' when the answer needed no retrieval (e.g. the sponsors chip). */
-  mode: RetrievalMode | 'none';
+  mode: RetrievalMode | 'none' | 'whole';
   latencyMs: number;
 }
 
@@ -118,8 +127,9 @@ function refsOf(
 }
 
 /**
- * Wraps the backend so the first retrieval call (and only then) loads models and checks that
- * the document's namespace exists. Chips that never retrieve (sponsors) therefore load nothing,
+ * Wraps the backend so reads check that the document's namespace exists, and only search or
+ * rerank loads models. Whole-bill reads need stored text, not embeddings. Chips that never
+ * retrieve (sponsors) therefore load nothing,
  * and a registry entry whose index vanished is a clear error rather than an empty result that
  * the model would "decline" to answer.
  */
@@ -128,16 +138,21 @@ function guarded(
   docId: string,
   signal: AbortSignal | undefined,
 ): { backend: RetrievalBackend; used: () => boolean } {
+  let checked: Promise<void> | undefined;
   let ready: Promise<void> | undefined;
-  const ensure = (): Promise<void> => {
-    ready ??= (async () => {
+  const ensureDocument = (): Promise<void> => {
+    checked ??= (async () => {
+      signal?.throwIfAborted();
       if (!(await backend.hasDocument(docId)))
         throw new AppError('DOC_NOT_FOUND', 'The document has no index.', {
           userMessage:
             "This document's search index is missing. Run ingest again for its URL.",
         });
-      await backend.ensureReady(signal);
     })();
+    return checked;
+  };
+  const ensure = (): Promise<void> => {
+    ready ??= ensureDocument().then(() => backend.ensureReady(signal));
     return ready;
   };
   const wrapped: RetrievalBackend = {
@@ -151,16 +166,18 @@ function guarded(
       return backend.search(req);
     },
     getChunks: async (id, ids) => {
-      await ensure();
+      await ensureDocument();
       return backend.getChunks(id, ids);
     },
     rerank: async (req) => {
       await ensure();
       return backend.rerank(req);
     },
-    deleteDocument: (id) => backend.deleteDocument(id),
-  };
-  return { backend: wrapped, used: () => ready !== undefined };
+    deleteDocument: (id) => deleteIndexedDocument(backend, id),
+    // The per-ask wrapper must share the real backend's whole-bill scan memo.
+    [MEMO_OWNER]: backend,
+  } as RetrievalBackend;
+  return { backend: wrapped, used: () => checked !== undefined };
 }
 
 /**
@@ -184,6 +201,7 @@ function startScenario(
   return attachScenario({
     provider: deps.provider,
     hits,
+    whole: result.context === 'whole',
     citedSectionIds: result.citations
       .filter((c) => c.valid)
       .map((c) => c.sectionId),
@@ -305,7 +323,11 @@ async function askWithinLimits(
         provider: deps.provider,
         doc: { ...doc, history },
       },
-      { signal, onToken: opts.onToken },
+      {
+        signal,
+        onToken: opts.onToken,
+        wholeBillMaxTokens: deps.wholeBillMaxTokens,
+      },
     );
     // `who-affected` always tries; `summary` only for a single-subject bill, since an omnibus
     // summary stays descriptive (spec amendment 13).
@@ -337,7 +359,7 @@ async function askWithinLimits(
     return {
       answer: settled.answer,
       ...(settled.scenario && { scenario: settled.scenario }),
-      refs: refsOf(ran.hits),
+      refs: ran.mode === 'whole' ? [] : refsOf(ran.hits),
       // Chips report the mode they used; an injected runner that doesn't falls back here.
       mode:
         ran.mode ??
@@ -352,13 +374,29 @@ async function askWithinLimits(
 
   const mode = deps.retrievalMode ?? 'hybrid_rerank';
   const includeDeleted = asksAboutChanges(question);
-  const retrieved = await retrieve(guard.backend, {
-    docId,
-    query: question,
-    mode,
+  const whole = await documentContext(guard.backend, docId, doc.sections, {
+    budget: deps.wholeBillMaxTokens,
     includeDeleted,
     signal,
   });
+  const retrieved: {
+    hits: (SearchHit & { injected?: boolean })[];
+    usage: BackendUsage;
+    mode: RetrievalMode | 'whole';
+  } =
+    whole.mode === 'whole'
+      ? {
+          hits: whole.hits,
+          usage: ZERO_USAGE,
+          mode: 'whole',
+        }
+      : await retrieve(guard.backend, {
+          docId,
+          query: question,
+          mode,
+          includeDeleted,
+          signal,
+        });
 
   // Defense in depth: struck text is not current law, so unless the question asks about
   // changes, nothing deleted reaches the prompt whatever the backend returned.
@@ -372,7 +410,10 @@ async function askWithinLimits(
     provider: deps.provider,
     question,
     context: {
-      hits: includeDeleted ? withInlineChanges(live, doc, docId) : live,
+      mode: whole.mode,
+      hits: includeDeleted
+        ? withInlineChanges(live, doc, docId, whole.mode === 'whole')
+        : live,
       definitions: usable.filter((hit) => hit.injected),
       metadata: doc.metadata,
     },
@@ -410,7 +451,7 @@ async function askWithinLimits(
   return {
     answer: settled.answer,
     ...(settled.scenario && { scenario: settled.scenario }),
-    refs: refsOf(usable),
+    refs: whole.mode === 'whole' ? [] : refsOf(usable),
     mode: retrieved.mode,
     latencyMs: now() - startedAt,
   };

@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { expect, it } from 'vitest';
 import { asset, drain, httpReplay, KEY } from '../../../tests/llm/http.js';
 import { describeHttpProvider } from '../../../tests/llm/provider-tests.js';
@@ -91,4 +92,36 @@ it('sends a plain string message unchanged and no effort by default', async () =
   };
   expect(sent.messages[0]!.content).toBe('hello');
   expect(sent.output_config).toBeUndefined();
+});
+
+it('carries a cached prompt part and effort into structured output', async () => {
+  const replay = httpReplay([{ body: asset('anthropic-object.json') }]);
+  const provider = new AnthropicProvider(
+    { provider: 'anthropic', model: 'claude-sonnet-5-5', apiKey: KEY },
+    { fetch: replay.fetch },
+  );
+  await provider.generateObject({
+    system: 'Extract fields',
+    prompt: [
+      { text: '<bill>…</bill>\n', cache: true },
+      { text: '<task>Brief each part.</task>' },
+    ],
+    schema: z.object({
+      billNumber: z.string().nullable(),
+      sponsors: z.array(z.string()).nullable(),
+    }),
+    schemaName: 'bill_fields',
+    maxTokens: 200,
+    effort: 'low',
+  });
+  const sent = (await replay.requests[0]!.json()) as {
+    messages: { content: { text: string; cache_control?: unknown }[] }[];
+    output_config: { effort?: string; format?: unknown };
+  };
+  expect(sent.messages[0]!.content.map((b) => b.cache_control)).toEqual([
+    { type: 'ephemeral' },
+    undefined,
+  ]);
+  expect(sent.output_config.effort).toBe('low');
+  expect(sent.output_config.format).toBeDefined();
 });

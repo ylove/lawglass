@@ -7,6 +7,7 @@
  * answer is never touched. This function therefore never throws.
  */
 import {
+  type LlmUsage,
   type LlmProvider,
   type ObjectRequest,
   type Scenario,
@@ -21,6 +22,8 @@ export const MAX_SCENARIO_EXCERPTS = 8;
 
 export interface AttachScenarioInput {
   provider: LlmProvider;
+  /** Whole mode grounds against every live section, without the excerpt cap. */
+  whole?: boolean | undefined;
   /** The excerpts the answer was written from, best first. */
   hits: readonly SearchHit[];
   /**
@@ -32,6 +35,13 @@ export interface AttachScenarioInput {
   /** A reader-requested subject, already vetted; see `ScenarioInput.subject`. */
   subject?: string | undefined;
   docId?: string | undefined;
+  /** An example for one part of the bill; see `ScenarioInput.focusSectionId`. */
+  focusSectionId?: string | undefined;
+  /**
+   * Return a failure (budget, timeout, provider outage) as `error` instead of swallowing it, so a
+   * caller that caches results can tell "no honest example" from "could not try".
+   */
+  captureError?: boolean | undefined;
   signal?: AbortSignal | undefined;
   timeoutMs?: number | undefined;
 }
@@ -40,6 +50,8 @@ export interface AttachedScenario {
   scenario?: Scenario;
   /** LLM tokens spent, including a failed or dropped attempt. */
   usage: { inputTokens: number; outputTokens: number };
+  /** Only with `captureError`: why no scenario could be attempted or finished. */
+  error?: unknown;
 }
 
 export async function attachScenario(
@@ -69,10 +81,11 @@ export async function attachScenario(
       cited.has(id),
     );
   // Cited excerpts first, then the rest in their original (best-first) order, up to the cap.
-  const hits = [
+  const ranked = [
     ...live.filter(isCited),
     ...live.filter((hit) => !isCited(hit)),
-  ].slice(0, MAX_SCENARIO_EXCERPTS);
+  ];
+  const hits = input.whole ? live : ranked.slice(0, MAX_SCENARIO_EXCERPTS);
   if (hits.length === 0) return { usage };
 
   const timeout = AbortSignal.timeout(input.timeoutMs ?? SCENARIO_TIMEOUT_MS);
@@ -87,21 +100,26 @@ export async function attachScenario(
       ...(input.subject === undefined
         ? {}
         : { subject: input.subject, docId: input.docId ?? '' }),
+      ...(input.focusSectionId === undefined
+        ? {}
+        : { focusSectionId: input.focusSectionId }),
       signal,
     });
     return scenario ? { scenario, usage } : { usage };
-  } catch {
-    // Deliberately silent: the error may carry provider text, and the answer stands without it.
-    return { usage };
+  } catch (error) {
+    // Deliberately silent by default: the error may carry provider text, and the answer stands
+    // without it. A caller that asked for `captureError` decides what to show.
+    return input.captureError ? { usage, error } : { usage };
   }
 }
 
 /** Adds scenario tokens to an answer's usage without mutating either. */
 export function addScenarioUsage(
-  answerUsage: { inputTokens: number; outputTokens: number },
+  answerUsage: LlmUsage,
   scenarioUsage: { inputTokens: number; outputTokens: number },
-): { inputTokens: number; outputTokens: number } {
+): LlmUsage {
   return {
+    ...answerUsage,
     inputTokens: answerUsage.inputTokens + scenarioUsage.inputTokens,
     outputTokens: answerUsage.outputTokens + scenarioUsage.outputTokens,
   };

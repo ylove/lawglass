@@ -3,7 +3,11 @@
 /// <reference types="vite/client" />
 import { z } from 'zod';
 import {
+  LocateResponse,
+  LocateVersionsResponse,
+  type LocateRequest,
   AskEvent,
+  BreakdownResponse,
   ClientConfig,
   DocDetail,
   DocSummary,
@@ -35,12 +39,30 @@ export interface ApiClient {
   getSection(docId: string, sectionId: string): Promise<SectionExcerpt>;
   /** The summary shown on arrival: cached, still being made (poll again), or off. */
   getSummary(docId: string): Promise<SummaryResponse>;
+  /** "Section by section": cached briefs, a run in progress (poll again, maybe with partial briefs), or off. */
+  getBreakdown(docId: string): Promise<BreakdownResponse>;
+  /** An example for one part of the bill: `pending` while it is drawn, then `ok` or `none` with a note. */
+  getSectionExample(
+    docId: string,
+    sectionId: string,
+    signal?: AbortSignal,
+  ): Promise<ScenarioResponse>;
   /** An illustrated example for a subject the reader names (`POST .../scenario`). */
   getScenario(
     docId: string,
     req: ScenarioRequest,
     signal?: AbortSignal,
   ): Promise<ScenarioResponse>;
+  locate(
+    docId: string,
+    req: LocateRequest,
+    signal?: AbortSignal,
+  ): Promise<LocateResponse>;
+  locateVersions(
+    docId: string,
+    req: LocateRequest,
+    signal?: AbortSignal,
+  ): Promise<LocateVersionsResponse>;
   ingest(req: IngestRequest, signal?: AbortSignal): AsyncIterable<IngestEvent>;
   ask(
     docId: string,
@@ -183,6 +205,25 @@ export function createHttpApi(options: HttpApiOptions = {}): ApiClient {
   const docPath = (docId: string) => `/api/docs/${encodeURIComponent(docId)}`;
 
   return {
+    locate: (docId, req, signal) =>
+      request(`${docPath(docId)}/locate`, LocateResponse, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(req),
+        ...(signal ? { signal } : {}),
+      }),
+    locateVersions: (docId, req, signal) =>
+      request(
+        `${docPath(docId)}/locate/versions`,
+        LocateVersionsResponse,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(req),
+          ...(signal ? { signal } : {}),
+        },
+        Math.max(defaultTimeout, 60_000),
+      ),
     getConfig: () => request('/api/config', ClientConfig),
     listDocs: () => request('/api/docs', z.array(DocSummary)),
     getDoc: (docId) => request(docPath(docId), DocDetail),
@@ -191,6 +232,20 @@ export function createHttpApi(options: HttpApiOptions = {}): ApiClient {
         `${docPath(docId)}/summary`,
         SummaryResponse,
         undefined,
+        Math.max(defaultTimeout, SUMMARY_TIMEOUT_MS),
+      ),
+    getBreakdown: (docId) =>
+      request(
+        `${docPath(docId)}/breakdown`,
+        BreakdownResponse,
+        undefined,
+        Math.max(defaultTimeout, SUMMARY_TIMEOUT_MS),
+      ),
+    getSectionExample: (docId, sectionId, signal) =>
+      request(
+        `${docPath(docId)}/sections/${encodeURIComponent(sectionId)}/example`,
+        ScenarioResponse,
+        signal ? { signal } : undefined,
         Math.max(defaultTimeout, SUMMARY_TIMEOUT_MS),
       ),
     getScenario: (docId, req, signal) =>

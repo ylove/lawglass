@@ -27,6 +27,12 @@ export interface ScenarioInput {
   subject?: string;
   /** Seeds the persona name together with `subject`. Required when `subject` is set. */
   docId?: string;
+  /**
+   * An example for ONE part of the bill ("Section by section"). The excerpts are that part's own
+   * text first, then definitions it uses, sections it refers to and other laws read for the bill.
+   * The generator chooses who the example is about from that part. Mutually exclusive with `subject`.
+   */
+  focusSectionId?: string;
   signal?: AbortSignal;
 }
 
@@ -53,6 +59,16 @@ export const SCENARIO_SUBJECT_RULE = `The reader asked for an example about the 
 export const SCENARIO_SUBJECT_PROMPT_VERSION = promptVersion(
   SCENARIO_SYSTEM_PROMPT,
   SCENARIO_SUBJECT_RULE,
+  JSON.stringify([...PERSONA_NAMES]),
+);
+
+/** Added only for a per-section example, so every other scenario prompt (and cache) is unchanged. */
+export const SCENARIO_SECTION_RULE = `The reader wants an example for one part of the bill, named in <focus> by its section id. The excerpts that carry that section id are the part itself; any other excerpts are background only (definitions, sections it refers to, or another law read for this bill). Choose the one kind of person or business that part most directly applies to and make the example about them: profile.label is a short neutral description that visibly includes "Example", for instance "Example small business". Base every rule and effect frame on the part itself, and cite its section id. Use background excerpts only to explain a defined or referred-to term. If the part states nothing that applies to a person or business, keep the frames qualitative and general rather than inventing an effect.`;
+
+/** A per-section example changes the system prompt, so it is part of that cache's version. */
+export const SCENARIO_SECTION_PROMPT_VERSION = promptVersion(
+  SCENARIO_SYSTEM_PROMPT,
+  SCENARIO_SECTION_RULE,
   JSON.stringify([...PERSONA_NAMES]),
 );
 
@@ -94,12 +110,18 @@ export async function generateScenario(
     subject === undefined
       ? personaName(excerpts)
       : subjectPersonaName(input.docId ?? '', subject);
+  // TODO(#305): in whole mode the bill is the large, repeated part of this prompt. Once
+  // ObjectRequest.prompt accepts parts (string | LlmTextPart[]), send the bill block first with
+  // `cache: true` and the persona, subject and question after it. Until then it goes uncached.
+  const focus = input.focusSectionId;
   const result = await input.provider.generateObject({
     system:
-      subject === undefined
-        ? SCENARIO_SYSTEM_PROMPT
-        : `${SCENARIO_SYSTEM_PROMPT}\n${SCENARIO_SUBJECT_RULE}`,
-    prompt: `<persona>${name}</persona>\n${subject === undefined ? '' : `<subject>${escapeText(subject)}</subject>\n`}<excerpts>\n${excerpts.map((hit, index) => formatExcerpt(hit, String(index + 1))).join('\n')}\n</excerpts>\n<question>${escapeText(input.question ?? 'Show the cited effect on the example profile.')}</question>`,
+      subject !== undefined
+        ? `${SCENARIO_SYSTEM_PROMPT}\n${SCENARIO_SUBJECT_RULE}`
+        : focus !== undefined
+          ? `${SCENARIO_SYSTEM_PROMPT}\n${SCENARIO_SECTION_RULE}`
+          : SCENARIO_SYSTEM_PROMPT,
+    prompt: `<persona>${name}</persona>\n${subject === undefined ? '' : `<subject>${escapeText(subject)}</subject>\n`}${focus === undefined ? '' : `<focus>${escapeText(focus)}</focus>\n`}<excerpts>\n${excerpts.map((hit, index) => formatExcerpt(hit, String(index + 1))).join('\n')}\n</excerpts>\n<question>${escapeText(input.question ?? 'Show the cited effect on the example profile.')}</question>`,
     schema: Scenario,
     schemaName: 'scenario',
     maxTokens: 2000,

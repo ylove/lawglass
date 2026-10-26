@@ -53,7 +53,10 @@ const squash = (text: string): string =>
  * `struck]`, which only becomes a marker once the spans are joined. Neutralizing keeps the
  * length (one bracket for one bracket), so offsets found before it still hold after it.
  */
-export function renderWithMarkers(spans: readonly Span[]): Rendered {
+export function renderWithMarkers(
+  spans: readonly Span[],
+  maxRunChars = MAX_RUN_CHARS,
+): Rendered {
   // Whitespace-only changed spans carry no words, so they are plain text.
   const parts = spans.map((span) => ({
     text: span.text,
@@ -73,7 +76,7 @@ export function renderWithMarkers(spans: readonly Span[]): Rendered {
     const lead = piece.length - piece.trimStart().length;
     const core = piece.trim();
     const run =
-      core.length > MAX_RUN_CHARS ? `${core.slice(0, MAX_RUN_CHARS)}…` : core;
+      core.length > maxRunChars ? `${core.slice(0, maxRunChars)}…` : core;
     const start = text.length + lead;
     const marked = part.status === 'deleted' ? struck(run) : inserted(run);
     text += piece.slice(0, lead) + marked + piece.slice(lead + core.length);
@@ -163,6 +166,7 @@ export function withInlineChanges(
   hits: readonly SearchHit[],
   doc: Pick<NormalizedDoc, 'sections'>,
   docId: string,
+  fullText = false,
 ): SearchHit[] {
   const out: SearchHit[] = [];
   const done = new Set<string>();
@@ -172,7 +176,14 @@ export function withInlineChanges(
     let complete = true;
     for (const id of ids) {
       if (done.has(id)) continue;
-      const built = inlineHit(doc, docId, id, hit, focusFor(hits, id));
+      const built = inlineHit(
+        doc,
+        docId,
+        id,
+        hit,
+        focusFor(hits, id),
+        fullText,
+      );
       if (built) {
         done.add(id);
         rebuilt.push(built);
@@ -205,6 +216,7 @@ function inlineHit(
   sectionId: string,
   from: SearchHit,
   focus: readonly string[],
+  fullText: boolean,
 ): SearchHit | undefined {
   let excerpt;
   try {
@@ -218,11 +230,13 @@ function inlineHit(
     key: `inline:${sectionId}`,
     sectionId,
     breadcrumb: excerpt.breadcrumb,
-    text: windowChanges(
-      renderWithMarkers(excerpt.spans),
-      MAX_CHANGE_EXCERPT_CHARS,
-      focus,
-    ),
+    text: fullText
+      ? renderWithMarkers(excerpt.spans, Infinity).text
+      : windowChanges(
+          renderWithMarkers(excerpt.spans),
+          MAX_CHANGE_EXCERPT_CHARS,
+          focus,
+        ),
     // The markers are authoritative; this only tells the model the section is not plain text.
     amendmentStatus: hasInserted ? 'inserted' : 'deleted',
     location: excerpt.location,

@@ -67,7 +67,7 @@ describe('runScenario budgets', () => {
   it('surfaces an acquisition failure before retrieval', async () => {
     const limits = sharedLimits();
     vi.spyOn(limits, 'acquire').mockRejectedValue(new AppError('RATE_LIMITED'));
-    const retrieve = vi.spyOn(env.backend, 'hasDocument');
+    const retrieve = vi.spyOn(env.backend, 'search');
     await expect(
       runScenario(docId, 'a renter', deps({ limits })),
     ).rejects.toMatchObject({ code: 'RATE_LIMITED' });

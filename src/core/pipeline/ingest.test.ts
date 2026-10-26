@@ -21,7 +21,8 @@ import {
   stubPdfParser,
   type PipelineEnv,
 } from '../../../tests/support/pipeline-env.js';
-import { AppError, type AnswerResult } from '../model/index.js';
+import { documentContext } from '../answer/context.js';
+import { AppError, messageText, type AnswerResult } from '../model/index.js';
 import { ingest, type IngestDeps, type IngestProgress } from './ingest.js';
 import { Limits } from './limits.js';
 
@@ -180,6 +181,21 @@ test('a registry entry whose index vanished is re-indexed', async () => {
   expect(again.stats.reused).toBe(false);
   expect(await env.backend.hasDocument(first.doc.docId)).toBe(true);
   expect(await env.registry.list()).toHaveLength(1);
+});
+
+test('ingest forgets any earlier whole-bill scan of the document', async () => {
+  env.serve('https://example.gov/s9001.xml', makeCongressionalBillXml());
+  const first = await ingest('https://example.gov/s9001.xml', deps());
+  const { sections } = await env.registry.getDocument(first.doc.docId);
+  const budget = { budget: 1_000_000 };
+  await documentContext(env.backend, first.doc.docId, sections, budget);
+  const get = vi.spyOn(env.backend, 'getChunks');
+  await documentContext(env.backend, first.doc.docId, sections, budget);
+  expect(get).not.toHaveBeenCalled();
+  await env.backend.deleteDocument(first.doc.docId);
+  await ingest('https://example.gov/s9001.xml', deps());
+  await documentContext(env.backend, first.doc.docId, sections, budget);
+  expect(get).toHaveBeenCalled();
 });
 
 test('uses the requested label, and default labels never collide', async () => {
@@ -540,7 +556,7 @@ test('metadata text does not repeat header lines that the body already starts wi
   const seen: string[] = [];
   const real = env.provider.generateObject.bind(env.provider);
   vi.spyOn(env.provider, 'generateObject').mockImplementation((req) => {
-    seen.push(req.prompt);
+    seen.push(messageText(req.prompt));
     return real(req);
   });
   env.serve(
