@@ -409,3 +409,70 @@ describe('.gov links in answers', () => {
     expect(container.querySelector('a')).toBeNull();
   });
 });
+
+describe('itemFigure (#345)', () => {
+  const text =
+    'Intro.\n\n- First [S:sec-2]\n- [S:nowhere]\n- Third\n\nMore:\n1. Fourth\n2. Fifth';
+
+  test('is asked about every item with listItems() indexes and text, empty items included', () => {
+    const itemFigure = vi.fn(() => null);
+    render(
+      <AnswerText
+        text={text}
+        citations={citations}
+        onOpenCitation={() => undefined}
+        itemFigure={itemFigure}
+      />,
+    );
+    const seen = itemFigure.mock.calls.map(
+      (c) => (c as unknown as [{ index: number; text: string }])[0],
+    );
+    expect(seen.map((i) => i.index)).toEqual([0, 2, 3, 4]);
+    expect(seen[0]?.text).toBe('First [S:sec-2]');
+    expect(seen[3]?.text).toBe('Fifth');
+  });
+
+  test('a figure turns the item into a figure with the item text as caption', () => {
+    const { container } = render(
+      <AnswerText
+        text={text}
+        citations={citations}
+        onOpenCitation={() => undefined}
+        itemFigure={({ index }) =>
+          index === 3 ? <span data-testid="art">art</span> : null
+        }
+      />,
+    );
+    expect(container.querySelectorAll('figure')).toHaveLength(1);
+    const caption = container.querySelector('figure figcaption');
+    expect(caption?.textContent).toBe('Fourth');
+    expect(container.querySelector('figure [data-testid="art"]')).toBeTruthy();
+    // The other items are plain list items.
+    expect(container.querySelectorAll('li:not(.picture-item)')).toHaveLength(3);
+  });
+
+  test('a cited caption keeps its working citation button', () => {
+    const { container, getByRole } = render(
+      <AnswerText
+        text="- First [S:sec-2]"
+        citations={citations}
+        onOpenCitation={() => undefined}
+        itemFigure={() => <span>art</span>}
+      />,
+    );
+    expect(container.querySelector('figcaption button.cite')).toBeTruthy();
+    expect(getByRole('button', { name: 'Source 1' })).toBeTruthy();
+  });
+
+  test('without the prop nothing changes', () => {
+    const { container } = render(
+      <AnswerText
+        text={text}
+        citations={citations}
+        onOpenCitation={() => undefined}
+      />,
+    );
+    expect(container.querySelector('figure')).toBeNull();
+    expect(container.querySelector('.picture-item')).toBeNull();
+  });
+});

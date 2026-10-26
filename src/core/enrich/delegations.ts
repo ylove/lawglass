@@ -44,6 +44,8 @@ export interface DelegationItem {
   /** "not later than 180 days after ..." when the same sentence sets one. */
   deadline?: string;
   kind: DelegationKind;
+  /** Only laws governed by an explicit dependency phrase are treated as dependencies. */
+  lawRole?: 'dependency' | 'citation';
   /** The matched sentence, at most 200 characters, for the chip to cite. */
   quote: string;
 }
@@ -196,6 +198,7 @@ function deadlineIn(sentence: string): string | undefined {
 
 interface Hit {
   actor?: string | undefined;
+  lawRole?: DelegationItem['lawRole'];
   what: string;
   /** Position of the match start inside the sentence, for the line lookup. */
   at?: number;
@@ -213,11 +216,17 @@ function clean(text: string): string {
 }
 
 function shorten(text: string, max: number): string {
-  // Bounded first: the trailing-punctuation regex is quadratic on a long run of commas.
-  const t = trimEndWhile(clean(text.slice(0, max * 4)), (c) =>
-    '.;,'.includes(c),
-  );
-  return t.length <= max ? t : `${t.slice(0, max - 1).trimEnd()}…`;
+  const flat = clean(text.slice(0, max * 4));
+  // Linear trimming also handles adversarial runs of punctuation.
+  let t = trimEndWhile(flat, (c) => '.;,—–:-'.includes(c)).trimEnd();
+  if (/[—–:-]$/.test(flat)) t = t.replace(/ in order$/i, '');
+  if (t.length <= max) return t;
+  const window = t.slice(0, max - 1);
+  const clauseEnd = Math.max(window.lastIndexOf(';'), window.lastIndexOf(','));
+  // Prefer a whole clause; otherwise make the omission explicit at a word boundary.
+  if (clauseEnd >= max / 2) return `${window.slice(0, clauseEnd).trimEnd()}…`;
+  const wordEnd = window.lastIndexOf(' ');
+  return `${window.slice(0, wordEnd > 0 ? wordEnd : window.length).trimEnd()}…`;
 }
 
 /** The sentence from the verb on: "prescribe regulations to carry out this section". */
@@ -303,6 +312,18 @@ const INTERNAL =
   /\b(?:this|these|section|sections|division|paragraph|subsection|chapter|article|title)\b/i;
 const BARE_LAW =
   /^(?:the|such|that|said|applicable|any|other|\s)*(?:act|law|laws|code|statute|statutes|charter)$/i;
+
+const LAW_DEPENDENCY =
+  /\b(?:as\s+provided\s+(?:by|in|under)|in\s+accordance\s+with|pursuant\s+to|subject\s+to)\s+(?:(?:the\s+)?(?:requirements|provisions|terms|limitations)\s+of\s+)?$/i;
+
+function lawDependencyBefore(text: string, at: number): number | undefined {
+  const start = Math.max(0, at - 150);
+  const prefix = text.slice(start, at);
+  const match = LAW_DEPENDENCY.exec(prefix);
+  if (!match) return undefined;
+  const phraseAt = start + match.index;
+  return isNegated(text, phraseAt) ? undefined : phraseAt;
+}
 
 /** True for "the general election laws of the state", false for "section 3 of this charter". */
 function isNamedLaw(phrase: string): boolean {
@@ -540,7 +561,7 @@ const RULES: Rule[] = [
     kind: 'law',
     // "as provided by the general election laws of the state", "pursuant to the Revised Code".
     pattern:
-      /\b(?:as\s+provided\s+(?:by|in|under)|in\s+accordance\s+with|pursuant\s+to)(?=\s)/gi,
+      /\b(?:as\s+provided\s+(?:by|in|under)|in\s+accordance\s+with|pursuant\s+to|subject\s+to)(?=\s)/gi,
     hit(m, s) {
       const phrase = phraseAfter(s, m.index + m[0].length);
       if (!phrase || !isNamedLaw(phrase)) return undefined;
@@ -548,6 +569,7 @@ const RULES: Rule[] = [
         actor: phrase,
         what: shorten(`${m[0]} ${phrase}`, WHAT_MAX),
         at: m.index,
+        lawRole: 'dependency',
       };
     },
   },
@@ -556,7 +578,15 @@ const RULES: Rule[] = [
     kind: 'law',
     pattern:
       /\b(?:the\s+)?general\s+(?:election\s+)?laws\s+of\s+(?:the|this)\s+state\b/gi,
-    hit: (m) => ({ actor: clean(m[0]), what: clean(m[0]), at: m.index }),
+    hit: (m, s) => ({
+      actor: clean(m[0]),
+      what: clean(m[0]),
+      at: m.index,
+      lawRole:
+        lawDependencyBefore(s, m.index) === undefined
+          ? 'citation'
+          : 'dependency',
+    }),
   },
   {
     group: 'takesEffect',
@@ -602,6 +632,24 @@ function locatedText(section: Section): Located {
     marks.push({ offset: text.length, page: span.page, line: span.line });
     text += span.text;
   }
+  const lineEnd = text.indexOf('\n');
+  const heading = section.heading;
+  if (
+    heading &&
+    lineEnd >= 0 &&
+    !/\b(?:shall|may|must|determines?)\b/i.test(heading) &&
+    !/^(?:the|a|an|each|any|every|this|that|such|no)\b/i.test(heading)
+  ) {
+    const firstLine = clean(text.slice(0, lineEnd)).replace(
+      /^(?:(?:sec(?:tion)?\.?|§)\s+[\w.-]+|\([A-Za-z0-9]+\))\s*/i,
+      '',
+    );
+    if (firstLine === clean(heading)) {
+      // Text parsers retain printed headings in spans. Mask only a confirmed heading line,
+      // preserving offsets so a match still points to its original printed page and line.
+      text = ' '.repeat(lineEnd) + text.slice(lineEnd);
+    }
+  }
   return { text, marks };
 }
 
@@ -641,12 +689,16 @@ function quoteOf(sentence: string, at: number): string {
 // ---------------------------------------------------------------------------------------
 
 const DEPENDS_ORDER: Record<string, number> = {
-  appropriation: 0,
-  voter_approval: 1,
-  contingency: 2,
-  outside_body: 3,
-  law: 4,
+  contingency: 0,
+  voter_approval: 0,
+  appropriation: 1,
+  outside_body: 2,
+  law: 3,
 };
+
+function dependencyRank(item: DelegationItem): number {
+  return item.lawRole === 'citation' ? 4 : (DEPENDS_ORDER[item.kind] ?? 9);
+}
 
 const norm = (text: string): string => text.toLowerCase().replace(/\s+/g, ' ');
 
@@ -681,7 +733,8 @@ function capGroup(items: DelegationItem[]): {
 }
 
 /**
- * Delegations and dependencies in current (non-struck) text, in document order. `externalRefs`
+ * Delegations and dependencies in current (non-struck) text, in document order within each
+ * dependency rank. `externalRefs`
  * are the laws the reference extractor already found; they are reused, not re-detected, and
  * listed only where the cited text is still in force (not struck).
  */
@@ -739,6 +792,7 @@ export function extractDelegations(
             ...(rule.group === 'decidedLater' &&
               deadline !== undefined && { deadline }),
             kind: rule.kind,
+            ...(hit.lawRole !== undefined && { lawRole: hit.lawRole }),
             quote: quoteOf(sentence, at),
           });
         }
@@ -757,33 +811,52 @@ export function extractDelegations(
     // this section's own current text, and by its wording only as a fallback.
     const matches = sectionRefs.length > 0 ? findExternalMatches(text) : [];
     const spans = sectionRefs.length > 0 ? sentenceSpans(text) : [];
+    const lawItems: { at: number; item: DelegationItem }[] = [];
     for (const ref of sectionRefs) {
       const wanted = normCitation(ref.citation);
-      const match = matches.find((m) => normCitation(m.citation) === wanted);
+      const occurrences = matches.filter(
+        (m) => normCitation(m.citation) === wanted,
+      );
+      // A later occurrence may impose a real dependency after an earlier plain citation.
+      const match =
+        occurrences.find(
+          (m) => lawDependencyBefore(text, m.start) !== undefined,
+        ) ?? occurrences[0];
       const at = match?.start ?? text.indexOf(ref.text);
       if (at === -1) continue; // only cited in struck text
       const sentenceSpan = spans.find((s) => at >= s.start && at < s.end) ?? {
         start: 0,
         end: text.length,
       };
-      groups.dependsOn.push({
-        sectionId: section.id,
-        ...positionAt(section, located, at),
-        actor: ref.citation,
-        what: match?.text ?? ref.text,
-        kind: 'law',
-        quote: quoteOf(
-          text.slice(sentenceSpan.start, sentenceSpan.end),
-          at - sentenceSpan.start,
-        ),
+      const phraseAt = lawDependencyBefore(text, at);
+      lawItems.push({
+        at,
+        item: {
+          sectionId: section.id,
+          ...positionAt(section, located, at),
+          actor: ref.citation,
+          what:
+            phraseAt === undefined
+              ? (match?.text ?? ref.text)
+              : shorten(
+                  text.slice(phraseAt, match?.end ?? at + ref.text.length),
+                  WHAT_MAX,
+                ),
+          kind: 'law',
+          lawRole: phraseAt === undefined ? 'citation' : 'dependency',
+          quote: quoteOf(
+            text.slice(sentenceSpan.start, sentenceSpan.end),
+            at - sentenceSpan.start,
+          ),
+        },
       });
     }
+    lawItems.sort((a, b) => a.at - b.at);
+    groups.dependsOn.push(...lawItems.map(({ item }) => item));
   }
 
   // Laws are the most numerous and least surprising, so they come last when the cap bites.
-  groups.dependsOn.sort(
-    (a, b) => (DEPENDS_ORDER[a.kind] ?? 9) - (DEPENDS_ORDER[b.kind] ?? 9),
-  );
+  groups.dependsOn.sort((a, b) => dependencyRank(a) - dependencyRank(b));
   const decided = capGroup(groups.decidedLater);
   const depends = capGroup(groups.dependsOn);
   const effect = capGroup(groups.takesEffect);
