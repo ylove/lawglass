@@ -404,6 +404,26 @@ test('an aborted ingest stops without indexing', async () => {
   expect(await env.registry.list()).toEqual([]);
 });
 
+test('ingest hands its signal to the backend, and a mid-embedding abort leaves no document (#221)', async () => {
+  env.serve('https://example.gov/s9001.xml', makeCongressionalBillXml());
+  const controller = new AbortController();
+  const real = env.backend.upsertChunks.bind(env.backend);
+  const spy = vi
+    .spyOn(env.backend, 'upsertChunks')
+    .mockImplementation((docId, chunks, onProgress, signal) => {
+      // The client disconnects while the backend is embedding.
+      controller.abort();
+      return real(docId, chunks, onProgress, signal);
+    });
+  await expect(
+    ingest('https://example.gov/s9001.xml', deps(), {
+      signal: controller.signal,
+    }),
+  ).rejects.toBeDefined();
+  expect(spy.mock.calls[0]?.[3]).toBe(controller.signal);
+  expect(await env.registry.list()).toEqual([]);
+});
+
 test('metadata extraction usage is reported', async () => {
   env.serve(
     'https://example.gov/gardens.txt',
