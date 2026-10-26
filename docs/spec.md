@@ -173,6 +173,12 @@ These override the original text below, and the earlier amendments, where they c
     - **Unknown is not current.** Where change marks were not read (an OCR'd scan page, or a New York or New Jersey bill without its legend), passages report `unknown`, never `unchanged`, with a fixed warning.
     - **Status.** It is a measurement harness, not a product. No claim about it is made until the pre-registered evaluation in decision 0013 passes.
 
+## Amendments (2026-10-26, v1.2)
+
+29. **Deferred work is on the roadmap (§5.2, §5.9).** Issue #349. Parts of amendments 16 and 17 were specified but not built. They now live in [the roadmap](roadmap.md), and the shipped behaviour is what holds:
+    - **Amendment 16, scanned redlines.** Detection, the per-page scan status and the warning on every scanned document stand. Recovering strike-through and underline from the page image (Method and Release gate) is deferred (#193). Until it ships, struck words on a scan may read as current text, and the warning says so.
+    - **Amendment 17, scenarios.** "A default scenario for every bill" is replaced by amendment 23: a single-subject bill gets one scenario with its summary, and every substantive part of any bill gets its own "Show an example". This closes #197. The on-demand route and the suggested personas stand; their "How does this affect…?" interface is deferred (#198).
+
 ## 1. Purpose
 
 A local-first tool that takes the URL of any piece of legislation (federal, state, county, municipal), ingests it into Pinecone using structure-aware chunking and hybrid retrieval, and answers questions about it with citations to the exact section, page, and line.
