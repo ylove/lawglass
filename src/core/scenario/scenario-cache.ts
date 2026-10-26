@@ -24,7 +24,10 @@ export const NONE_RETRY_MS = 10 * 60_000;
 
 export interface ScenarioCacheKey {
   docId: string;
+  /** The reader's subject; empty for a per-section example, which is keyed by `sectionId`. */
   subject: string;
+  /** A per-section example (#277): one cached result per part of the bill, never shared. */
+  sectionId?: string;
   provider: string;
   model: string;
   promptVersion: string;
@@ -46,6 +49,9 @@ export function scenarioCacheHash(key: ScenarioCacheKey): string {
       JSON.stringify({
         kind: 'scenario',
         subjectNorm: normalizeSubject(key.subject),
+        // Added only when set, so every existing subject-scenario hash is unchanged. Not
+        // lowercased: section ids are case-sensitive.
+        ...(key.sectionId === undefined ? {} : { sectionId: key.sectionId }),
         provider: key.provider,
         model: key.model,
         promptVersion: key.promptVersion,
@@ -89,8 +95,20 @@ export class ScenarioCache {
     return join(this.dir, key.docId, `scenario-${scenarioCacheHash(key)}.json`);
   }
 
+  /** True when any result is stored, including a `none` past its cool-down (which `get` hides). */
+  async has(key: ScenarioCacheKey): Promise<boolean> {
+    return (await this.read(key, true)) !== undefined;
+  }
+
   /** A miss is `undefined`: absent, unreadable, corrupt, another model, or a `none` past its cool-down. */
   async get(key: ScenarioCacheKey): Promise<ScenarioLookup> {
+    return this.read(key, false);
+  }
+
+  private async read(
+    key: ScenarioCacheKey,
+    ignoreCooldown: boolean,
+  ): Promise<ScenarioLookup> {
     let value: unknown;
     try {
       value = await readPrivateJson(this.path(key), this.fs);
@@ -106,7 +124,7 @@ export class ScenarioCache {
       return undefined;
     const { status, scenario, storedAt } = parsed.data;
     if (status === 'none')
-      return this.now() - storedAt < NONE_RETRY_MS
+      return ignoreCooldown || this.now() - storedAt < NONE_RETRY_MS
         ? { status: 'none' }
         : undefined;
     return scenario ? { status: 'ok', scenario } : undefined;

@@ -35,6 +35,13 @@ export interface AttachScenarioInput {
   /** A reader-requested subject, already vetted; see `ScenarioInput.subject`. */
   subject?: string | undefined;
   docId?: string | undefined;
+  /** An example for one part of the bill; see `ScenarioInput.focusSectionId`. */
+  focusSectionId?: string | undefined;
+  /**
+   * Return a failure (budget, timeout, provider outage) as `error` instead of swallowing it, so a
+   * caller that caches results can tell "no honest example" from "could not try".
+   */
+  captureError?: boolean | undefined;
   signal?: AbortSignal | undefined;
   timeoutMs?: number | undefined;
 }
@@ -43,6 +50,8 @@ export interface AttachedScenario {
   scenario?: Scenario;
   /** LLM tokens spent, including a failed or dropped attempt. */
   usage: { inputTokens: number; outputTokens: number };
+  /** Only with `captureError`: why no scenario could be attempted or finished. */
+  error?: unknown;
 }
 
 export async function attachScenario(
@@ -91,12 +100,16 @@ export async function attachScenario(
       ...(input.subject === undefined
         ? {}
         : { subject: input.subject, docId: input.docId ?? '' }),
+      ...(input.focusSectionId === undefined
+        ? {}
+        : { focusSectionId: input.focusSectionId }),
       signal,
     });
     return scenario ? { scenario, usage } : { usage };
-  } catch {
-    // Deliberately silent: the error may carry provider text, and the answer stands without it.
-    return { usage };
+  } catch (error) {
+    // Deliberately silent by default: the error may carry provider text, and the answer stands
+    // without it. A caller that asked for `captureError` decides what to show.
+    return input.captureError ? { usage, error } : { usage };
   }
 }
 

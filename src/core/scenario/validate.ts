@@ -1,5 +1,6 @@
 import { coveredSectionIds, validateCitations } from '../answer/citations.js';
 import {
+  REFERENCE_ID_PREFIX,
   Scenario,
   type ScenarioFrame,
   type ScenarioFigure,
@@ -111,7 +112,12 @@ function frameReason(
   const chunkIds = new Set(valid.flatMap((citation) => citation.chunkIds));
   const citedText = chunks
     .filter(
-      (chunk) => chunkIds.has(chunk.id) && chunk.amendmentStatus !== 'deleted',
+      (chunk) =>
+        chunkIds.has(chunk.id) &&
+        chunk.amendmentStatus !== 'deleted' &&
+        // Another law's text explains a term; it is not what this bill does, so its numbers
+        // cannot ground a figure.
+        !chunk.sectionId.startsWith(REFERENCE_ID_PREFIX),
     )
     .map((chunk) => chunk.text)
     .join('\n');

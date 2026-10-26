@@ -32,6 +32,7 @@ import { buildDocDetail } from './doc-detail.js';
 import { CHIP_LABELS } from './chips.js';
 import { SlidingWindowLimiter } from './rate-limit.js';
 import { registerLocateRoute } from './locate-route.js';
+import { registerBreakdownRoutes } from './breakdown-route.js';
 import { registerScenarioRoute } from './scenario-route.js';
 import { createSummaryService } from './summary.js';
 import { securityHeaders } from './security-headers.js';
@@ -202,7 +203,9 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       method === 'DELETE' ||
       // HEAD reaches the GET handler, so it can start the same paid generation.
       ((method === 'GET' || method === 'HEAD') &&
-        /^\/api\/docs\/[^/]+\/summary$/.test(c.req.path));
+        /^\/api\/docs\/[^/]+\/(?:summary|breakdown|sections\/[^/]+\/example)$/.test(
+          c.req.path,
+        ));
     if (canSpendOrChange && c.req.header('sec-fetch-site') === 'cross-site')
       return c.json(
         { error: { code: 'INVALID_INPUT', message: 'Cross-site request.' } },
@@ -290,8 +293,8 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       model,
       chips: CHIP_LABELS,
       scenariosEnabled: !publicMode,
-      // Served once Section by section lands (#276).
-      breakdownEnabled: false,
+      // Public servers never start a model call for a visitor, so there is nothing to show.
+      breakdownEnabled: !publicMode,
       locateEnabled: !publicMode,
     };
     return c.json(config);
@@ -666,6 +669,16 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
           checkIngestFetchHost(url, hosts);
         }
       : undefined,
+  });
+
+  registerBreakdownRoutes(app, runtime, {
+    publicMode,
+    now,
+    summary,
+    waitMs: options.summaryWaitMs,
+    onError: (c, error, ms) => {
+      log.error(c, error, ms);
+    },
   });
 
   app.all('/api/*', (c) =>

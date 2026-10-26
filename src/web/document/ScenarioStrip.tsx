@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import type { Scenario } from '../../core/model/index.js';
 import { AVATAR_ICONS, TOPIC_ICONS } from './scenario-icons.js';
 
@@ -17,17 +18,29 @@ function footnoteNumbers(frames: Scenario['frames']): Map<string, number> {
 export function ScenarioStrip({
   scenario,
   onOpenSection,
+  nested = false,
 }: {
   scenario: Scenario;
   onOpenSection: (sectionId: string, trigger: HTMLElement) => void;
+  /**
+   * Inside a "Section by section" card: one heading level lower, and a unique id so several
+   * strips can sit on one page.
+   */
+  nested?: boolean;
 }) {
   const numbers = footnoteNumbers(scenario.frames);
+  const uniqueId = useId();
+  const titleId = nested ? `scenario-title-${uniqueId}` : 'scenario-title';
+  const Heading = nested ? 'h5' : 'h3';
   return (
-    <section aria-labelledby="scenario-title" className="scenario">
+    <section
+      aria-labelledby={titleId}
+      className={nested ? 'scenario scenario-nested' : 'scenario'}
+    >
       <div className="scenario-head">
-        <h3 id="scenario-title">
+        <Heading id={titleId}>
           What it could mean for {scenario.profile.name}
-        </h3>
+        </Heading>
         <span className="scenario-badge">Example · invented person</span>
       </div>
       <ol className="scenario-frames" data-count={scenario.frames.length}>

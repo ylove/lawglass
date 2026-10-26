@@ -776,3 +776,36 @@ describe('round 3: every assumption a result relies on is visible', () => {
     ).toEqual([]);
   });
 });
+
+describe('other-law excerpts', () => {
+  const frame = (id: string): ScenarioFrame => ({
+    kind: 'effect',
+    avatar: 'person-a',
+    icon: 'tax',
+    caption: 'The rate is 4%.',
+    citations: [id],
+    figures: [{ source: 'bill', value: 4, unit: 'percent' }],
+  });
+  const withFrame = (id: string): Scenario => {
+    const scenario = exampleScenario();
+    scenario.frames[2] = frame(id);
+    return scenario;
+  };
+
+  it('grounds a figure in the bill but not in another law read for the bill', () => {
+    const [bill] = scenarioExcerpts('The tax rate is 4 percent.');
+    const other = {
+      ...bill!,
+      chunk: { ...bill!.chunk, id: 'x:~ref', sectionId: 'ref:usc/26/1' },
+    };
+    const own = validateScenario(withFrame(bill!.chunk.sectionId), [
+      bill!,
+      other,
+    ]);
+    expect(own.dropped.filter((d) => d.frameIndex === 2)).toEqual([]);
+    const viaOther = validateScenario(withFrame('ref:usc/26/1'), [other]);
+    expect(viaOther.dropped.filter((d) => d.frameIndex === 2)).toEqual([
+      { frameIndex: 2, reason: 'figure' },
+    ]);
+  });
+});

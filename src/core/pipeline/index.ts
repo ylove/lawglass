@@ -25,3 +25,11 @@ export {
 } from './excerpt.js';
 export { formatCitation, formatLocation } from './citations.js';
 export { runScenario, type RunScenarioDeps } from './scenario.js';
+export {
+  breakdownCacheKey,
+  runBreakdown,
+  runSectionExample,
+  sectionExampleKey,
+  type BreakdownDeps,
+  type SectionExampleDeps,
+} from './breakdown.js';
