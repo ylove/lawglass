@@ -5,7 +5,12 @@ import { isAppError } from '../core/model/index.js';
 export type LogWriter = (line: string) => void;
 interface EventFields {
   level: 'info' | 'warn' | 'error';
-  event: 'refusal' | 'internal_error' | 'ingest_start' | 'ingest_finish';
+  event:
+    | 'refusal'
+    | 'internal_error'
+    | 'ingest_start'
+    | 'ingest_finish'
+    | 'metadata_failed';
   status: number;
   code?: string;
   ms: number;

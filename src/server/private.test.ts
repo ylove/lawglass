@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MockAgent } from 'undici';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { AppError } from '../core/model/index.js';
 import {
   makePipelineEnv,
   type PipelineEnv,
@@ -320,4 +321,26 @@ test('invalid mode, key and hop options fail before serving', () => {
     { trustProxyHops: 0.5 },
   ])
     expect(() => app(options)).toThrow();
+});
+
+test('a failed metadata call is logged with its code, never the address or a message (#270)', async () => {
+  vi.spyOn(env.runtime.extractProvider, 'generateObject').mockRejectedValue(
+    new AppError('PROVIDER_ERROR', 'upstream said something private'),
+  );
+  const lines: string[] = [];
+  const a = app({
+    privateMode: true,
+    logWriter: (line) => {
+      lines.push(line);
+    },
+  });
+  expect(await (await a.request('/api/ingest', post())).text()).toContain(
+    '"type":"done"',
+  );
+  const failed = lines
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .find((entry) => entry.event === 'metadata_failed');
+  expect(failed).toMatchObject({ level: 'warn', code: 'PROVIDER_ERROR' });
+  expect(lines.join('')).not.toContain(sourceUrl);
+  expect(lines.join('')).not.toContain('upstream said something private');
 });
