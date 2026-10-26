@@ -11,14 +11,21 @@ import { AnswerText, type OpenCitation } from '../AnswerText.js';
 import { describeLocation, ExcerptSpans } from '../CitationDrawer.js';
 import { errorMessage } from '../errors.js';
 import { buildReceipt, copyReceipt } from './locate-receipt.js';
+import { LABEL_TEXT } from './locate-label-text.js';
 
-const LABELS: Record<LocateLabel, { text: string; icon: typeof Plus }> = {
-  added: { text: 'Added by this bill', icon: Plus },
-  removed: { text: 'Being removed by this bill', icon: Minus },
-  changed: { text: 'Changed by this bill', icon: RefreshCw },
-  existing: { text: 'Already law, reprinted unchanged', icon: BookOpen },
-  'in-bill': { text: 'In this bill', icon: FileText },
+const ICONS: Record<LocateLabel, typeof Plus> = {
+  added: Plus,
+  removed: Minus,
+  changed: RefreshCw,
+  existing: BookOpen,
+  'in-bill': FileText,
 };
+const LABELS = Object.fromEntries(
+  (Object.keys(ICONS) as LocateLabel[]).map((k) => [
+    k,
+    { text: LABEL_TEXT[k], icon: ICONS[k] },
+  ]),
+) as Record<LocateLabel, { text: string; icon: typeof Plus }>;
 
 export function LocateCard({
   api,

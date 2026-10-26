@@ -20,7 +20,7 @@ afterEach(() => {
 it('builds the exact receipt with removal status, printed location, version, date, and official URL', async () => {
   const { detail, match } = await fixture();
   expect(buildReceipt(match, detail).plain).toBe(
-    `"[removed: within fifteen years]" — HB 214, Clean Water Infrastructure Act > Section 4 > (b), page 3, lines 5–12, Introduced in House (2026-02-03). The bill removes the fifteen-year deadline. Source: https://example.gov/bills/hb214.pdf. Found with ${BRAND.displayName}; not legal advice.`,
+    `"[removed: within fifteen years]" — HB 214, Clean Water Infrastructure Act > Section 4 > (b), page 3, lines 5–12, Introduced in House (2026-02-03). Status: Being removed by this bill. The bill removes the fifteen-year deadline. Source: https://example.gov/bills/hb214.pdf. Found with ${BRAND.displayName}; not legal advice.`,
   );
   expect(buildReceipt(match, detail).markdown).toContain(
     '\\[removed: within fifteen years\\]',

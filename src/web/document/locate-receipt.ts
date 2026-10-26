@@ -1,5 +1,6 @@
 import { BRAND } from '../../core/brand.js';
 import type { DocDetail, LocateMatch } from '../../core/model/index.js';
+import { LABEL_TEXT } from './locate-label-text.js';
 import { stripMarkers } from '../AnswerText.js';
 
 /** The receipt preserves removal status and limits even when pasted into plain text. */
@@ -34,11 +35,14 @@ export function buildReceipt(
   const explanation = stripMarkers(match.explanation)
     .replace(/(?<!\s)\s+([.,;!?])/g, '$1')
     .trim();
+  const sentence = (text: string): string =>
+    /[.!?]$/.test(text) ? text : `${text}.`;
   const conditions = match.conditions
-    ? ` Conditions: ${stripMarkers(match.conditions).trim()}`
+    ? ` Conditions: ${sentence(stripMarkers(match.conditions).trim())}`
     : '';
   const amends = match.amends ? ` Changes ${match.amends}.` : '';
-  const beforeSource = `"${quote}" — ${bill}, ${match.breadcrumb}${page}${lines}, ${versionText}${date}. ${explanation}${conditions}${amends}`;
+  const status = ` Status: ${LABEL_TEXT[match.label]}.`;
+  const beforeSource = `"${quote}" — ${bill}, ${match.breadcrumb}${page}${lines}, ${versionText}${date}.${status} ${sentence(explanation)}${conditions}${amends}`;
   const footer = `Found with ${BRAND.displayName}; not legal advice.`;
   // Escaping keeps source text from becoming Markdown instructions or forged links.
   const escaped = beforeSource.replace(/[\\`*_{}[\]<>#!|]/g, '\\$&');

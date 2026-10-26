@@ -129,7 +129,11 @@ export async function locateVersions(
       deps.validateUrl?.(url);
     };
     for (const version of versions) {
-      signal.throwIfAborted();
+      // The time cap ends the run but keeps the versions already read.
+      if (signal.aborted) {
+        if (deps.signal?.aborted || !results.length) signal.throwIfAborted();
+        break;
+      }
       const versionUrl = version.url;
       if (!versionUrl) continue;
       if (remaining <= 0) break;
@@ -178,7 +182,8 @@ export async function locateVersions(
         if (!doc) continue;
         await fetched.commitCache?.();
         const plain = [...walkSections(doc.sections)]
-          .map((s) => sectionText(s, { includeDeleted: true }))
+          // Struck words are not that version's law; neither count nor show them.
+          .map((s) => sectionText(s, { includeDeleted: false }))
           .join('\n');
         results.push({
           label: version.label,
@@ -187,7 +192,8 @@ export async function locateVersions(
           ...versionOverlap(query, plain),
         });
       } catch {
-        signal.throwIfAborted(); /* A missing version does not hide the versions we could read. */
+        /* A missing version does not hide the versions we could read. */
+        if (deps.signal?.aborted) signal.throwIfAborted();
       } finally {
         remaining -= bytes;
       }

@@ -185,3 +185,37 @@ it('parses XML and HTML into plain text without a model', async () => {
     expect(result.versions[0]?.excerpt).not.toContain('<');
   }
 });
+
+it('uses only current wording of a marked version', async () => {
+  const html =
+    '<html><body><h2>Section 1. Fee</h2><p>The grantee pays a fee of <s>forty dollars</s> <u>fifty dollars</u> each month.</p></body></html>';
+  const fetcher: Fetcher = () =>
+    Promise.resolve({ ...fetched(html), format: 'html' as const });
+  const result = await locateVersions(
+    'pays forty dollars each month',
+    history([url(0)]),
+    { fetcher },
+  );
+  expect(result.versions[0]?.excerpt ?? '').not.toContain('forty');
+});
+it('returns the versions read before the time cap', async () => {
+  // AbortSignal.timeout uses native timers, so hand the code a signal we can fire.
+  const cap = new AbortController();
+  vi.spyOn(AbortSignal, 'timeout').mockReturnValue(cap.signal);
+  let calls = 0;
+  const fetcher: Fetcher = () => {
+    calls++;
+    if (calls === 1) return Promise.resolve(fetched());
+    cap.abort(new DOMException('cap', 'TimeoutError'));
+    return Promise.reject(new Error('aborted'));
+  };
+  const result = await locateVersions(
+    'garden grants',
+    history([url(0), url(1), url(2)]),
+    { fetcher },
+  );
+  vi.restoreAllMocks();
+  expect(calls).toBe(2);
+  expect(result.status).toBe('ok');
+  expect(result.versions).toHaveLength(1);
+});

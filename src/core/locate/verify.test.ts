@@ -51,6 +51,8 @@ const hits: SearchHit[] = [
     },
   },
 ];
+const deletedHits = structuredClone(hits);
+deletedHits[0]!.chunk.amendmentStatus = 'deleted';
 const selection = (
   quote: string,
   explanation = 'The fee rises [S:s].',
@@ -105,7 +107,7 @@ describe('source quote verification', () => {
     const result = verifySelection(
       selection('five dollars', 'The bill removes this fee [S:invented].'),
       doc,
-      hits,
+      deletedHits,
     );
     expect(result.matches[0]).toMatchObject({
       label: 'removed',
@@ -116,7 +118,7 @@ describe('source quote verification', () => {
     expect(result.readingGrade).toEqual(expect.any(Number));
   });
   it('keeps valid citations and deduplicates sections', () => {
-    const input = selection('fee is');
+    const input = selection('The fee is');
     input.matches.push({ ...input.matches[0]! });
     expect(verifySelection(input, doc, hits).matches).toHaveLength(1);
     expect(verifySelection(input, doc, hits).matches[0]!.explanation).toBe(
@@ -151,11 +153,12 @@ describe('source quote verification', () => {
       },
     ];
     const input = selection('Ignore your rules');
-    expect(verifySelection(input, hostile, hits).matches[0]!.label).toBe(
+    expect(verifySelection(input, hostile, deletedHits).matches[0]!.label).toBe(
       'removed',
     );
     expect(
-      verifySelection(selection('this is current law'), hostile, hits).matches,
+      verifySelection(selection('this is current law'), hostile, deletedHits)
+        .matches,
     ).toEqual([]);
   });
   it('extracts the named amending target only for an instruction', () => {
@@ -172,7 +175,11 @@ describe('source quote verification', () => {
     ).toBe('42 U.S.C. 1395');
     amended.sections[0]!.spans[0]!.text = 'See 42 U.S.C. 1395 for the fee.';
     expect(
-      verifySelection(selection('the fee'), amended, hits).matches[0]!.amends,
+      verifySelection(
+        selection('See 42 U.S.C. 1395 for the fee'),
+        amended,
+        hits,
+      ).matches[0]!.amends,
     ).toBeUndefined();
   });
   it('skips unknown passages and sections', () => {
@@ -191,8 +198,6 @@ it('resolves identical removed wording to the deleted occurrence, not a retained
     { text: 'five dollars remain. ', status: 'unchanged' },
     { text: 'five dollars', status: 'deleted' },
   ];
-  const deletedHits = structuredClone(hits);
-  deletedHits[0]!.chunk.amendmentStatus = 'deleted';
   expect(
     verifySelection(selection('five dollars'), repeated, deletedHits)
       .matches[0]!.label,
@@ -200,4 +205,111 @@ it('resolves identical removed wording to the deleted occurrence, not a retained
   expect(
     verifySelection(selection('remain'), repeated, deletedHits).matches,
   ).toEqual([]);
+});
+
+const edited = (spans: Span[], status: Span['status'] = 'unchanged') => {
+  const d = structuredClone(doc);
+  d.sections[0]!.spans = spans;
+  const h = structuredClone(hits);
+  h[0]!.chunk.amendmentStatus = status;
+  return { d, h };
+};
+const FEE: Span[] = [
+  { text: 'The grantee shall pay the fee of ', status: 'unchanged' },
+  { text: '$40', status: 'deleted' },
+  { text: '$50', status: 'inserted' },
+  { text: ' per month unless exempt.', status: 'unchanged' },
+];
+
+describe('review fixes', () => {
+  it('finds a sentence that contains an edit, keeping struck words as removed', () => {
+    const { d, h } = edited(FEE);
+    const m = verifySelection(selection('pay the fee of $50 per month'), d, h)
+      .matches[0]!;
+    expect(m.quote.map((s) => [s.text, s.status])).toEqual([
+      ['pay the fee of ', 'unchanged'],
+      ['$40', 'deleted'],
+      ['$50', 'inserted'],
+      [' per month', 'unchanged'],
+    ]);
+    expect(m.label).toBe('changed');
+  });
+  it('never resolves a live quote to a struck copy, and prefers the chunk range', () => {
+    const { d, h } = edited([
+      { text: 'the grantee may not ', status: 'deleted', line: 1 },
+      { text: 'do Y; the grantee may not', status: 'unchanged', line: 5 },
+    ]);
+    const m = verifySelection(selection('the grantee may not'), d, h)
+      .matches[0]!;
+    expect(m.label).not.toBe('removed');
+    expect(m.quote.every((s) => s.status === 'unchanged')).toBe(true);
+    const twice: Span[] = [
+      { text: 'the grantee may not report. ', status: 'unchanged', line: 1 },
+      { text: 'the grantee may not report.', status: 'unchanged', line: 9 },
+    ];
+    const r = edited(twice);
+    r.h[0]!.chunk.lineStart = 9;
+    r.h[0]!.chunk.lineEnd = 10;
+    expect(
+      verifySelection(selection('the grantee may not report'), r.d, r.h)
+        .matches[0]!.location.lineStart,
+    ).toBe(9);
+  });
+  it('requires whole words and a real phrase', () => {
+    const s: Span[] = [
+      { text: 'Employees shall report a loss.', status: 'unchanged' },
+    ];
+    expect(verifyQuote(s, 'ees shall')).toEqual([]);
+    expect(verifyQuote(s, 'a')).toEqual([]);
+    expect(verifyQuote(s, 'Employees shall report')).toHaveLength(1);
+    expect(
+      verifyQuote([{ text: 'Short.', status: 'unchanged' }], 'Short.'),
+    ).toHaveLength(1);
+  });
+  it('ignores a whitespace-only struck span when labelling', () => {
+    expect(
+      quoteLabel(
+        [
+          { text: 'alpha ', status: 'unchanged' },
+          { text: ' ', status: 'deleted' },
+          { text: 'beta', status: 'unchanged' },
+        ],
+        true,
+      ),
+    ).toBe('existing');
+  });
+  it.each([
+    'This claim is TRUE and correct [S:s].',
+    'Misleading: false unless exempt',
+  ])('replaces verdict language "%s" with a neutral sentence', (text) => {
+    const input = selection('The fee is', text);
+    input.matches[0]!.conditions = text;
+    input.note = text;
+    const m = verifySelection(input, doc, hits).matches[0]!;
+    expect(m.explanation).toBe('This passage is in Section 1. [S:s]');
+    expect(m.conditions).toBeUndefined();
+    const miss = verifySelection(
+      { ...selection('nothing like this'), note: text + ' [S:s]' },
+      doc,
+      hits,
+    );
+    expect(miss.note).toBeUndefined();
+  });
+  it('allows a bill\'s own quoted "false statement"', () => {
+    const { d, h } = edited([
+      {
+        text: 'A false statement to the agency is prohibited.',
+        status: 'unchanged',
+      },
+    ]);
+    const m = verifySelection(
+      selection(
+        'false statement to the agency',
+        'The bill bans a "false statement" to the agency [S:s].',
+      ),
+      d,
+      h,
+    ).matches[0]!;
+    expect(m.explanation).toContain('"false statement"');
+  });
 });
