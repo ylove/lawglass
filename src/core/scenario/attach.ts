@@ -35,6 +35,8 @@ export interface AttachScenarioInput {
   /** A reader-requested subject, already vetted; see `ScenarioInput.subject`. */
   subject?: string | undefined;
   docId?: string | undefined;
+  /** An example for one part of the bill; see `ScenarioInput.focusSectionId`. */
+  focusSectionId?: string | undefined;
   signal?: AbortSignal | undefined;
   timeoutMs?: number | undefined;
 }
@@ -91,6 +93,9 @@ export async function attachScenario(
       ...(input.subject === undefined
         ? {}
         : { subject: input.subject, docId: input.docId ?? '' }),
+      ...(input.focusSectionId === undefined
+        ? {}
+        : { focusSectionId: input.focusSectionId }),
       signal,
     });
     return scenario ? { scenario, usage } : { usage };

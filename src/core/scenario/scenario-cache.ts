@@ -24,7 +24,10 @@ export const NONE_RETRY_MS = 10 * 60_000;
 
 export interface ScenarioCacheKey {
   docId: string;
+  /** The reader's subject; empty for a per-section example, which is keyed by `sectionId`. */
   subject: string;
+  /** A per-section example (#277): one cached result per part of the bill, never shared. */
+  sectionId?: string;
   provider: string;
   model: string;
   promptVersion: string;
@@ -46,6 +49,9 @@ export function scenarioCacheHash(key: ScenarioCacheKey): string {
       JSON.stringify({
         kind: 'scenario',
         subjectNorm: normalizeSubject(key.subject),
+        // Added only when set, so every existing subject-scenario hash is unchanged. Not
+        // lowercased: section ids are case-sensitive.
+        ...(key.sectionId === undefined ? {} : { sectionId: key.sectionId }),
         provider: key.provider,
         model: key.model,
         promptVersion: key.promptVersion,

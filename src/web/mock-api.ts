@@ -8,6 +8,8 @@ import {
   type AskEvent,
   type AskRequest,
   type BillHistory,
+  type BreakdownResponse,
+  type SectionBrief,
   type ChipId,
   type ClientConfig,
   type DocDetail,
@@ -22,6 +24,7 @@ import {
   type SummaryResponse,
 } from '../core/model/index.js';
 import { BRAND } from '../core/brand.js';
+import { NO_EXAMPLE_NOTE } from '../core/breakdown/notes.js';
 import type { ApiClient } from './api.js';
 import { ApiError } from './sse.js';
 
@@ -137,6 +140,20 @@ const SECTIONS: MockSection[] = [
     ],
     page: 3,
     lines: [5, 12],
+  },
+  {
+    id: 'sec-5',
+    breadcrumb: 'Clean Water Infrastructure Act > Section 5',
+    num: '5',
+    heading: 'Annual report',
+    spans: [
+      {
+        text: 'Each utility shall file an annual report with the state agency listing the lead service lines it has replaced.',
+        status: 'unchanged',
+      },
+    ],
+    page: 4,
+    lines: [1, 3],
   },
   {
     id: 'sec-6',
@@ -323,6 +340,29 @@ const SAMPLE_SPONSORS: SponsorProfile[] = [
   },
 ];
 
+/** Invented briefs for the sample bill: two with an example, one without (a report). */
+const SAMPLE_BRIEFS: readonly {
+  sectionId: string;
+  text: string;
+  example: SectionBrief['example'];
+}[] = [
+  {
+    sectionId: 'sec-4/b',
+    text: 'A utility has ten years to replace each lead service line, down from fifteen [S:sec-4/b]. It must tell each affected household in writing [S:sec-4/b].',
+    example: 'available',
+  },
+  {
+    sectionId: 'sec-5',
+    text: 'A utility sends the state an annual report on the lead lines it has replaced [S:sec-5].',
+    example: 'none',
+  },
+  {
+    sectionId: 'sec-6',
+    text: 'A utility that misses a deadline can be fined up to $1,000 for each day of delay [S:sec-6].',
+    example: 'available',
+  },
+];
+
 const sleep = (ms: number, signal?: AbortSignal): Promise<void> =>
   new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -367,6 +407,9 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
   const publicMode = options.publicMode ?? false;
   const docs = new Map<string, DocSummary>([[SAMPLE_ID, SAMPLE_DOC]]);
   const summariesStarted = new Set<string>();
+  // How many times each breakdown / example has been looked at, so a poll sees it progress.
+  const breakdownLooks = new Map<string, number>();
+  const exampleLooks = new Map<string, number>();
 
   const config: ClientConfig = {
     productName: BRAND.displayName,
@@ -377,7 +420,7 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
     model: 'mock-1',
     chips: CHIPS,
     scenariosEnabled: !publicMode,
-    breakdownEnabled: false,
+    breakdownEnabled: !publicMode,
     locateEnabled: !publicMode,
   };
 
@@ -598,6 +641,58 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
       if (summariesStarted.has(docId)) return cached();
       summariesStarted.add(docId);
       return { status: 'pending' };
+    },
+
+    // Same contract as GET /api/docs/:id/breakdown: pending, then one part finished, then all.
+    // eslint-disable-next-line @typescript-eslint/require-await
+    async getBreakdown(docId): Promise<BreakdownResponse> {
+      const doc = need(docId);
+      if (publicMode) return { status: 'disabled' };
+      const looks = (breakdownLooks.get(docId) ?? 0) + 1;
+      breakdownLooks.set(docId, looks);
+      const briefs = (count: number): SectionBrief[] =>
+        SAMPLE_BRIEFS.slice(0, count).map((b) => {
+          const answer = buildAnswer(doc, b.text, false);
+          const section = SECTIONS.find((x) => x.id === b.sectionId);
+          return {
+            sectionId: b.sectionId,
+            ...(section ? { num: section.num, heading: section.heading } : {}),
+            text: answer.text,
+            citations: answer.citations,
+            readingGrade: 6.2,
+            example: b.example,
+          };
+        });
+      if (looks === 1) return { status: 'pending' };
+      if (looks === 2) return { status: 'pending', briefs: briefs(1) };
+      return {
+        status: 'cached',
+        briefs: briefs(SAMPLE_BRIEFS.length),
+        omitted: 0,
+      };
+    },
+
+    // Same contract as GET /api/docs/:id/sections/:sectionId/example: pending, then the example.
+    async getSectionExample(docId, sectionId): Promise<ScenarioResponse> {
+      need(docId);
+      if (publicMode) return { status: 'disabled' };
+      const brief = SAMPLE_BRIEFS.find((b) => b.sectionId === sectionId);
+      if (!brief)
+        throw new ApiError(
+          'INVALID_INPUT',
+          'That part of the bill could not be found.',
+        );
+      if (brief.example === 'none')
+        return { status: 'none', note: NO_EXAMPLE_NOTE };
+      const key = `${docId}:${sectionId}`;
+      const looks = (exampleLooks.get(key) ?? 0) + 1;
+      exampleLooks.set(key, looks);
+      await sleep(delay);
+      if (looks === 1) return { status: 'pending' };
+      const scenario = structuredClone(SAMPLE_SCENARIO);
+      for (const frame of scenario.frames)
+        if (frame.kind !== 'setup') frame.citations = [sectionId];
+      return { status: 'ok', scenario };
     },
 
     // Same contract as POST /api/docs/:id/scenario. Scripted: a judging subject is refused the way
