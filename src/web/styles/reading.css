@@ -151,6 +151,9 @@ ins {
 /* A link inside amended text takes the amendment's own ink: the link color on the amber or blue
    fill falls under 4.5:1 in light mode. The underline still marks it as a link, and the strike
    or underline of the amendment still shows. */
+/* Scoped like `.excerpt a` above so it wins on specificity; a bare `del a` would lose to it. */
+.excerpt del a,
+.excerpt ins a,
 del a,
 ins a {
   color: inherit;
