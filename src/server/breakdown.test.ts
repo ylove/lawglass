@@ -543,8 +543,16 @@ describe('pre-generation', () => {
         (_, i) => `sec-${String(i + 1)}`,
       ),
     );
-    // Every one is now instant.
+    // Every one is now instant. The pass caches an example only after its model call returns, so
+    // on a slow runner the last one can still read `pending`: wait for it to land first.
     const calls = exampleCalls();
+    const last = `sec-${String(MAX_PREGENERATED_EXAMPLES)}`;
+    await vi.waitFor(
+      async () => {
+        expect((await example(a, docId, last)).status).toBe('ok');
+      },
+      { timeout: 5000 },
+    );
     for (let i = 1; i <= MAX_PREGENERATED_EXAMPLES; i++)
       expect((await example(a, docId, `sec-${String(i)}`)).status).toBe('ok');
     expect(exampleCalls()).toBe(calls);
