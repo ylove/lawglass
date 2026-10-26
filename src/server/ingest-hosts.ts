@@ -1,3 +1,4 @@
+import { NEW_YORK_HOSTS } from '../core/fetch/new-york.js';
 import { BRAND, envVar } from '../core/brand.js';
 import { assertHistoryUrl } from '../core/history/allowlist.js';
 import { HISTORY_SOURCES } from '../core/history/resolve.js';
@@ -5,6 +6,7 @@ import { LEGISLATORS_URLS } from '../core/sponsors/legislators.js';
 import { AppError } from '../core/model/index.js';
 
 export const DEFAULT_INGEST_HOSTS = [
+  ...NEW_YORK_HOSTS,
   'congress.gov',
   'www.congress.gov',
   'govinfo.gov',
@@ -27,7 +29,7 @@ export function ingestHosts(
 
 export function checkIngestHost(url: string, hosts: ReadonlySet<string>): void {
   if (hosts.has(new URL(url).hostname.toLowerCase())) return;
-  const message = `${BRAND.displayName} currently reads U.S. federal bills (congress.gov, govinfo.gov) and Ohio legislation (legislature.ohio.gov). Other states are on the roadmap.`;
+  const message = `${BRAND.displayName} currently reads U.S. federal bills (congress.gov, govinfo.gov) Ohio legislation (legislature.ohio.gov), and New York bills (nysenate.gov, nyassembly.gov). Other states are on the roadmap.`;
   throw new AppError('INVALID_INPUT', message, { userMessage: message });
 }
 

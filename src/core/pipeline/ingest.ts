@@ -1,3 +1,4 @@
+import { resolveNewYork, assertNewYorkFetch } from '../fetch/new-york.js';
 /**
  * The shared ingest pipeline: fetch -> parse -> metadata -> chunk -> enrich -> index.
  * The CLI, the server (#29) and eval (#32) all call this, so none of them re-implements
@@ -425,10 +426,13 @@ async function ingestWithinLimits(
   deps = { ...deps, parseLimits: deps.parseLimits ?? readParseLimits() };
   opts.onProgress?.({ stage: 'fetching', detail: url });
   // WRAPPER_PAGE (with candidate links in `details`) propagates untouched for callers to offer.
-  const plan = resolveHistory(url);
+  const newYork = resolveNewYork(url);
+  const plan = newYork ? undefined : resolveHistory(url);
   let attachment: HistoryAttachment | undefined;
-  let fetchUrl = url;
-  let validateUrl: (url: URL) => void = assertNoCongressFetch;
+  let fetchUrl = newYork?.textUrl ?? url;
+  let validateUrl: (url: URL) => void = newYork
+    ? assertNewYorkFetch
+    : assertNoCongressFetch;
   if (plan) {
     const source = historySource(plan.source);
     validateUrl = (url) => {
@@ -463,6 +467,7 @@ async function ingestWithinLimits(
     signal,
     validateUrl,
     parseLimits: deps.parseLimits,
+    ...(newYork?.latest ? { refresh: true } : {}),
   });
   validateUrl(new URL(fetched.finalUrl));
   signal?.throwIfAborted();

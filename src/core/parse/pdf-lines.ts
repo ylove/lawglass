@@ -302,7 +302,12 @@ export function joinLine(
     for (let unit = 0; unit < item.text.length; unit++) {
       chars.push({
         char: item.text[unit] ?? '',
-        status: statuses[index]?.[unit] ?? 'unchanged',
+        status:
+          statuses[index]?.[unit] === 'deleted'
+            ? 'deleted'
+            : item.italic
+              ? 'inserted'
+              : (statuses[index]?.[unit] ?? 'unchanged'),
       });
     }
   });

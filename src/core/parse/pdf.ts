@@ -13,7 +13,7 @@ import {
   readParseLimits,
   type ParseControl,
 } from './limits.js';
-import { AppError, EMPTY_METADATA, NormalizedDoc } from '../model/index.js';
+import { AppError, NormalizedDoc } from '../model/index.js';
 import {
   collectGlyphWidths,
   extractMarkSegments,
@@ -21,7 +21,20 @@ import {
   type PdfTextItem,
   type Rect,
 } from './pdf-geometry.js';
-import { layoutPages, type PageContent, type StyledLine } from './pdf-lines.js';
+import {
+  applyChangeMarks,
+  changeMarkConvention,
+  changeMarkJurisdiction,
+} from './change-marks.js';
+import { jurisdictionSections, newYorkMetadata } from './new-york.js';
+import {
+  layoutPages,
+  groupLines,
+  joinLine,
+  withoutOverprint,
+  type PageContent,
+  type StyledLine,
+} from './pdf-lines.js';
 import {
   detectSections,
   startsWithHeading,
@@ -33,6 +46,7 @@ export interface PdfParseOptions extends SectionDetectionOptions, ParseControl {
   maxPages?: number | undefined;
   publicMode?: boolean | undefined;
   sourceUrl: string;
+  jurisdiction?: string;
   /** Supplied by the fetch step so parsing is deterministic. */
   fetchedAt: string;
 }
@@ -108,6 +122,7 @@ const linkAnnotation = z.object({
 });
 
 interface ExtractedPage extends PageContent {
+  italicFonts: ReadonlySet<string>;
   /** Visible characters in the text layer, including rotated text. */
   characters: number;
   /** Image paints: a page that only paints images is likely a scan. */
@@ -121,6 +136,7 @@ async function extractPage(
   pageNumber: number,
   { OPS, AnnotationMode }: PdfJs,
   budget: ParseBudget,
+  readItalicFonts: boolean,
 ): Promise<ExtractedPage> {
   const content = await budget.wait(page.getTextContent());
   const items: PdfTextItem[] = [];
@@ -154,6 +170,13 @@ async function extractPage(
       annotationMode: AnnotationMode.DISABLE,
     }),
   );
+  const italicFonts = new Set<string>();
+  const fontInfo = z.object({ name: z.string().optional() });
+  for (const name of readItalicFonts ? Object.keys(content.styles) : []) {
+    const font = fontInfo.safeParse(page.commonObjs.get(name));
+    if (font.success && /italic|oblique/i.test(font.data.name ?? ''))
+      italicFonts.add(name);
+  }
   const links: Rect[] = (await budget.wait(page.getAnnotations())).flatMap(
     (annotation) => {
       const link = linkAnnotation.safeParse(annotation);
@@ -191,6 +214,7 @@ async function extractPage(
     characters,
     images: operators.fnArray.filter((fn) => imageOps.has(fn)).length,
     skippedRotated,
+    italicFonts,
   };
 }
 
@@ -211,6 +235,7 @@ async function extractPages(
     // and extraction is identical without them across every fixture. `useSystemFonts` stops
     // PDF.js fetching them (and warning that no font path was given).
     useSystemFonts: true,
+    fontExtraProperties: changeMarkJurisdiction(options) === 'NY',
     // PDF.js silently drops images over maxImageSize (ignoreErrors is true).
     // OCR-scan work (#192) must account for these missing images.
     maxImageSize: 40_000_000,
@@ -244,7 +269,15 @@ async function extractPages(
       await budget.wait(setImmediate());
       const page = await budget.wait(document.getPage(number));
       try {
-        pages.push(await extractPage(page, number, api, budget));
+        pages.push(
+          await extractPage(
+            page,
+            number,
+            api,
+            budget,
+            changeMarkJurisdiction(options) === 'NY',
+          ),
+        );
       } finally {
         // Keep only the extracted geometry; long bills run to thousands of pages.
         page.cleanup();
@@ -303,17 +336,73 @@ export async function parsePdf(
         `Page ${String(page)}: rotated text (such as a stamp) was skipped.`,
       );
   }
+  // Read the legend before layout drops running furniture. Typography is interpreted only
+  // under the verified convention; ordinary italics in other documents remain unchanged.
+  const jurisdiction = changeMarkJurisdiction(options);
+  // Content-stream order may paint an italic word after the rest of its sentence.
+  // Reconstruct by geometry so the legend is read in the order a person sees it.
+  const rawText = jurisdiction
+    ? pages
+        .flatMap((page) =>
+          groupLines(withoutOverprint(page.items)).map(
+            (items) => joinLine(items, []).text,
+          ),
+        )
+        .join('\n')
+    : '';
+  const convention = changeMarkConvention(rawText, options);
+  if (convention === 'bracket-underline') {
+    for (const page of pages) {
+      for (const item of page.items)
+        item.italic =
+          jurisdiction === 'NY' && page.italicFonts.has(item.fontName);
+      if (
+        jurisdiction === 'NJ' &&
+        rawText.includes('Matter enclosed in superscript numerals')
+      ) {
+        // NJ amendment numbers are raised small glyphs, not body text or printed line numbers.
+        // Remove them before grouping baselines, where they would become spurious lines.
+        page.items = page.items.filter(
+          (item) =>
+            !(
+              /^\d+$/.test(item.text) &&
+              page.items.some(
+                (other) =>
+                  other.fontSize > item.fontSize / 0.8 &&
+                  item.y > other.y + 0.15 * other.fontSize &&
+                  item.y < other.y + 0.8 * other.fontSize &&
+                  item.x + item.width >= other.x - other.fontSize &&
+                  item.x <= other.x + other.width + other.fontSize,
+              )
+            ),
+        );
+      }
+    }
+  }
+  const sectionOptions = jurisdictionSections(options);
   const layout = layoutPages(pages);
+  const marked = applyChangeMarks(layout.lines, options, rawText);
+  warnings.push(...marked.warnings);
   warnings.push(...layout.warnings);
+  const metadata = newYorkMetadata(
+    layout.lines.map((line) => line.text).join('\n'),
+    options,
+  );
+  if (metadata.jurisdiction === 'New York' && !metadata.billNumber) {
+    const cover = pages[0]?.items.map((item) => item.text).join('\n') ?? '';
+    const coverMetadata = newYorkMetadata(cover, options);
+    metadata.billNumber = coverMetadata.billNumber;
+    metadata.version = coverMetadata.version;
+  }
   const doc = {
     docId,
     sourceUrl: options.sourceUrl,
     fetchedAt: options.fetchedAt,
     format: 'pdf',
-    metadata: { ...EMPTY_METADATA },
+    metadata,
     sections: detectSections(
-      toSourceLines(layout.lines, options.patterns),
-      options,
+      toSourceLines(marked.lines, sectionOptions.patterns),
+      sectionOptions,
     ),
     definitions: [],
     externalRefs: [],
@@ -365,7 +454,15 @@ export function toSourceLines(
   const atMargin = (line: StyledLine): boolean =>
     margin !== undefined && Math.abs(line.x - margin) <= INDENT_TOLERANCE;
   const headings = lines.filter((line) =>
-    startsWithHeading(line.text, patterns),
+    startsWithHeading(
+      line.statuses.includes('deleted')
+        ? line.text
+            .split('')
+            .filter((_char, index) => line.statuses[index] !== 'deleted')
+            .join('')
+        : line.text,
+      patterns,
+    ),
   );
   const indented = headings.filter((line) => !atMargin(line));
   const firstLineIndent =
