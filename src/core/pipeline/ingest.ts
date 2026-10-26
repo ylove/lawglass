@@ -717,9 +717,16 @@ async function ingestLocked(
   let embedTokens = 0;
   try {
     progress({ stage: 'embedding', done: 0, total: chunks.length });
-    const { usage } = await backend.upsertChunks(docId, chunks, (p) => {
-      progress({ stage: 'embedding', done: p.done, total: p.total });
-    });
+    // The signal reaches the adapter so a client that disconnected mid-embedding stops the
+    // spend now instead of after the last batch.
+    const { usage } = await backend.upsertChunks(
+      docId,
+      chunks,
+      (p) => {
+        progress({ stage: 'embedding', done: p.done, total: p.total });
+      },
+      signal,
+    );
     embedTokens = usage.embedTokens;
     // Chunks changed (or just became visible): no earlier whole-bill scan may be trusted.
     forgetDocument(backend, docId);
