@@ -1,3 +1,4 @@
+import { ASSEMBLY_HOSTS } from '../fetch/new-york.js';
 import { createHash } from 'node:crypto';
 import { load, type CheerioAPI } from 'cheerio';
 import { z } from 'zod';
@@ -9,7 +10,6 @@ import {
 } from './html-safety.js';
 import {
   AppError,
-  EMPTY_METADATA,
   NormalizedDoc,
   type Section,
   type Span,
@@ -22,6 +22,13 @@ import {
   subdivisionHeading,
 } from './sections.js';
 import type { TextParseOptions } from './text.js';
+import {
+  applyChangeMarks,
+  changeMarkConvention,
+  changeMarkJurisdiction,
+  type ChangeMarkConvention,
+} from './change-marks.js';
+import { jurisdictionSections, newYorkMetadata } from './new-york.js';
 import { trimEndWhile } from '../trim.js';
 
 export type HtmlParseOptions = TextParseOptions & {
@@ -80,19 +87,27 @@ function decorationFromValue(value: string): Decoration {
 }
 
 /** Last `text-decoration` / `text-decoration-line` declaration in a CSS declaration list. */
-function decorationFromDeclarations(css: string): Decoration {
+function decorationFromDeclarations(
+  css: string,
+  convention: ChangeMarkConvention = 'default',
+): Decoration {
   let result: Decoration;
+  let italic = false;
   for (const declaration of css.split(';')) {
     const colon = declaration.indexOf(':');
     if (colon < 0) continue;
     const name = declaration.slice(0, colon).trim().toLowerCase();
+    if (convention === 'bracket-underline' && name === 'font-style') {
+      italic = /italic|oblique/i.test(declaration.slice(colon + 1));
+      continue;
+    }
     if (name !== 'text-decoration' && name !== 'text-decoration-line') continue;
     const decided = decorationFromValue(
       declaration.slice(colon + 1).replace(/!important/i, ''),
     );
     if (decided) result = decided;
   }
-  return result;
+  return italic && result !== 'deleted' ? 'inserted' : result;
 }
 
 interface ClassRule {
@@ -189,11 +204,14 @@ function flattenAtRules(css: string, nesting = 0): string {
  * classes. Tag-only rules (e.g. `a { text-decoration: underline }`) are ignored on purpose, or
  * every link would read as inserted text.
  */
-function readClassRules(css: string): ClassRule[] {
+function readClassRules(
+  css: string,
+  convention: ChangeMarkConvention,
+): ClassRule[] {
   const rules: ClassRule[] = [];
   const stripped = flattenAtRules(stripCssComments(css));
   for (const [selectors, body] of cssBlocks(stripped)) {
-    const status = decorationFromDeclarations(body);
+    const status = decorationFromDeclarations(body, convention);
     if (!status) continue;
     for (const selector of selectors.split(',')) {
       const match = /^\s*([a-z][a-z0-9]*)?\.([\w-]+)\s*$/i.exec(selector);
@@ -212,8 +230,15 @@ function readClassRules(css: string): ClassRule[] {
 const STYLED_NOT_AMENDED = /^(?:h[1-6]|a)$/;
 
 /** Inline style beats stylesheet classes, which beat the tag's own meaning. */
-function ownStatus(element: Element, rules: readonly ClassRule[]): Decoration {
-  const inline = decorationFromDeclarations(element.attribs.style ?? '');
+function ownStatus(
+  element: Element,
+  rules: readonly ClassRule[],
+  convention: ChangeMarkConvention,
+): Decoration {
+  const inline = decorationFromDeclarations(
+    element.attribs.style ?? '',
+    convention,
+  );
   if (inline) return inline;
   const classes = new Set((element.attribs.class ?? '').split(/\s+/));
   const name = element.name.toLowerCase();
@@ -222,7 +247,13 @@ function ownStatus(element: Element, rules: readonly ClassRule[]): Decoration {
     if (classes.has(rule.className) && (!rule.tag || rule.tag === name))
       fromClass = rule.status;
   }
-  return fromClass ?? TAG_STATUS[name];
+  return (
+    fromClass ??
+    TAG_STATUS[name] ??
+    (convention === 'bracket-underline' && /^(?:i|em)$/.test(name)
+      ? 'inserted'
+      : undefined)
+  );
 }
 
 /** Text decorations propagate to descendants, so a strike anywhere above wins. */
@@ -292,6 +323,7 @@ function walk(
   status: SpanStatus,
   pre: boolean,
   budget: ParseBudget,
+  convention: ChangeMarkConvention,
 ): void {
   budget.check();
   // domhandler's ElementType is an enum; compare as plain strings.
@@ -311,10 +343,10 @@ function walk(
   if (block) builder.endLine();
   const firstLine = builder.lines.length;
   if (CELL_TAGS.has(name)) builder.addFlowed(' ', status);
-  const childStatus = combine(status, ownStatus(node, rules));
+  const childStatus = combine(status, ownStatus(node, rules, convention));
   const childPre = pre || name === 'pre';
   for (const child of node.children)
-    walk(child, builder, rules, childStatus, childPre, budget);
+    walk(child, builder, rules, childStatus, childPre, budget, convention);
   if (block) builder.endLine();
   if (/^h[1-6]$/.test(name))
     for (const line of builder.lines.slice(firstLine))
@@ -775,16 +807,55 @@ function parseHtmlDocument(
   const prepared = options.preparedHtml ?? prepareHtml(input, options, budget);
   const $ = prepared.dom;
   budget.check();
-  const rules = $('style')
+  const stylesheets = $('style')
     .toArray()
-    .flatMap((style) => readClassRules($(style).text()));
+    .map((style) => $(style).text());
   const warnings = [...prepared.warnings, ...removeNoise($)];
   $('style').remove();
+  // Assembly publishes the bill in preformatted blocks after this fixed text heading.
+  // Keep only those blocks; summaries, menus and sponsor memos are not bill text.
+  if (
+    ['nyassembly.gov', 'www.nyassembly.gov'].includes(
+      new URL(options.sourceUrl).hostname,
+    )
+  ) {
+    const blocks = $('#jump_to_Text').nextUntil('h3').filter('pre');
+    if (!blocks.length)
+      throw new AppError(
+        'PARSE_FAILED',
+        'The Assembly page has no full bill text.',
+      );
+    const content = blocks.clone();
+    $('body').empty().append(content);
+  }
+  const convention = changeMarkConvention($('body').text(), options);
+  // NJ's legend specifies underline only; its enacting clause is ordinary italic type.
+  const typographyConvention =
+    changeMarkJurisdiction(options) === 'NJ' ? 'default' : convention;
+  const rules = stylesheets.flatMap((css) =>
+    readClassRules(css, typographyConvention),
+  );
+  if (
+    convention === 'bracket-underline' &&
+    changeMarkJurisdiction(options) === 'NJ' &&
+    /Matter enclosed in superscript numerals/i.test($('body').text())
+  )
+    $('sup')
+      .filter((_i, element) => /^[0-9]+$/.test($(element).text()))
+      .remove();
 
   const builder = new LineBuilder();
   for (const root of $.root().toArray()) {
     for (const child of root.children)
-      walk(child, builder, rules, 'unchanged', false, budget);
+      walk(
+        child,
+        builder,
+        rules,
+        'unchanged',
+        false,
+        budget,
+        typographyConvention,
+      );
   }
   builder.endLine();
   // Leading/trailing blank lines (common around <pre>) carry nothing.
@@ -797,31 +868,61 @@ function parseHtmlDocument(
   const sourceLines = lines.map((line) => ({
     text: line.map((c) => c.text).join(''),
     printedHeading: builder.headings.has(line),
+    statuses: line.flatMap((c) =>
+      Array<SpanStatus>(c.text.length).fill(c.status),
+    ),
   }));
-  const lineTexts = sourceLines.map((line) => line.text);
-  const fullText = lineTexts.join('\n');
-  const statuses: SpanStatus[] = [];
-  for (const [index, line] of lines.entries()) {
-    budget.check();
-    // A loop, not push(...array): spreading a long block overflows the call stack.
-    for (const chunk of line)
-      for (const _unit of chunk.text.split('')) statuses.push(chunk.status);
-    // The joining newline is structure, not amendment text.
-    if (index < lines.length - 1) statuses.push('unchanged');
+  // Assembly's HTML faithfully prints page/line numbers. Strip their fixed gutters before
+  // section detection; HTML citations remain section-only under the spec.
+  if (
+    changeMarkJurisdiction(options) === 'NY' &&
+    ASSEMBLY_HOSTS.has(new URL(options.sourceUrl).hostname)
+  ) {
+    for (const line of sourceLines) {
+      const gutter = /^\s{0,8}\d{1,3}\s{2,}/.exec(line.text)?.[0];
+      if (gutter) {
+        line.text = line.text.slice(gutter.length);
+        line.statuses = line.statuses.slice(gutter.length);
+      }
+      if (
+        /^\s*[SA]\.\s*\d+(?:--[A-Z])?\s+\d+\s*$/.test(line.text) ||
+        /^\s*LBD\d/.test(line.text)
+      ) {
+        line.text = '';
+        line.statuses = [];
+      }
+    }
   }
-  // Chunk text is built from UTF-16 code units, matching String.length used above.
-  const printedHeadings = new Set(
-    sourceLines.filter((line) => line.printedHeading).map((line) => line.text),
-  );
-  const sections = detectSections(sourceLines);
-  // detectSections never alters source text, so this only fails if that invariant breaks.
-  if (!applyStatuses(sections, statuses, fullText)) {
-    throw new AppError(
-      'PARSE_FAILED',
-      'Could not align amendment markup with the detected sections.',
+  const marked = applyChangeMarks(sourceLines, options);
+  warnings.push(...marked.warnings);
+  const sections =
+    convention === 'default'
+      ? detectSections(
+          sourceLines.map(({ statuses: _statuses, ...line }) => line),
+          jurisdictionSections(options),
+        )
+      : detectSections(marked.lines, jurisdictionSections(options));
+  if (convention === 'default') {
+    const fullText = sourceLines.map((line) => line.text).join('\n');
+    const statuses = sourceLines.flatMap((line, index) =>
+      index < sourceLines.length - 1
+        ? [...line.statuses, 'unchanged' as const]
+        : line.statuses,
+    );
+    if (!applyStatuses(sections, statuses, fullText))
+      throw new AppError(
+        'PARSE_FAILED',
+        'Could not align amendment markup with the detected sections.',
+      );
+    refineIds(
+      sections,
+      new Set(
+        sourceLines
+          .filter((line) => line.printedHeading)
+          .map((line) => line.text),
+      ),
     );
   }
-  refineIds(sections, printedHeadings);
   for (const section of walkSections(sections)) collapseGaps(section);
   budget.check();
   const doc = NormalizedDoc.parse({
@@ -829,7 +930,10 @@ function parseHtmlDocument(
     sourceUrl: options.sourceUrl,
     fetchedAt: options.fetchedAt,
     format: 'html',
-    metadata: { ...EMPTY_METADATA },
+    metadata: newYorkMetadata(
+      sourceLines.map((line) => line.text).join('\n'),
+      options,
+    ),
     sections,
     definitions: [],
     externalRefs: [],

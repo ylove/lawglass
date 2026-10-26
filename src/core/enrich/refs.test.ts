@@ -238,3 +238,17 @@ describe('collectExternalRefs', () => {
     expect(existing[0]?.sectionIds).toEqual(['sec-0']);
   });
 });
+
+it('New York law citations are external state_code refs, even when bill section numbers coincide', () => {
+  const hits = findExternalMatches(
+    'section 1-a of the public health law and section 2 of the education law',
+    { jurisdiction: 'New York' },
+  );
+  expect(hits.map((h) => [h.kind, h.citation])).toEqual([
+    ['state_code', 'New York public health law § 1-a'],
+    ['state_code', 'New York education law § 2'],
+  ]);
+  expect(findExternalMatches('section 1-a of the public health law')).toEqual(
+    [],
+  );
+});
