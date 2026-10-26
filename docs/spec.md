@@ -192,6 +192,10 @@ These override the original text below, and the earlier amendments, where they c
 
 33. **Reading level for amending bills and section briefs (§5.7).** Issues #340 and #320. This amends amendment 25. An answer citing struck or inserted text may now be regenerated for reading level; the rewrite is refused if it brings in a word or number that appears only in struck text of the cited sections, or drops an inserted-only number the first answer had. Briefs above the background ceiling are rewritten once under the same checks. The ceiling is part of the summary and breakdown cache keys.
 
+34. **Two contract additions (§5.3, §5.5).** Issues #325 and #221.
+    - `AmendsTarget.sectionIds` lists the measure's own sections that reprint amended charter text. A listed section number links only to one of those sections, never to a section of the measure that happens to share the number. Older cached documents lack the ids and keep the number match.
+    - `RetrievalBackend.upsertChunks` takes an optional `AbortSignal`. A client that disconnects during embedding stops the spend between batches. A cancelled first write leaves no document visible, and a cancelled update never leaves a half-written generation that reads as complete.
+
 ## 1. Purpose
 
 A local-first tool that takes the URL of any piece of legislation (federal, state, county, municipal), ingests it into Pinecone using structure-aware chunking and hybrid retrieval, and answers questions about it with citations to the exact section, page, and line.
