@@ -762,6 +762,27 @@ describe('toSourceLines', () => {
     expect(source[3]).not.toHaveProperty('line');
   });
 
+  it('a margin line after "(cf: ...)" still opens a section (NJ page break)', () => {
+    const source = toSourceLines([
+      line('Sec. 1. Section 3 of P.L.1976 is amended to read as follows:', 111),
+      line('Sec. 3. If any member is injured', 111),
+      line('while on duty.', 75),
+      line('(cf: P.L.1976, c.45, s.3)', 75),
+      line('Sec. 7. This act shall take effect immediately.', 75),
+      line('Sec. 2. Another indented section.', 111),
+      line('Sec. 5 of this act applies.', 75),
+    ]);
+    expect(source.map((s) => s.continuation ?? false)).toEqual([
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+    ]);
+  });
+
   it('passes indentation through when heading indents differ by level', () => {
     const source = toSourceLines([
       line('SEC. 2. GRANTS.', 72),

@@ -97,6 +97,13 @@ const NAMED_ACT =
   /\bsections?\s+(\d+[A-Za-z]?)(?:\([A-Za-z0-9]+\))*\s+of\s+the\s+((?:[A-Z][A-Za-z'’-]*\s+){1,6}Act(?:\s+of\s+\d{4})?)/g;
 const NY_LAW =
   /\bsection\s+(\d+[a-z]?(?:-[a-z0-9]+)*)\s+of\s+the\s+((?:[a-z]+\s+){1,6}law)\b/gi;
+// NJ statutes are cited by Title:chapter-section: R.S.37:1-13, N.J.S.A. 2C:12-1 and the
+// compiled form C.52:14B-1 printed after a P.L. citation.
+const NJ_CITE = String.raw`(\d+[A-Z]?:[0-9A-Za-z]+(?:-[0-9A-Za-z.]*[0-9A-Za-z])*)`;
+const NJ_RS = new RegExp(String.raw`\bR\.S\.\s*${NJ_CITE}`, 'g');
+const NJ_NJSA = new RegExp(String.raw`\bN\.J\.S\.A\.\s*${NJ_CITE}`, 'g');
+const NJ_COMPILED = new RegExp(String.raw`\(C\.\s*${NJ_CITE}`, 'g');
+const NJ_PUBLIC_LAW = /\bP\.L\.\s*(\d{4}),\s*c\.\s*(\d+)/g;
 const PUBLIC_LAW =
   /\b(?:Public\s+Law|Pub\.\s*L\.|P\.\s*L\.)\s*(?:No\.\s*)?(\d{1,3})\s*[-–]\s*(\d{1,4})/gi;
 // "H.B. 110 of the 134th General Assembly": another enactment's section, never ours.
@@ -276,6 +283,16 @@ export function findExternalMatches(
         `New York ${(m[2] ?? '').toLowerCase()} § ${m[1] ?? ''}`,
         'state_code',
       );
+  if (options.jurisdiction === 'New Jersey') {
+    for (const m of text.matchAll(NJ_RS))
+      add(m, `N.J. R.S. ${m[1] ?? ''}`, 'state_code');
+    for (const m of text.matchAll(NJ_NJSA))
+      add(m, `N.J.S.A. ${m[1] ?? ''}`, 'state_code');
+    for (const m of text.matchAll(NJ_COMPILED))
+      add(m, `N.J.S.A. ${m[1] ?? ''}`, 'state_code');
+    for (const m of text.matchAll(NJ_PUBLIC_LAW))
+      add(m, `N.J. P.L.${m[1] ?? ''}, c.${m[2] ?? ''}`, 'state_code');
+  }
   for (const m of text.matchAll(PUBLIC_LAW))
     add(m, `Public Law ${m[1] ?? ''}-${m[2] ?? ''}`, 'public_law');
   for (const m of text.matchAll(CFR))

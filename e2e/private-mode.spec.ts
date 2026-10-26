@@ -93,7 +93,7 @@ test('private preview gate, invite exchange and hosted ingest policy', async ({
     await page.goto(origin.origin);
     await page
       .getByRole('textbox', { name: /url|address|link/i })
-      .fill('https://pub.njleg.gov/bill.pdf');
+      .fill('https://www.palegis.us/bill.pdf');
     await page
       .getByRole('button', { name: 'Read this bill', exact: true })
       .click();

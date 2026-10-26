@@ -3,7 +3,8 @@ import { z } from 'zod';
 import { ParseBudget, type ParseControl } from './limits.js';
 import { AppError, NormalizedDoc } from '../model/index.js';
 import { applyChangeMarks } from './change-marks.js';
-import { jurisdictionSections, newYorkMetadata } from './new-york.js';
+import { jurisdictionSections } from './new-york.js';
+import { stateBillMetadata } from './bill-metadata.js';
 import { detectSections, type SectionDetectionOptions } from './sections.js';
 
 export interface TextParseOptions
@@ -65,7 +66,7 @@ export function parseText(
     sourceUrl: options.sourceUrl,
     fetchedAt: options.fetchedAt,
     format: 'text',
-    metadata: newYorkMetadata(text, options),
+    metadata: stateBillMetadata(text, options),
     sections: detectSections(marked.lines, jurisdictionSections(options)),
     definitions: [],
     externalRefs: [],

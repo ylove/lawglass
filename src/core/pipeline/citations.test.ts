@@ -142,3 +142,49 @@ test('a reference citation prints the law and its source, not the bare id', () =
     ),
   ).toBe('ref:usc/1/1');
 });
+
+test('a quoted statute section reads "quoted § N", and a PART bill names its part', () => {
+  const bill: Section[] = [
+    {
+      id: 'sec-1',
+      num: '1',
+      heading: 'Part A. Short title.',
+      level: 1,
+      spans: [],
+      children: [
+        {
+          id: 'sec-1/1509',
+          num: '§ 1509',
+          level: 2,
+          spans: [],
+          children: [
+            {
+              id: 'sec-1/1509/1',
+              num: '(1)',
+              level: 3,
+              spans: [],
+              children: [],
+            },
+          ],
+        },
+      ],
+    },
+    {
+      id: 'sec-1~2',
+      num: '1',
+      heading: 'Part B',
+      level: 1,
+      spans: [],
+      children: [],
+    },
+  ];
+  expect(formatCitation(cite('sec-1/1509'), { sections: bill })).toBe(
+    'Sec. 1 of Part A, quoted § 1509',
+  );
+  expect(formatCitation(cite('sec-1/1509/1'), { sections: bill })).toBe(
+    'Sec. 1 of Part A, quoted § 1509(1)',
+  );
+  expect(formatCitation(cite('sec-1~2'), { sections: bill })).toBe(
+    'Sec. 1 of Part B',
+  );
+});

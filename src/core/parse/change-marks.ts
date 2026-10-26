@@ -64,11 +64,13 @@ export function changeMarkConvention(
  * are literal. The NJ fixture prints [Second Reprint] on its cover, outside the law text.
  * Explicit strike markup still wins, including on an otherwise literal label.
  */
-function literalBracket(body: string): boolean {
+function literalBracket(body: string, lineBefore: string): boolean {
   const text = body.replace(/\s+/g, ' ').trim();
   return (
     /^(?:sic|reserved)\.?$/i.test(text) ||
-    /^(?:First|Second|Third|Fourth|Fifth) Reprint$/i.test(text)
+    /^(?:First|Second|Third|Fourth|Fifth) Reprint$/i.test(text) ||
+    // NJ running header "S1000 [1R] SPONSOR": 1R/2R is the reprint number, not law text.
+    (/^\d{1,2}R$/i.test(text) && /^\s*[SA]\d{1,5}\s+$/.test(lineBefore))
   );
 }
 
@@ -124,6 +126,46 @@ export function isLegendNotFoundWarning(warning: string): boolean {
 }
 
 /**
+ * The NJ reprint footnote: the "Matter enclosed in superscript numerals" line followed by
+ * entries that start with "Senate"/"Assembly" and end with a dated period, wrapping lines.
+ */
+function superscriptFootnotes(
+  lines: readonly SourceLine[],
+): { start: number; end: number }[] {
+  const notes: { start: number; end: number }[] = [];
+  let offset = 0;
+  let open: { start: number } | undefined;
+  let inEntry = false;
+  let end = 0;
+  const close = (): void => {
+    if (open) notes.push({ start: open.start, end });
+    open = undefined;
+    inEntry = false;
+  };
+  for (const line of lines) {
+    const text = line.text.trim();
+    const lineEnd = offset + line.text.length + 1;
+    if (
+      /^Matter enclosed in superscript numerals has been adopted as follows:?$/i.test(
+        text,
+      )
+    ) {
+      close();
+      open = { start: offset };
+      end = lineEnd;
+    } else if (open) {
+      if (inEntry || /^(?:Senate|Assembly)\b/.test(text)) {
+        inEntry = !/\d{4}\.$/.test(text);
+        end = lineEnd;
+      } else close();
+    }
+    offset = lineEnd;
+  }
+  close();
+  return notes;
+}
+
+/**
  * One document-wide pass, before section detection. Joining lines keeps state across HTML
  * elements and PDF pages; splitting back preserves every printed coordinate. Legend text is
  * removed before scanning, including a footer inside a deletion that spans the page break.
@@ -169,6 +211,12 @@ export function applyChangeMarks<T extends SourceLine>(
     return { lines: [...lines], convention: 'default', warnings: [] };
   for (const match of text.matchAll(new RegExp(legend.source, 'gi')))
     removed.fill(1, match.index, match.index + match[0].length);
+  if (jurisdiction === 'NJ') {
+    // Reprints print "Matter enclosed in superscript numerals has been adopted as follows:"
+    // and the committee-amendment list at the foot of a page, which can fall mid-sentence.
+    for (const note of superscriptFootnotes(lines))
+      removed.fill(1, note.start, note.end);
+  }
   const warnings: string[] = [];
   const stack: number[] = [];
   const pairs: { start: number; end: number }[] = [];
@@ -193,7 +241,10 @@ export function applyChangeMarks<T extends SourceLine>(
   for (const { start, end } of pairs.sort((a, b) => a.start - b.start)) {
     if (
       start < deletedThrough ||
-      literalBracket(text.slice(start + 1, end - 1))
+      literalBracket(
+        text.slice(start + 1, end - 1),
+        text.slice(text.lastIndexOf('\n', start) + 1, start),
+      )
     )
       continue;
     mark(start, end);

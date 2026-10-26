@@ -1,4 +1,10 @@
 import { resolveNewYork, assertNewYorkFetch } from '../fetch/new-york.js';
+import {
+  resolveNewJersey,
+  assertNewJerseyFetch,
+  chooseNewJerseyText,
+  newJerseyLookupUrl,
+} from '../fetch/new-jersey.js';
 /**
  * The shared ingest pipeline: fetch -> parse -> metadata -> chunk -> enrich -> index.
  * The CLI, the server (#29) and eval (#32) all call this, so none of them re-implements
@@ -493,12 +499,38 @@ async function ingestWithinLimits(
   opts.onProgress?.({ stage: 'fetching', detail: url });
   // WRAPPER_PAGE (with candidate links in `details`) propagates untouched for callers to offer.
   const newYork = resolveNewYork(url);
-  const plan = newYork ? undefined : resolveHistory(url);
+  const newJersey = newYork ? undefined : resolveNewJersey(url);
+  const plan = newYork || newJersey ? undefined : resolveHistory(url);
   let attachment: HistoryAttachment | undefined;
-  let fetchUrl = newYork?.textUrl ?? url;
+  let fetchUrl = newYork?.textUrl ?? newJersey?.textUrl ?? url;
   let validateUrl: (url: URL) => void = newYork
     ? assertNewYorkFetch
-    : assertNoCongressFetch;
+    : newJersey
+      ? assertNewJerseyFetch
+      : assertNoCongressFetch;
+  if (newJersey?.lookup) {
+    // A bill page is a script-rendered shell; the site's own JSON names the newest text.
+    const lookupUrl = newJerseyLookupUrl(newJersey.lookup);
+    let json: unknown;
+    try {
+      const listing = await deps.fetcher(lookupUrl, {
+        signal,
+        validateUrl,
+        refresh: true,
+      });
+      validateUrl(new URL(listing.finalUrl));
+      json = JSON.parse(new TextDecoder().decode(listing.bytes));
+    } catch (error) {
+      // An outage or challenge page must never become a WRAPPER_PAGE offering scraped links.
+      if (
+        signal?.aborted ||
+        (error instanceof AppError && error.code === 'SSRF_BLOCKED')
+      )
+        throw error;
+      throw new AppError('FETCH_FAILED');
+    }
+    fetchUrl = chooseNewJerseyText(json, newJersey.lookup);
+  }
   if (plan) {
     const source = historySource(plan.source);
     validateUrl = (url) => {

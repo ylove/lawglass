@@ -110,8 +110,27 @@ describeWithFixture('ny-s8102-2025-introduced', () => {
       sponsors: ['GOUNARDES'],
       version: 'Introduced',
     });
+    // Each quoted section of the new article is a container inside bill section 1, and
+    // its subdivisions nest under it (not under the previous section's last subdivision).
+    const outline = [...walkSections(doc().sections)].map((s) => s.id);
+    expect(outline).toEqual([
+      'preamble',
+      'sec-1',
+      'sec-1/1509',
+      ...[1, 2, 3, 4, 5, 6, 7, 8].map((n) => `sec-1/1509/${String(n)}`),
+      'sec-1/1510',
+      ...[1, 2, 3].map((n) => `sec-1/1510/${String(n)}`),
+      'sec-1/1511',
+      ...[1, 2, 3].map((n) => `sec-1/1511/${String(n)}`),
+      'sec-1/1512',
+      'sec-1/1513',
+      'sec-1/1514',
+      ...[1, 2, 3, 4].map((n) => `sec-1/1514/${String(n)}`),
+      'sec-2',
+      'sec-3',
+    ]);
     const definition = [...walkSections(doc().sections)].find(
-      (s) => s.id === 'sec-1509/1',
+      (s) => s.id === 'sec-1/1509/1',
     );
     expect(definition).toBeDefined();
     expect(
@@ -124,6 +143,19 @@ describeWithFixture('ny-s8102-2025-introduced', () => {
 describeWithFixture('nj-s1446-2024-r2', () => {
   const doc = load('nj-s1446-2024-r2');
   it('finds all 12 manually counted runs, including superscript committee brackets, without cover/header/legend false positives', () => {
+    const ids = [...walkSections(doc().sections)].map((s) => s.id);
+    expect(
+      doc()
+        .sections.map((s) => s.id)
+        .filter((id) => id !== 'preamble'),
+    ).toEqual(['sec-1', 'sec-2', 'sec-3', 'sec-4']);
+    expect(ids).toEqual(expect.arrayContaining(['sec-1/1', 'sec-2/2']));
+    const lawText = [...walkSections(doc().sections)]
+      .map((s) => sectionText(s, { includeDeleted: false }))
+      .join('\n');
+    expect(lawText).not.toMatch(
+      /superscript numerals|committee amendments adopted/,
+    );
     expect(deletionRuns(doc())).toEqual([
       '[,]',
       '[, and each member of whose household]',
@@ -157,5 +189,169 @@ describeWithFixture('nj-s1446-2024-r2', () => {
     ])
       expect(inserted).toContain(phrase);
     expect(inserted).not.toContain('BE IT ENACTED');
+  });
+});
+
+const insertedRuns = (doc: NormalizedDoc): string[] => {
+  const runs: string[] = [];
+  let current = '';
+  for (const span of spans(doc)) {
+    if (span.status === 'inserted') current += span.text;
+    else if (span.text.trim() && current) {
+      runs.push(normalize(current));
+      current = '';
+    }
+  }
+  if (current) runs.push(normalize(current));
+  return runs;
+};
+describeWithFixture('nj-s1000-2024-r1', () => {
+  const doc = load('nj-s1000-2024-r1');
+  it('finds both counted deletions, all 5 underlined runs and no reprint-header false positive', () => {
+    expect(deletionRuns(doc())).toEqual(['[deaf]', '[of a]']);
+    expect(insertedRuns(doc())).toEqual([
+      'hard of hearing',
+      'as demonstrated by the',
+      '500, 1,000, and 2,000 Hertz, of',
+      'in the better ear, aided or unaided,',
+      'or licensed by the State of New Jersey',
+    ]);
+    expect(doc().metadata).toMatchObject({
+      billNumber: 'S. 1000',
+      jurisdiction: 'New Jersey',
+      session: '221st Legislature',
+      version: 'First Reprint',
+      sponsors: ['LINDA R. GREENSTEIN', 'PARKER SPACE'],
+    });
+    expect(doc().sections.map((s) => s.id)).toEqual([
+      'preamble',
+      'sec-1',
+      'sec-2',
+    ]);
+  });
+});
+describeWithFixture('nj-s1000-2026-i1', () => {
+  const doc = load('nj-s1000-2026-i1');
+  it('reads an underline-only amendment with nested subsections', () => {
+    expect(deletionRuns(doc())).toEqual([]);
+    expect(insertedRuns(doc())).toEqual([
+      'every current member of the New Jersey State Legislature while that person holds office,',
+    ]);
+    const ids = [...walkSections(doc().sections)].map((s) => s.id);
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        'sec-1',
+        'sec-1/b/1/a',
+        'sec-1/b/1/b/i',
+        'sec-1/b/2/b',
+        'sec-2',
+      ]),
+    );
+    expect(doc().metadata).toMatchObject({
+      billNumber: 'S. 1000',
+      session: '222nd Legislature',
+      version: 'Introduced',
+    });
+  });
+});
+describeWithFixture('nj-a3000-2026-i1', () => {
+  const doc = load('nj-a3000-2026-i1');
+  it('a new-law bill has no change marks at all', () => {
+    expect(deletionRuns(doc())).toEqual([]);
+    expect(insertedRuns(doc())).toEqual([]);
+    expect(doc().metadata).toMatchObject({
+      billNumber: 'A. 3000',
+      jurisdiction: 'New Jersey',
+      version: 'Introduced',
+      sponsors: ['ERIK PETERSON'],
+    });
+    expect(doc().sections.map((s) => s.id)).toEqual(
+      expect.arrayContaining(['sec-1', 'sec-2', 'sec-3', 'sec-4']),
+    );
+  });
+});
+describeWithFixture('ny-a5000-2025-assembly', () => {
+  const doc = load('ny-a5000-2025-assembly');
+  it('bill sections are the only containers; wrapped chapter lines are prose', () => {
+    expect(doc().sections.map((s) => s.id)).toEqual([
+      'preamble',
+      'sec-1',
+      'sec-2',
+      'sec-3',
+      'sec-4',
+      'sec-5',
+    ]);
+    const all = [...walkSections(doc().sections)];
+    expect(all.some((s) => s.id.startsWith('chapter-'))).toBe(false);
+    expect(all.find((s) => s.id === 'sec-1')?.heading).toBe('Short Title.');
+    expect(all.find((s) => s.id === 'sec-3')?.heading).toBeUndefined();
+  });
+});
+
+describeWithFixture('nj-a4-2024-r2', () => {
+  const doc = load('nj-a4-2024-r2');
+  it('keeps all 39 bill sections; quoted statute sections are containers inside them', () => {
+    const top = doc()
+      .sections.map((s) => s.id)
+      .filter((id) => id !== 'preamble');
+    expect(top).toEqual(
+      Array.from({ length: 39 }, (_, i) => `sec-${String(i + 1)}`),
+    );
+    const ids = [...walkSections(doc().sections)].map((s) => s.id);
+    expect(ids).toEqual(
+      expect.arrayContaining(['sec-1/2', 'sec-2/4', 'sec-3/b', 'sec-4/13']),
+    );
+    // No section id is duplicated with a ~2 suffix inside the first seven bill sections.
+    expect(
+      ids.filter((id) => /^sec-[1-7]\//.test(id) && id.includes('~')),
+    ).toEqual([]);
+  });
+  it('drops the superscript footnote from law text', () => {
+    const text = [...walkSections(doc().sections)]
+      .map((s) => sectionText(s, { includeDeleted: false }))
+      .join('\n');
+    expect(text).not.toMatch(
+      /Matter enclosed in superscript|committee amendments adopted/,
+    );
+  });
+});
+
+const topLevel = (doc: NormalizedDoc) =>
+  doc.sections.map((s) => s.id).filter((id) => id !== 'preamble');
+const range = (count: number) =>
+  Array.from({ length: count }, (_, i) => `sec-${String(i + 1)}`);
+
+describeWithFixture('ny-a07601-2025-assembly', () => {
+  const doc = load('ny-a07601-2025-assembly');
+  it('the quoted "§ 3. This act shall take effect" stays inside bill section 1', () => {
+    expect(topLevel(doc())).toEqual(['sec-1', 'sec-2']);
+    expect(
+      doc()
+        .sections.find((s) => s.id === 'sec-1')
+        ?.children.map((c) => c.num),
+    ).toEqual(['§ 3']);
+  });
+});
+
+describeWithFixture('ny-s07334-2025-assembly', () => {
+  const doc = load('ny-s07334-2025-assembly');
+  it('sections quoted from chapter 18 stay inside bill section 1', () => {
+    expect(topLevel(doc())).toEqual(['sec-1', 'sec-2', 'sec-3']);
+  });
+});
+
+describeWithFixture('ny-a06137-2025-assembly', () => {
+  const doc = load('ny-a06137-2025-assembly');
+  it('"section 11-2204" does not hide bill section 11', () => {
+    expect(topLevel(doc())).toEqual(range(27));
+  });
+});
+
+describeWithFixture('nj-a170-2024-i1', () => {
+  const doc = load('nj-a170-2024-i1');
+  it('opens bill section 7 on the first line of page 6', () => {
+    expect(topLevel(doc())).toEqual([...range(7), 'article-statement']);
+    const seven = doc().sections.find((s) => s.id === 'sec-7');
+    expect(seven?.spans[0]?.page).toBe(6);
   });
 });
