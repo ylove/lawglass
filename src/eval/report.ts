@@ -70,6 +70,9 @@ function answerRow(row: EvalRow, extra: RowExtras | undefined): string[] {
     row.model ?? '?',
     percent(a.citationValidity),
     percent(a.declineRate),
+    extra?.inventedAnswerRate === undefined
+      ? 'n/a'
+      : percent(extra.inventedAnswerRate),
     percent(a.deletedLeakageRate),
     a.meanReadingGrade === null ? 'n/a' : fixed(a.meanReadingGrade, 1),
     String(a.answersAboveGrade9),
@@ -148,6 +151,15 @@ export function renderResults(input: ReportInput): string {
       out.push(
         '### Answers',
         '',
+        'Decline rate includes explicit soft declines followed by bill context. Invented answer rate ' +
+          'counts non-declines on unanswerable questions; it is a heuristic proxy, not an independent fact check. ' +
+          'Both rates use only unanswerable questions; invented answer rate is n/a when none were asked.',
+        '',
+        'Deleted-text leakage uses all answers as its denominator. It checks exact runs of at least four words ' +
+          'with a word absent from live text, allowing removal cues in the same clause or a linked acknowledgement ' +
+          'in the next sentence. Paraphrased leaks may be missed. These results are not comparable with earlier ' +
+          'runs that used a different denominator or leakage heuristic.',
+        '',
         table(
           [
             'Backend',
@@ -156,6 +168,7 @@ export function renderResults(input: ReportInput): string {
             'Model',
             'Citation validity',
             'Decline rate',
+            'Invented answer rate',
             'Deleted-text leakage',
             'Mean FK grade',
             'Answers > grade 9',
