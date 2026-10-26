@@ -59,6 +59,13 @@ npx lawglass serve --port 4317          # local web UI; --public allows chips on
 npx lawglass mcp                        # Model Context Protocol server on stdio, for AI agents (prototype)
 ```
 
+**Install warnings.** npm may report deprecation notices for `whatwg-encoding` (through `cheerio` →
+`encoding-sniffer`) and `node-domexception` (through `@google/genai` →
+`google-auth-library` → `gaxios` → `node-fetch` → `fetch-blob`). These are harmless
+notices from transitive dependencies and do not prevent installation or use. The current
+Cheerio release and newer Google SDK still use these dependency chains; removing the
+notices awaits compatible upstream updates.
+
 Paste a bill's own page, for example:
 
 - A federal bill on congress.gov: `https://www.congress.gov/bill/119th-congress/senate-bill/202`
