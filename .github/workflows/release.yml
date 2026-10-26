@@ -52,8 +52,11 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npm run check
       - run: npm run build
+      # npm pack does not create its destination; v1.1.0's first run stopped here.
       - name: Pack the tarball
-        run: npm pack --ignore-scripts --pack-destination release-assets
+        run: |
+          mkdir -p release-assets
+          npm pack --ignore-scripts --pack-destination release-assets
       # Dev dependencies stay in on purpose: pdfjs-dist (a devDependency) has its JS bundled into
       # dist/cli.js, so an SBOM that omitted dev dependencies would hide it. Its WASM files are
       # not shipped (not in the package's `files`), so a component-level entry is the right level.
