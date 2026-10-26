@@ -21,13 +21,45 @@ export function requireKey(key: string | undefined): string {
   return key;
 }
 
+/**
+ * A provider failure that remembers one thing about the cause: the HTTP status, when there was
+ * one. "400" and "429" need different fixes, and a status is a number, so it can never carry a
+ * key, a header or the request. Lives here rather than in the frozen `AppError` contract.
+ */
+export class ProviderFailure extends AppError {
+  readonly providerStatus: number | undefined;
+  constructor(
+    code: 'PROVIDER_ERROR' | 'PROVIDER_BAD_OUTPUT',
+    providerStatus?: number,
+  ) {
+    super(code);
+    this.providerStatus = providerStatus;
+  }
+}
+
+/** The HTTP status of an SDK error (all three SDKs set `status`), or undefined. */
+function httpStatus(error: unknown): number | undefined {
+  if (typeof error !== 'object' || error === null || !('status' in error))
+    return undefined;
+  const { status } = error;
+  return typeof status === 'number' &&
+    Number.isInteger(status) &&
+    status >= 100 &&
+    status <= 599
+    ? status
+    : undefined;
+}
+
+/** For log lines: a provider failure's HTTP status, or undefined for anything else. */
+export function providerStatusOf(error: unknown): number | undefined {
+  return error instanceof ProviderFailure ? error.providerStatus : undefined;
+}
+
 /** SDK errors can contain headers, credentials and request bodies, even in their cause. */
 export function providerFailure(error: unknown): AppError {
-  return new AppError(
-    error instanceof AppError && error.code === 'PROVIDER_BAD_OUTPUT'
-      ? 'PROVIDER_BAD_OUTPUT'
-      : 'PROVIDER_ERROR',
-  );
+  if (error instanceof AppError && error.code === 'PROVIDER_BAD_OUTPUT')
+    return new ProviderFailure('PROVIDER_BAD_OUTPUT');
+  return new ProviderFailure('PROVIDER_ERROR', httpStatus(error));
 }
 
 export function jsonSchema<T>(schema: z.ZodType<T>): Record<string, unknown> {

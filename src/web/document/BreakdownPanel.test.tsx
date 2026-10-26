@@ -73,6 +73,7 @@ const panel = (
       maxWaitMs={60}
       examplePollMs={5}
       exampleMaxWaitMs={5000}
+      coolDownMs={5}
       {...extra}
     />,
   );
@@ -242,6 +243,29 @@ describe('failures and slow runs', () => {
     expect(screen.getByText(/This part does sec-2/)).toBeTruthy();
   });
 
+  test('a failed run waits out the cool-down once, then looks again on its own (#341)', async () => {
+    const api = scripted([
+      new ApiError('PROVIDER_ERROR', 'Try again in a minute.'),
+      { status: 'cached', briefs: [brief('sec-2')], omitted: 0 },
+    ]);
+    panel(api, { coolDownMs: 200 });
+    await screen.findByText(/Trying again in about a minute/);
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    await screen.findByText(/This part does sec-2/);
+    expect(screen.queryByText(/Trying again/)).toBeNull();
+    expect(api.spy.breakdown).toHaveBeenCalledTimes(2);
+  });
+
+  test('a second failure after the cool-down asks the reader', async () => {
+    const api = scripted([
+      new ApiError('PROVIDER_ERROR', 'Try again in a minute.'),
+    ]);
+    panel(api);
+    await screen.findByText(/could not be loaded right now/);
+    expect(api.spy.breakdown).toHaveBeenCalledTimes(2);
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+  });
+
   test('a run that keeps finishing parts is not timed out, however long it takes in all', async () => {
     const grow = Array.from({ length: 24 }, (_, i) => ({
       status: 'pending' as const,
@@ -290,6 +314,23 @@ describe('the example control', () => {
     expect(
       screen.getByRole('button', { name: /Try the example again/ }),
     ).toBeTruthy();
+  });
+
+  test('a failed example waits out the cool-down once before asking (#341)', async () => {
+    const api = scripted(
+      [{ status: 'cached', briefs: [brief('sec-2')] }],
+      [
+        new ApiError('PROVIDER_ERROR', 'x'),
+        { status: 'none', note: 'Nothing to draw here.' },
+      ],
+    );
+    panel(api, { coolDownMs: 200 });
+    fireEvent.click(
+      await screen.findByRole('button', { name: /Show an example/ }),
+    );
+    await screen.findByText(/Trying again in about a minute/);
+    await screen.findByText('Nothing to draw here.');
+    expect(api.spy.example).toHaveBeenCalledTimes(2);
   });
 
   test('button, then a visible loader, then the strip with its footnotes', async () => {

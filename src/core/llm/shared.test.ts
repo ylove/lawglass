@@ -7,6 +7,7 @@ import {
   jsonSchema,
   parseJson,
   providerFailure,
+  providerStatusOf,
   requestSignal,
   requireKey,
   validateObject,
@@ -62,6 +63,24 @@ describe('provider boundary helpers', () => {
     expect(providerFailure(new AppError('PROVIDER_BAD_OUTPUT')).code).toBe(
       'PROVIDER_BAD_OUTPUT',
     );
+  });
+  it('keeps only the HTTP status of a provider failure (#341)', () => {
+    const sdkError = Object.assign(new Error('secret body'), {
+      status: 400,
+      headers: { 'x-api-key': 'secret' },
+    });
+    const safe = providerFailure(sdkError);
+    expect(providerStatusOf(safe)).toBe(400);
+    expect(JSON.stringify(safe)).not.toContain('secret');
+    expect(safe.message).not.toContain('secret');
+    for (const status of ['400', 99, 600, 400.5, undefined])
+      expect(
+        providerStatusOf(
+          providerFailure(Object.assign(new Error(), { status })),
+        ),
+      ).toBeUndefined();
+    expect(providerStatusOf(new AppError('PROVIDER_ERROR'))).toBeUndefined();
+    expect(providerStatusOf(providerFailure(null))).toBeUndefined();
   });
   it('rejects absent keys and invalid timeouts', () => {
     expect(requireKey('test')).toBe('test');
