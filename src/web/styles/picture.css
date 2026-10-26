@@ -60,6 +60,8 @@
   justify-content: center;
   gap: 0.25rem;
   min-width: 0;
+  /* Centres the scene in the panel's free space while a stamp stays on the top edge. */
+  margin-block: auto;
 }
 .pp-side {
   display: flex;
@@ -98,7 +100,8 @@
   flex-direction: column;
   align-items: center;
   gap: 0.1rem;
-  flex: none;
+  /* May narrow to its longest word, so a long note wraps instead of pushing the right side out. */
+  flex: 0 1 auto;
   color: var(--accent);
 }
 .pp-carry {
@@ -130,11 +133,11 @@
 .pp-note {
   color: var(--muted);
 }
-/* The stamp sits over the top-left corner of the panel, above the left glyphs. */
+/* The stamp sits on the panel's top edge, above the left glyphs. It stays in the flow, so a
+   label that wraps to two lines pushes the scene down instead of covering it. */
 .pp-stamp {
-  position: absolute;
-  top: -0.5rem;
-  left: 0.5rem;
+  align-self: flex-start;
+  margin: -1.6rem 0 0 0.1rem;
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
