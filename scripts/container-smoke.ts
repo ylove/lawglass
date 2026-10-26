@@ -3,7 +3,7 @@
  *
  * Builds the image and runs it the way Cloud Run does: private mode, a mounted snapshot
  * directory, a SIGTERM to stop. Then it checks the invite gate, the key exchange, the
- * federal-and-Ohio ingest rule, a real ingest (which exercises the ONNX models baked into the
+ * hosted ingest-host rule, a real ingest (which exercises the ONNX models baked into the
  * image), and that the document is still there after a stop and a fresh start.
  *
  * Needs Docker and network access (it ingests a real federal bill), so it is not part of
