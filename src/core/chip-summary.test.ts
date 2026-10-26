@@ -16,6 +16,7 @@ import {
   chooseMapUnits,
 } from './chip-summary.js';
 import type { ChipDeps } from './chip-types.js';
+import { Limits } from './pipeline/limits.js';
 import {
   AppError,
   EMPTY_METADATA,
@@ -557,6 +558,22 @@ describe('map-step abort (a failed call stops its siblings)', () => {
     await expect(run).rejects.toBeDefined();
     expect(state.inFlight).toBe(0);
   });
+
+  it('preserves RATE_LIMITED when a later map call exhausts the ceiling and aborts the first', async () => {
+    const { provider, state } = slowProvider(() => false);
+    const limits = new Limits(
+      { maxConcurrentIngest: 2, maxConcurrentAsk: 4, maxCallsPerMinute: 1 },
+      () => 0,
+    );
+    // Fifteen units require two map calls. The first is still streaming when the second fails.
+    await setup(ndaaShaped(5, 3, 1), limits.meter(provider));
+    await expect(runChip(getChip('summary'), DOC, deps)).rejects.toMatchObject({
+      code: 'RATE_LIMITED',
+    });
+    expect(state.started).toBe(1);
+    expect(state.abortedSeen).toBe(1);
+    expect(state.inFlight).toBe(0);
+  });
 });
 
 describe('allOrAbort', () => {
@@ -595,5 +612,22 @@ describe('allOrAbort', () => {
         ),
       ]),
     ).rejects.toThrow('first');
+  });
+
+  it('keeps the triggering failure when an earlier array entry rejects on cancellation', async () => {
+    const first = new AppError('RATE_LIMITED');
+    let siblingSettled = false;
+    await expect(
+      allOrAbort(undefined, (signal) => [
+        new Promise((_, reject) => {
+          signal.addEventListener('abort', () => {
+            siblingSettled = true;
+            reject(new AppError('PROVIDER_ERROR'));
+          });
+        }),
+        Promise.reject(first),
+      ]),
+    ).rejects.toBe(first);
+    expect(siblingSettled).toBe(true);
   });
 });

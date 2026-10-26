@@ -154,6 +154,30 @@ describe('createEchoGuard (streaming)', () => {
     const emitted = feed(tokens).out.join('');
     expect(normalizeWords(emitted).length).toBeLessThan(GUARD_RUN_WORDS);
   });
+
+  it('retains words split across events', () => {
+    const { out, guard } = feed(Array.from(PROMPT));
+    // An unfinished prefix of the eighth word may stream before that word matches.
+    expect(normalizeWords(out.join('')).length).toBeLessThan(ECHO_RUN_WORDS);
+    expect(guard.withheld()).toContain('twelve');
+  });
+
+  it.each([
+    ['one two three [S:long citation] four five six seven eight'],
+    ['one two three [S:long ', 'citation] four five six seven eight'],
+    ['one two three [S', ':long ', 'citation] four five six seven eight'],
+    ['one two three [S:long [S:nested ', 'citation] four five six seven eight'],
+  ])(
+    'removes whole citation markers without breaking word history: %j',
+    (...tokens) => {
+      const { out, guard } = feed(tokens);
+      expect(
+        echoesSystemPrompt(`${tokens.join('')} nine ten eleven twelve`, PROMPT),
+      ).toBe(true);
+      expect(normalizeWords(out.join('')).length).toBeLessThan(GUARD_RUN_WORDS);
+      expect(guard.withheld()).toContain('eight');
+    },
+  );
 });
 
 describe('default-ignorable characters and huge events', () => {

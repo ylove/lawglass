@@ -19,15 +19,19 @@ export const ECHO_RUN_WORDS = 12;
 /** Streaming stops at this many matching words, safely under the 12 that count as an echo. */
 export const GUARD_RUN_WORDS = 8;
 
-/** Normalize to comparable words. Citation markers are dropped so they cannot split a run. */
-export function normalizeWords(text: string): string[] {
+function normalizeText(text: string): string {
   // Default_Ignorable covers variation selectors, U+034F, tag characters, U+3164 and the like;
   // stripInvisibles adds the bidi/zero-width set. Both go before tokenizing so none can split a word.
   // NFKD then dropping combining marks (\p{M}) also defeats a stray accent or mark that would
   // otherwise split a word; it folds accents the same way for the prompt and the reply.
   return stripInvisibles(text.normalize('NFKD'))
     .replace(/[\p{Default_Ignorable_Code_Point}\p{M}]/gu, '')
-    .replace(/\[S:[^\]]*\]/g, ' ')
+    .replace(/\[S:[^\]]*\]/g, ' ');
+}
+
+/** Normalize to comparable words. Citation markers are dropped so they cannot split a run. */
+export function normalizeWords(text: string): string[] {
+  return normalizeText(text)
     .toLowerCase()
     .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .split(' ')
@@ -76,26 +80,43 @@ export interface EchoGuard {
 }
 
 /**
- * Overlap rescanned before the unemitted text, so a run that straddles two events is seen.
- * Everything not yet emitted is always rescanned: one huge event must not slip through.
+ * Retain the last normalized words, plus raw text that may still be an unfinished word or
+ * citation marker. Padding cannot evict the history, and each event is scanned before trimming
+ * so even a huge event cannot hide a recital in its middle.
  */
-const OVERLAP_CHARS = 600;
-
 export function createEchoGuard(systemPrompt: string): EchoGuard {
   const runs = runsOf(promptWords(systemPrompt), GUARD_RUN_WORDS);
   let raw = '';
   let emitted = 0;
   let tripped = false;
+  let history: string[] = [];
+  let pending = '';
   return {
     push(text) {
       raw += text;
-      if (!tripped)
-        tripped = hasRun(
-          normalizeWords(raw.slice(Math.max(0, emitted - OVERLAP_CHARS))),
-          GUARD_RUN_WORDS,
-          runs,
-        );
       if (tripped) return '';
+      pending = normalizeText(pending + text);
+      tripped = hasRun(
+        [...history, ...normalizeWords(pending)],
+        GUARD_RUN_WORDS,
+        runs,
+      );
+      if (tripped) return '';
+
+      // A whitespace boundary fixes the preceding words. Do not commit any part of a citation
+      // until its closing bracket arrives: normalization must be able to remove it as a whole.
+      const openCitation = pending.indexOf('[S:');
+      const stable =
+        openCitation >= 0 ? pending.slice(0, openCitation) : pending;
+      let end = 0;
+      for (const boundary of stable.matchAll(/\s+/gu))
+        end = boundary.index + boundary[0].length;
+      if (end > 0) {
+        history = [...history, ...normalizeWords(pending.slice(0, end))].slice(
+          -(GUARD_RUN_WORDS - 1),
+        );
+        pending = pending.slice(end);
+      }
       emitted = raw.length;
       return text;
     },

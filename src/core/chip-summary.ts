@@ -234,15 +234,19 @@ export async function allOrAbort<T>(
   if (parent?.aborted) onParentAbort();
   else parent?.addEventListener('abort', onParentAbort, { once: true });
   try {
+    let failure: { error: unknown } | undefined;
     const tasks = start(child.signal).map((task) =>
       task.catch((error: unknown) => {
-        child.abort(error);
+        // Capture before aborting: a sibling's cancellation must not replace the cause.
+        if (!failure) {
+          failure = { error };
+          child.abort(error);
+        }
         throw error;
       }),
     );
     const settled = await Promise.allSettled(tasks);
-    const failed = settled.find((r) => r.status === 'rejected');
-    if (failed) throw failed.reason;
+    if (failure) throw failure.error;
     return settled.map((r) => (r as PromiseFulfilledResult<T>).value);
   } finally {
     parent?.removeEventListener('abort', onParentAbort);
