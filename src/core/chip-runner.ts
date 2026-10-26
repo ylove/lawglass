@@ -11,6 +11,7 @@
  *   retrieve      one `retrieve()` per query, merged, reranked once, then `answer()`
  */
 import { documentContext } from './answer/context.js';
+import { referenceTokens } from './answer/references.js';
 import { answer, fleschKincaidGrade } from './answer/index.js';
 import {
   hasAmendmentMarks,
@@ -132,13 +133,18 @@ async function runWholeChip(
     {
       budget: options.wholeBillMaxTokens,
       signal: options.signal,
+      reservedTokens: referenceTokens(deps.doc.references),
     },
   );
   if (context.mode !== 'whole') return undefined;
   const result = await answer({
     provider: deps.provider,
     question: chip.label,
-    context: { ...context, metadata: deps.doc.metadata },
+    context: {
+      ...context,
+      references: deps.doc.references,
+      metadata: deps.doc.metadata,
+    },
     chipInstruction:
       chip.id === 'summary'
         ? SUMMARY_WHOLE_INSTRUCTION
@@ -275,6 +281,7 @@ async function runRetrieveChip(
     context: {
       hits: ranked,
       definitions: injected,
+      references: deps.doc.references,
       metadata: deps.doc.metadata,
     },
     chipInstruction: chip.answerInstruction,

@@ -252,3 +252,16 @@ it('New York law citations are external state_code refs, even when bill section 
     [],
   );
 });
+
+describe('U.S. Code sections written with a typographic dash', () => {
+  const cites = (text: string) =>
+    findExternalMatches(text).map((m) => m.citation);
+  it('keeps a lettered section whole ("1395w–4") and takes the first of a numeric range', () => {
+    expect(cites('under 42 U.S.C. 1395w–4 and 42 U.S.C. 1395w—4')).toEqual([
+      '42 U.S.C. 1395w-4',
+      '42 U.S.C. 1395w-4',
+    ]);
+    expect(cites('see 42 U.S.C. 1395–1396')).toEqual(['42 U.S.C. 1395']);
+    expect(cites('see 42 U.S.C. 1395w-4')).toEqual(['42 U.S.C. 1395w-4']);
+  });
+});

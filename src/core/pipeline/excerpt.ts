@@ -3,8 +3,10 @@
  * (never from the index), so the text is the full source text including struck spans.
  */
 import { breadcrumb, levelNum } from '../chunk/index.js';
+import { referenceHeading } from '../answer/references.js';
 import {
   AppError,
+  REFERENCE_ID_PREFIX,
   type NormalizedDoc,
   type Section,
   type SectionExcerpt,
@@ -89,9 +91,29 @@ function childLabel(child: Section): string {
  * id. Showing the whole subtree would disagree with the chunk the model actually saw.
  */
 export function sectionExcerpt(
-  doc: Pick<NormalizedDoc, 'sections'>,
+  doc: Pick<NormalizedDoc, 'sections'> &
+    Partial<Pick<NormalizedDoc, 'references'>>,
   sectionId: string,
 ): SectionExcerpt {
+  // Another law's text read for this document (issue #275). It has no page or lines here, and
+  // its spans are never struck or inserted: it is the current official text, as fetched.
+  if (sectionId.startsWith(REFERENCE_ID_PREFIX)) {
+    const reference = doc.references?.find((r) => r.sectionId === sectionId);
+    if (!reference)
+      throw new AppError('INVALID_INPUT', `Unknown section "${sectionId}".`, {
+        userMessage: 'That section is not in this document.',
+      });
+    return {
+      sectionId: reference.sectionId,
+      breadcrumb: referenceHeading(reference),
+      ...(reference.heading === undefined
+        ? {}
+        : { heading: reference.heading }),
+      spans: [{ text: reference.text, status: 'unchanged' }],
+      location: {},
+      reference: { citation: reference.citation, url: reference.sourceUrl },
+    };
+  }
   const path = findSectionPath(doc.sections, sectionId);
   const section = path?.at(-1);
   if (!path || !section)

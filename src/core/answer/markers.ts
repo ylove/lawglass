@@ -42,3 +42,14 @@ export function promptText(chunk: StoredChunk): string {
     ? chunk.text
     : neutralizeMarkers(chunk.text);
 }
+
+/** A citation marker such as `[S:sec-1]`, in any spacing or case. */
+const CITATION_LIKE = /\[(\s*S\s*:)/gi;
+
+/**
+ * Make citation-marker-like text inert (`［S:sec-1]`). Only the model writes citations; text
+ * from another law that happens to contain one must not be copied as a citation to the bill.
+ */
+export function neutralizeCitations(text: string): string {
+  return text.replace(CITATION_LIKE, '［$1');
+}

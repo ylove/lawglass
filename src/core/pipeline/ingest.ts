@@ -48,6 +48,7 @@ import {
 } from '../history/resolve.js';
 import { deleteHistory, writeHistory } from '../history/history-store.js';
 import { withSponsorLinks } from '../sponsors/enrich.js';
+import { withReferenceTexts } from '../enrich/references.js';
 
 export type Fetcher = (
   url: string,
@@ -57,6 +58,7 @@ export type Fetcher = (
     refresh?: boolean | undefined;
     maxBytes?: number | undefined;
     parseLimits?: ParseLimits | undefined;
+    skipWrapperCheck?: boolean | undefined;
   },
 ) => Promise<SafeFetchResult>;
 
@@ -109,6 +111,8 @@ export interface IngestDeps {
    */
   admit?: ((docId: string, known: boolean) => Promise<boolean>) | undefined;
   parsePdf?: PdfParser | undefined;
+  /** Told when a U.S. Code reference could not be read: the citation and an error code only. */
+  onReferenceSkip?: ((citation: string, code: string) => void) | undefined;
 }
 
 export interface IngestProgress {
@@ -220,6 +224,25 @@ function enrichSponsors(
     },
     { fromRecord: attachment?.record !== undefined },
   );
+}
+
+/** Read the U.S. Code definitions the bill points to (issue #275). Never fails an ingest. */
+async function enrichReferences(
+  doc: NormalizedDoc,
+  deps: IngestDeps,
+  signal: AbortSignal | undefined,
+): Promise<NormalizedDoc> {
+  try {
+    return await withReferenceTexts(doc, {
+      fetcher: deps.fetcher,
+      now: deps.now,
+      signal,
+      onSkip: deps.onReferenceSkip,
+    });
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return doc;
+  }
 }
 
 function countSpans(doc: NormalizedDoc): { inserted: number; deleted: number } {
@@ -557,7 +580,8 @@ async function ingestLocked(
       await registry.getDocument(docId),
       attachment,
     );
-    const cached = await enrichSponsors(attached, deps, attachment, signal);
+    const sponsored = await enrichSponsors(attached, deps, attachment, signal);
+    const cached = await enrichReferences(sponsored, deps, signal);
     if (attachment || cached !== attached) {
       await saveHistory(cached, deps, attachment);
       touched = await registry.updateDocument(cached);
@@ -626,6 +650,8 @@ async function ingestLocked(
     progress({ stage: 'chunking' });
     ({ doc, chunks } = chunkAndEnrich(withMetadata, deps, signal));
   }
+  progress({ stage: 'enriching', detail: 'references' });
+  doc = await enrichReferences(doc, deps, signal);
   doc = await enrichSponsors(
     attachHistory(doc, attachment),
     deps,

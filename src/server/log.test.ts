@@ -74,3 +74,28 @@ test('logs route templates and safe fields, never request or error contents', as
   expect(lines[7]).toContain('TypeError');
   expect(lines[8]).toContain('RangeError');
 });
+
+test('a skipped reference logs a citation and a code, and nothing else', () => {
+  const lines: string[] = [];
+  const log = createLogger(
+    (line) => {
+      lines.push(line);
+    },
+    () => 100,
+  );
+  log.referenceSkipped('12 U.S.C. 1813', 'FETCH_FAILED');
+  log.referenceSkipped(
+    'https://evil.example/?k=secret',
+    'bad code with spaces',
+  );
+  const [first, second] = lines.map(
+    (l) => JSON.parse(l) as Record<string, string>,
+  );
+  expect(first).toMatchObject({
+    event: 'reference_skipped',
+    citation: '12 U.S.C. 1813',
+    code: 'FETCH_FAILED',
+  });
+  expect(second).toMatchObject({ citation: 'unknown', code: 'ERROR' });
+  expect(lines.join('')).not.toContain('secret');
+});

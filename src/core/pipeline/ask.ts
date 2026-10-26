@@ -8,6 +8,7 @@ import {
   MEMO_OWNER,
 } from '../answer/context.js';
 import { answer } from '../answer/index.js';
+import { referenceTokens } from '../answer/references.js';
 import { getChip, runChip } from '../chips.js';
 import { withInlineChanges } from './inline-changes.js';
 import { readHistory } from '../history/history-store.js';
@@ -49,7 +50,10 @@ export type ChipRunner = (
     backend: RetrievalBackend;
     provider: LlmProvider;
     /** The full cached document: `definitions` lists document-wide definitions first. */
-    doc: Pick<NormalizedDoc, 'metadata' | 'sections' | 'definitions'> & {
+    doc: Pick<
+      NormalizedDoc,
+      'metadata' | 'sections' | 'definitions' | 'references'
+    > & {
       /** Only loaded for the history chip. */
       history?: BillHistory | undefined;
     };
@@ -378,6 +382,7 @@ async function askWithinLimits(
     budget: deps.wholeBillMaxTokens,
     includeDeleted,
     signal,
+    reservedTokens: referenceTokens(doc.references),
   });
   const retrieved: {
     hits: (SearchHit & { injected?: boolean })[];
@@ -415,6 +420,7 @@ async function askWithinLimits(
         ? withInlineChanges(live, doc, docId, whole.mode === 'whole')
         : live,
       definitions: usable.filter((hit) => hit.injected),
+      references: doc.references,
       metadata: doc.metadata,
     },
     signal,

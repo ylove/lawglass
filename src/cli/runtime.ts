@@ -149,6 +149,7 @@ export const createRuntimeFrom =
           ...(options?.maxBytes === undefined
             ? {}
             : { maxBytes: options.maxBytes }),
+          skipWrapperCheck: options?.skipWrapperCheck,
         }),
       now: () => new Date(),
       maxDocs: config.maxDocs,

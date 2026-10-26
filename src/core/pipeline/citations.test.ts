@@ -118,3 +118,27 @@ test('unknown sections fall back to the id and the citation location', () => {
     formatCitation(cite('sec-99', { pageStart: 2, pageEnd: 2 }), { sections }),
   ).toBe('sec-99, p. 2');
 });
+
+test('a reference citation prints the law and its source, not the bare id', () => {
+  const reference = {
+    sectionId: 'ref:usc/15/6809',
+    citation: '15 U.S.C. 6809',
+    sourceUrl: 'https://www.govinfo.gov/link/uscode/15/6809?link-type=html',
+    text: 'x',
+    terms: ['financial institution'],
+    fetchedAt: '2026-10-26T00:00:00.000Z',
+  };
+  const line = formatCitation(
+    { sectionId: reference.sectionId, valid: true, chunkIds: [] },
+    { sections, references: [reference] },
+  );
+  expect(line).toBe(
+    "15 U.S.C. 6809 (U.S. Code, read for 'financial institution'), https://www.govinfo.gov/link/uscode/15/6809?link-type=html",
+  );
+  expect(
+    formatCitation(
+      { sectionId: 'ref:usc/1/1', valid: true, chunkIds: [] },
+      { sections },
+    ),
+  ).toBe('ref:usc/1/1');
+});

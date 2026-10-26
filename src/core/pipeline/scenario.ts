@@ -13,6 +13,7 @@ import {
   type DocumentContext,
 } from '../answer/context.js';
 import { WHOLE_PROMPT_VERSION } from '../answer/prompt.js';
+import { referenceTokens } from '../answer/references.js';
 import {
   AppError,
   ZERO_USAGE,
@@ -108,6 +109,7 @@ export async function runScenario(
   try {
     context = await documentContext(backend, docId, doc.sections, {
       signal: deps.signal,
+      reservedTokens: referenceTokens(doc.references),
     });
   } catch (error) {
     // The scan only picks the cache key. If it failed, a cached example under either key is
