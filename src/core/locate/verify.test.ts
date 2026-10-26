@@ -399,3 +399,26 @@ describe('second review fixes', () => {
     expect(verifyQuote(s, '-shall report a loss')).toEqual([]);
   });
 });
+
+describe('ordinary legal wording is not a verdict (#312)', () => {
+  it.each([
+    [
+      'The Senate must confirm the nominee [S:s]',
+      'the Senate shall confirm the nominee',
+    ],
+    [
+      'Jurisdiction lies with the district court [S:s]',
+      'jurisdiction lies with the district court',
+    ],
+    ['The clerk sends a true copy [S:s]', 'a true copy of the order'],
+    ['It applies after a jury verdict [S:s]', 'after a verdict of the jury'],
+  ])('%s', (text, bill) => {
+    expect(hasVerdictLanguage(text, bill)).toBe(false);
+  });
+  it('still catches the same words when the section does not use them, and strict phrases always', () => {
+    expect(hasVerdictLanguage('This is true [S:s]', 'a fee of $50')).toBe(true);
+    expect(
+      hasVerdictLanguage('The claim is misleading [S:s]', 'misleading'),
+    ).toBe(true);
+  });
+});

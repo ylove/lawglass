@@ -208,9 +208,24 @@ export function quoteLabel(
  * "Never a verdict" backstop. The prompt asks for neutral wording; this makes it deterministic.
  * Words inside a double-quoted phrase that really occurs in the bill are exempt, so a bill's own
  * "false statement" can be quoted.
+ *
+ * Two lists: wording that only ever judges the reader's sentence ("the claim is", "misleading"),
+ * and words that are verdicts in a claim check but ordinary in law ("confirm the nominee",
+ * "jurisdiction lies with", "a true copy", "jury verdict"). An ambiguous word is allowed when the
+ * matched section itself uses it (#312); a strict phrase never is.
  */
 const VERDICT =
-  /\b(?:true|untrue|false|correct(?:ly)?|incorrect(?:ly)?|accurate(?:ly)?|inaccurate(?:ly)?|misleading|misinformation|myth|wrong|lies?|verdict|confirm\w*|fact[- ]?check\w*|debunk\w*)\b|\b(?:the|this|that|your)\s+(?:claim|statement|sentence)\s+(?:is|was|isn't|is not)\b|\bmatches\s+(?:the\s+)?(?:bill|claim|sentence)\b|\bbacks?\s+(?:this|that|it)\s+up\b|^\s*(?:yes|no),/;
+  /\b(?:untrue|incorrect(?:ly)?|inaccurate(?:ly)?|misleading|misinformation|myth|wrong|fact[- ]?check\w*|debunk\w*)\b|\b(?:the|this|that|your)\s+(?:claim|statement|sentence)\s+(?:is|was|isn't|is not)\b|\bmatches\s+(?:the\s+)?(?:bill|claim|sentence)\b|\bbacks?\s+(?:this|that|it)\s+up\b|^\s*(?:yes|no),|["“]\s*(?:true|false|correct|accurate|right)\s*["”]/;
+
+/** Verdict words that are also ordinary legal vocabulary, with the stem the bill must share. */
+const AMBIGUOUS =
+  /\b(true|false|correct(?:ly)?|accurate(?:ly)?|lies?|verdicts?|confirm\w*)\b/g;
+const stemOf = (word: string): string =>
+  word.startsWith('confirm')
+    ? 'confirm'
+    : word.startsWith('lie')
+      ? 'lie'
+      : word.replace(/ly$/, '').replace(/s$/, '');
 
 /** Look-alike letters that would hide a verdict word from the check. */
 const CONFUSABLES: Record<string, string> = Object.fromEntries(
@@ -261,7 +276,11 @@ export function hasVerdictLanguage(text: string, billText: string): boolean {
       return phrase.trim().includes(' ') && bill.includes(phrase) ? ' ' : whole;
     },
   );
-  return VERDICT.test(unquoted);
+  if (VERDICT.test(unquoted)) return true;
+  // An ambiguous word passes only when the section uses a word with the same stem.
+  for (const [word] of unquoted.matchAll(AMBIGUOUS))
+    if (!bill.includes(` ${stemOf(word)}`)) return true;
+  return false;
 }
 
 export function verifySelection(
