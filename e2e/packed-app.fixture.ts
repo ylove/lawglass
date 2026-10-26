@@ -37,14 +37,27 @@ export const test = base.extend<
       });
       // A function, not a string: Playwright evaluates strings with eval(), which CSP would flag.
       await context.addInitScript(() => {
-        const report = (
-          globalThis as unknown as {
-            reportCspViolation?: (text: string) => void;
-          }
-        ).reportCspViolation;
-        document.addEventListener('securitypolicyviolation', (event) => {
-          report?.(`${event.violatedDirective} blocked ${event.blockedURI}`);
-        });
+        // The e2e project has no DOM types; this is all of the browser API the script touches.
+        const browser = globalThis as unknown as {
+          reportCspViolation?: (text: string) => void;
+          document: {
+            addEventListener(
+              type: string,
+              listener: (event: {
+                violatedDirective: string;
+                blockedURI: string;
+              }) => void,
+            ): void;
+          };
+        };
+        browser.document.addEventListener(
+          'securitypolicyviolation',
+          (event) => {
+            browser.reportCspViolation?.(
+              `${event.violatedDirective} blocked ${event.blockedURI}`,
+            );
+          },
+        );
       });
       const watch = (page: Page) => {
         page.on('console', (message) => {

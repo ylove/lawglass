@@ -9,20 +9,21 @@ const ACCESS_KEY = 'e'.repeat(40);
 const ALLOWED_EXTERNAL = [
   'https://www.vouchnetworks.org/contact',
   'https://linkedin.com/in/yitzjordan',
-  'https://github.com/ylove/lawglass',
+  BRAND.repositoryUrl,
 ];
 
 /** Every link that leaves the site, as origin plus path, with the `rel` it opens under. */
 async function externalLinks(page: Page) {
-  return page.locator('a[href]').evaluateAll((anchors) =>
-    anchors
-      .map((a) => ({
-        url: new URL((a as HTMLAnchorElement).href),
-        rel: a.getAttribute('rel') ?? '',
-      }))
-      .filter(({ url }) => url.origin !== location.origin)
-      .map(({ url, rel }) => ({ destination: url.origin + url.pathname, rel })),
-  );
+  const links: { destination: string; rel: string }[] = [];
+  for (const anchor of await page.locator('a[href]').all()) {
+    const url = new URL((await anchor.getAttribute('href')) ?? '', page.url());
+    if (url.origin !== new URL(page.url()).origin)
+      links.push({
+        destination: url.origin + url.pathname,
+        rel: (await anchor.getAttribute('rel')) ?? '',
+      });
+  }
+  return links;
 }
 
 // The quickstart also sends readers to nodejs.org, to install what the steps need.
