@@ -165,3 +165,31 @@ describe('a damaged final line', () => {
     expect(() => parseReport('nothing here')).toThrow(/No calibration report/);
   });
 });
+
+describe('which runs the recommendation counts', () => {
+  test('counts stopped and timed-out runs and excludes failed ones', () => {
+    const rec = recommend(
+      report([
+        run('A', 0.5, 1),
+        run('B', 2, 1, 'stopped'),
+        run('C', 3, 1, 'timeout'),
+        run('D', 90, 1, 'failed'),
+      ]),
+    );
+    const summary = rec.find((r) => r.feature === 'summary');
+    expect(summary?.runs).toBe(3);
+    expect(summary?.worst).toBe(3);
+    expect(summary?.multiplier).toBe(3.75);
+    const md = renderReport(
+      report([
+        run('A', 0.5, 1),
+        run('C', 3, 1, 'timeout'),
+        run('D', 90, 1, 'failed'),
+      ]),
+    );
+    expect(md).toContain(
+      'C on haiku (timeout, 3.00x of its high bound so far)',
+    );
+    expect(md).toContain('D on haiku (failed, excluded)');
+  });
+});

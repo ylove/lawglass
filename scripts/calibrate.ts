@@ -40,10 +40,12 @@ import {
   estimateBill,
   modelPrice,
   type CallTokens,
+  type ModelPrice,
   type BillEstimate,
   type PriceTable,
   type UsageEvent,
 } from '../src/core/cost/index.js';
+import { jsonSchema } from '../src/core/llm/shared.js';
 import { MockProvider } from '../src/core/llm/mock.js';
 import {
   AppError,
@@ -174,8 +176,8 @@ export interface CalibrationOptions {
 const QUESTION_BUDGET_USD = 0.75;
 /** Below this the next run is not worth starting. */
 const MIN_RUN_USD = 0.05;
-/** How long to wait for calls in flight to report after a run or the whole job ends. */
-const SETTLE_MS = 60_000;
+/** How long to wait for calls in flight to report after a run or the whole job ends: the provider's own timeout plus a margin. */
+const SETTLE_MS = 150_000;
 
 // --- accounting -------------------------------------------------------------------------------
 
@@ -266,27 +268,41 @@ export function worstCallDollars(
   model: string,
   req: { maxTokens: number; system: string } & (
     { messages: unknown } | { prompt: unknown }
-  ),
+  ) & { schema?: z.ZodType },
   prices: PriceTable = {},
 ): number {
-  const input = Math.ceil(
-    JSON.stringify([req.system, 'messages' in req ? req.messages : req.prompt])
-      .length / 3,
-  );
+  // Two bytes a token is far denser than any real tokenizer, so this over-counts. A structured
+  // call also sends its JSON schema.
+  const sent = JSON.stringify([
+    req.system,
+    'messages' in req ? req.messages : req.prompt,
+    req.schema ? jsonSchema(req.schema) : null,
+  ]);
+  const input = Math.ceil(Buffer.byteLength(sent, 'utf8') / 2);
   const counts = (cacheWrite: number): CallTokens => ({
     inputTokens: input,
     cachedInputTokens: 0,
     cacheWriteTokens: cacheWrite,
     outputTokens: req.maxTokens,
   });
-  try {
-    const rate = modelPrice(model, prices);
-    return Math.max(
-      callDollars(counts(0), rate),
-      callDollars(counts(input), rate),
+  /** The base rates and, when the model has them, the long-context rates for the whole call. */
+  const rates = (rate: ModelPrice): ModelPrice[] =>
+    rate.longContext
+      ? [rate, { ...rate, ...rate.longContext, longContext: undefined }]
+      : [rate];
+  const worst = (all: readonly ModelPrice[]): number =>
+    Math.max(
+      ...all.flatMap((rate) =>
+        rates(rate).flatMap((r) => [
+          callDollars(counts(0), r),
+          callDollars(counts(input), r),
+        ]),
+      ),
     );
+  try {
+    return worst([modelPrice(model, prices)]);
   } catch {
-    return Math.max(dearestDollars(counts(0)), dearestDollars(counts(input)));
+    return worst(Object.values(PRICES));
   }
 }
 
@@ -382,12 +398,27 @@ export async function runCalibration(
   const guardFor =
     (s: RunState) =>
     (p: LlmProvider): LlmProvider => {
-      const admit = (req: Parameters<typeof worstCallDollars>[1]): number => {
-        if (!s.open) throw new AppError('BUDGET_EXHAUSTED');
+      const admit = async (
+        req: Parameters<typeof worstCallDollars>[1],
+      ): Promise<number> => {
         const worst = worstCallDollars(p.model, req, prices);
-        if (total + reserved + worst > options.maxUsd) capHit = true;
-        if (capHit || s.spent + s.reserved + worst > options.maxUsdPerRun)
-          throw new AppError('BUDGET_EXHAUSTED');
+        for (;;) {
+          if (!s.open || capHit) throw new AppError('BUDGET_EXHAUSTED');
+          // A call that cannot fit even alone ends the job's spending for good.
+          if (total + worst > options.maxUsd) {
+            capHit = true;
+            throw new AppError('BUDGET_EXHAUSTED');
+          }
+          if (s.spent + worst > options.maxUsdPerRun)
+            throw new AppError('BUDGET_EXHAUSTED');
+          // It fits alone but not beside the calls in flight: wait for them to report.
+          if (
+            total + reserved + worst <= options.maxUsd &&
+            s.spent + s.reserved + worst <= options.maxUsdPerRun
+          )
+            break;
+          await sleep(10);
+        }
         reserved += worst;
         s.reserved += worst;
         inflight++;
@@ -411,7 +442,7 @@ export async function runCalibration(
           return p.model;
         },
         streamText: async function* (req) {
-          const worst = admit(req);
+          const worst = await admit(req);
           try {
             yield* p.streamText(req);
           } finally {
@@ -419,7 +450,7 @@ export async function runCalibration(
           }
         },
         generateObject: async (req) => {
-          const worst = admit(req);
+          const worst = await admit(req);
           try {
             return await p.generateObject(req);
           } finally {

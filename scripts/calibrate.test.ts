@@ -11,6 +11,8 @@ import { resolveNewJersey } from '../src/core/fetch/new-jersey.js';
 import { resolveNewYork } from '../src/core/fetch/new-york.js';
 import { resolveHistory } from '../src/core/history/resolve.js';
 import type { CliRuntime } from '../src/cli/runtime.js';
+import { z } from 'zod';
+import { PRICES, callDollars } from '../src/core/cost/index.js';
 import { MockProvider } from '../src/core/llm/mock.js';
 import { resetSharedLimits } from '../src/core/pipeline/limits.js';
 import {
@@ -220,7 +222,13 @@ function slowSpender(model?: string, delayMs = 20) {
       const r = await inner.generateObject(req);
       return {
         ...r,
-        usage: { inputTokens: 1000, outputTokens: req.maxTokens },
+        usage: {
+          // Prose tokenizes at about 2.7 characters a token.
+          inputTokens: Math.ceil(
+            JSON.stringify([req.system, req.prompt]).length / 2.7,
+          ),
+          outputTokens: req.maxTokens,
+        },
       };
     },
   };
@@ -231,8 +239,8 @@ describe('the cap is hard', () => {
     Object.assign(env.runtime, {
       providerFor: (_role: string, model?: string) => slowSpender(model),
     });
-    // A call can cost up to about $0.003 (6,000 output tokens on Haiku); the cap fits only a few.
-    const cap = 0.01;
+    // A call reserves up to about $0.04 (16,000 output tokens at Haiku's long-context rate), so the cap fits only a few.
+    const cap = 0.1;
     const report = await runCalibration(
       options({ maxUsd: cap, minRunUsd: 0, plan: [run('A'), run('B')] }),
     );
@@ -267,6 +275,39 @@ describe('the cap is hard', () => {
     expect(haiku).toBeGreaterThanOrEqual(0.5);
     // Opus, at $20 per million output tokens, is the dearest built-in model.
     expect(unknown).toBeGreaterThanOrEqual(20);
+  });
+});
+
+describe('the reservation bounds a real call', () => {
+  test('a whole-bill Haiku prompt near the long-context threshold costs less than its reservation', () => {
+    const text =
+      'The department shall publish a rule for each grantee. '.repeat(
+        Math.ceil(279_000 / 54),
+      );
+    const req = {
+      system: 's',
+      messages: [{ role: 'user', content: text }],
+      maxTokens: 16_000,
+    };
+    const reserved = worstCallDollars('claude-haiku-5-5', req);
+    // 279K characters at 2.7 per token is about 103K tokens: past the 100K long-context line.
+    const actual = callDollars(
+      {
+        inputTokens: Math.ceil(text.length / 2.7),
+        cachedInputTokens: 0,
+        cacheWriteTokens: 0,
+        outputTokens: 16_000,
+      },
+      PRICES['claude-haiku-5-5'],
+    );
+    expect(reserved).toBeGreaterThanOrEqual(actual);
+    // And the schema a structured call sends is counted too.
+    const withSchema = worstCallDollars('claude-haiku-5-5', {
+      ...req,
+      prompt: text,
+      schema: z.object({ a: z.array(z.string()) }),
+    });
+    expect(withSchema).toBeGreaterThan(reserved * 0.99);
   });
 });
 

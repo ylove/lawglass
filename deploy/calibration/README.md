@@ -2,7 +2,7 @@
 
 Runs `scripts/calibrate.ts` against the real Anthropic API as a Cloud Run Job and prints a JSON report to the job logs. It measures what the pipeline really spends on a plan of bills and compares it with the estimator in `src/core/cost`. Part of #385: this is the tooling; the run comes after.
 
-**Spend is capped at $10 in total** (`--max-usd`, default 10) and $3 per bill and model plan (`--max-usd-per-bill`, default 3). Every admitted job carries a dollar budget, and every provider call reserves its worst case (the prompt at the dearest rate plus all `maxTokens` of output) before it is sent. A call that would not fit under the cap together with everything in flight is refused, so parallel calls cannot overshoot it. The cap counts model calls only (not embeddings or hosting).
+**Spend is capped at $10 in total** (`--max-usd`, default 10) and $3 per bill and model plan (`--max-usd-per-bill`, default 3). Every admitted job carries a dollar budget, and every provider call reserves an over-estimate of its worst case before it is sent: the prompt and JSON schema at two bytes per token, priced at the model's dearest rates (long-context included, cache writes included), plus all `maxTokens` of output. A call waits while other calls' reservations leave no room, and is refused if it cannot fit even alone. Given the provider bills no more than that bound (a real tokenizer produces fewer tokens than bytes divided by two), the total cannot pass the cap; the guarantee rests on that bound, not on an after-the-fact check. The cap counts model calls only (not embeddings or hosting).
 
 The API key reaches the container only as the `ANTHROPIC_API_KEY` environment variable, from Secret Manager. The script never prints it.
 
