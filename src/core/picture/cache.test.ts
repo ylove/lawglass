@@ -2,7 +2,15 @@ import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PictureEntry } from '../model/index.js';
+import { z } from 'zod';
+import { promptVersion } from '../answer/prompt.js';
+import { GlyphId, StampId, type PictureEntry } from '../model/index.js';
+import {
+  ITEMS_PER_CALL,
+  PICTURE_PROMPT_VERSION,
+  PICTURE_SYSTEM_PROMPT,
+  PictureSet,
+} from './prompt.js';
 import {
   PictureCache,
   pictureCacheHash,
@@ -78,6 +86,38 @@ describe('PictureCache', () => {
     expect(await cache.get(key({ model: 'other' }))).toBeUndefined();
     expect(await cache.get(key({ promptVersion: 'v2' }))).toBeUndefined();
   });
+
+  it.each([undefined, 1])(
+    'does not reuse pictures cached under older rules (%s)',
+    async (rules) => {
+      const cache = new PictureCache({ dir });
+      const oldVersion = promptVersion(
+        PICTURE_SYSTEM_PROMPT,
+        JSON.stringify(z.toJSONSchema(PictureSet)),
+        JSON.stringify([GlyphId.options, StampId.options, ITEMS_PER_CALL]),
+        ...(rules === undefined ? [] : [JSON.stringify({ rules })]),
+      );
+      const unchecked: PictureEntry = {
+        ...entry,
+        panels: [
+          {
+            left: { glyphs: ['bank'] },
+            link: 'none',
+            stamp: { glyph: 'warning' },
+          },
+        ],
+      };
+      await cache.getOrCompute(key({ promptVersion: oldVersion }), () =>
+        Promise.resolve([unchecked]),
+      );
+      expect(await cache.get(key({ promptVersion: oldVersion }))).toEqual([
+        unchecked,
+      ]);
+      expect(
+        await cache.get(key({ promptVersion: PICTURE_PROMPT_VERSION })),
+      ).toBeUndefined();
+    },
+  );
 
   it('does not write for a document removed while drawing, and refuses hostile ids', async () => {
     const cache = new PictureCache({ dir, isStillRegistered: () => false });

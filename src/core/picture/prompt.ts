@@ -9,6 +9,7 @@ import { z } from 'zod';
 import { escapeText, promptVersion } from '../answer/prompt.js';
 import { stripCitations } from '../answer/readability.js';
 import { GlyphId, PicturePanel, StampId } from '../model/index.js';
+import { PICTURE_RULES_VERSION } from './validate.js';
 
 /** Items per model call. A summary rarely has more; a long breakdown takes several calls. */
 export const ITEMS_PER_CALL = 10;
@@ -55,11 +56,12 @@ Rules:
 
 Return {"pictures": [...]}, each with the item's number and its panels. Leave out the items you skip.`;
 
-/** Changes to the prompt, the drawing grammar or the batching invalidate cached pictures. */
+/** Prompt, grammar, batching and validation changes invalidate cached pictures. */
 export const PICTURE_PROMPT_VERSION = promptVersion(
   PICTURE_SYSTEM_PROMPT,
   JSON.stringify(z.toJSONSchema(PictureSet)),
   JSON.stringify([GlyphId.options, StampId.options, ITEMS_PER_CALL]),
+  JSON.stringify({ rules: PICTURE_RULES_VERSION }),
 );
 
 export interface PictureItem {

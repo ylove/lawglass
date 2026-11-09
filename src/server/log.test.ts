@@ -172,3 +172,49 @@ test('picture runs log a count and the route template, never text (#344)', () =>
     method: 'GET',
   });
 });
+
+test('picture retry and recovery logs contain only counters', () => {
+  const lines: string[] = [];
+  const log = createLogger(
+    (line) => {
+      lines.push(line);
+    },
+    () => 0,
+  );
+  log.pictureEvent({
+    event: 'pictures_made',
+    source: 'summary',
+    count: 2,
+    recovered: 1,
+  });
+  log.pictureEvent({
+    event: 'pictures_dropped',
+    source: 'summary',
+    count: 1,
+    retried: 2,
+  });
+  expect(lines.map((line) => JSON.parse(line) as unknown)).toEqual([
+    {
+      t: new Date(0).toISOString(),
+      level: 'info',
+      event: 'pictures_made',
+      status: 200,
+      count: 2,
+      recovered: 1,
+      ms: 0,
+      route: '/api/docs/:docId/summary/pictures',
+      method: 'GET',
+    },
+    {
+      t: new Date(0).toISOString(),
+      level: 'info',
+      event: 'pictures_dropped',
+      status: 200,
+      count: 1,
+      retried: 2,
+      ms: 0,
+      route: '/api/docs/:docId/summary/pictures',
+      method: 'GET',
+    },
+  ]);
+});
