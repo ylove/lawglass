@@ -21,11 +21,11 @@
 import type { BreakdownLog } from '../core/breakdown/generate.js';
 import type { CliRuntime } from '../cli/runtime.js';
 import { documentContext } from '../core/answer/context.js';
+import { budgetRemaining, isBudgetExhausted } from '../core/cost/job.js';
 import { breakdownCacheHash } from '../core/breakdown/cache.js';
 import { NO_EXAMPLE_NOTE } from '../core/breakdown/notes.js';
 import {
   breakdownMaxUnitsFromEnv,
-  isBudgetExhausted,
   isFullCoverage,
   pregenerateExamplesFromEnv,
   unitCapOf,
@@ -84,10 +84,16 @@ export interface RequestOptions {
   start?: boolean;
   signal?: AbortSignal;
   onError?: (error: unknown, ms: number) => void;
+  /** Runs `begin` (which starts a paid generation) after the host admits it; throws to refuse. */
+  admit?: (begin: () => void) => Promise<void>;
 }
 
 export interface BreakdownService {
   get(docId: string, options?: RequestOptions): Promise<BreakdownResponse>;
+  /** A document was just paid for: forget its failure cool-downs and let a budget-stopped run go on. */
+  resume?(docId: string): void;
+  /** True when the pre-drawn examples for this tier are all stored (or none are drawn ahead). */
+  examplesComplete?(docId: string): Promise<boolean>;
   example(
     docId: string,
     sectionId: string,
@@ -160,8 +166,6 @@ export function createBreakdownService(
     { briefs: readonly SectionBrief[]; done: number; total: number }
   >();
   const failedAt = new Map<string, number>();
-  /** Runs that ended on purpose (a spent budget): reported as partial, not as a failure. */
-  const stopped = new Map<string, StoppedReason>();
   /** Documents whose example pass ended on a spent budget. */
   const examplesStopped = new Map<string, StoppedReason>();
   /** When the picture drawing of a document ended on a spent budget (reported by pictures). */
@@ -173,6 +177,8 @@ export function createBreakdownService(
       return 'budget_exhausted';
     return examplesStopped.get(passKey(docId));
   }
+  // Runs the job's budget cut short. Their briefs are shown for a while but never cached as final.
+  const stopped = new Map<string, { at: number; briefs: SectionBrief[] }>();
 
   /** Wake waiters when a run ends, whatever the outcome. */
   function settle(name: string): void {
@@ -188,7 +194,6 @@ export function createBreakdownService(
     if (failed === undefined) return false;
     if (now() - failed < FAILED_RETRY_MS) return true;
     failedAt.delete(name);
-    stopped.delete(name);
     return false;
   }
 
@@ -236,24 +241,41 @@ export function createBreakdownService(
         unitCap,
         log: options.log,
         onProgress: (briefs, counts) => {
-          progress.set(name, { briefs, ...counts });
+          // Parts an earlier, budget-stopped run wrote are never shown as fewer.
+          const kept = stopped.get(name)?.briefs ?? [];
+          progress.set(name, {
+            briefs: briefs.length >= kept.length ? briefs : kept,
+            ...counts,
+          });
           // Under 'all', each finished batch's examples start drawing without waiting for the end.
           startPregeneration(docId, briefs, context.mode, false);
           notify(docId);
         },
-        onStopped: (reason) => {
-          stopped.set(name, reason);
-        },
       });
-      if (!stored) failedAt.set(name, now());
+      if (stored?.stoppedReason) {
+        // Written parts are never replaced by fewer, whatever the later run managed. They are
+        // also on disk as checkpoints, so a run that goes on does not make them again.
+        const kept = stopped.get(name)?.briefs ?? [];
+        stopped.set(name, {
+          at: now(),
+          briefs: [
+            ...(stored.briefs.length >= kept.length ? stored.briefs : kept),
+          ],
+        });
+      } else if (!stored) failedAt.set(name, now());
       else {
+        stopped.delete(name);
         startPregeneration(docId, stored.briefs, stored.context);
         notify(docId);
       }
     })()
       .catch((error: unknown) => {
         failedAt.set(name, now());
-        if (isBudgetExhausted(error)) stopped.set(name, 'budget_exhausted');
+        if (isBudgetExhausted(error))
+          stopped.set(name, {
+            at: now(),
+            briefs: [...(progress.get(name)?.briefs ?? [])],
+          });
         onError?.(error, now() - started);
       })
       .finally(() => {
@@ -281,7 +303,9 @@ export function createBreakdownService(
           done: Math.min(total, saved.briefs.length + saved.dropped),
         };
     }
-    const stoppedReason = stopped.get(name) ?? docStopReason(docId);
+    const stoppedReason = stopped.has(name)
+      ? 'budget_exhausted'
+      : docStopReason(docId);
     const counts = {
       done: seen?.done ?? 0,
       total,
@@ -358,6 +382,38 @@ export function createBreakdownService(
       }
       return unfinished(docId, key, name, total, chosen.omitted);
     }
+    const halted = stopped.get(name);
+    if (halted) {
+      // What the budget let through stays until a run that finishes replaces it. A new run
+      // starts only when this scope has budget again and the last stop is not fresh. That run
+      // goes on from the checkpoints on disk, so the parts already written are not made again.
+      const mayResume =
+        request.start !== false &&
+        budgetRemaining() &&
+        now() - halted.at >= FAILED_RETRY_MS;
+      if (!mayResume) {
+        const counts = {
+          done: halted.briefs.length,
+          total,
+          stoppedReason: 'budget_exhausted' as const,
+        };
+        return halted.briefs.length > 0
+          ? {
+              status: 'cached',
+              briefs: [...halted.briefs],
+              // Parts the budget never reached are not "left out": nothing is claimed about them.
+              omitted: 0,
+              stoppedReason: 'budget',
+              progress: counts,
+            }
+          : { status: 'disabled', stoppedReason: 'budget', progress: counts };
+      }
+      progress.set(name, {
+        briefs: halted.briefs,
+        done: halted.briefs.length,
+        total,
+      });
+    }
     if (request.start === false) {
       // Report only: show the finished batches of a run that is not going (a restart, a stop).
       const idle = await unfinished(docId, key, name, total, chosen.omitted);
@@ -367,8 +423,6 @@ export function createBreakdownService(
     // would hide the panel and the parts the reader was already reading. A run that ended on a
     // spent budget is not an error: the reader keeps what was written.
     if (coolingDown(name)) {
-      if (stopped.has(name))
-        return unfinished(docId, key, name, total, chosen.omitted);
       throw new AppError('PROVIDER_ERROR', 'Breakdown is cooling down.', {
         userMessage:
           "Couldn't finish reading the sections right now. Try again in a minute.",
@@ -471,7 +525,13 @@ export function createBreakdownService(
       throw new AppError('PROVIDER_ERROR', 'Example is cooling down.', {
         userMessage: "Couldn't draw an example right now. Try again.",
       });
-    void startExample(docId, sectionId, name, context, request.onError);
+    const begin = (): void => {
+      // Another look may have started this run while admission was pending.
+      if (running.has(name)) return;
+      void startExample(docId, sectionId, name, context, request.onError);
+    };
+    if (request.admit) await request.admit(begin);
+    else begin();
     return { status: 'pending' };
   }
 
@@ -653,10 +713,61 @@ export function createBreakdownService(
     }
   }
 
+  /** Called when a document is paid for again: forget cool-downs and let stopped runs go on. */
+  function resume(docId: string): void {
+    for (const name of [...failedAt.keys()])
+      if (name.startsWith(`${docId}:`)) failedAt.delete(name);
+    for (const [name, halted] of stopped)
+      if (name.startsWith(`${docId}:`)) halted.at = Number.NEGATIVE_INFINITY;
+    // The example pass and the pictures go on too, from where they stopped.
+    const k = passKey(docId);
+    const pass = examplePasses.get(k);
+    if (pass) pass.stoppedAt = undefined;
+    examplesStopped.delete(k);
+    picturesStoppedAt.delete(k);
+  }
+
+  /** True when every example this tier draws ahead is stored (or none are drawn ahead). */
+  async function examplesComplete(docId: string): Promise<boolean> {
+    const policy = pregenerationMode(options);
+    if (policy === 'off' || options.publicMode) return true;
+    const llm = provider();
+    if (!llm) return true;
+    const doc = await registry.getDocument(docId);
+    const context = await documentContext(runtime.backend, docId, doc.sections);
+    if (policy === 'small' && context.mode !== 'whole') return true;
+    const hit = await breakdowns.get(
+      breakdownCacheKey(
+        docId,
+        llm,
+        runtime.answerEndpoint,
+        context.mode,
+        unitCap,
+      ),
+    );
+    const available =
+      hit?.briefs.filter((b) => b.example === 'available') ?? [];
+    if (
+      !hit ||
+      (policy === 'small' && available.length > MAX_PREGENERATED_EXAMPLES)
+    )
+      return Boolean(hit);
+    for (const { sectionId } of available)
+      if (
+        !(await examples.has(
+          sectionExampleKey(docId, sectionId, llm, context.mode),
+        ))
+      )
+        return false;
+    return true;
+  }
+
   return {
     get,
     example,
     progressivePictures: isFullCoverage(unitCap),
+    resume,
+    examplesComplete,
     reportPicturesStopped: (docId) => {
       picturesStoppedAt.set(passKey(docId), now());
     },

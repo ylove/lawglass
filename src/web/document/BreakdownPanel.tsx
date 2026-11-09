@@ -247,7 +247,17 @@ export function BreakdownPanel({
             lastProgress = Date.now();
             shown.current = r.briefs ?? [];
           }
-          if (r.status === 'cached' && r.briefs && r.briefs.length > 0) {
+          if (r.stoppedReason) {
+            // The host's budget for this bill ran out: what was written stays, nothing more comes.
+            setState({
+              kind: 'stopped',
+              briefs: shown.current,
+              progress: r.progress ?? {
+                done: shown.current.length,
+                total: shown.current.length,
+              },
+            });
+          } else if (r.status === 'cached' && r.briefs && r.briefs.length > 0) {
             autoRetried.current = false;
             setState({
               kind: 'cached',

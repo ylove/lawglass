@@ -21,10 +21,7 @@ import {
   generateBreakdown,
 } from '../breakdown/generate.js';
 import { EXAMPLE_FAILED_NOTE } from '../breakdown/notes.js';
-import {
-  isBudgetExhausted,
-  type StoppedReason,
-} from '../breakdown/coverage.js';
+import { isBudgetExhausted } from '../cost/job.js';
 import {
   chooseBreakdownUnits,
   MAX_BREAKDOWN_UNITS,
@@ -74,8 +71,6 @@ export interface BreakdownDeps {
         progress: { done: number; total: number },
       ) => void)
     | undefined;
-  /** The run ended early on purpose (a spent budget). The batches written so far are kept. */
-  onStopped?: ((reason: StoppedReason) => void) | undefined;
 }
 
 export function breakdownCacheKey(
@@ -150,11 +145,14 @@ export async function runBreakdown(
       [...resumed, ...briefs].sort(
         (a, b) => (order.get(a.sectionId) ?? 0) - (order.get(b.sectionId) ?? 0),
       );
+    // The newest batch written, for a run that ends early without a result of its own.
+    let latest: SectionBrief[] = inOrder([]);
     const writeBatch = async (
       briefs: readonly SectionBrief[],
       dropped: number,
     ): Promise<void> => {
       const all = inOrder(briefs);
+      latest = all;
       await checkpoint({
         briefs: all,
         total: units.length,
@@ -190,8 +188,14 @@ export async function runBreakdown(
     } catch (error) {
       // A spent budget ends the run, not the breakdown: every finished batch is already written.
       if (!isBudgetExhausted(error)) throw error;
-      deps.onStopped?.('budget_exhausted');
-      return undefined;
+      return {
+        briefs: latest,
+        omitted,
+        context: context.mode,
+        provider: deps.provider.id,
+        model: deps.provider.model,
+        stoppedReason: 'budget',
+      };
     }
     await registry.touch(docId, {
       embedTokens: made.backendUsage.embedTokens,
@@ -199,7 +203,7 @@ export async function runBreakdown(
       ...registryLlmUsage(made.usage),
     });
     const briefs = inOrder(made.briefs);
-    if (briefs.length === 0) return undefined;
+    if (briefs.length === 0 && !made.stoppedReason) return undefined;
     return {
       briefs,
       // Parts left out by choice, plus parts whose brief could not be made or checked.
@@ -207,6 +211,7 @@ export async function runBreakdown(
       context: context.mode,
       provider: deps.provider.id,
       model: deps.provider.model,
+      ...(made.stoppedReason ? { stoppedReason: made.stoppedReason } : {}),
     };
   });
 }

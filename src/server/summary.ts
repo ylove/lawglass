@@ -101,6 +101,8 @@ export interface SummaryRequestOptions {
 export interface SummaryService {
   /** Cache hit, a run in progress or just started, or `disabled`. Existing runs may be awaited. */
   get(docId: string, options?: SummaryRequestOptions): Promise<SummaryResponse>;
+  /** Forget a document's failure cool-down: someone just paid for it, so try again now. */
+  resume?(docId: string): void;
 }
 
 /** Polls subscribe to completion without attaching reactions to a possibly stuck generation. */
@@ -145,6 +147,7 @@ export function createSummaryService(
   });
   const running = new Map<string, Set<() => void>>();
   const failedAt = new Map<string, number>();
+  const failedDoc = new Map<string, string>();
 
   // Accepted trade-offs:
   // - Background runs are not aborted when the server closes or the tab goes away. For a
@@ -188,10 +191,14 @@ export function createSummaryService(
       .then(
         async () => {
           // A decline or truncated answer is returned but never stored; remember that.
-          if (!(await cache.get(key))) failedAt.set(name, now());
+          if (!(await cache.get(key))) {
+            failedAt.set(name, now());
+            failedDoc.set(name, docId);
+          }
         },
         (error: unknown) => {
           failedAt.set(name, now());
+          failedDoc.set(name, docId);
           onError?.(error, now() - started);
         },
       )
@@ -203,6 +210,13 @@ export function createSummaryService(
   }
 
   return {
+    resume(docId) {
+      for (const [name, doc] of failedDoc)
+        if (doc === docId) {
+          failedAt.delete(name);
+          failedDoc.delete(name);
+        }
+    },
     async get(docId, request = {}) {
       let provider;
       try {

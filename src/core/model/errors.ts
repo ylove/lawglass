@@ -3,6 +3,8 @@
  * tests and eval) and a plain-language `userMessage` (for the CLI and UI). Internal detail goes
  * in `message`/`cause` and is never shown to end users verbatim. Never put API keys in either.
  */
+import type { LlmUsage } from './ports.js';
+
 export const ERROR_CODES = {
   INVALID_INPUT: 'That input is not valid.',
   SSRF_BLOCKED:
@@ -26,6 +28,8 @@ export const ERROR_CODES = {
   RATE_LIMITED: 'Too many requests. Please wait and try again.',
   PUBLIC_MODE_FORBIDDEN: 'That action is turned off on this public server.',
   DOC_CAP_REACHED: 'The document limit has been reached.',
+  PAYMENT_REQUIRED: 'This needs a confirmed quote before it can start.',
+  BUDGET_EXHAUSTED: 'This job reached its spending limit and stopped.',
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_CODES;
@@ -35,6 +39,11 @@ export class AppError extends Error {
   readonly userMessage: string;
   /** Optional structured detail safe to show (e.g. candidate links for WRAPPER_PAGE). */
   readonly details: Record<string, unknown> | undefined;
+  /**
+   * Tokens a failed model call was billed for, when the provider's response said (for example a
+   * reply cut off at max_tokens). Lets hosted accounting charge calls that produced no answer.
+   */
+  usage: LlmUsage | undefined;
 
   constructor(
     code: ErrorCode,

@@ -1,5 +1,12 @@
 export { createApp, toErrorPayload, DEFAULT_PUBLIC_LIMITS } from './app.js';
 export type { AppOptions, ExternalAuth, PublicLimits } from './app.js';
+export type {
+  Admission,
+  AdmissionHook,
+  AdmissionJob,
+  ModelForHook,
+} from './admission.js';
+export type { QuoteOptions, QuoteFacts } from './quotes.js';
 export { createRuntime } from '../cli/runtime.js';
 export type {
   CliRuntime,

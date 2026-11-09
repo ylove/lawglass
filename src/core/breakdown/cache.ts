@@ -42,6 +42,8 @@ const StoredBreakdown = z.object({
   context: z.enum(['whole', 'excerpts']),
   provider: z.string(),
   model: z.string(),
+  /** A run the job's budget cut short. Never written to the cache: a later run with budget resumes. */
+  stoppedReason: z.literal('budget').optional(),
 });
 export type StoredBreakdown = z.infer<typeof StoredBreakdown>;
 
@@ -238,7 +240,7 @@ export class BreakdownCache {
         const result = await compute((partial) =>
           this.storePartial(key, partial, startedAt).catch(() => undefined),
         );
-        if (result && result.briefs.length > 0) {
+        if (result && !result.stoppedReason && result.briefs.length > 0) {
           // The checkpoint goes only once the final result is safely written; if that write
           // fails, the finished batches stay on disk for the next run to resume from.
           const written = await this.store(key, result, startedAt).then(

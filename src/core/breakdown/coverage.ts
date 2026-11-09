@@ -4,7 +4,6 @@
  * them up and prices the bill to match, with the cost estimator in `core/cost`.
  */
 import { envVar } from '../brand.js';
-import { AppError } from '../model/index.js';
 import { MAX_BREAKDOWN_UNITS } from './units.js';
 
 /** How many parts get a brief: a count, or `'all'` for every substantive part. */
@@ -56,17 +55,5 @@ export function pregenerateExamplesFromEnv(
   return DEFAULT_PREGENERATE_EXAMPLES;
 }
 
-/**
- * The job-budget hook (a separate change) throws an `AppError` with this code from
- * `Limits.meter`. Compared as a string so this code does not depend on that change landing first.
- */
-export const BUDGET_EXHAUSTED = 'BUDGET_EXHAUSTED';
-
 /** Why a background loop ended early; surfaced as `progress.stoppedReason`. */
 export type StoppedReason = 'budget_exhausted';
-
-export function isBudgetExhausted(error: unknown): error is AppError {
-  return (
-    error instanceof AppError && (error.code as string) === BUDGET_EXHAUSTED
-  );
-}

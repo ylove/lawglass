@@ -241,13 +241,66 @@ describe('progressive breakdown', () => {
       expect(r.progress?.stoppedReason).toBe('budget_exhausted');
       return r;
     });
-    expect(stopped.status).toBe('partial');
+    // Shown as final-so-far, flagged as stopped (hosting hooks, part B).
+    expect(stopped.status).toBe('cached');
+    expect(stopped.stoppedReason).toBe('budget');
     expect(stopped.briefs).toHaveLength(20);
     expect(stopped.progress).toMatchObject({ done: 20, total: 25 });
     const made = provider.breakdownCalls;
     for (let i = 0; i < 3; i++) await breakdown(a, docId);
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(provider.breakdownCalls).toBe(made);
+  });
+});
+
+describe('resuming after a budget stop', () => {
+  test('goes on from the checkpoints: parts already written are not made again', async () => {
+    const { createBreakdownService } = await import('./breakdown.js');
+    const service = createBreakdownService(env.runtime, {
+      publicMode: false,
+      breakdownMaxUnits: 'all',
+      pregenerateExamples: 'off',
+    });
+    const a = app({ breakdownMaxUnits: 'all', pregenerateExamples: 'off' });
+    const docId = await ingestMany(a, 25);
+    let calls = 0;
+    const make = (
+      req: Parameters<NonNullable<typeof provider.behavior>>[0],
+    ) => ({
+      briefs: listedIds(req.prompt).map((id) => ({
+        id,
+        text: `This part sets rules for ${id}. [S:${id}]`,
+        example: 'available',
+      })),
+    });
+    provider.behavior = (req) => {
+      if (++calls === 3) throw budgetError();
+      return make(req);
+    };
+    await service.get(docId, { wait: false });
+    const stopped = await vi.waitFor(async () => {
+      const r = await service.get(docId, { wait: false });
+      expect(r.stoppedReason).toBe('budget');
+      return r;
+    });
+    expect(stopped.briefs).toHaveLength(20);
+    expect(stopped.progress).toMatchObject({ done: 20, total: 25 });
+
+    // Paid for again: the next look starts a run that only asks for what is missing.
+    provider.behavior = make;
+    provider.requests.length = 0;
+    service.resume?.(docId);
+    await service.get(docId, { wait: false });
+    const done = await vi.waitFor(async () => {
+      const r = await service.get(docId, { wait: false });
+      expect(r.status).toBe('cached');
+      expect(r.stoppedReason).toBeUndefined();
+      return r;
+    });
+    expect(done.briefs).toHaveLength(25);
+    expect(provider.requests.flatMap((r) => listedIds(r.prompt))).toEqual(
+      Array.from({ length: 5 }, (_, i) => `sec-${String(i + 21)}`),
+    );
   });
 });
 
@@ -264,7 +317,8 @@ describe('stops that readers are told about', () => {
       expect(x.progress?.stoppedReason).toBe('budget_exhausted');
       return x;
     });
-    expect(r.status).toBe('pending');
+    expect(r.status).toBe('disabled');
+    expect(r.stoppedReason).toBe('budget');
     expect(r.progress).toEqual({
       done: 0,
       total: 25,

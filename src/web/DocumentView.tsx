@@ -25,6 +25,7 @@ import { SummaryPanel } from './document/SummaryPanel.js';
 import type { Turn } from './document/types.js';
 import { errorMessage } from './errors.js';
 import { HOME_PATH, Link } from './nav.js';
+import { emitEvent } from './events.js';
 import { ApiError } from './sse.js';
 import { CUT_OFF } from './sse.js';
 
@@ -178,7 +179,15 @@ export function DocumentView({
   if (!detail) return <p role="status">Loading the document...</p>;
 
   const openSection = (sectionId: string, trigger: HTMLElement) => {
+    emitEvent('section_brief_open', {
+      jurisdiction: detail.metadata.jurisdiction,
+    });
     setOpen({ sectionId, trigger });
+  };
+  // A referenced law's text opens in the same drawer, but it is a different reader action.
+  const openReference = (referenceId: string, trigger: HTMLElement) => {
+    emitEvent('reference_open', { jurisdiction: detail.metadata.jurisdiction });
+    setOpen({ sectionId: referenceId, trigger });
   };
 
   const showFreeform = config.freeformEnabled && !config.publicMode;
@@ -247,7 +256,7 @@ export function DocumentView({
           />
           <ReferencedCard
             externalRefs={detail.externalRefs}
-            onOpenReference={openSection}
+            onOpenReference={openReference}
           />
           <AmendmentsCard
             history={detail.history}

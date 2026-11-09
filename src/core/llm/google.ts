@@ -104,14 +104,19 @@ export class GoogleProvider implements LlmProvider {
           responseJsonSchema: jsonSchema(req.schema),
         },
       });
-      signal.throwIfAborted();
-      const text = (result.candidates?.[0]?.content?.parts ?? [])
-        .flatMap((p) => (p.text && !p.thought ? [p.text] : []))
-        .join('');
-      return {
-        object: validateObject(req.schema, parseJson(text)),
-        usage: usageOf(result),
-      };
+      const usage = usageOf(result);
+      try {
+        signal.throwIfAborted();
+        const text = (result.candidates?.[0]?.content?.parts ?? [])
+          .flatMap((p) => (p.text && !p.thought ? [p.text] : []))
+          .join('');
+        return {
+          object: validateObject(req.schema, parseJson(text)),
+          usage,
+        };
+      } catch (error) {
+        throw providerFailure(error, usage);
+      }
     } catch (error) {
       throw providerFailure(error);
     }

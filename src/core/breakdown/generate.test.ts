@@ -513,14 +513,14 @@ describe('brief reading-level regeneration', () => {
       return first ? first(req) : undefined;
     };
     const seen: number[] = [];
-    await expect(
-      generateBreakdown({
-        ...input(provider, WHOLE_BATCH_SIZE + 2),
-        onProgress: (briefs) => {
-          seen.push(briefs.length);
-        },
-      }),
-    ).rejects.toMatchObject({ code: 'BUDGET_EXHAUSTED' });
+    const out = await generateBreakdown({
+      ...input(provider, WHOLE_BATCH_SIZE + 2),
+      onProgress: (briefs) => {
+        seen.push(briefs.length);
+      },
+    });
+    expect(out.stoppedReason).toBe('budget');
+    expect(out.briefs).toHaveLength(WHOLE_BATCH_SIZE);
     // The whole first batch was recorded (hard first draft included); no second batch ran.
     expect(seen).toEqual([WHOLE_BATCH_SIZE]);
     expect(provider.breakdownCalls).toBe(2);

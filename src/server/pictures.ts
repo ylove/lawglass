@@ -9,7 +9,8 @@
  * keeps the words, with no error to dismiss.
  */
 import { addLlmUsage } from '../core/cost/usage.js';
-import type { LlmUsage } from '../core/model/index.js';
+import { budgetRemaining, isBudgetExhausted } from '../core/cost/job.js';
+import { AppError, type LlmUsage } from '../core/model/index.js';
 import { registryLlmUsage } from '../core/registry.js';
 import { join } from 'node:path';
 import type { CliRuntime } from '../cli/runtime.js';
@@ -26,7 +27,6 @@ import {
   type PictureCacheKey,
   type PictureSource,
 } from '../core/picture/cache.js';
-import { isBudgetExhausted } from '../core/breakdown/coverage.js';
 import { drawPictures, type DrawnPictures } from '../core/picture/generate.js';
 import {
   ITEMS_PER_CALL,
@@ -45,6 +45,8 @@ import {
 export interface PictureRequestOptions {
   /** False answers at once (HEAD, tests); default waits up to `waitMs` for a run in progress. */
   wait?: boolean;
+  /** False only reports: cached pictures, or `pending`; never starts a run. */
+  start?: boolean;
   signal?: AbortSignal;
   onError?: (error: unknown, ms: number) => void;
 }
@@ -57,6 +59,8 @@ export interface PictureService {
     source: PictureSource,
     request?: PictureRequestOptions,
   ): Promise<PicturesResponse>;
+  /** A document was just paid for: forget cool-downs and let a budget-stopped run go on. */
+  resume(docId: string): void;
 }
 
 /** Counts only, never text: what a run drew and what the checks refused. */
@@ -115,6 +119,8 @@ export function createPictureService(
   const running = new Map<string, Set<() => void>>();
   const failedAt = new Map<string, number>();
   const budgetStoppedAt = new Map<string, number>();
+  // Pictures drawn before the job's budget ran out: shown for a while, never cached as final.
+  const stopped = new Map<string, { at: number; entries: PictureEntry[] }>();
 
   function provider(): LlmProvider | undefined {
     try {
@@ -216,6 +222,32 @@ export function createPictureService(
         await registry
           .touch(key.docId, registryLlmUsage(usage))
           .catch((error: unknown) => onError?.(error, now() - started));
+      }
+      if (drawn.stoppedReason) {
+        if (perBrief) {
+          // Records only for briefs that did get a picture: the others were never decided.
+          await Promise.all(
+            items
+              .filter((item) =>
+                drawn.entries.some((e) => e.item === item.index),
+              )
+              .map((item) =>
+                cache.put(
+                  briefKey(key.docId, llm, item),
+                  drawn.entries.filter((e) => e.item === item.index),
+                ),
+              ),
+          );
+        } else {
+          // Pictures already drawn are never replaced by fewer.
+          const kept = stopped.get(name)?.entries ?? [];
+          stopped.set(name, {
+            at: now(),
+            entries: drawn.entries.length >= kept.length ? drawn.entries : kept,
+          });
+        }
+        // Throwing keeps getOrCompute from storing a partial set as the finished one.
+        throw new AppError('BUDGET_EXHAUSTED');
       }
       options.log?.({
         event: 'pictures_made',
@@ -495,6 +527,10 @@ export function createPictureService(
       const done = request.signal?.aborted ? undefined : await cache.get(key);
       return done ? respond(done) : { status: 'pending' };
     }
+    if (request.start === false) return { status: 'pending' };
+    const halted = stopped.get(name);
+    if (halted && !(budgetRemaining() && now() - halted.at >= FAILED_RETRY_MS))
+      return respond(halted.entries);
     const failed = failedAt.get(name);
     if (failed !== undefined && now() - failed < FAILED_RETRY_MS)
       return { status: 'none' };
@@ -503,5 +539,14 @@ export function createPictureService(
     return { status: 'pending' };
   }
 
-  return { get, knownRecords: () => known.size };
+  function resume(docId: string): void {
+    for (const name of [...failedAt.keys()])
+      if (name.startsWith(`${docId}:`)) failedAt.delete(name);
+    for (const [name, halted] of stopped)
+      if (name.startsWith(`${docId}:`)) halted.at = Number.NEGATIVE_INFINITY;
+    // Full coverage: a paid-for document draws what is left, starting now.
+    if (budgetStoppedAt.delete(docId)) void drainBackground(docId);
+  }
+
+  return { get, resume, knownRecords: () => known.size };
 }
