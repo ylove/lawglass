@@ -187,7 +187,9 @@ function isPublicLaw(element: Element): boolean {
   return (
     nameField(element, 'type')?.toLowerCase() === 'public law' ||
     items(child(element, 'formats')).some((format) =>
-      /\/PLAW-[^/]*\/|\/PLAW-[^/]*$/.test(field(format, 'url') ?? ''),
+      /^https?:\/\/(?:www\.)?govinfo\.gov\/content\/pkg\/PLAW-/i.test(
+        field(format, 'url') ?? '',
+      ),
     )
   );
 }

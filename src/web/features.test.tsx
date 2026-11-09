@@ -136,7 +136,7 @@ describe('summary on arrival', () => {
     expect(screen.queryByRole('status')).toBeNull();
   });
 
-  test('the summary shows its reading level, and says when it was simplified', async () => {
+  test('the summary never shows a reading grade, even when it was simplified', async () => {
     const api = mock();
     const original = api.getSummary.bind(api);
     api.getSummary = async (...args) => {
@@ -160,9 +160,10 @@ describe('summary on arrival', () => {
         pollMs={5}
       />,
     );
+    await screen.findByRole('button', { name: 'Summary source 1' });
     expect(
-      await screen.findByText('Reading level: grade 7 (simplified)'),
-    ).toBeTruthy();
+      screen.queryByText(/reading level|grade \d|\d(st|nd|rd|th)-grade/i),
+    ).toBeNull();
   });
 
   test('the whole page keeps a single role=status while the summary arrives', async () => {

@@ -910,6 +910,8 @@ describe('HTTP security boundary', () => {
     ['POST', '/api/docs/missing/ask'],
     ['DELETE', '/api/docs/missing'],
     ['GET', '/api/docs/missing/summary'],
+    ['GET', '/api/docs/missing/summary/pictures'],
+    ['GET', '/api/docs/missing/breakdown/pictures'],
   ])('refuses cross-site %s %s before pipeline work', async (method, path) => {
     const { a, provider, backend } = secureApp();
     const del = vi.spyOn(backend, 'deleteDocument');
@@ -1048,6 +1050,18 @@ describe('HTTP security boundary', () => {
       ).status,
     ).toBe(403);
   });
+  test.each(['summary', 'breakdown'])(
+    'refuses a cross-site HEAD on the %s pictures route',
+    async (source) => {
+      const { a, provider } = secureApp();
+      const response = await a.request(`/api/docs/missing/${source}/pictures`, {
+        method: 'HEAD',
+        headers: { cookie, 'sec-fetch-site': 'cross-site' },
+      });
+      expect(response.status).toBe(403);
+      expect(provider.calls).toEqual([]);
+    },
+  );
 });
 
 test('the quickstart is served in local mode even without a session cookie', async () => {
