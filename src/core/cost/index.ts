@@ -30,6 +30,8 @@ export {
   topUp,
   chargeJob,
   currentJob,
+  currentTier,
+  tierName,
   isBudgetExhausted,
   newSpend,
   runInJob,

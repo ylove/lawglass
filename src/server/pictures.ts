@@ -9,7 +9,15 @@
  * keeps the words, with no error to dismiss.
  */
 import { addLlmUsage } from '../core/cost/usage.js';
-import { budgetRemaining, isBudgetExhausted } from '../core/cost/job.js';
+import {
+  budgetRemaining,
+  currentJob,
+  currentTier,
+  isBudgetExhausted,
+  runInJob,
+  tierName,
+  type JobScope,
+} from '../core/cost/job.js';
 import { AppError, type LlmUsage } from '../core/model/index.js';
 import { registryLlmUsage } from '../core/registry.js';
 import { join } from 'node:path';
@@ -60,7 +68,7 @@ export interface PictureService {
     request?: PictureRequestOptions,
   ): Promise<PicturesResponse>;
   /** A document was just paid for: forget cool-downs and let a budget-stopped run go on. */
-  resume(docId: string): void;
+  resume(docId: string, live?: JobScope): void;
 }
 
 /** Counts only, never text: what a run drew and what the checks refused. */
@@ -118,6 +126,10 @@ export function createPictureService(
     });
   const running = new Map<string, Set<() => void>>();
   const failedAt = new Map<string, number>();
+  // Stop marks and drain state are per (document, tier): another tier's reader neither sees
+  // nor restarts them.
+  const tierKey = (docId: string, tier = currentTier()): string =>
+    `${docId}\n${tier}`;
   const budgetStoppedAt = new Map<string, number>();
   // Pictures drawn before the job's budget ran out: shown for a while, never cached as final.
   const stopped = new Map<string, { at: number; entries: PictureEntry[] }>();
@@ -189,6 +201,7 @@ export function createPictureService(
     perBrief = false,
   ): Promise<void> {
     const started = now();
+    const tier = currentTier();
     // Forget cool-downs that are over, so the map holds only recent failures.
     for (const [other, at] of failedAt)
       if (started - at >= FAILED_RETRY_MS) failedAt.delete(other);
@@ -282,8 +295,8 @@ export function createPictureService(
         failedAt.set(name, now());
         // A spent job budget ends drawing for this document; nothing else is started for it.
         if (isBudgetExhausted(error)) {
-          budgetStoppedAt.set(key.docId, now());
-          options.breakdown.reportPicturesStopped?.(key.docId);
+          budgetStoppedAt.set(tierKey(key.docId, tier), now());
+          options.breakdown.reportPicturesStopped?.(key.docId, tier);
         }
         onError?.(error, now() - started);
       })
@@ -392,28 +405,30 @@ export function createPictureService(
   const drainAgain = new Set<string>();
   async function drainBackground(docId: string): Promise<void> {
     if (options.publicMode || !options.breakdown.progressivePictures) return;
-    if (draining.has(docId)) {
-      drainAgain.add(docId);
+    const drainKey = tierKey(docId);
+    if (draining.has(drainKey)) {
+      drainAgain.add(drainKey);
       return;
     }
-    draining.add(docId);
+    draining.add(drainKey);
+    // Everything the drain does runs in the scope it was created in: the job (and so the budget
+    // and the tier) that the work belongs to, whoever's request happens to wake it later.
+    const scope = currentJob();
+    const inScope = <T>(fn: () => T): T => runInJob(scope, fn);
     try {
       const llm = provider();
       if (!llm) return;
       const tried = new Set<string>();
       do {
-        drainAgain.delete(docId);
+        drainAgain.delete(drainKey);
         for (;;) {
-          const found = await sourceItems(docId, 'breakdown');
+          const found = await inScope(() => sourceItems(docId, 'breakdown'));
           if (found.status !== 'ready') break;
-          const stoppedAt = budgetStoppedAt.get(docId);
+          const stoppedAt = budgetStoppedAt.get(tierKey(docId));
           if (stoppedAt !== undefined && now() - stoppedAt < FAILED_RETRY_MS)
             return;
-          const { batches } = await briefState(
-            docId,
-            llm,
-            found.items,
-            found.complete,
+          const { batches } = await inScope(() =>
+            briefState(docId, llm, found.items, found.complete),
           );
           const next = batches.find(
             (batch) => !tried.has(batch.name) && !isCooling(batch.name),
@@ -429,13 +444,15 @@ export function createPictureService(
             continue;
           }
           tried.add(next.name);
-          await start(next.key, next.name, llm, next.items, undefined, true);
+          await inScope(() =>
+            start(next.key, next.name, llm, next.items, undefined, true),
+          );
         }
-      } while (drainAgain.has(docId));
+      } while (drainAgain.has(drainKey));
     } catch {
       // Pictures are an enhancement: a failure here must never reach the breakdown.
     } finally {
-      draining.delete(docId);
+      draining.delete(drainKey);
     }
   }
   options.breakdown.subscribe?.((docId) => {
@@ -466,13 +483,15 @@ export function createPictureService(
     if (options.publicMode)
       return entries.length > 0 ? respond(entries) : { status: 'disabled' };
 
-    const stoppedAt = budgetStoppedAt.get(docId);
+    const stoppedAt = budgetStoppedAt.get(tierKey(docId));
     const budgetStopped =
       stoppedAt !== undefined && now() - stoppedAt < FAILED_RETRY_MS;
     // Briefs still to come keep the reader polling; so does a batch being drawn or about to be.
     const todo = budgetStopped ? [] : batches.filter((b) => !isCooling(b.name));
     const more = !complete ? !budgetStopped : todo.length > 0;
     if (todo.length === 0) return finish(more);
+    // Report only: what exists, never a draw (the caller may not have been admitted).
+    if (request.start === false) return finish(true);
 
     const busy = [...running].find(([name]) => name.startsWith(`${docId}:`));
     if (busy) {
@@ -539,13 +558,16 @@ export function createPictureService(
     return { status: 'pending' };
   }
 
-  function resume(docId: string): void {
+  function resume(docId: string, live?: JobScope): void {
     for (const name of [...failedAt.keys()])
       if (name.startsWith(`${docId}:`)) failedAt.delete(name);
     for (const [name, halted] of stopped)
       if (name.startsWith(`${docId}:`)) halted.at = Number.NEGATIVE_INFINITY;
-    // Full coverage: a paid-for document draws what is left, starting now.
-    if (budgetStoppedAt.delete(docId)) void drainBackground(docId);
+    // Full coverage: a paid-for (document, tier) draws what is left, starting now and in its own
+    // live scope. Without a scope there is nothing to charge, so nothing is started here; the
+    // next generating request in the right scope does it.
+    if (live && budgetStoppedAt.delete(tierKey(docId, tierName(live.models))))
+      void runInJob(live, () => drainBackground(docId));
   }
 
   return { get, resume, knownRecords: () => known.size };

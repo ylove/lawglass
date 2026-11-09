@@ -458,4 +458,19 @@ describe('breakdown pictures under full coverage', () => {
     await svc.get(DOC, 'breakdown', { wait: false });
     expect(svc.knownRecords?.()).toBe(0);
   });
+
+  it('a report-only look (start: false) never draws, however many briefs are missing', async () => {
+    const provider = drawingProvider();
+    const svc = service(provider, () => ({
+      status: 'cached',
+      briefs: briefs(ITEMS_PER_CALL * 2),
+      omitted: 0,
+    }));
+    for (let i = 0; i < 3; i++) {
+      const r = await svc.get(DOC, 'breakdown', { wait: false, start: false });
+      expect(r.status).toBe('pending');
+    }
+    await new Promise((r) => setTimeout(r, 100));
+    expect(provider.calls).toHaveLength(0);
+  });
 });

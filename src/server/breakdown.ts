@@ -21,7 +21,15 @@
 import type { BreakdownLog } from '../core/breakdown/generate.js';
 import type { CliRuntime } from '../cli/runtime.js';
 import { documentContext } from '../core/answer/context.js';
-import { budgetRemaining, isBudgetExhausted } from '../core/cost/job.js';
+import {
+  budgetRemaining,
+  currentJob,
+  currentTier,
+  isBudgetExhausted,
+  runInJob,
+  tierName,
+  type JobScope,
+} from '../core/cost/job.js';
 import { breakdownCacheHash } from '../core/breakdown/cache.js';
 import { NO_EXAMPLE_NOTE } from '../core/breakdown/notes.js';
 import {
@@ -91,7 +99,7 @@ export interface RequestOptions {
 export interface BreakdownService {
   get(docId: string, options?: RequestOptions): Promise<BreakdownResponse>;
   /** A document was just paid for: forget its failure cool-downs and let a budget-stopped run go on. */
-  resume?(docId: string): void;
+  resume?(docId: string, live?: JobScope): void;
   /** True when the pre-drawn examples for this tier are all stored (or none are drawn ahead). */
   examplesComplete?(docId: string): Promise<boolean>;
   example(
@@ -106,7 +114,7 @@ export interface BreakdownService {
   readonly progressivePictures?: boolean;
   /** Told with the document id whenever a batch of briefs lands, and when the run is whole. */
   /** Pictures ended on a spent budget; readers are told in `progress.stoppedReason`. */
-  reportPicturesStopped?(docId: string): void;
+  reportPicturesStopped?(docId: string, tier?: string): void;
   subscribe?(listener: (docId: string) => void): void;
 }
 
@@ -139,6 +147,8 @@ interface ExamplePass {
   running: boolean;
   failures: number;
   stoppedAt: number | undefined;
+  /** The job the pass belongs to; every call it makes runs in it. */
+  scope: JobScope | undefined;
 }
 const examplePasses = new Map<string, ExamplePass>();
 
@@ -158,7 +168,9 @@ export function createBreakdownService(
     options.breakdownMaxUnits ?? breakdownMaxUnitsFromEnv(),
   );
 
-  const passKey = (docId: string): string => `${registry.configDir}\n${docId}`;
+  // Background state is per (document, tier): a stop or a pass for one tier is not another's.
+  const passKey = (docId: string, tier = currentTier()): string =>
+    `${registry.configDir}\n${docId}\n${tier}`;
   const running = new Map<string, Set<() => void>>();
   /** The running breakdown's finished batches (also on disk, for readers after a restart). */
   const progress = new Map<
@@ -628,6 +640,7 @@ export function createBreakdownService(
         running: false,
         failures: 0,
         stoppedAt: undefined,
+        scope: currentJob(),
       };
       examplePasses.set(k, pass);
     }
@@ -647,7 +660,8 @@ export function createBreakdownService(
     }
     if (pass.running || pass.queue.length === 0) return;
     pass.running = true;
-    void drainExamples(docId, pass);
+    // The caller's scope may belong to another request; the pass keeps the one it was made in.
+    void runInJob(pass.scope, () => drainExamples(docId, pass));
   }
 
   /**
@@ -662,6 +676,8 @@ export function createBreakdownService(
     const stop = (reason?: StoppedReason): void => {
       pass.stoppedAt = now();
       pass.queue.length = 0;
+      // What was queued but not drawn must be queueable again when the pass goes on.
+      pass.queued.clear();
       if (reason) examplesStopped.set(k, reason);
     };
     try {
@@ -714,17 +730,29 @@ export function createBreakdownService(
   }
 
   /** Called when a document is paid for again: forget cool-downs and let stopped runs go on. */
-  function resume(docId: string): void {
+  function resume(docId: string, live?: JobScope): void {
     for (const name of [...failedAt.keys()])
       if (name.startsWith(`${docId}:`)) failedAt.delete(name);
     for (const [name, halted] of stopped)
       if (name.startsWith(`${docId}:`)) halted.at = Number.NEGATIVE_INFINITY;
-    // The example pass and the pictures go on too, from where they stopped.
-    const k = passKey(docId);
+    // The example pass and the pictures of this tier go on too, from where they stopped, in the
+    // live scope of the (document, tier).
+    const k = passKey(docId, live ? tierName(live.models) : undefined);
     const pass = examplePasses.get(k);
-    if (pass) pass.stoppedAt = undefined;
+    if (pass) {
+      pass.stoppedAt = undefined;
+      pass.failures = 0;
+      pass.queue.length = 0;
+      pass.queued.clear();
+      pass.scope = live ?? pass.scope;
+    }
     examplesStopped.delete(k);
     picturesStoppedAt.delete(k);
+    // Start the pass again now, in the live scope, from what is stored.
+    if (pass && live)
+      void runInJob(live, () =>
+        get(docId, { wait: false }).catch(() => undefined),
+      );
   }
 
   /** True when every example this tier draws ahead is stored (or none are drawn ahead). */
@@ -768,8 +796,8 @@ export function createBreakdownService(
     progressivePictures: isFullCoverage(unitCap),
     resume,
     examplesComplete,
-    reportPicturesStopped: (docId) => {
-      picturesStoppedAt.set(passKey(docId), now());
+    reportPicturesStopped: (docId, tier) => {
+      picturesStoppedAt.set(passKey(docId, tier), now());
     },
     subscribe: (listener) => {
       listeners.push(listener);
