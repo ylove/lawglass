@@ -47,9 +47,10 @@ describe('estimateBill', () => {
       low: { calls: 2 },
       high: { calls: 4 },
     });
+    // Each picture batch: the call, one malformed retry and one redraw of dropped items.
     expect(result.features.pictures).toMatchObject({
       low: { calls: 2 },
-      high: { calls: 4 },
+      high: { calls: 6 },
     });
     expect(result.total.low.dollars).toBeGreaterThan(0);
     expect(result.total.high.dollars).toBeGreaterThan(result.total.low.dollars);
@@ -83,7 +84,7 @@ describe('estimateBill', () => {
     expect(features.summaryScenario.low.calls).toBe(0);
     expect(features.pictures).toMatchObject({
       low: { calls: 9 },
-      high: { calls: 18 },
+      high: { calls: 27 },
     });
     expect(features.examples).toMatchObject({
       low: { calls: 8 },
@@ -136,7 +137,9 @@ describe('estimateBill', () => {
     const uncached = estimateBill(facts, { ...plan, cache: 'none' });
     expect(reuse.features.breakdown.low.cachedInputTokens).toBeGreaterThan(0);
     expect(cold.features.breakdown.low.cachedInputTokens).toBe(0);
-    expect(cold.total.high.dollars).toBeGreaterThan(reuse.total.high.dollars);
+    // The high bound never counts on a cache hit, so a cold cache cannot raise it.
+    expect(cold.total.high.dollars).toBe(reuse.total.high.dollars);
+    expect(reuse.features.breakdown.high.cachedInputTokens).toBe(0);
     expect(uncached.features.breakdown.low.cacheWriteTokens).toBe(0);
     const thinking = estimateBill(facts, {
       ...plan,
@@ -191,14 +194,40 @@ describe('estimateBill', () => {
 it('quotes a separate question, with a cached whole prefix or roughly 4.5k excerpt input', () => {
   const whole = estimateQuestion(small());
   expect(whole).toMatchObject({ low: { calls: 1 }, high: { calls: 2 } });
-  expect(whole.high.cachedInputTokens).toBeGreaterThan(0);
+  expect(whole.high.cachedInputTokens).toBe(0);
+  expect(whole.high.cacheWriteTokens).toBeGreaterThan(0);
   const excerpts = estimateQuestion(billFacts(many(80)));
+  // About 4.5K tokens of excerpts and framing, plus the prompt markup on the excerpts.
   expect(excerpts.low).toMatchObject({
-    inputTokens: 4500,
     cachedInputTokens: 0,
     cacheWriteTokens: 0,
   });
+  expect(excerpts.low.inputTokens).toBeGreaterThanOrEqual(4500);
+  expect(excerpts.low.inputTokens).toBeLessThan(5500);
   expect(() =>
     estimateQuestion(small(), {}, { answerModel: 'unknown' }),
   ).toThrow('No price configured');
+});
+
+it('prices the high bound for the real prompt size, including the long-context tier', () => {
+  // About 95K plain tokens: under Haiku's 100K tier by chars/4, over it once the <part> markup
+  // the whole-bill prompt adds is counted.
+  const facts = billFacts(many(95, 1000 * 4));
+  expect(facts.mode).toBe('whole');
+  const haiku = estimateBill(facts, {
+    ...plan,
+    answerModel: 'claude-haiku-5-5',
+  });
+  const summaryHigh = haiku.features.summary.high;
+  expect(summaryHigh.inputTokens / summaryHigh.calls).toBeGreaterThan(
+    facts.estimatedTokens * 1.25,
+  );
+  // Long-context rates are five times the base rates, so the high bound must reflect them.
+  const base = estimateBill(billFacts(many(60, 1000 * 4)), {
+    ...plan,
+    answerModel: 'claude-haiku-5-5',
+  }).features.summary.high;
+  expect(summaryHigh.dollars / summaryHigh.inputTokens).toBeGreaterThan(
+    (base.dollars / base.inputTokens) * 3,
+  );
 });

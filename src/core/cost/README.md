@@ -22,8 +22,13 @@ answer call's existing output limit. Low adds its allowance to the visible forec
 already reserves the full output limit, so increasing its thinking allowance cannot exceed that
 limit. Default zero is an explicit uncalibrated assumption. Use usage events to calibrate it.
 
-The default cache policy `reuse` charges an initial write per feature and reads on later calls,
-assuming a five-minute cache lifetime. Use `cold` to charge a write on every call, or `none`
+The default cache policy `reuse` charges an initial write per feature and reads on later calls
+in the **low** bound, assuming a five-minute cache lifetime. The **high** bound never counts on a
+cache hit: background batches can run further apart than the cache lasts, so every cached prefix
+is priced as a write. Contexts are multiplied by a prompt markup (1.1 low, 1.25 high) for the
+escaped `<part>` tags, ids and page/line markers that chars/4 does not see (measured at about
+1.16 on a 380K-character bill), so long-context pricing tiers apply when the real prompt crosses
+them. Use `cold` to charge a write on every call, or `none`
 for providers without prompt caching. Summary scenarios and examples currently send their
 context uncached. Summary and breakdown picture jobs batch separately and send generated
 item text, not the bill. Their item counts are forecasts from map/brief counts, because a

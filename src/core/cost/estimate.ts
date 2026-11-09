@@ -82,6 +82,12 @@ const RELATED_TOKENS =
   MAX_REFERENCE_TEXTS * Math.ceil(REFERENCE_CHAR_BUDGET / 4);
 /** Prompt/schema/citation framing is a heuristic, not a tokenizer or a provider guarantee. */
 const FRAMING = { low: 1000, high: 3000 };
+/**
+ * The bill reaches the model wrapped in escaped <part> tags with ids, headings and page/line
+ * markers, which chars/4 does not see. Measured on a 380K-character bill built into the real
+ * whole-bill prompt: about 1.16 times the plain estimate. The high bound adds margin on top.
+ */
+const PROMPT_MARKUP = { low: 1.1, high: 1.25 };
 
 function sum(a: TokenEstimate, b: TokenEstimate): TokenEstimate {
   return {
@@ -121,19 +127,18 @@ function feature(
     for (const spec of specs) {
       const count = bound === 'low' ? 1 : (spec.highCalls ?? 1);
       for (let n = 0; n < count; n++) {
-        const prefix = spec.cachedPrefix
-          ? spec.context[bound] + FRAMING[bound]
-          : 0;
+        const context = Math.ceil(spec.context[bound] * PROMPT_MARKUP[bound]);
+        const prefix = spec.cachedPrefix ? context + FRAMING[bound] : 0;
         const caching = spec.cachedPrefix === true && plan.cache !== 'none';
-        const read = caching && prefixWritten && plan.cache !== 'cold';
+        // The high bound never counts on a cache hit: the provider's cache lasts minutes, and
+        // background batches can run further apart than that, so every prefix may be rewritten.
+        const read =
+          bound === 'low' && caching && prefixWritten && plan.cache !== 'cold';
         const overhead = thinking
           ? (plan.thinkingTokensPerCall?.[bound] ?? 0)
           : 0;
         const tokens: CallTokens = {
-          inputTokens:
-            spec.context[bound] +
-            FRAMING[bound] +
-            (spec.cachedPrefix ? 300 : 0),
+          inputTokens: context + FRAMING[bound] + (spec.cachedPrefix ? 300 : 0),
           cachedInputTokens: read ? prefix : 0,
           cacheWriteTokens: caching && !read ? prefix : 0,
           outputTokens:
@@ -266,7 +271,8 @@ export function estimateBill(
           context: { low: items * 100, high: items * 1000 },
           visibleOutput: items * 150,
           maxTokens: 3000,
-          highCalls: 2,
+          // The first call, one retry for malformed output, and one redraw of dropped items.
+          highCalls: 3,
         });
       }
     }
