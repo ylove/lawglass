@@ -44,7 +44,6 @@ function pictures(prompt: string): unknown {
           {
             left: { glyphs: ['people'] },
             link: 'none',
-            stamp: { glyph: 'check' },
           },
         ],
       })),

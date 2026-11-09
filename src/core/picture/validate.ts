@@ -5,7 +5,7 @@
  * item stays text-only; nothing is repaired, because a repaired picture is one nobody checked.
  */
 import { stripCitations } from '../answer/readability.js';
-import type { PictureEntry, PicturePanel } from '../model/index.js';
+import type { PictureEntry, PicturePanel, StampId } from '../model/index.js';
 import { evaluative, markup } from '../scenario/validate.js';
 import type { PictureItem, PictureSet } from './prompt.js';
 
@@ -13,6 +13,7 @@ export type PictureDropReason =
   | 'unknown-item'
   | 'repeat'
   | 'shape'
+  | 'stamp-unsupported'
   | 'label-markup'
   | 'label-judgment'
   | 'label-words'
@@ -24,6 +25,9 @@ export interface PictureValidation {
   entries: PictureEntry[];
   dropped: { item: number; reason: PictureDropReason }[];
 }
+
+/** Validation and retry rule changes must invalidate pictures checked under older rules. */
+export const PICTURE_RULES_VERSION = 2;
 
 const WORD = /\p{L}+/gu;
 /**
@@ -55,6 +59,48 @@ const NUMBER = /\p{Nd}+(?:[.,]\p{Nd}+)*/gu;
 /** Words that turn a label into its opposite; a label may use one only if the item does. */
 const NEGATION =
   /\b(?:no|not|non|un|never|none|nor|without|cannot)\b|n['’]t\b/iu;
+const PROHIBITION = /\b(?:prohibit\w*|bans?|banned|forbid\w*|bars?|barred)\b/iu;
+const OTHER_MONTHS =
+  '(?:january|february|march|april|june|july|august|september|october|november|december)';
+const MONTH = `(?:may|${OTHER_MONTHS})`;
+const TIME_UNIT =
+  '(?:seconds?|minutes?|hours?|days?|weeks?|months?|quarters?|years?)';
+const TIME_SUPPORT = new RegExp(
+  [
+    `\\b(?:${TIME_UNIT}|daily|weekly|monthly|yearly|annual(?:ly)?|quarterly|deadline|within|${OTHER_MONTHS}|(?:19|20)\\d{2}|(?:no|not) later than)\\b`,
+    // "May" also grants permission. Require date context for that month.
+    '\\b(?:(?:by|in|each|every|before|after|during|until) may|may \\d+)\\b',
+    // A relative word alone ("after consultation") makes no timing claim. Allow at most
+    // three connecting words before a number, date, month or time unit.
+    `\\b(?:before|after|by)\\s+(?:\\p{L}+\\s+){0,3}(?:\\d+|${MONTH}|${TIME_UNIT})\\b`,
+  ].join('|'),
+  'iu',
+);
+const RULE_BREACH =
+  /\b(?:break(?:s|ing)?|broke(?:n)?|breach(?:es|ed|ing)?)\s+(?:(?:a|the|any|of)\s+){0,2}(?:rules?|laws?|regulations?)\b/iu;
+const NONCOMPLIANCE =
+  /\b(?:break(?:s|ing)?|broke(?:n)?|violat\w*|fail\w*|noncomply\w*|noncompli\w*|non-comply\w*|non-compli\w*)\b/iu;
+const CAPPED_PAYMENT = /\bup to\s+\$\d/iu;
+/** Stamps make claims even without labels; their meanings come from the drawing prompt. */
+const STAMP_SUPPORT: Record<StampId, RegExp> = {
+  // A warning says the actor faces a penalty or risk.
+  warning:
+    /\b(?:penalt\w*|penali[sz]\w*|fines?|fined|violat\w*|sanction\w*|liab\w*|risk\w*|revok\w*|revoc\w*|suspen\w*|prison\w*|imprison\w*|civil action\w*|forfeit\w*|criminal|(?:charged with|charges? (?:of|for)) (?:an? )?(?:crime|offen[cs]e)|shut down|cease(?:-| )and(?:-| )desist)\b/iu,
+  // A seal says the actor is approved, licensed or under official oversight.
+  seal: /\b(?:approv|licens|charter|certif|regist|authori[sz]|permit|regulat|supervis|accredit|oversee|oversight)\w*\b/iu,
+  // A no badge needs the same negation as labels, or an explicit prohibition.
+  no: new RegExp(`${NEGATION.source}|${PROHIBITION.source}`, 'iu'),
+  // A calendar says when the actor must act, so the item must mention time.
+  calendar: TIME_SUPPORT,
+  // A clock makes the same timing claim as a calendar.
+  clock: new RegExp(
+    `${TIME_SUPPORT.source}|\\b(?:promptly|immediately|without delay|as soon as)\\b`,
+    'iu',
+  ),
+  // A check says the actor may or must act, or qualifies to do so.
+  check:
+    /\b(?:may|must|shall|can|able|require\w*|allow\w*|permit\w*|eligib\w*|entitle\w*|authori[sz]ed)\b/iu,
+};
 /**
  * Inflections only. "Federal" may label "federally" and "Reserves" "reserve", but derivations
  * are other words: "Billion" is not "bill", "Statement" is not "state".
@@ -62,7 +108,10 @@ const NEGATION =
 const ENDINGS = ['ally', 'ing', 'ers', 'ly', 'ed', 'es', 'er', 'al', 's', 'd'];
 
 function normalize(text: string): string {
-  return text.normalize('NFKC').toLowerCase();
+  return text
+    .normalize('NFKC')
+    .replace(/\p{Cf}/gu, '')
+    .toLowerCase();
 }
 
 function words(text: string): string[] {
@@ -133,6 +182,7 @@ function shapeIsSound(panel: PicturePanel): boolean {
 }
 
 interface ItemFacts {
+  plain: string;
   stems: ReadonlySet<string>;
   numbers: ReadonlySet<string>;
   negated: boolean;
@@ -141,10 +191,25 @@ interface ItemFacts {
 function itemFacts(text: string): ItemFacts {
   const plain = normalize(stripCitations(text));
   return {
+    plain,
     stems: new Set(words(plain).flatMap((word) => [...stems(word)])),
     numbers: new Set(plain.match(NUMBER) ?? []),
-    negated: NEGATION.test(plain),
+    negated: STAMP_SUPPORT.no.test(plain),
   };
+}
+
+function stampSupported(stamp: StampId, item: ItemFacts): boolean {
+  if (stamp === 'check' && item.negated) return false;
+  if (STAMP_SUPPORT[stamp].test(item.plain)) return true;
+  if (stamp !== 'warning') return false;
+  if (RULE_BREACH.test(item.plain)) return true;
+  // A capped payment is a penalty only alongside noncompliance in the same sentence.
+  return item.plain
+    .split(/[.!?\n]/u)
+    .some(
+      (sentence) =>
+        NONCOMPLIANCE.test(sentence) && CAPPED_PAYMENT.test(sentence),
+    );
 }
 
 function panelReason(
@@ -152,14 +217,16 @@ function panelReason(
   item: ItemFacts,
 ): PictureDropReason | undefined {
   if (!shapeIsSound(panel)) return 'shape';
+  if (panel.stamp && !stampSupported(panel.stamp.glyph, item))
+    return 'stamp-unsupported';
   for (const raw of labels(panel)) {
-    if (markup(raw)) return 'label-markup';
+    const plain = normalize(raw);
+    if (markup(plain)) return 'label-markup';
     // Plain characters only, and at least one letter or digit: "$" or "()" alone says nothing.
-    const plain = raw.normalize('NFKC');
     if (!LABEL_CHARS.test(plain) || !/[\p{L}\p{Nd}]/u.test(plain))
       return 'label-chars';
     const label = joinItemCompounds(raw, item.stems);
-    if (evaluative(raw)) return 'label-judgment';
+    if (evaluative(plain)) return 'label-judgment';
     if (!numbersFromItem(label, item.numbers)) return 'label-number';
     // "No" under an item that says "may pay interest" would draw the opposite of the caption.
     if (NEGATION.test(normalize(label)) && !item.negated)
