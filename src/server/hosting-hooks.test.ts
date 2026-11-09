@@ -243,7 +243,7 @@ describe('document read access', () => {
       const path = route.path
         .replace(/:docId\b/g, 'denied')
         .replace(/:[A-Za-z]+/g, 'section-1')
-        .replace('*', 'future-route');
+        .replaceAll('*', 'future-route');
       // Include ALL registrations too: Hono uses them for middleware, and a future handler may
       // use app.all(). Testing the wildcard itself also covers an as-yet unregistered subroute.
       const methods =
