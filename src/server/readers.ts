@@ -5,6 +5,8 @@
  * of the documents it added or opened. A reader is a random 128-bit id in a cookie. The id is an
  * unguessable list key, not an authorization boundary: any invitee may open any document in the
  * store by its id (invitees share `/doc/<id>` links on purpose).
+ * External-auth hosts supply an opaque account id instead of the cookie. It still only keys
+ * the list; document authorization belongs to the server's separate canRead hook.
  *
  * The raw id never reaches the filesystem. Lists live at `<configDir>/readers/<sha256(id)>.json`,
  * so a crafted cookie cannot name another reader's file or walk out of the directory, and a
@@ -60,6 +62,8 @@ export const READER_MAX_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 export const READER_MAX_FILES = 10_000;
 
 export interface ReaderLibraryOptions {
+  /** Authenticated hosts supply opaque account ids, rather than our cookie format. */
+  externalIds?: boolean;
   fs?: ConfigFileSystem;
   now?: () => Date;
   maxAgeMs?: number;
@@ -82,6 +86,7 @@ export class ReaderLibrary {
   private readonly now: () => Date;
   private readonly maxAgeMs: number;
   private readonly maxFiles: number;
+  private readonly externalIds: boolean;
   // Which documents each reader lists, by file key. Built once from the directory (expired
   // files are deleted then) and kept current by every write, so an ingest never rereads the
   // directory.
@@ -93,6 +98,7 @@ export class ReaderLibrary {
     this.now = options.now ?? (() => new Date());
     this.maxAgeMs = options.maxAgeMs ?? READER_MAX_AGE_MS;
     this.maxFiles = options.maxFiles ?? READER_MAX_FILES;
+    this.externalIds = options.externalIds ?? false;
   }
 
   private loaded(): Promise<Map<string, IndexEntry>> {
@@ -150,7 +156,13 @@ export class ReaderLibrary {
   }
 
   private pathFor(readerId: string): string {
-    if (!isReaderId(readerId)) throw new Error('Invalid reader id.');
+    // Both formats are hashed before becoming paths; never include the id in errors or logs.
+    if (
+      this.externalIds
+        ? typeof readerId !== 'string' || readerId.length === 0
+        : !isReaderId(readerId)
+    )
+      throw new Error('Invalid reader id.');
     return join(this.dir, `${readerKey(readerId)}.json`);
   }
 

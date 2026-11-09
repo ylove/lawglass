@@ -447,6 +447,26 @@ describe('Registry', () => {
     ]);
   });
 
+  it('never selects pinned documents, counts them toward capacity, and awaits host lookups', async () => {
+    const r = new Registry(dir);
+    for (const label of ['a', 'b', 'c'])
+      await r.add(doc(id(label)), { label, backend: 'local' });
+    const pinned = vi.fn((docId: string) => Promise.resolve(docId === id('a')));
+    expect(
+      (await r.evictionCandidates(2, new Set(), pinned)).map((e) => e.label),
+    ).toEqual(['b']);
+    expect(pinned).toHaveBeenCalledTimes(3);
+    expect(
+      (await r.evictionCandidates(0, new Set(), pinned)).map((e) => e.label),
+    ).toEqual(['b', 'c']);
+    expect(await r.evictionCandidates(0, new Set(), () => true)).toEqual([]);
+    await expect(
+      r.evictionCandidates(0, new Set(), () => {
+        throw new Error('Pin lookup failed');
+      }),
+    ).rejects.toThrow('Pin lookup failed');
+  });
+
   it('serializes concurrent adds without losing entries', async () => {
     const r1 = new Registry(dir);
     const r2 = new Registry(dir);

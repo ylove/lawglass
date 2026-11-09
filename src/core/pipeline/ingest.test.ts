@@ -295,6 +295,25 @@ test('an unusable label leaves no half-indexed namespace behind', async () => {
   expect(env.fetches).toContain('https://other.gov/b.txt');
 });
 
+test('pin lookup failure during cap enforcement preserves all registered documents and indexes', async () => {
+  const pinned = vi.fn(() => {
+    throw new Error('Pin lookup failed');
+  });
+  const ids: string[] = [];
+  for (const label of ['one', 'two']) {
+    const url = `https://example.gov/${label}.txt`;
+    env.serve(
+      url,
+      { bytes: new TextEncoder().encode(`Section 1. ${label}\nA bill.`) },
+      'text/plain',
+    );
+    ids.push((await ingest(url, deps({ maxDocs: 1, pinned }))).doc.docId);
+  }
+  expect(pinned).toHaveBeenCalled();
+  expect(await env.registry.list()).toHaveLength(2);
+  for (const id of ids) expect(await env.backend.hasDocument(id)).toBe(true);
+});
+
 test('evicts the least recently used documents beyond the cap, from index, registry and answers', async () => {
   const cache = new AnswerCache({
     dir: join(env.registry.configDir, 'cache', 'answers'),

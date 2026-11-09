@@ -264,6 +264,41 @@ added or opened. The documents themselves are shared, so a bill is ingested once
 and documents nobody lists are evicted first ([decision 0016](docs/decisions/0016-per-reader-library.md)).
 `LAWGLASS_EXAMPLES` sets the example links on the homepage.
 
+### Hosting it behind your own sign-in
+
+Import `createApp` and `createRuntime` from `lawglass/server` to embed the server. Pass
+`auth: { middleware, readerId }`: Hono middleware handles sign-in on API and page requests,
+and `readerId(c)` returns a stable, nonempty account id for that reader's document list.
+This enables all features, HTTPS security headers and hosted ingest restrictions without
+a shared access key or reader cookie. It cannot be combined with `privateMode` or `publicMode`.
+`/api/health` bypasses external auth and sets no cookies so hosting probes need no credentials;
+`/quickstart` is also public and must contain no reader data.
+
+Use `canRead(c, docId)` to authorize every document route; refusal returns the same 404 as a
+missing document. `pinned(docId)` protects documents from automatic eviction. These hooks are
+security boundaries: the host must authenticate requests and decide access itself. Reader ids
+are hashed on disk and never logged. An account's list is a convenience, not an access check.
+
+Presentation options include `accountUrl` (a same-origin path shown as an Account link),
+`csp` (additional HTTPS origins or `'self'`), and `head` (same-origin module scripts or
+stylesheet/preload/modulepreload links). Invalid configuration throws during `createApp`.
+Head tags use double quotes and the exact attribute order shown here:
+
+```ts
+head: [
+  '<script type="module" src="/host.js"></script>',
+  '<link rel="stylesheet" href="/host.css">',
+];
+```
+
+`site.quickstart(c)` replaces the public guide; `site.landing(c)` replaces the shared-key gate.
+With external auth, the host serves its own landing and account pages from its middleware;
+return a response there or call `next()` to reach the app. The default `landingPage`,
+`gatePage` and `quickstartHtml` builders are exported. `runtime.providerFor(role, model?)`
+builds a provider with the configured credentials and endpoint, without changing the defaults.
+See [ADR 0018](docs/decisions/0018-hosting-hooks.md) for the hooks and the later admission,
+usage and budget work.
+
 ### Providers, keys and backends
 
 `init` writes `~/.lawglass/config.json`. Environment variables win over the file. `init --non-interactive` copies the provider settings and keys currently in your environment into that file (mode 0600) without prompting, which is meant for scripted setups; it prints no keys. Without a configured provider, `ask` and `ingest` fail with a message listing the options. List, remove and the `sponsors` chip work without any key.

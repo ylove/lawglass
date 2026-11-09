@@ -161,6 +161,11 @@ export function App({ api: provided }: { api?: ApiClient }) {
               <LogoMark />
               <h1>{productName}</h1>
             </Link>
+            {config?.accountUrl && (
+              <a className="account-link" href={config.accountUrl}>
+                Account
+              </a>
+            )}
           </div>
           {selected === null && (
             <div className="hero">
