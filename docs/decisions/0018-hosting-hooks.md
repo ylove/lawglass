@@ -42,7 +42,7 @@ The open-source server gains generic hooks. With none passed, behaviour is uncha
 4. **Quotes.** `POST /api/quote {url}` fetches and parses only. It makes no model call and stores nothing. It returns size facts and an estimate per configured model. A hosted package turns that into a price; the open-source server never shows one. Ingest accepts an optional `quoteId` and passes it to `admission`.
 5. **Usage.** `onUsage(event)` receives every model call's usage. Each event names the feature, the model and the token split, including cache reads and writes, plus the job context. The job context is carried through `AsyncLocalStorage` from the route that started the work. Background work started by an admitted ingest keeps that ingest's context.
 6. **Budgets.** A job budget, in tokens or in dollars against the cost table, is enforced in `Limits.meter()`.
-   - Before each call, a job whose spend has reached its budget is refused with `BUDGET_EXHAUSTED`. That stops a single job at its ceiling, overshooting by at most one call.
+   - Before each call, a job whose spend has reached its budget is refused with `BUDGET_EXHAUSTED`. That stops a single job at its ceiling, overshooting by at most one call per sequential job. Concurrent calls within a job may each overshoot by one.
    - The breakdown and examples stop cleanly, and the parts already written stay.
 7. **Model routing.** `modelFor(job)` may choose the answer and extract models for a document. Cache keys already include the model, so two tiers of the same bill never share cached text. `runtime.providerFor(role, model)` builds a provider for an explicit model.
 8. **Presentation seams.**
@@ -53,6 +53,10 @@ The open-source server gains generic hooks. With none passed, behaviour is uncha
    - The SPA shows a quote dialog on a 402, and an account link when `/api/config` names one.
 9. **Eviction.** `pinned(docId)` lets the host protect documents from eviction, for example documents a reader has paid for.
 10. **Packaging.** `package.json` gains `exports` for `./server` (side-effect free), plus emitted `.d.ts` files. A `./web` export waits until a host needs to rebuild the SPA; for now a host serves the built `dist/web` and extends it through `head`. `createRuntime`, the security headers and the site pages are exported.
+
+## Amendment (part B): scope after a restart
+
+A document's generation scope (budget, models, job id) lives in memory, so a restart would lose it and an Advanced unlock could resume on the default tier with no budget. `backgroundScope(docId)` is an optional host hook, consulted when background work for a document starts and no live scope exists (the first request after a restart, a resumed run). The host persists the scope, for example from its entitlements, and returns `{budget?, models?, jobId?}`; the server uses it as the document's scope. With no hook, behaviour is unchanged (the requester stands in, unbudgeted, default tier). If the hook returns `undefined` while `admission` is configured, the server fails closed: the document runs under a zero budget, so no paid call is made and only cached results are served.
 
 ## Consequences
 
