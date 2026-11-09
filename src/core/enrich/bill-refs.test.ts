@@ -466,3 +466,106 @@ describe('labels are not NY/NJ bills', () => {
     ]);
   });
 });
+
+describe('honorifics and abbreviations do not cut a stated session off', () => {
+  const fed119 = {
+    jurisdiction: 'United States',
+    session: '119th Congress, 1st Session',
+  };
+  const oh136 = {
+    jurisdiction: 'Ohio',
+    session: '136th General Assembly, Regular Session 2025-2026',
+  };
+  test.each([
+    'H.R. 5, as introduced by Mr. Jordan in the 118th Congress, would have repealed the program.',
+    'In the 118th Congress, Mr. Smith introduced H.R. 5.',
+    'In the 118th Congress, Ms. Jones introduced H.R. 5.',
+    'S. 5, introduced by Ms. Collins in the 118th Congress, was referred to committee.',
+    'H.R. 5, introduced at the request of Gov. Smith during the 118th Congress, failed.',
+    'H.R. 5, introduced at the request of Hon. Jane Doe during the 118th Congress, failed.',
+    'H.R. 5 as reported by the Comm. On Ways and Means in the 118th Congress',
+    'H.R. 5 (relating to the Dept. of Energy and Gen. Services Admin. Programs) of the 118th Congress',
+  ])('federal: %s', (text) => {
+    // Either the stated session or plain text; never the document's 119th.
+    expect(citations(text, fed119).join()).not.toContain('119th');
+  });
+  test('Ohio: H.B. 33, sponsored by Mr. Edwards in the 135th General Assembly', () => {
+    expect(
+      citations(
+        'H.B. 33, sponsored by Mr. Edwards in the 135th General Assembly, is amended.',
+        oh136,
+      ).join(),
+    ).not.toContain('136th');
+  });
+});
+
+describe('a bare repeat of a bill the text states elsewhere', () => {
+  const fed119 = {
+    jurisdiction: 'United States',
+    session: '119th Congress, 1st Session',
+  };
+  const oh136 = { jurisdiction: 'Ohio', session: '136th General Assembly' };
+  test('takes the stated session', () => {
+    expect(
+      citations(
+        'The term "covered bill" means H.R. 5 of the 118th Congress. Not later than 90 days after the enactment of H.R. 5, the Secretary shall report.',
+        fed119,
+      ),
+    ).toEqual(['H.R. 5 (118th Congress)', 'H.R. 5 (118th Congress)']);
+    expect(
+      citations(
+        'Section 3 of H.B. 33 of the 135th General Assembly is amended. The amendment to H.B. 33 applies to fiscal year 2026.',
+        oh136,
+      ),
+    ).toEqual([
+      'H.B. 33 (135th General Assembly)',
+      'H.B. 33 (135th General Assembly)',
+    ]);
+  });
+  test('stays plain when the text states two sessions for it', () => {
+    expect(
+      citations(
+        'H.B. 33 of the 134th General Assembly and H.B. 33 of the 135th General Assembly are amended. See H.B. 33.',
+        oh136,
+      ),
+    ).toEqual([
+      'H.B. 33 (134th General Assembly)',
+      'H.B. 33 (135th General Assembly)',
+    ]);
+  });
+  test('another bill number still inherits', () => {
+    expect(
+      citations('H.R. 5 of the 118th Congress. See H.R. 6.', fed119),
+    ).toEqual(['H.R. 5 (118th Congress)', 'H.R. 6 (119th Congress)']);
+  });
+});
+
+describe('undotted GA and Public Law numbers', () => {
+  const oh136 = { jurisdiction: 'Ohio', session: '136th General Assembly' };
+  const fed119 = {
+    jurisdiction: 'United States',
+    session: '119th Congress, 1st Session',
+  };
+  test('(130th GA) is a session qualifier', () => {
+    expect(citations('Senate Bill 9 (130th GA) is repealed.', oh136)).toEqual([
+      'S.B. 9 (130th General Assembly)',
+    ]);
+  });
+  test('a Public Law in the sentence blocks inheriting', () => {
+    expect(
+      citations(
+        'The Infrastructure Investment and Jobs Act (Public Law 117-58; H.R. 3684) is amended.',
+        fed119,
+      ),
+    ).toEqual([]);
+    expect(
+      citations(
+        'Section 3 of the Act (Pub. L. 117-58) enacted H.R. 3684.',
+        fed119,
+      ),
+    ).toEqual([]);
+    expect(
+      citations('Public Law 117-58 (H.R. 3684 of the 117th Congress)', fed119),
+    ).toEqual(['H.R. 3684 (117th Congress)']);
+  });
+});

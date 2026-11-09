@@ -84,7 +84,7 @@ const STATE_LETTER = new RegExp(
 // ---------------------------------------------------------------------------------------
 
 const ORDINAL_ANY = String.raw`(\d{1,3}(?:st|nd|rd|th)|One\s+Hundred\s+(?:and\s+)?[A-Za-z]+(?:-[A-Za-z]+)?)`;
-const SESSION_NAME = String.raw`(Congress|Cong\.|General\s+Assembly|G\.\s?A\.)`;
+const SESSION_NAME = String.raw`(Congress|Cong\.|General\s+Assembly|G\.\s?A\.|GA\b)`;
 /** ", 118th Congress", "(118th Cong.)", "of the 134th G.A.", "as enacted by the 133rd General Assembly". */
 const QUALIFIER = new RegExp(
   String.raw`^(?:,?\s+of\s+the\s+|\s*\(\s*(?:the\s+)?|,\s*(?:the\s+)?|,?\s+as\s+(?:enacted|passed|adopted)\s+by\s+the\s+|\s+in\s+the\s+)${ORDINAL_ANY}\s+${SESSION_NAME}(?:\s*\))?`,
@@ -97,7 +97,8 @@ const LIST_TAIL = new RegExp(
   'i',
 );
 const SESSION_LIKE = new RegExp(
-  String.raw`\b(?:Congress|Cong\b|General\s+Assembly|G\.\s?A\b|Legislature|Sessions?|One\s+Hundred)\b|\b(?:19|20)\d{2}\s*[-–]\s*(?:19|20)?\d{2}\b`,
+  // A Public Law number ("Public Law 117-58") also names a congress.
+  String.raw`\b(?:Congress|Cong\b|General\s+Assembly|G\.\s?A\b|GA|Legislature|Sessions?|One\s+Hundred)\b|\b(?:19|20)\d{2}\s*[-–]\s*(?:19|20)?\d{2}\b|\b(?:Public\s+Law|Pub\.\s*L\.|P\.\s*L\.)\s*(?:No\.\s*)?\d{1,3}\s*[-–]`,
   'i',
 );
 /**
@@ -158,15 +159,28 @@ function parseOrdinal(raw: string): number | undefined {
 
 /** Words whose final period does not end a sentence. */
 const ABBREVIATIONS = new Set(
-  'sub am cong sess stat supp rept rep sen res sec sect secs inc art vol ann rev amd adm dept govt fed reg ch pub jr sr mrs msr dr no nos vs cf ed ct'.split(
+  'sub am cong sess stat supp rept rep sen res sec subsec sect secs inc art vol ann rev amd adm admin dept govt fed reg ch cl pub jr sr mr ms mrs messrs mmes dr gov hon gen comm st co corp div prof rec const ord no nos vs cf ed ct'.split(
     ' ',
   ),
 );
 
-/** The sentence around `at`: bounded by a period that ends a word, not an abbreviation. */
-function sentenceAround(text: string, start: number, end: number): string {
-  let from = 0;
-  let to = text.length;
+/**
+ * Where sentences end, found in one pass: `ends[i]` is the index just past a sentence's final
+ * period and `starts[i]` the index of the next sentence's first letter. A period ends a
+ * sentence when a capital follows and it closes a word that is not a known abbreviation. A
+ * short capitalized word ("Mr", "Act") is not trusted to end one either, so a doubtful split
+ * keeps the sentence longer, which only ever makes inheriting the document's session rarer.
+ *
+ * Known limit: a session named in an EARLIER sentence ("The following bills of the 118th
+ * Congress are cited. H.R. 5.") is not seen; such text is rare and the mention would take
+ * the document's session.
+ */
+function sentenceBoundaries(text: string): {
+  ends: number[];
+  starts: number[];
+} {
+  const ends: number[] = [];
+  const starts: number[] = [];
   for (const m of text.matchAll(/\.\s+(?=[A-Z])/g)) {
     const period = m.index;
     // The word the period ends: letters going back, or a digit or ")" for a figure.
@@ -174,17 +188,26 @@ function sentenceAround(text: string, start: number, end: number): string {
     while (wordStart > 0 && /[A-Za-z]/.test(text.charAt(wordStart - 1)))
       wordStart--;
     const word = text.slice(wordStart, period);
-    const previous = text.charAt(period - 1);
-    const endsWord = word.length >= 2 || /[\d)]/.test(previous);
-    if (!endsWord || ABBREVIATIONS.has(word.toLowerCase())) continue;
-    const next = period + m[0].length;
-    if (next <= start) from = next;
-    else if (period >= end) {
-      to = period + 1;
-      break;
-    }
+    const endsWord = word.length >= 2 || /[\d)]/.test(text.charAt(period - 1));
+    const shortCapitalized = word.length <= 4 && /^[A-Z]/.test(word);
+    if (!endsWord || shortCapitalized || ABBREVIATIONS.has(word.toLowerCase()))
+      continue;
+    ends.push(period + 1);
+    starts.push(period + m[0].length);
   }
-  return text.slice(from, to);
+  return { ends, starts };
+}
+
+/** Index of the first element of the sorted `values` greater than `target` (or the length). */
+function firstAbove(values: readonly number[], target: number): number {
+  let low = 0;
+  let high = values.length;
+  while (low < high) {
+    const mid = (low + high) >> 1;
+    if ((values[mid] ?? 0) > target) high = mid;
+    else low = mid + 1;
+  }
+  return low;
 }
 
 type Family = 'federal' | 'ohio';
@@ -194,6 +217,8 @@ interface Resolved {
   family: Family | undefined;
   /** End of the mention, including a qualifier that was read. */
   end: number;
+  /** True when no session was stated and the document's own was taken. */
+  inherited: boolean;
 }
 
 const familyOf = (name: string): Family =>
@@ -276,118 +301,150 @@ export function findBillMentions(
   ctx: BillContext = {},
 ): BillMention[] {
   const here = currentPlace(ctx);
-  const out: BillMention[] = [];
-
-  /** The session of the bill matched by `m`, or undefined when it cannot be known for sure. */
-  const resolve = (m: RegExpMatchArray): Resolved | undefined => {
-    const start = m.index ?? 0;
-    const end = start + m[0].length;
-    const rest = text.slice(end, end + 300);
-    const direct = QUALIFIER.exec(rest);
-    const stated = direct ?? LIST_TAIL.exec(rest);
-    if (stated) {
-      const groups = stated.slice(-2);
-      const session = parseOrdinal(groups[0] ?? '');
-      if (session === undefined) return undefined;
-      return {
-        session,
-        family: familyOf(groups[1] ?? ''),
-        // A list qualifier belongs to the whole list, so this mention ends where it did.
-        end: direct ? end + direct[0].length : end,
-      };
-    }
-    // Inheriting the document's session is safe only when nothing nearby names another one.
-    if (SESSION_LIKE.test(sentenceAround(text, start, end))) return undefined;
-    if (LEFTOVER_QUALIFIER.test(rest)) return undefined;
-    if (here?.session === undefined) return undefined;
-    const family =
-      here.place === 'federal' || here.place === 'ohio'
-        ? here.place
-        : undefined;
-    return { session: here.session, family, end };
+  let bounds: ReturnType<typeof sentenceBoundaries> | undefined;
+  /** The sentence around [start, end), with boundaries computed once per call. */
+  const sentenceAround = (start: number, end: number): string => {
+    bounds ??= sentenceBoundaries(text);
+    const before = firstAbove(bounds.starts, start) - 1;
+    const from = before >= 0 ? (bounds.starts[before] ?? 0) : 0;
+    const to = bounds.ends[firstAbove(bounds.ends, end)] ?? text.length;
+    return text.slice(from, to);
   };
-
-  const push = (
-    m: RegExpMatchArray,
-    resolved: Resolved,
-    citation: string | undefined,
-  ): void => {
-    if (citation === undefined) return;
-    const start = m.index ?? 0;
-    out.push({
-      start,
-      end: resolved.end,
-      text: text.slice(start, resolved.end),
-      citation,
-    });
-  };
-
-  const federal = (m: RegExpMatchArray, type: string | undefined): void => {
-    const r = resolve(m);
-    // A federal bill, whether stated or inherited from a federal document.
-    if (!r || !type || r.family !== 'federal') return;
-    push(m, r, federalCitation(type, m[2] ?? '', r.session));
-  };
-  for (const m of text.matchAll(FEDERAL_BILL))
-    federal(m, federalType(m[1] ?? ''));
-
-  const ohio = (m: RegExpMatchArray, chamber: string): void => {
-    const r = resolve(m);
-    if (r?.family !== 'ohio') return;
-    if (r.session < FIRST_OHIO_GA || Number(m[2]) < 1) return;
-    const label = /^h/i.test(chamber) ? 'H.B.' : 'S.B.';
-    push(
-      m,
-      r,
-      `${label} ${String(Number(m[2]))} (${ordinal(r.session)} General Assembly)`,
-    );
-  };
-  for (const m of text.matchAll(OHIO_BILL_ABBR)) ohio(m, m[1] ?? '');
-  for (const m of text.matchAll(BILL_WORDS)) {
-    const chamber = m[1] ?? '';
-    const r = resolve(m);
-    if (!r) continue;
-    if (r.family === 'federal') federal(m, chamber === 'House' ? 'hr' : 's');
-    else ohio(m, chamber);
+  // Pass 1 reads only mentions that state their own session; pass 2 may also inherit, and a
+  // bare repeat of a bill the text states elsewhere takes that stated session.
+  const stated = scan(undefined);
+  const known = new Map<string, Set<string>>();
+  for (const mention of stated) {
+    const key = mention.citation.replace(/ \(.*$/, '');
+    known.set(key, (known.get(key) ?? new Set()).add(mention.citation));
   }
+  return scan(known);
 
-  if (here?.place === 'new-york' || here?.place === 'new-jersey') {
-    const prefix = here.place === 'new-york' ? 'N.Y.' : 'N.J.';
-    const add = (m: RegExpMatchArray, letter: string, n: string): void => {
+  function scan(known: Map<string, Set<string>> | undefined): BillMention[] {
+    const out: BillMention[] = [];
+
+    /** The session of the bill matched by `m`, or undefined when it cannot be known for sure. */
+    const resolve = (m: RegExpMatchArray): Resolved | undefined => {
       const start = m.index ?? 0;
       const end = start + m[0].length;
       const rest = text.slice(end, end + 300);
-      // These bills belong to the document's own session; a stated one is another matter.
-      if (QUALIFIER.test(rest) || LIST_TAIL.test(rest)) return;
-      if (SESSION_LIKE.test(sentenceAround(text, start, end))) return;
-      if (LEFTOVER_QUALIFIER.test(rest)) return;
-      if (here.session === undefined || here.session < MIN_YEAR) return;
+      const direct = QUALIFIER.exec(rest);
+      const given = direct ?? LIST_TAIL.exec(rest);
+      if (given) {
+        const groups = given.slice(-2);
+        const session = parseOrdinal(groups[0] ?? '');
+        if (session === undefined) return undefined;
+        return {
+          session,
+          family: familyOf(groups[1] ?? ''),
+          // A list qualifier belongs to the whole list, so this mention ends where it did.
+          end: direct ? end + direct[0].length : end,
+          inherited: false,
+        };
+      }
+      // Inheriting the document's session is safe only when nothing nearby names another one.
+      if (!known) return undefined;
+      if (SESSION_LIKE.test(sentenceAround(start, end))) return undefined;
+      if (LEFTOVER_QUALIFIER.test(rest)) return undefined;
+      if (here?.session === undefined) return undefined;
+      const family =
+        here.place === 'federal' || here.place === 'ohio'
+          ? here.place
+          : undefined;
+      return { session: here.session, family, end, inherited: true };
+    };
+
+    const push = (
+      m: RegExpMatchArray,
+      resolved: Resolved,
+      citation: string | undefined,
+    ): void => {
+      if (citation === undefined) return;
+      const start = m.index ?? 0;
+      if (resolved.inherited && known) {
+        // The text states this very bill's session elsewhere: use it, or stay plain if it states two.
+        const sessions = known.get(citation.replace(/ \(.*$/, ''));
+        if (sessions) {
+          const only = sessions.size === 1 ? [...sessions][0] : undefined;
+          if (only === undefined) return;
+          citation = only;
+        }
+      }
+      out.push({
+        start,
+        end: resolved.end,
+        text: text.slice(start, resolved.end),
+        citation,
+      });
+    };
+
+    const federal = (m: RegExpMatchArray, type: string | undefined): void => {
+      const r = resolve(m);
+      // A federal bill, whether stated or inherited from a federal document.
+      if (!r || !type || r.family !== 'federal') return;
+      push(m, r, federalCitation(type, m[2] ?? '', r.session));
+    };
+    for (const m of text.matchAll(FEDERAL_BILL))
+      federal(m, federalType(m[1] ?? ''));
+
+    const ohio = (m: RegExpMatchArray, chamber: string): void => {
+      const r = resolve(m);
+      if (r?.family !== 'ohio') return;
+      if (r.session < FIRST_OHIO_GA || Number(m[2]) < 1) return;
+      const label = /^h/i.test(chamber) ? 'H.B.' : 'S.B.';
       push(
         m,
-        { session: here.session, family: undefined, end },
-        `${prefix} ${letter}${String(Number(n))} (${String(here.session)})`,
+        r,
+        `${label} ${String(Number(m[2]))} (${ordinal(r.session)} General Assembly)`,
       );
     };
-    for (const m of text.matchAll(STATE_WORDS)) {
-      const letter = (m[2] ?? (m[1] === 'Senate' ? 'S' : 'A')).toUpperCase();
-      // "Senate Bill A12" contradicts itself; skip rather than guess.
-      if (m[2] && (m[1] === 'Senate') !== (letter === 'S')) continue;
-      add(m, letter, m[3] ?? '');
+    for (const m of text.matchAll(OHIO_BILL_ABBR)) ohio(m, m[1] ?? '');
+    for (const m of text.matchAll(BILL_WORDS)) {
+      const chamber = m[1] ?? '';
+      const r = resolve(m);
+      if (!r) continue;
+      if (r.family === 'federal') federal(m, chamber === 'House' ? 'hr' : 's');
+      else ohio(m, chamber);
     }
-    for (const m of text.matchAll(STATE_LETTER))
-      add(m, (m[1] ?? '').toUpperCase(), m[2] ?? '');
-  }
 
-  // A span claimed by an earlier, longer match is reported once ("Senate Bill S1234").
-  out.sort((a, b) => a.start - b.start || b.end - a.end);
-  const kept: BillMention[] = [];
-  let until = -1;
-  for (const mention of out) {
-    if (mention.start < until) continue;
-    kept.push(mention);
-    until = mention.end;
+    if (here?.place === 'new-york' || here?.place === 'new-jersey') {
+      const prefix = here.place === 'new-york' ? 'N.Y.' : 'N.J.';
+      const add = (m: RegExpMatchArray, letter: string, n: string): void => {
+        const start = m.index ?? 0;
+        const end = start + m[0].length;
+        const rest = text.slice(end, end + 300);
+        // These bills belong to the document's own session; a stated one is another matter.
+        if (!known || QUALIFIER.test(rest) || LIST_TAIL.test(rest)) return;
+        if (SESSION_LIKE.test(sentenceAround(start, end))) return;
+        if (LEFTOVER_QUALIFIER.test(rest)) return;
+        if (here.session === undefined || here.session < MIN_YEAR) return;
+        push(
+          m,
+          { session: here.session, family: undefined, end, inherited: false },
+          `${prefix} ${letter}${String(Number(n))} (${String(here.session)})`,
+        );
+      };
+      for (const m of text.matchAll(STATE_WORDS)) {
+        const letter = (m[2] ?? (m[1] === 'Senate' ? 'S' : 'A')).toUpperCase();
+        // "Senate Bill A12" contradicts itself; skip rather than guess.
+        if (m[2] && (m[1] === 'Senate') !== (letter === 'S')) continue;
+        add(m, letter, m[3] ?? '');
+      }
+      for (const m of text.matchAll(STATE_LETTER))
+        add(m, (m[1] ?? '').toUpperCase(), m[2] ?? '');
+    }
+
+    // A span claimed by an earlier, longer match is reported once ("Senate Bill S1234").
+    out.sort((a, b) => a.start - b.start || b.end - a.end);
+    const kept: BillMention[] = [];
+    let until = -1;
+    for (const mention of out) {
+      if (mention.start < until) continue;
+      kept.push(mention);
+      until = mention.end;
+    }
+    return kept;
   }
-  return kept;
 }
 
 const FEDERAL_CITATION =
