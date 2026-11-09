@@ -114,3 +114,70 @@ describe('BreakdownCache', () => {
     ).toThrow();
   });
 });
+
+describe('breakdown cache: unit cap and checkpoints (#382)', () => {
+  it('the default cap leaves the key as it was; any other cap changes it', () => {
+    const base = breakdownCacheHash(KEY);
+    expect(breakdownCacheHash({ ...KEY, unitCap: undefined })).toBe(base);
+    const all = breakdownCacheHash({ ...KEY, unitCap: 'all' });
+    const hundred = breakdownCacheHash({ ...KEY, unitCap: 100 });
+    expect(new Set([base, all, hundred]).size).toBe(3);
+  });
+
+  const partial = (count: number) => ({
+    briefs: Array.from({ length: count }, (_, i) => ({
+      ...STORED.briefs[0]!,
+      sectionId: `sec-${String(i + 2)}`,
+    })),
+    total: 5,
+    dropped: 0,
+    omitted: 0,
+    context: 'whole' as const,
+    provider: 'anthropic',
+    model: 'm1',
+  });
+
+  it('writes each checkpoint where readers can see it, then replaces it with the result', async () => {
+    const cache = new BreakdownCache({ dir });
+    const seen: number[] = [];
+    await cache.getOrCompute(KEY, async (checkpoint) => {
+      for (const n of [1, 2]) {
+        await checkpoint(partial(n));
+        seen.push((await cache.getPartial(KEY))?.briefs.length ?? -1);
+      }
+      expect(await cache.get(KEY)).toBeUndefined();
+      return STORED;
+    });
+    expect(seen).toEqual([1, 2]);
+    expect(await cache.get(KEY)).toEqual(STORED);
+    expect(await cache.getPartial(KEY)).toBeUndefined();
+    expect(
+      (await readdir(join(dir, DOC))).filter((f) => f.includes('partial')),
+    ).toEqual([]);
+  });
+
+  it('keeps the checkpoints of a run that ends without a result', async () => {
+    const cache = new BreakdownCache({ dir });
+    await cache.getOrCompute(KEY, async (checkpoint) => {
+      await checkpoint(partial(3));
+      return undefined;
+    });
+    expect(await cache.get(KEY)).toBeUndefined();
+    expect((await cache.getPartial(KEY))?.briefs).toHaveLength(3);
+    // Never offered to a different model.
+    expect(await cache.getPartial({ ...KEY, model: 'm2' })).toBeUndefined();
+  });
+
+  it('a corrupt checkpoint is a miss', async () => {
+    const cache = new BreakdownCache({ dir });
+    await cache.getOrCompute(KEY, async (checkpoint) => {
+      await checkpoint(partial(1));
+      return undefined;
+    });
+    const file = (await readdir(join(dir, DOC))).find((f) =>
+      f.includes('partial'),
+    )!;
+    await writeFile(join(dir, DOC, file), '{not json');
+    expect(await cache.getPartial(KEY)).toBeUndefined();
+  });
+});

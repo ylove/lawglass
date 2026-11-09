@@ -9,6 +9,7 @@ import {
   fetchAndParseDocument,
   type ReadDocumentDeps,
 } from '../core/pipeline/ingest.js';
+import { breakdownMaxUnitsFromEnv } from '../core/breakdown/coverage.js';
 import {
   billFacts,
   estimateBill,
@@ -64,6 +65,8 @@ export async function estimateUrl(
 ): Promise<EstimateReport> {
   const doc = await fetchAndParseDocument(url, runtime);
   const facts = billFacts(doc.sections, {
+    // The same cap the server will run with, so the estimate prices what would be made.
+    breakdownUnitCap: breakdownMaxUnitsFromEnv(),
     ...(runtime.wholeBillMaxTokens === undefined
       ? {}
       : { wholeBillMaxTokens: runtime.wholeBillMaxTokens }),

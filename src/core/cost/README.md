@@ -2,9 +2,11 @@
 
 `billFacts(sections, options)` uses only parsed sections. It counts live text with the same
 characters/4 heuristic as the whole-bill policy, and reuses `chooseMapUnits`,
-`chooseBreakdownUnits`, and `classifyBill`. `breakdownUnitCap` defaults to 30; a larger cap
-or `Infinity` opens more of the existing map units without changing the runtime default.
-The map selector still caps its own input at 60. This does not change frozen model contracts.
+`chooseBreakdownUnits`, and `classifyBill`. `breakdownUnitCap` is the server's
+`breakdownMaxUnits` value (a count, `'all'` or `Infinity`) and defaults to 30. A cap above 30
+is full coverage (#382): every substantive part is a candidate, so the map selector's 60-part
+cut no longer applies. Pass the cap the server will run with. This does not change frozen
+model contracts.
 
 `estimateBill(facts, plan, prices)` assigns answer/extract model IDs in `plan`, enables
 features by default, and quotes up to eight examples (`exampleCount` is configurable).

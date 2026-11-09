@@ -205,6 +205,7 @@ export function DocumentView({
             api={api}
             docId={docId}
             enabled={config.breakdownEnabled}
+            outline={detail.outline}
             onOpenSection={openSection}
           />
           <ChipRow

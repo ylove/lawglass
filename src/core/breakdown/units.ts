@@ -158,7 +158,12 @@ export function chooseBreakdownUnits(
     throw new RangeError(
       'The breakdown unit cap must be a nonnegative integer or Infinity.',
     );
-  const mapUnits = chooseMapUnits(sections);
+  // The summary's unit choice keeps at most `MAX_MAP_UNITS` parts of a flat bill. Beyond the
+  // default cap (full coverage) every part of the bill is a candidate, so that cut does not apply.
+  const mapUnits =
+    unitCap > MAX_BREAKDOWN_UNITS
+      ? { units: [...sections], omitted: 0 }
+      : chooseMapUnits(sections);
   let contentSkips = 0;
   const substantive = leaves(mapUnits.units).filter((s) => {
     if (subtreeText(s) === '') return false;

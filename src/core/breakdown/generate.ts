@@ -118,8 +118,16 @@ export interface BreakdownInput {
   context: DocumentContext;
   units: readonly Section[];
   signal?: AbortSignal | undefined;
-  /** Called after each batch with every brief finished so far (for a partial view). */
-  onProgress?: ((briefs: readonly SectionBrief[]) => void) | undefined;
+  /**
+   * Called after each batch with every brief finished so far and the count of parts dropped so
+   * far (for a partial view). Awaited, so a caller can persist the batch before the next one.
+   */
+  onProgress?:
+    | ((
+        briefs: readonly SectionBrief[],
+        dropped: number,
+      ) => void | Promise<void>)
+    | undefined;
 }
 
 export interface BreakdownOutput {
@@ -269,6 +277,7 @@ export async function generateBreakdown(
     }
     if (!reply) {
       dropped += batch.length;
+      await input.onProgress?.([...briefs], dropped);
       continue;
     }
 
@@ -339,7 +348,7 @@ export async function generateBreakdown(
       if (brief) briefs.push(brief.brief);
       else dropped++;
     }
-    input.onProgress?.([...briefs]);
+    await input.onProgress?.([...briefs], dropped);
   }
   return { briefs, dropped, usage, backendUsage };
 }

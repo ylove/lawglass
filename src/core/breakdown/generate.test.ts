@@ -103,7 +103,9 @@ describe('generateBreakdown in whole-bill mode', () => {
     const seen: number[] = [];
     const out = await generateBreakdown({
       ...input(provider, WHOLE_BATCH_SIZE * 2 + 1),
-      onProgress: (b) => seen.push(b.length),
+      onProgress: (b) => {
+        seen.push(b.length);
+      },
     });
     expect(provider.breakdownCalls).toBe(3);
     expect(peak).toBe(1);

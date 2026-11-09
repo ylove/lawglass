@@ -26,8 +26,10 @@ import {
   type PictureCacheKey,
   type PictureSource,
 } from '../core/picture/cache.js';
+import { isBudgetExhausted } from '../core/breakdown/coverage.js';
 import { drawPictures, type DrawnPictures } from '../core/picture/generate.js';
 import {
+  ITEMS_PER_CALL,
   PICTURE_PROMPT_VERSION,
   type PictureItem,
 } from '../core/picture/prompt.js';
@@ -81,7 +83,12 @@ export interface PictureServiceOptions {
 const MAX_ITEM_TEXT = 4000;
 
 type SourceItems =
-  | { status: 'ready'; items: PictureItem[] }
+  | {
+      status: 'ready';
+      items: PictureItem[];
+      /** False while a full-coverage breakdown is still being made (#382). */
+      complete: boolean;
+    }
   | { status: 'pending' | 'none' | 'disabled' };
 
 export function createPictureService(
@@ -99,6 +106,7 @@ export function createPictureService(
     });
   const running = new Map<string, Set<() => void>>();
   const failedAt = new Map<string, number>();
+  const budgetStoppedAt = new Map<string, number>();
 
   function provider(): LlmProvider | undefined {
     try {
@@ -124,17 +132,24 @@ export function createPictureService(
       const items = listItems(summary.answer.text).filter(
         (item) => item.text.length <= MAX_ITEM_TEXT,
       );
-      return items.length > 0 ? { status: 'ready', items } : { status: 'none' };
+      return items.length > 0
+        ? { status: 'ready', items, complete: true }
+        : { status: 'none' };
     }
     const breakdown = await options.breakdown
       .get(docId, { wait: false, start: false })
       // A breakdown that is cooling down after a failure has nothing to draw yet.
       .catch(() => ({ status: 'disabled' as const, briefs: undefined }));
     if (breakdown.status === 'pending') return { status: 'pending' };
-    if (breakdown.status !== 'cached' || !breakdown.briefs?.length)
-      return { status: 'none' };
+    // Under full coverage the finished batches of an unfinished breakdown are drawn already.
+    const partial =
+      breakdown.status === 'partial' && options.breakdown.progressivePictures;
+    if (!partial && breakdown.status !== 'cached') return { status: 'none' };
+    if (!breakdown.briefs?.length)
+      return partial ? { status: 'pending' } : { status: 'none' };
     return {
       status: 'ready',
+      complete: !partial,
       items: breakdown.briefs
         .map((brief, index) => ({
           index,
@@ -204,6 +219,8 @@ export function createPictureService(
       })
       .catch((error: unknown) => {
         failedAt.set(name, now());
+        // A spent job budget ends drawing for this document; nothing else is started for it.
+        if (isBudgetExhausted(error)) budgetStoppedAt.set(key.docId, now());
         onError?.(error, now() - started);
       })
       .finally(() => {
@@ -211,6 +228,90 @@ export function createPictureService(
         running.delete(name);
         for (const finish of waiters ?? []) finish();
       });
+  }
+
+  /**
+   * Full coverage (#382): pictures for a breakdown are drawn and cached in fixed groups of
+   * `ITEMS_PER_CALL` briefs (one model call each), so a group that is finished is never drawn
+   * again when more briefs arrive. Briefs only ever append in document order, so a group's
+   * contents, and therefore its cache key, do not change once it is full. The client attaches a
+   * picture only when its text matches the brief's, so a stale entry can never mislabel one.
+   * Groups are drawn one at a time per document, each look starting the next one.
+   */
+  async function getByGroup(
+    docId: string,
+    llm: LlmProvider,
+    items: readonly PictureItem[],
+    complete: boolean,
+    request: PictureRequestOptions,
+    waited = false,
+  ): Promise<PicturesResponse> {
+    const groups: PictureItem[][] = [];
+    for (let i = 0; i < items.length; i += ITEMS_PER_CALL)
+      groups.push(items.slice(i, i + ITEMS_PER_CALL));
+    // A short last group is final only once the breakdown is.
+    const ready = complete
+      ? groups
+      : groups.filter((g) => g.length === ITEMS_PER_CALL);
+
+    const entries: PictureEntry[] = [];
+    const missing: {
+      key: PictureCacheKey;
+      name: string;
+      items: PictureItem[];
+    }[] = [];
+    for (const group of ready) {
+      const key: PictureCacheKey = {
+        docId,
+        source: 'breakdown',
+        sourceHash: pictureSourceHash(group),
+        provider: llm.id,
+        model: llm.model,
+        promptVersion: PICTURE_PROMPT_VERSION,
+      };
+      const hit = await cache.get(key);
+      if (hit) entries.push(...hit);
+      else
+        missing.push({
+          key,
+          name: `${docId}:${pictureCacheHash(key)}`,
+          items: group,
+        });
+    }
+    const finish = (more: boolean): PicturesResponse => {
+      if (more)
+        return entries.length > 0
+          ? { status: 'pending', entries }
+          : { status: 'pending' };
+      return respond(entries);
+    };
+    if (options.publicMode)
+      return entries.length > 0 ? respond(entries) : { status: 'disabled' };
+
+    const stoppedAt = budgetStoppedAt.get(docId);
+    const budgetStopped =
+      stoppedAt !== undefined && now() - stoppedAt < FAILED_RETRY_MS;
+    const cooling = (name: string): boolean => {
+      const failed = failedAt.get(name);
+      return failed !== undefined && now() - failed < FAILED_RETRY_MS;
+    };
+    // Briefs still to come keep the reader polling; so does a group being drawn or about to be.
+    const todo = budgetStopped ? [] : missing.filter((m) => !cooling(m.name));
+    const more = !complete ? !budgetStopped : todo.length > 0;
+    if (todo.length === 0) return finish(more);
+
+    const busy = [...running].find(([name]) => name.startsWith(`${docId}:`));
+    if (busy) {
+      if (request.wait !== false && !waited) {
+        await waitForSummary(busy[1], options.waitMs ?? 20_000, request.signal);
+        if (!request.signal?.aborted)
+          return getByGroup(docId, llm, items, complete, request, true);
+      }
+      return finish(true);
+    }
+    const next = todo[0];
+    if (next) start(next.key, next.name, llm, next.items, request.onError);
+    return finish(true);
   }
 
   async function get(
@@ -232,6 +333,8 @@ export function createPictureService(
       model: llm.model,
       promptVersion: PICTURE_PROMPT_VERSION,
     };
+    if (source === 'breakdown' && options.breakdown.progressivePictures)
+      return getByGroup(docId, llm, found.items, found.complete, request);
     const hit = await cache.get(key);
     if (hit) return respond(hit);
     // Public mode serves cache hits only: an anonymous visitor never spends the host's money.

@@ -35,6 +35,10 @@ import { getChip } from '../core/chips.js';
 import { lazyProvider } from '../core/llm/lazy-provider.js';
 import { SlidingWindowLimiter } from './rate-limit.js';
 import { registerLocateRoute } from './locate-route.js';
+import type {
+  BreakdownMaxUnits,
+  PregenerateExamples,
+} from '../core/breakdown/coverage.js';
 import { registerBreakdownRoutes } from './breakdown-route.js';
 import { registerPictureRoutes } from './pictures-route.js';
 import { registerScenarioRoute } from './scenario-route.js';
@@ -120,6 +124,13 @@ export interface AppOptions {
   sessionPort?: () => number;
   /** Example bills for the homepage; defaults to the examples environment variable. */
   examples?: ClientConfig['examples'];
+  /**
+   * Full coverage (#382), both opt-in. Parts that get a brief: default `<PREFIX>_BREAKDOWN_MAX_UNITS`,
+   * else 30; `'all'` briefs every substantive part.
+   */
+  breakdownMaxUnits?: BreakdownMaxUnits;
+  /** Examples drawn ahead: default `<PREFIX>_PREGENERATE_EXAMPLES`, else `'small'` (1-8 parts). */
+  pregenerateExamples?: PregenerateExamples;
   now?: () => number;
 }
 
@@ -1028,6 +1039,8 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     now,
     summary,
     waitMs: options.summaryWaitMs,
+    breakdownMaxUnits: options.breakdownMaxUnits,
+    pregenerateExamples: options.pregenerateExamples,
     onError: (c, error, ms) => {
       log.error(c, error, ms);
     },

@@ -217,7 +217,7 @@ describe('GET /api/docs/:docId/breakdown', () => {
     await breakdown(a, docId);
     const partial = await vi.waitFor(async () => {
       const r = await breakdown(a, docId);
-      expect(r.status).toBe('pending');
+      expect(r.status).toBe('partial');
       expect(r.briefs?.length).toBe(10);
       return r;
     });

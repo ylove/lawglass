@@ -137,7 +137,7 @@ export type PicturePanel = z.infer<typeof PicturePanel>;
  */
 export const PictureEntry = z.object({
   /** The item's position: a list item of the summary, or a brief in the breakdown. */
-  item: z.number().int().min(0).max(199),
+  item: z.number().int().min(0).max(4999),
   text: z.string().min(1).max(4000),
   /** For a breakdown brief, the part of the bill it describes. */
   sectionId: SectionId.optional(),
@@ -151,6 +151,7 @@ export type PictureEntry = z.infer<typeof PictureEntry>;
  */
 export const PicturesResponse = z.object({
   status: z.enum(['cached', 'pending', 'none', 'disabled']),
-  entries: z.array(PictureEntry).max(200).optional(),
+  // A full-coverage breakdown (#382) can have a picture for every part of a very long bill.
+  entries: z.array(PictureEntry).max(5000).optional(),
 });
 export type PicturesResponse = z.infer<typeof PicturesResponse>;

@@ -247,10 +247,20 @@ export type SectionBrief = z.infer<typeof SectionBrief>;
 
 /** Response for `GET /api/docs/:docId/breakdown`. */
 export const BreakdownResponse = z.object({
-  status: z.enum(['cached', 'pending', 'disabled']),
+  /** `partial` (#382): some briefs are finished and more are being made; see `progress`. */
+  status: z.enum(['cached', 'pending', 'partial', 'disabled']),
   briefs: z.array(SectionBrief).optional(),
   /** Substantive parts left out of a long bill's breakdown. */
   omitted: z.number().int().nonnegative().optional(),
+  /** Parts handled so far out of all of them, while a run is going (#382). */
+  progress: z
+    .object({
+      done: z.number().int().nonnegative(),
+      total: z.number().int().nonnegative(),
+      /** Set when background work ended early on purpose; what is written is kept. */
+      stoppedReason: z.enum(['budget_exhausted']).optional(),
+    })
+    .optional(),
 });
 export type BreakdownResponse = z.infer<typeof BreakdownResponse>;
 

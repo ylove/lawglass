@@ -3,17 +3,16 @@ import {
   WHOLE_BILL_MAX_TOKENS,
   type ContextMode,
 } from '../answer/context.js';
-import {
-  chooseBreakdownUnits,
-  MAX_BREAKDOWN_UNITS,
-} from '../breakdown/units.js';
+import { chooseBreakdownUnits } from '../breakdown/units.js';
+import { unitCapOf, type BreakdownMaxUnits } from '../breakdown/coverage.js';
 import { UNIT_TOKEN_BUDGET } from '../breakdown/context.js';
 import { buildOutline, chooseMapUnits } from '../chip-summary.js';
 import { sectionText, walkSections, type Section } from '../model/index.js';
 import { classifyBill } from '../scenario/detect.js';
 
 export interface BillFactsOptions {
-  breakdownUnitCap?: number;
+  /** The same value as the server's `breakdownMaxUnits`: a count, or `'all'`. Default 30. */
+  breakdownUnitCap?: BreakdownMaxUnits;
   wholeBillMaxTokens?: number;
 }
 
@@ -56,7 +55,7 @@ export function billFacts(
   const map = chooseMapUnits(sections);
   const breakdown = chooseBreakdownUnits(
     sections,
-    opts.breakdownUnitCap ?? MAX_BREAKDOWN_UNITS,
+    unitCapOf(opts.breakdownUnitCap),
   );
   const ownTokens = (unit: Section): number =>
     Math.ceil(
