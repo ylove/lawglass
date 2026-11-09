@@ -70,6 +70,20 @@ describe('landing page', () => {
   });
 });
 
+describe('public copy', () => {
+  // Readers found "reading level" and grade numbers condescending; the public pages describe
+  // how thoroughly a bill is broken down instead. Grades stay in the API, docs and eval.
+  const CONDESCENDING = /reading level|\bgrade\b|\d(st|nd|rd|th)-grade/i;
+
+  test('the landing page never mentions reading levels or grades', async () => {
+    expect(await gatePage(undefined, root)).not.toMatch(CONDESCENDING);
+  });
+
+  test('the quickstart never mentions reading levels or grades', async () => {
+    expect(await quickstartHtml(undefined, root)).not.toMatch(CONDESCENDING);
+  });
+});
+
 describe('quickstart page', () => {
   test('lists the verified commands and the approved links', async () => {
     const html = await quickstartHtml(undefined, root);

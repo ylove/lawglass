@@ -302,7 +302,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       method === 'DELETE' ||
       // HEAD reaches the GET handler, so it can start the same paid generation.
       ((method === 'GET' || method === 'HEAD') &&
-        /^\/api\/docs\/[^/]+\/(?:summary|breakdown|sections\/[^/]+\/example)$/.test(
+        /^\/api\/docs\/[^/]+\/(?:summary|breakdown|(?:summary|breakdown)\/pictures|sections\/[^/]+\/example)$/.test(
           c.req.path,
         ));
     if (canSpendOrChange && c.req.header('sec-fetch-site') === 'cross-site')

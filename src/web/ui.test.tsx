@@ -285,13 +285,18 @@ describe('document flow', () => {
     ).toBeTruthy();
   });
 
-  test('an answer shows its measured reading level', async () => {
+  test('an answer never shows a reading grade', async () => {
     render(<App api={mock()} />);
     await ready();
     fireEvent.click(
       screen.getByRole('button', { name: 'Who does it affect?' }),
     );
-    expect(await screen.findByText('Reading level: grade 7')).toBeTruthy();
+    // The grade is still measured and returned by the API, but a reader never sees it: a
+    // "reading level" label reads as condescending.
+    await screen.findByText('Answer ready');
+    expect(
+      screen.queryByText(/reading level|grade \d|\d(st|nd|rd|th)-grade/i),
+    ).toBeNull();
   });
 
   test('a declined answer shows the decline sentence without sources', async () => {

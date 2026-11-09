@@ -29,7 +29,8 @@
     "url": "git+https://github.com/ylove/lawglass.git"
   },
   "overrides": {
-    "esbuild": "0.28.2"
+    "esbuild": "0.28.2",
+    "minimatch": "11.0.5"
   },
   "scripts": {
     "lint": "eslint . --max-warnings 0",

@@ -1,4 +1,4 @@
-import { readFile, stat } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import { extname, join, normalize, resolve, sep } from 'node:path';
 import type { MiddlewareHandler } from 'hono';
 
@@ -18,11 +18,16 @@ const TYPES: Record<string, string> = {
 };
 
 async function readIfFile(path: string): Promise<Buffer | undefined> {
+  // Open once and ask the handle, so the file checked is the file read (no stat-then-open race).
+  let handle;
   try {
-    if (!(await stat(path)).isFile()) return undefined;
-    return await readFile(path);
+    handle = await open(path, 'r');
+    if (!(await handle.stat()).isFile()) return undefined;
+    return await handle.readFile();
   } catch {
     return undefined;
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
 }
 
