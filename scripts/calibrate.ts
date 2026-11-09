@@ -11,13 +11,17 @@
  *
  * Spending is capped three ways, because a cap that fails open costs real money:
  *   1. every admitted job carries a dollar budget of at most what is left of the run and total
- *      caps, so one call is the most any job can overshoot;
- *   2. once the total is reached, admission refuses and every provider call throws before it is
- *      sent (a stand-in for the spend gate of #397, which is not in this tree);
- *   3. the loops stop waiting, and the report says what was skipped.
+ *      caps;
+ *   2. every provider call first reserves its worst case (prompt at the dearest rate plus all
+ *      `maxTokens` of output) and is refused unless that fits under the caps together with the
+ *      calls already in flight, so parallel calls cannot overshoot (a stand-in for the spend
+ *      gate of #397, which is not in this tree);
+ *   3. each run has its own books and is closed when it ends: its late usage stays with it, and
+ *      it can start no new call. The job waits up to a minute for calls in flight at the end.
  *
- * The report goes to stdout as one JSON line between marker lines (Cloud Logging keeps a line
- * whole up to 256 KB), and also to `CALIBRATION_OUT` when that is a file path. A `gs://` URL is
+ * The report goes to stdout as one line starting `CALIBRATION REPORT ` (the prefix keeps it in
+ * Cloud Logging's textPayload), after a `CALIBRATION RUN ` line per finished run, and also to
+ * `CALIBRATION_OUT` when that is a file path. A `gs://` URL is
  * not written: `@google-cloud/storage` is not a dependency, so the job logs are the output.
  * Progress goes to stderr. The API key is read by the provider alone and is never printed.
  */
@@ -31,9 +35,11 @@ import { createApp } from '../src/server/index.js';
 import { createRuntime, type CliRuntime } from '../src/cli/runtime.js';
 import {
   billFacts,
+  PRICES,
   callDollars,
   estimateBill,
   modelPrice,
+  type CallTokens,
   type BillEstimate,
   type PriceTable,
   type UsageEvent,
@@ -73,6 +79,8 @@ export const PlanRun = z.object({
   extractModel: z.string().min(1),
   breakdownMaxUnits: z.union([z.number().int().positive(), z.literal('all')]),
   pregenerateExamples: z.enum(['all', 'small', 'off']),
+  /** Minutes allowed after the ingest; default is the job's `--run-timeout-minutes`. */
+  timeoutMinutes: z.number().positive().optional(),
 });
 export type PlanRun = z.infer<typeof PlanRun>;
 
@@ -116,6 +124,8 @@ export function defaultPlan(): PlanRun[] {
       ...haiku('H.R. 5009 (NDAA)', BILLS['H.R. 5009 (NDAA)']),
       breakdownMaxUnits: 30,
       pregenerateExamples: 'small',
+      // Its ingest alone takes about eight minutes on the job's size; this starts after it.
+      timeoutMinutes: 25,
     },
     ...small.map(([bill, url]): PlanRun => ({
       bill,
@@ -164,6 +174,8 @@ export interface CalibrationOptions {
 const QUESTION_BUDGET_USD = 0.75;
 /** Below this the next run is not worth starting. */
 const MIN_RUN_USD = 0.05;
+/** How long to wait for calls in flight to report after a run or the whole job ends. */
+const SETTLE_MS = 60_000;
 
 // --- accounting -------------------------------------------------------------------------------
 
@@ -213,7 +225,7 @@ function featureOf(event: UsageEvent): Priced['feature'] {
   }
 }
 
-/** Priced with the same table the budgets use. An unknown model is charged at the dearest rate. */
+/** Priced with the same table the budgets use. An unknown model is charged at the dearest built-in rate. */
 function price(event: UsageEvent, prices: PriceTable): Priced {
   const counts = {
     inputTokens: event.usage.inputTokens,
@@ -227,7 +239,7 @@ function price(event: UsageEvent, prices: PriceTable): Priced {
     dollars = callDollars(counts, modelPrice(event.model, prices));
   } catch {
     unpriced = true;
-    dollars = callDollars(counts, modelPrice(SONNET));
+    dollars = dearestDollars(counts);
   }
   return {
     feature: featureOf(event),
@@ -236,6 +248,46 @@ function price(event: UsageEvent, prices: PriceTable): Priced {
     estimated: event.estimated === true,
     unpriced,
   };
+}
+
+/** What a call would cost on the dearest model in the built-in table. */
+function dearestDollars(counts: CallTokens): number {
+  return Math.max(
+    ...Object.values(PRICES).map((rate) => callDollars(counts, rate)),
+  );
+}
+
+/**
+ * The most a call can cost: the prompt (over-counted at 3 characters a token, as if every
+ * token were written to the cache) plus every output token it may produce. An unknown model is
+ * priced at the dearest built-in rate.
+ */
+export function worstCallDollars(
+  model: string,
+  req: { maxTokens: number; system: string } & (
+    { messages: unknown } | { prompt: unknown }
+  ),
+  prices: PriceTable = {},
+): number {
+  const input = Math.ceil(
+    JSON.stringify([req.system, 'messages' in req ? req.messages : req.prompt])
+      .length / 3,
+  );
+  const counts = (cacheWrite: number): CallTokens => ({
+    inputTokens: input,
+    cachedInputTokens: 0,
+    cacheWriteTokens: cacheWrite,
+    outputTokens: req.maxTokens,
+  });
+  try {
+    const rate = modelPrice(model, prices);
+    return Math.max(
+      callDollars(counts(0), rate),
+      callDollars(counts(input), rate),
+    );
+  } catch {
+    return Math.max(dearestDollars(counts(0)), dearestDollars(counts(input)));
+  }
 }
 
 const sumOf = (rows: readonly Priced[]): Tokens =>
@@ -286,55 +338,119 @@ export async function runCalibration(
   const runTimeoutMs = options.runTimeoutMs ?? 45 * 60_000;
   const prices = options.prices ?? {};
 
-  let total = 0; // dollars across every run
-  let inRun = 0; // dollars in the current run
-  let lastUsageAt = Date.now();
-  let events: Priced[] = [];
-  const cap = (): number =>
-    Math.min(options.maxUsd - total, options.maxUsdPerRun - inRun);
-  const halted = (): boolean => total >= options.maxUsd;
-  const runSpent = (): boolean => inRun >= options.maxUsdPerRun;
+  let total = 0; // dollars reported by finished calls, across every run
+  let reserved = 0; // worst-case dollars of calls in flight, across every run
+  let inflight = 0;
+  // Set when a call or job was refused because of the TOTAL cap: nothing further may start.
+  let capHit = false;
+  const halted = (): boolean => capHit || total >= options.maxUsd;
 
-  const onUsage = (event: UsageEvent): void => {
+  /** One run's own books: late usage from its calls stays with it, and it can be closed. */
+  interface RunState {
+    open: boolean;
+    events: Priced[];
+    spent: number;
+    reserved: number;
+    inflight: number;
+    lastUsageAt: number;
+  }
+  const newState = (): RunState => ({
+    open: true,
+    events: [],
+    spent: 0,
+    reserved: 0,
+    inflight: 0,
+    lastUsageAt: Date.now(),
+  });
+  const cap = (s: RunState): number =>
+    Math.min(options.maxUsd - total, options.maxUsdPerRun - s.spent);
+  const runSpent = (s: RunState): boolean => s.spent >= options.maxUsdPerRun;
+
+  const usageSink = (s: RunState) => (event: UsageEvent) => {
     const priced = price(event, prices);
     total += priced.tokens.dollars;
-    inRun += priced.tokens.dollars;
-    lastUsageAt = Date.now();
-    events.push(priced);
+    s.spent += priced.tokens.dollars;
+    s.lastUsageAt = Date.now();
+    s.events.push(priced);
   };
 
-  // Providers refuse once the total is reached, whoever asks (a background batch included).
-  const guard = (p: LlmProvider): LlmProvider => ({
-    get id() {
-      return p.id;
-    },
-    get model() {
-      return p.model;
-    },
-    streamText: async function* (req) {
-      if (halted()) throw new AppError('BUDGET_EXHAUSTED');
-      yield* p.streamText(req);
-    },
-    generateObject: (req) => {
-      if (halted()) return Promise.reject(new AppError('BUDGET_EXHAUSTED'));
-      return p.generateObject(req);
-    },
-  });
-  const runtime = Object.create(options.runtime, {
-    answerProvider: {
-      get: () => guard(options.runtime.answerProvider),
-      enumerable: true,
-    },
-    extractProvider: {
-      get: () => guard(options.runtime.extractProvider),
-      enumerable: true,
-    },
-    providerFor: {
-      value: (role: 'answer' | 'extract', model?: string) =>
-        guard(options.runtime.providerFor(role, model)),
-      enumerable: true,
-    },
-  }) as CliRuntime;
+  /**
+   * Refuses a call unless its WORST case still fits under both caps with everything already in
+   * flight, so parallel calls cannot jointly overshoot. The reservation is released after the
+   * caller has had a chance to report the real usage, which then counts in `total` instead.
+   */
+  const guardFor =
+    (s: RunState) =>
+    (p: LlmProvider): LlmProvider => {
+      const admit = (req: Parameters<typeof worstCallDollars>[1]): number => {
+        if (!s.open) throw new AppError('BUDGET_EXHAUSTED');
+        const worst = worstCallDollars(p.model, req, prices);
+        if (total + reserved + worst > options.maxUsd) capHit = true;
+        if (capHit || s.spent + s.reserved + worst > options.maxUsdPerRun)
+          throw new AppError('BUDGET_EXHAUSTED');
+        reserved += worst;
+        s.reserved += worst;
+        inflight++;
+        s.inflight++;
+        return worst;
+      };
+      const release = (worst: number): void => {
+        // After the metering wrapper's continuation, which records the actual cost.
+        setTimeout(() => {
+          reserved -= worst;
+          s.reserved -= worst;
+          inflight--;
+          s.inflight--;
+        }, 0);
+      };
+      return {
+        get id() {
+          return p.id;
+        },
+        get model() {
+          return p.model;
+        },
+        streamText: async function* (req) {
+          const worst = admit(req);
+          try {
+            yield* p.streamText(req);
+          } finally {
+            release(worst);
+          }
+        },
+        generateObject: async (req) => {
+          const worst = admit(req);
+          try {
+            return await p.generateObject(req);
+          } finally {
+            release(worst);
+          }
+        },
+      };
+    };
+  const runtimeFor = (s: RunState): CliRuntime => {
+    const guard = guardFor(s);
+    return Object.create(options.runtime, {
+      answerProvider: {
+        get: () => guard(options.runtime.answerProvider),
+        enumerable: true,
+      },
+      extractProvider: {
+        get: () => guard(options.runtime.extractProvider),
+        enumerable: true,
+      },
+      providerFor: {
+        value: (role: 'answer' | 'extract', model?: string) =>
+          guard(options.runtime.providerFor(role, model)),
+        enumerable: true,
+      },
+    }) as CliRuntime;
+  };
+  /** Waits for calls still in flight to report, up to a minute. */
+  const settled = async (get: () => number): Promise<void> => {
+    const until = Date.now() + SETTLE_MS;
+    while (get() > 0 && Date.now() < until) await sleep(10);
+  };
 
   const report: CalibrationReport = {
     version: 1,
@@ -366,23 +482,21 @@ export async function runCalibration(
         });
       break;
     }
-    events = [];
-    inRun = 0;
-    lastUsageAt = Date.now();
     const started = Date.now();
     log(
       `run ${String(index + 1)}/${String(options.plan.length)}: ${planRun.bill} on ${planRun.plan}`,
     );
     const run = await executeRun(planRun);
-    run.spentUsd = inRun;
     run.elapsedSeconds = (Date.now() - started) / 1000;
     report.runs.push(run);
     options.onRun?.(run);
     report.spentUsd = total;
     log(
-      `  ${run.status}, $${inRun.toFixed(4)} (total $${total.toFixed(4)})${run.note ? `: ${run.note}` : ''}`,
+      `  ${run.status}, $${run.spentUsd.toFixed(4)} (total $${total.toFixed(4)})${run.note ? `: ${run.note}` : ''}`,
     );
   }
+  // Nothing may start now, and what is still in flight must report before the totals are final.
+  await settled(() => inflight);
   report.spentUsd = total;
   report.capReached ||= halted();
   return CalibrationReport.parse(report);
@@ -396,12 +510,13 @@ export async function runCalibration(
       string,
       { budget: { dollars: number }; jobId: string }
     >();
-    const app = createApp(runtime, {
+    const state = newState();
+    const app = createApp(runtimeFor(state), {
       auth: { middleware: (_c, next) => next(), readerId: () => 'calibration' },
       logWriter: () => undefined,
       breakdownMaxUnits: planRun.breakdownMaxUnits,
       pregenerateExamples: planRun.pregenerateExamples,
-      onUsage,
+      onUsage: usageSink(state),
       modelFor: () => models,
       quote: {
         tiers: {
@@ -416,7 +531,7 @@ export async function runCalibration(
         plan: { pregenerateExamples: planRun.pregenerateExamples },
       },
       admission: (_c: Context, job) => {
-        const left = cap();
+        const left = cap(state);
         if (halted() || left <= 0)
           return Promise.resolve({
             allow: false,
@@ -440,7 +555,7 @@ export async function runCalibration(
         const saved = scopes.get(`${docId}\n${tier}`);
         if (!saved) return Promise.resolve(undefined);
         return Promise.resolve({
-          budget: { dollars: Math.max(0, cap()) },
+          budget: { dollars: Math.max(0, cap(state)) },
           jobId: saved.jobId,
           ...(scopeModels ? { models: scopeModels } : {}),
         });
@@ -475,17 +590,20 @@ export async function runCalibration(
       return { ok: schema.parse(body) };
     };
 
-    const run: Run = emptyRun(planRun);
+    const run: Run = emptyRun(planRun, {
+      maxUsd: options.maxUsd,
+      maxUsdPerRun: options.maxUsdPerRun,
+    });
     const notes: string[] = [];
     let status: Run['status'] = 'completed';
-    const deadline = Math.min(
-      Date.now() + runTimeoutMs,
-      options.deadlineAt ?? Infinity,
-    );
+    // The clock starts after the ingest: embedding a long bill can take most of ten minutes
+    // and is not what is being measured. Until then only the job deadline applies.
+    const runTimeout = (planRun.timeoutMinutes ?? 0) * 60_000 || runTimeoutMs;
+    let deadline = options.deadlineAt ?? Infinity;
     const timedOut = (): boolean => Date.now() > deadline;
     /** Waits until no model call has been reported for `idleMs`, or the deadline. */
     const drain = async (): Promise<void> => {
-      while (!timedOut() && Date.now() - lastUsageAt < idleMs)
+      while (!timedOut() && Date.now() - state.lastUsageAt < idleMs)
         await sleep(Math.min(pollMs, idleMs));
     };
 
@@ -522,9 +640,13 @@ export async function runCalibration(
       }
       if (!docId) throw new Error('the ingest did not finish');
       run.docId = docId;
+      deadline = Math.min(
+        Date.now() + runTimeout,
+        options.deadlineAt ?? Infinity,
+      );
 
       // The forecast for what this run will do: the same caps the server runs with.
-      const doc = await runtime.registry.getDocument(docId);
+      const doc = await options.runtime.registry.getDocument(docId);
       const facts = billFacts(doc.sections, {
         breakdownUnitCap: planRun.breakdownMaxUnits,
       });
@@ -555,8 +677,8 @@ export async function runCalibration(
           stopNote = `total cap reached ($${total.toFixed(2)})`;
           break;
         }
-        if (runSpent()) {
-          stopNote = `per-run cap reached ($${inRun.toFixed(2)})`;
+        if (runSpent(state)) {
+          stopNote = `per-run cap reached ($${state.spent.toFixed(2)})`;
           break;
         }
         if (timedOut()) {
@@ -618,7 +740,7 @@ export async function runCalibration(
         for (const b of eligible) {
           const path = `${base}/sections/${encodeURIComponent(b.sectionId)}/example`;
           for (;;) {
-            if (halted() || runSpent() || timedOut()) break;
+            if (halted() || runSpent(state) || timedOut()) break;
             const r = await getJson(path, ScenarioResponse);
             if ('error' in r) break;
             if (r.ok.status === 'pending') {
@@ -628,7 +750,7 @@ export async function runCalibration(
             if (r.ok.status === 'ok') ok++;
             break;
           }
-          if (halted() || runSpent() || timedOut()) {
+          if (halted() || runSpent(state) || timedOut()) {
             notes.push('examples not finished before a cap or the deadline');
             break;
           }
@@ -638,7 +760,7 @@ export async function runCalibration(
       await drain();
 
       // 4. Two fixed questions.
-      if (!halted() && !runSpent()) {
+      if (!halted() && !runSpent(state)) {
         for (const question of QUESTIONS) {
           const res = await call(`${base}/ask`, { body: { question } });
           if (!res.ok) {
@@ -667,8 +789,11 @@ export async function runCalibration(
       notes.push(error instanceof Error ? error.message : 'unknown error');
     }
 
-    // Settle accounting after any stragglers: what was reported is what was spent.
-    await drain();
+    // Close the run: its calls still in flight report into it, and none can start after this.
+    state.open = false;
+    await settled(() => state.inflight);
+    run.spentUsd = state.spent;
+    const events = state.events;
     const bySection = (f: Priced['feature']): Priced[] =>
       events.filter((e) => e.feature === f);
     const zeroEstimate = { low: ZERO, high: ZERO };
@@ -736,7 +861,10 @@ export async function runCalibration(
   }
 }
 
-function emptyRun(p: PlanRun): Run {
+function emptyRun(
+  p: PlanRun,
+  caps: { maxUsd: number; maxUsdPerRun: number },
+): Run {
   const row = { low: ZERO, high: ZERO };
   return {
     bill: p.bill,
@@ -747,6 +875,7 @@ function emptyRun(p: PlanRun): Run {
     breakdownMaxUnits: p.breakdownMaxUnits,
     pregenerateExamples: p.pregenerateExamples,
     status: 'completed',
+    caps,
     features: {} as Run['features'],
     questions: { asked: 0, estimate: row, measured: ZERO, ratioHigh: null },
     other: ZERO,
@@ -776,8 +905,8 @@ function emptyRun(p: PlanRun): Run {
 // --- command line -----------------------------------------------------------------------------
 
 /** The runtime with every model call answered by the mock provider; costs nothing. */
-async function dryRuntime(): Promise<CliRuntime> {
-  const real = await createRuntime({ needsLlm: false });
+export async function dryRuntime(base?: CliRuntime): Promise<CliRuntime> {
+  const real = base ?? (await createRuntime({ needsLlm: false }));
   const mock = new MockProvider();
   return Object.create(real, {
     answerProvider: { value: mock, enumerable: true },
@@ -818,7 +947,7 @@ async function main(): Promise<void> {
       'poll-seconds': { type: 'string', default: '3' },
       'idle-seconds': { type: 'string', default: '20' },
       'run-timeout-minutes': { type: 'string', default: '10' },
-      'deadline-minutes': { type: 'string', default: '55' },
+      'deadline-minutes': { type: 'string', default: '210' },
     },
   });
   const num = (name: string, v: string | undefined): number => {
@@ -858,10 +987,8 @@ async function main(): Promise<void> {
     },
     log,
   });
-  const text = JSON.stringify(report);
-  console.log('=== CALIBRATION REPORT BEGIN ===');
-  console.log(text);
-  console.log('=== CALIBRATION REPORT END ===');
+  // A prefixed line lands in the log's textPayload; a bare JSON line would become jsonPayload.
+  console.log(`CALIBRATION REPORT ${JSON.stringify(report)}`);
   const out = process.env.CALIBRATION_OUT;
   if (out) await writeOutput(out, `${JSON.stringify(report, null, 2)}\n`, log);
 }

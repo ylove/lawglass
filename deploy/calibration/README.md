@@ -2,7 +2,7 @@
 
 Runs `scripts/calibrate.ts` against the real Anthropic API as a Cloud Run Job and prints a JSON report to the job logs. It measures what the pipeline really spends on a plan of bills and compares it with the estimator in `src/core/cost`. Part of #385: this is the tooling; the run comes after.
 
-**Spend is capped at $10 in total** (`--max-usd`, default 10) and $3 per bill and model plan (`--max-usd-per-bill`, default 3). Every admitted job carries a dollar budget, and once the total is reached no further call is sent. Overshoot is limited to calls already in flight.
+**Spend is capped at $10 in total** (`--max-usd`, default 10) and $3 per bill and model plan (`--max-usd-per-bill`, default 3). Every admitted job carries a dollar budget, and every provider call reserves its worst case (the prompt at the dearest rate plus all `maxTokens` of output) before it is sent. A call that would not fit under the cap together with everything in flight is refused, so parallel calls cannot overshoot it. The cap counts model calls only (not embeddings or hosting).
 
 The API key reaches the container only as the `ANTHROPIC_API_KEY` environment variable, from Secret Manager. The script never prints it.
 
@@ -34,6 +34,23 @@ docker buildx build --platform linux/amd64 --provenance=false --tag "$IMAGE" --p
 docker logout "https://$REGION-docker.pkg.dev"
 ```
 
+## Create the service account
+
+The job runs as its own account, which can read the one secret and nothing else (the service's `lawglass-run` account can also read the access key and write the state bucket):
+
+```sh
+gcloud iam service-accounts create lawglass-calibration \
+  --project lawglass-preview \
+  --display-name "Lawglass cost calibration job"
+
+gcloud secrets add-iam-policy-binding anthropic-api-key \
+  --project lawglass-preview \
+  --member serviceAccount:lawglass-calibration@lawglass-preview.iam.gserviceaccount.com \
+  --role roles/secretmanager.secretAccessor
+```
+
+Whoever creates the job also needs `roles/iam.serviceAccountUser` on this account.
+
 ## Create the job
 
 The container's entrypoint starts the web server, so the job overrides the command. `tsx` is a dev dependency and is pruned from the image, hence `node dist/calibrate.js`.
@@ -42,17 +59,17 @@ The container's entrypoint starts the web server, so the job overrides the comma
 gcloud run jobs create lawglass-calibration \
   --project lawglass-preview --region us-east1 \
   --image "$IMAGE" \
-  --service-account lawglass-run@lawglass-preview.iam.gserviceaccount.com \
+  --service-account lawglass-calibration@lawglass-preview.iam.gserviceaccount.com \
   --command node \
   --args dist/calibrate.js,--max-usd,10,--max-usd-per-bill,3 \
   --set-env-vars LAWGLASS_LLM_PROVIDER=anthropic,LAWGLASS_BACKEND=local \
   --set-secrets ANTHROPIC_API_KEY=anthropic-api-key:latest \
   --max-retries 0 \
-  --task-timeout 3600 \
+  --task-timeout 14400 \
   --cpu 2 --memory 4Gi
 ```
 
-`--max-retries 0` matters: a retry would spend the budget again from zero. The service account needs `roles/secretmanager.secretAccessor` on `anthropic-api-key`, which the service already has.
+`--max-retries 0` matters: a retry would spend the budget again from zero. The task timeout is four hours; the script stops starting runs after 210 minutes (`--deadline-minutes`) so the report prints before it.
 
 To change the image or arguments later, use `gcloud run jobs update lawglass-calibration ...` with the same flags.
 
@@ -75,16 +92,16 @@ gcloud run jobs execute lawglass-calibration \
   --project lawglass-preview --region us-east1 --wait
 ```
 
-Time limits: each run (one bill on one plan) stops after `--run-timeout-minutes` (default 10), and no run starts after `--deadline-minutes` (default 55) so the report is written before the 3600 second task timeout. Raise `--task-timeout` and both flags together if the NDAA needs longer.
+Time limits: a run's clock starts after its ingest finishes (embedding the NDAA alone takes about eight minutes). Each run then gets `--run-timeout-minutes` (default 10; the NDAA plan carries 25 in the plan itself). No run starts after `--deadline-minutes` (default 210), which also cuts a running run short, so the report is written before the 14400 second task timeout. When the job ends, calls still in flight are waited for (up to 60 seconds) so their cost is counted.
 
 ## Read the output
 
 Everything goes to stdout, which Cloud Run Jobs writes to the job's logs. Progress goes to stderr, also in the logs.
 
 - Each finished run is printed at once as a line starting `CALIBRATION RUN ` followed by its JSON, so a killed or timed-out job still leaves its measurements.
-- The final report is one JSON line between `=== CALIBRATION REPORT BEGIN ===` and `=== CALIBRATION REPORT END ===`.
+- The final report is one line starting `CALIBRATION REPORT ` followed by its JSON (the prefix keeps it in `textPayload`; a bare JSON line would go to `jsonPayload`).
 
-Save the job log and turn it into the markdown for `docs/calibration.md`. The report script accepts the JSON or the raw log lines, and rebuilds a partial report from the `CALIBRATION RUN` lines when the final report is missing.
+Save the job log and turn it into the markdown for `docs/calibration.md`. The report script accepts the JSON or the raw log lines, and rebuilds a partial report from the `CALIBRATION RUN` lines when the final report line is missing or damaged.
 
 ```sh
 EXECUTION=$(gcloud run jobs executions list --job lawglass-calibration \
@@ -100,7 +117,7 @@ The report states what was skipped when the cap or the deadline stopped the plan
 
 ## Things to know
 
-- Spend is read from the usage each call reports. A call that failed without usage is charged at a conservative guess and flagged `estimated` in the report. A model missing from the price table is charged at the dearest known rate and flagged `unpricedCalls`.
+- Spend is read from the usage each call reports. A call that failed without usage is charged at a conservative guess and flagged `estimated` in the report. A model missing from the price table is charged at the dearest built-in rate (the maximum over the price table) and flagged `unpricedCalls`.
 - Metadata is extracted once, at first ingest, so on the second plan for a bill it shows no calls. Compare metadata on the Haiku runs only.
 - The quote recorded in each run is the server's own (default part cap). The estimate that measured cost is compared with is computed with the run's real caps.
 - The spend gate of #397 is not in this tree; the script enforces the cap through per-job budgets and a guard on every provider call.

@@ -20,35 +20,59 @@ import {
 /** Margin kept above the worst measured ratio, so the next bill does not break the bound. */
 export const MARGIN = 1.25;
 
-export function parseReport(text: string): CalibrationReport {
-  const begin = text.indexOf('=== CALIBRATION REPORT BEGIN ===');
-  const end = text.indexOf('=== CALIBRATION REPORT END ===');
-  if (begin < 0) {
-    // A job that was killed before it finished: rebuild from the runs it printed as it went.
-    const marker = 'CALIBRATION RUN ';
-    const runs = text.split('\n').flatMap((line) => {
-      const at = line.indexOf(marker);
-      return at < 0
-        ? []
-        : [Run.parse(JSON.parse(line.slice(at + marker.length)))];
-    });
-    if (runs.length > 0)
-      return CalibrationReport.parse({
-        version: 1,
-        generatedAt: new Date().toISOString(),
-        dryRun: false,
-        caps: { maxUsd: 10, maxUsdPerRun: 3 },
-        spentUsd: runs.reduce((n, r) => n + r.spentUsd, 0),
-        capReached: false,
-        skipped: [],
-        runs,
-      });
+const REPORT_PREFIX = 'CALIBRATION REPORT ';
+const RUN_PREFIX = 'CALIBRATION RUN ';
+
+function tryParse<T>(parse: () => T): T | undefined {
+  try {
+    return parse();
+  } catch {
+    return undefined;
   }
-  const json =
-    begin >= 0 && end > begin
-      ? text.slice(begin + '=== CALIBRATION REPORT BEGIN ==='.length, end)
-      : text;
-  return CalibrationReport.parse(JSON.parse(json));
+}
+
+/**
+ * Reads the report from the saved JSON, or from a job log: the final `CALIBRATION REPORT` line
+ * when it is there and valid, else the report rebuilt from the `CALIBRATION RUN` lines a job that
+ * was killed or timed out left behind.
+ */
+export function parseReport(text: string): CalibrationReport {
+  const lines = text.split('\n');
+  for (const line of lines.toReversed()) {
+    const at = line.indexOf(REPORT_PREFIX);
+    if (at < 0) continue;
+    const found = tryParse(() =>
+      CalibrationReport.parse(
+        JSON.parse(line.slice(at + REPORT_PREFIX.length)),
+      ),
+    );
+    if (found) return found;
+  }
+  const whole = tryParse(() => CalibrationReport.parse(JSON.parse(text)));
+  if (whole) return whole;
+  const runs = lines.flatMap((line) => {
+    const at = line.indexOf(RUN_PREFIX);
+    const run =
+      at < 0
+        ? undefined
+        : tryParse(() =>
+            Run.parse(JSON.parse(line.slice(at + RUN_PREFIX.length))),
+          );
+    return run ? [run] : [];
+  });
+  const first = runs[0];
+  if (!first)
+    throw new Error('No calibration report or run lines found in the input.');
+  return CalibrationReport.parse({
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    dryRun: false,
+    caps: first.caps,
+    spentUsd: runs.reduce((n, r) => n + r.spentUsd, 0),
+    capReached: false,
+    skipped: [],
+    runs,
+  });
 }
 
 const usd = (n: number): string =>
@@ -65,8 +89,12 @@ const table = (head: string[], rows: string[][]): string =>
     ...rows.map((r) => `| ${r.map(cell).join(' | ')} |`),
   ].join('\n');
 
-/** Only a run that finished says what a bill really costs; a stopped one measured part of it. */
-const usable = (r: Run): boolean => r.status === 'completed';
+/**
+ * A run that did not fail measured at least part of the work, so its ratio is a floor: a partial
+ * ratio above 1 is a real overrun, while one below 1 proves nothing. Only failed runs are left out.
+ */
+const usable = (r: Run): boolean =>
+  r.status !== 'failed' && r.status !== 'skipped';
 
 export interface Recommendation {
   feature: Feature | 'total';
@@ -80,8 +108,11 @@ export interface Recommendation {
 /** Round up to the next 0.05, so the advice reads as a number someone would type. */
 const roundUp = (n: number): number => Math.ceil(n * 20 - 1e-9) / 20;
 
-export function recommend(report: CalibrationReport): Recommendation[] {
-  const runs = report.runs.filter(usable);
+export function recommend(
+  report: CalibrationReport,
+  keep: (r: Run) => boolean = usable,
+): Recommendation[] {
+  const runs = report.runs.filter(keep);
   const one = (
     feature: Recommendation['feature'],
     pick: (r: Run) => number | null,
@@ -301,10 +332,24 @@ export function renderReport(report: CalibrationReport): string {
   out.push(
     '## Recommendation for the high bound',
     '',
-    `Worst measured/high ratio over the ${String(report.runs.filter(usable).length)} completed runs, with a ${String(Math.round((MARGIN - 1) * 100))}% margin on top, rounded up to 0.05. ` +
+    `Worst measured/high ratio over the ${String(report.runs.filter(usable).length)} runs that did not fail, with a ${String(Math.round((MARGIN - 1) * 100))}% margin on top, rounded up to 0.05. ` +
       "Multiply a feature's high-bound dollars by this factor; 1.00 means the bound already holds with room to spare. " +
-      'Stopped, timed-out and failed runs are left out: they measured only part of the work.',
+      'Stopped and timed-out runs are included as floors (they measured part of the work, so a ratio above 1.00x there is a real overrun). Failed runs are left out.',
     '',
+    ...(report.runs.some((r) => !usable(r) || r.status !== 'completed')
+      ? [
+          'Not complete: ' +
+            report.runs
+              .filter((r) => r.status !== 'completed')
+              .map(
+                (r) =>
+                  `${r.bill} on ${r.plan} (${r.status}${usable(r) ? `, ${x(r.total.ratioHigh)} of its high bound so far` : ', excluded'})`,
+              )
+              .join('; ') +
+            '.',
+          '',
+        ]
+      : []),
     table(
       ['Feature', 'Runs', 'Worst measured/high', 'Multiplier'],
       recs.map((r) => [
@@ -319,11 +364,11 @@ export function renderReport(report: CalibrationReport): string {
   const under = recs.filter((r) => r.worst !== null && r.worst > 1);
   out.push(
     under.length === 0
-      ? 'Every feature stayed within its high bound on every completed run.'
+      ? 'Every feature stayed within its high bound on every run that did not fail.'
       : `The high bound was exceeded for: ${under.map((r) => r.feature).join(', ')}. Raise those bounds before relying on them as a budget.`,
     '',
   );
-  const tight = recs.filter(
+  const tight = recommend(report, (r) => r.status === 'completed').filter(
     (r) =>
       r.worst !== null && r.worst > 0 && r.worst < 0.3 && r.feature !== 'total',
   );

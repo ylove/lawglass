@@ -33,7 +33,7 @@ export const FeatureRow = z.object({
   measured: Tokens.extend({
     /** Calls whose usage the provider did not report (failed or abandoned), so a guess was charged. */
     estimatedCalls: z.number(),
-    /** Calls on a model the price table has no rate for, charged at the dearest known rate. */
+    /** Calls on a model the price table has no rate for, charged at the dearest built-in rate. */
     unpricedCalls: z.number(),
   }),
   /** Measured dollars over the estimate's high dollars; null when the estimate is zero. */
@@ -74,6 +74,8 @@ export const Run = z.object({
   breakdownMaxUnits: z.union([z.number(), z.literal('all')]),
   pregenerateExamples: z.enum(['all', 'small', 'off']),
   status: RunStatus,
+  /** The caps the run was under, so a report rebuilt from run lines still knows them. */
+  caps: z.object({ maxUsd: z.number(), maxUsdPerRun: z.number() }),
   /** Why a run did not complete: the budget that stopped it, the error, or the stage that stalled. */
   note: z.string().optional(),
   docId: z.string().optional(),

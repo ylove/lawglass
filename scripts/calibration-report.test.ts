@@ -39,6 +39,7 @@ function run(
     breakdownMaxUnits: 30,
     pregenerateExamples: 'small',
     status,
+    caps: { maxUsd: 7, maxUsdPerRun: 2 },
     facts: {
       pages: null,
       sections: 100,
@@ -131,13 +132,6 @@ describe('calibration report', () => {
     expect(over.find((r) => r.feature === 'pictures')?.multiplier).toBe(1.5);
   });
 
-  test('ignores runs that did not complete', () => {
-    const rec = recommend(
-      report([run('A', 0.5, 1), run('B', 5, 1, 'stopped')]),
-    );
-    expect(rec.find((r) => r.feature === 'summary')?.worst).toBe(0.5);
-  });
-
   test('renders the tables, the skipped runs and the extrapolation', () => {
     const md = renderReport(report([run('A', 0.5, 1)]));
     expect(md).toContain('# Cost estimator calibration');
@@ -151,8 +145,23 @@ describe('calibration report', () => {
 
   test('reads the JSON out of a job log', () => {
     const r = report([run('A', 0.5, 1)]);
-    const log = `starting\n=== CALIBRATION REPORT BEGIN ===\n${JSON.stringify(r)}\n=== CALIBRATION REPORT END ===\ndone`;
+    const log = `starting\nCALIBRATION REPORT ${JSON.stringify(r)}\ndone`;
     expect(parseReport(log)).toEqual(r);
     expect(parseReport(JSON.stringify(r))).toEqual(r);
+  });
+});
+
+describe('a damaged final line', () => {
+  test('falls back to the run lines when the report line is blank or invalid', () => {
+    const a = run('A', 0.5, 1);
+    for (const bad of [
+      'CALIBRATION REPORT ',
+      'CALIBRATION REPORT {"version":',
+      '',
+    ]) {
+      const log = `CALIBRATION RUN ${JSON.stringify(a)}\n${bad}\n`;
+      expect(parseReport(log).runs.map((r) => r.bill)).toEqual(['A']);
+    }
+    expect(() => parseReport('nothing here')).toThrow(/No calibration report/);
   });
 });

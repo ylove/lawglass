@@ -10,6 +10,7 @@ import { envVar } from '../src/core/brand.js';
 import { resolveNewJersey } from '../src/core/fetch/new-jersey.js';
 import { resolveNewYork } from '../src/core/fetch/new-york.js';
 import { resolveHistory } from '../src/core/history/resolve.js';
+import type { CliRuntime } from '../src/cli/runtime.js';
 import { MockProvider } from '../src/core/llm/mock.js';
 import { resetSharedLimits } from '../src/core/pipeline/limits.js';
 import {
@@ -17,6 +18,8 @@ import {
   PlanRun,
   QUESTIONS,
   defaultPlan,
+  dryRuntime,
+  worstCallDollars,
   runCalibration,
   type CalibrationOptions,
 } from './calibrate.js';
@@ -152,6 +155,7 @@ describe('the default plan', () => {
     const ndaa = plan.filter((p) => p.bill === 'H.R. 5009 (NDAA)');
     expect(ndaa).toHaveLength(1);
     expect(ndaa[0]).toMatchObject({
+      timeoutMinutes: 25,
       answerModel: 'claude-haiku-5-5',
       extractModel: 'claude-haiku-5-5',
       breakdownMaxUnits: 30,
@@ -199,4 +203,97 @@ describe('the job deadline', () => {
     await runCalibration(options({ onRun: (r) => seen.push(r.bill) }));
     expect(seen).toEqual(['Synthetic']);
   }, 60_000);
+});
+
+/** A provider that takes a moment and reports as much usage as the request allowed. */
+function slowSpender(model?: string, delayMs = 20) {
+  const inner = breakdownProvider(scenarioProvider(new MockProvider(model)));
+  return {
+    ...inner,
+    id: inner.id,
+    model: inner.model,
+    streamText: inner.streamText.bind(inner),
+    generateObject: async <T>(
+      req: Parameters<typeof inner.generateObject<T>>[0],
+    ) => {
+      await new Promise((r) => setTimeout(r, delayMs));
+      const r = await inner.generateObject(req);
+      return {
+        ...r,
+        usage: { inputTokens: 1000, outputTokens: req.maxTokens },
+      };
+    },
+  };
+}
+
+describe('the cap is hard', () => {
+  test('calls in flight together never take the total past it', async () => {
+    Object.assign(env.runtime, {
+      providerFor: (_role: string, model?: string) => slowSpender(model),
+    });
+    // A call can cost up to about $0.003 (6,000 output tokens on Haiku); the cap fits only a few.
+    const cap = 0.01;
+    const report = await runCalibration(
+      options({ maxUsd: cap, minRunUsd: 0, plan: [run('A'), run('B')] }),
+    );
+    expect(report.spentUsd).toBeLessThanOrEqual(cap);
+    expect(report.spentUsd).toBeGreaterThan(0);
+    expect(report.runs[0]?.features.breakdown.measured.calls).toBeGreaterThan(
+      0,
+    );
+  }, 60_000);
+
+  test('a timed-out run keeps its own late usage and leaks none into the next', async () => {
+    Object.assign(env.runtime, {
+      providerFor: (_role: string, model?: string) => slowSpender(model, 40),
+    });
+    const report = await runCalibration(
+      options({
+        plan: [run('A'), run('B', 'sonnet')],
+        runTimeoutMs: 1,
+      }),
+    );
+    expect(report.runs.map((r) => r.status)).toEqual(['timeout', 'timeout']);
+    // The run's clock starts after the ingest, so the ingest completed.
+    expect(report.runs.every((r) => r.docId !== undefined)).toBe(true);
+    const sum = report.runs.reduce((n, r) => n + r.spentUsd, 0);
+    expect(report.spentUsd).toBeCloseTo(sum, 12);
+  }, 60_000);
+
+  test('the worst case of a call counts every output token and an unpriced model is the dearest', () => {
+    const req = { system: 's', messages: [], maxTokens: 1_000_000 };
+    const haiku = worstCallDollars('claude-haiku-5-5', req);
+    const unknown = worstCallDollars('some-new-model', req);
+    expect(haiku).toBeGreaterThanOrEqual(0.5);
+    // Opus, at $20 per million output tokens, is the dearest built-in model.
+    expect(unknown).toBeGreaterThanOrEqual(20);
+  });
+});
+
+describe('the dry run', () => {
+  test('answers every provider with the mock and never touches the real ones', async () => {
+    const real = Object.create(env.runtime, {
+      answerProvider: {
+        get: () => {
+          throw new Error('real answer provider used');
+        },
+      },
+      extractProvider: {
+        get: () => {
+          throw new Error('real extract provider used');
+        },
+      },
+      providerFor: {
+        value: () => {
+          throw new Error('real provider used');
+        },
+      },
+    }) as CliRuntime;
+    const dry = await dryRuntime(real);
+    expect(dry.answerProvider.id).toBe('mock');
+    expect(dry.extractProvider.id).toBe('mock');
+    const routed = dry.providerFor('answer', 'claude-sonnet-5-5');
+    expect(routed.id).toBe('mock');
+    expect(routed.model).toBe('claude-sonnet-5-5');
+  });
 });
