@@ -7,6 +7,7 @@ import {
   type TextRequest,
 } from '../model/index.js';
 import { z } from 'zod';
+import type { UsageEvent } from '../cost/usage.js';
 import {
   Limits,
   RateCeiling,
@@ -37,6 +38,67 @@ async function collect<T>(it: AsyncIterable<T>): Promise<T[]> {
 }
 
 const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+
+it('reports each completed streamed/object call to an injectable usage sink', async () => {
+  const events: UsageEvent[] = [];
+  const limits = new Limits({
+    maxConcurrentIngest: 1,
+    maxConcurrentAsk: 1,
+    maxCallsPerMinute: 3,
+    usageSink: {
+      record(event) {
+        events.push(event);
+      },
+    },
+  });
+  const base = new ScriptedProvider({ objects: { o: { a: 1 } } });
+  const metered = limits.meter(base, 'summary');
+  await collect(metered.streamText(textReq));
+  const usage = {
+    inputTokens: 100,
+    outputTokens: 20,
+    cacheReadTokens: 70,
+    cacheWriteTokens: 10,
+  };
+  vi.spyOn(base, 'generateObject').mockResolvedValue({
+    object: { a: 1 },
+    usage,
+  });
+  await metered.generateObject(objReq);
+  await limits.paced(base, { feature: 'examples' }).generateObject(objReq);
+  expect(events).toEqual([
+    {
+      feature: 'summary',
+      model: 'scripted',
+      usage: { inputTokens: 1, outputTokens: 1 },
+    },
+    { feature: 'summary', model: 'scripted', usage },
+    { feature: 'examples', model: 'scripted', usage },
+  ]);
+  await expect(metered.generateObject(objReq)).rejects.toMatchObject({
+    code: 'RATE_LIMITED',
+  });
+  expect(events).toHaveLength(3);
+});
+
+it('does not retry a paid model call when the usage sink fails or invent usage for failures', async () => {
+  const record = vi.fn().mockRejectedValue(new Error('sink unavailable'));
+  const limits = new Limits({
+    maxConcurrentIngest: 1,
+    maxConcurrentAsk: 1,
+    maxCallsPerMinute: 10,
+    usageSink: { record },
+  });
+  const base = new ScriptedProvider({ objects: { o: { a: 1 } } });
+  await expect(
+    limits.meter(base).generateObject(objReq),
+  ).resolves.toMatchObject({ object: { a: 1 } });
+  expect(base.calls).toHaveLength(1);
+  await expect(
+    limits.meter(new ScriptedProvider()).generateObject(objReq),
+  ).rejects.toMatchObject({ code: 'PROVIDER_BAD_OUTPUT' });
+  expect(record).toHaveBeenCalledOnce();
+});
 
 /** A task that stays in flight until `finish()` is called; records peak concurrency. */
 function gate() {

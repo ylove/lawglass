@@ -139,7 +139,10 @@ function leaves(sections: readonly Section[]): Section[] {
   return sections.flatMap((s) => (isContainer(s) ? leaves(s.children) : [s]));
 }
 
-export function chooseBreakdownUnits(sections: readonly Section[]): {
+export function chooseBreakdownUnits(
+  sections: readonly Section[],
+  unitCap = MAX_BREAKDOWN_UNITS,
+): {
   units: Section[];
   /**
    * Parts the reader is not shown: substantive parts beyond the cap, parts the summary's unit
@@ -148,6 +151,13 @@ export function chooseBreakdownUnits(sections: readonly Section[]): {
    */
   omitted: number;
 } {
+  if (!(
+    unitCap === Infinity ||
+    (Number.isSafeInteger(unitCap) && unitCap >= 0)
+  ))
+    throw new RangeError(
+      'The breakdown unit cap must be a nonnegative integer or Infinity.',
+    );
   const mapUnits = chooseMapUnits(sections);
   let contentSkips = 0;
   const substantive = leaves(mapUnits.units).filter((s) => {
@@ -157,9 +167,9 @@ export function chooseBreakdownUnits(sections: readonly Section[]): {
     return reason === undefined;
   });
   return {
-    units: substantive.slice(0, MAX_BREAKDOWN_UNITS),
+    units: substantive.slice(0, unitCap),
     omitted:
-      Math.max(0, substantive.length - MAX_BREAKDOWN_UNITS) +
+      Math.max(0, substantive.length - unitCap) +
       mapUnits.omitted +
       contentSkips,
   };

@@ -29,7 +29,7 @@ import {
   type ScenarioResponse,
   type SectionBrief,
 } from '../model/index.js';
-import type { Registry } from '../registry.js';
+import { registryLlmUsage, type Registry } from '../registry.js';
 import { attachScenario } from '../scenario/attach.js';
 import { SCENARIO_SECTION_PROMPT_VERSION } from '../scenario/generate.js';
 import {
@@ -114,6 +114,7 @@ export async function runBreakdown(
       // Nobody is waiting on this run, so it yields to readers (`Limits.paced`).
       provider: limits.paced(deps.provider, {
         background: true,
+        feature: 'breakdown',
         signal: deps.signal,
       }),
       docId,
@@ -128,8 +129,7 @@ export async function runBreakdown(
     await registry.touch(docId, {
       embedTokens: made.backendUsage.embedTokens,
       rerankUnits: made.backendUsage.rerankUnits,
-      llmInputTokens: made.usage.inputTokens,
-      llmOutputTokens: made.usage.outputTokens,
+      ...registryLlmUsage(made.usage),
     });
     if (made.briefs.length === 0) return undefined;
     return {
@@ -240,6 +240,7 @@ export async function runSectionExample(
     const attached = await attachScenario({
       provider: limits.paced(deps.provider, {
         background: deps.background === true,
+        feature: 'examples',
         signal: deps.signal,
       }),
       hits,
@@ -254,8 +255,7 @@ export async function runSectionExample(
     await registry.touch(docId, {
       embedTokens: unitContext.usage.embedTokens,
       rerankUnits: unitContext.usage.rerankUnits,
-      llmInputTokens: attached.usage.inputTokens,
-      llmOutputTokens: attached.usage.outputTokens,
+      ...registryLlmUsage(attached.usage),
     });
     // A failure is not an answer: it is not cached, and the service backs off. Only a
     // validation outcome ("no honest example") becomes a cached `none`.

@@ -18,6 +18,7 @@
  * partial's own text therefore validate. A model that cites the stand-in or an ordinal gets
  * that marker stripped and flagged, instead of silently pointing at the wrong section.
  */
+import { addLlmUsage } from './cost/usage.js';
 import { answer } from './answer/index.js';
 import { promptVersion } from './answer/prompt.js';
 import {
@@ -350,13 +351,10 @@ export async function runOutlineChip(
       readingLevel: options.readingLevel,
       log: options.log,
     });
-    const sum = [...partials, final].reduce(
-      (n, r) => ({
-        inputTokens: n.inputTokens + r.usage.inputTokens,
-        outputTokens: n.outputTokens + r.usage.outputTokens,
-      }),
-      { inputTokens: 0, outputTokens: 0 },
-    );
+    const sum = [...partials, final].reduce((n, r) => addLlmUsage(n, r.usage), {
+      inputTokens: 0,
+      outputTokens: 0,
+    });
     final = { ...final, usage: sum };
   }
 

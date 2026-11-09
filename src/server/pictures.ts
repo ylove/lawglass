@@ -8,6 +8,9 @@
  * summary, the breakdown's briefs), never delay it, and any failure reads as `none`: the reader
  * keeps the words, with no error to dismiss.
  */
+import { addLlmUsage } from '../core/cost/usage.js';
+import type { LlmUsage } from '../core/model/index.js';
+import { registryLlmUsage } from '../core/registry.js';
 import { join } from 'node:path';
 import type { CliRuntime } from '../cli/runtime.js';
 import { listItems } from '../core/answer/list-items.js';
@@ -163,15 +166,17 @@ export function createPictureService(
     void cache
       .getOrCompute(key, async () => {
         // Nobody waits on this; it yields to readers' own questions (`Limits.paced`).
-        const usage = { inputTokens: 0, outputTokens: 0 };
+        let usage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
         let drawn: DrawnPictures;
         try {
           drawn = await drawPictures({
-            provider: sharedLimits().paced(llm, { background: true }),
+            provider: sharedLimits().paced(llm, {
+              background: true,
+              feature: 'pictures',
+            }),
             items,
             onUsage: (spent) => {
-              usage.inputTokens += spent.inputTokens;
-              usage.outputTokens += spent.outputTokens;
+              usage = addLlmUsage(usage, spent);
             },
           });
         } finally {
@@ -179,10 +184,7 @@ export function createPictureService(
           // Registry errors are logged through the same callback as other background errors,
           // but must not discard completed pictures or replace the original drawing error.
           await registry
-            .touch(key.docId, {
-              llmInputTokens: usage.inputTokens,
-              llmOutputTokens: usage.outputTokens,
-            })
+            .touch(key.docId, registryLlmUsage(usage))
             .catch((error: unknown) => onError?.(error, now() - started));
         }
         options.log?.({
