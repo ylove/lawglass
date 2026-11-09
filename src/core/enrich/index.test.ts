@@ -511,12 +511,10 @@ describe('bill references across sections and subsections', () => {
   it('two different stated sessions leave a bare repeat plain', () => {
     const doc = parseXml(
       new TextEncoder().encode(
-        xml
-          .replace('<text>Grants</text>', '<text>Grants</text>')
-          .replace(
-            'may apply using',
-            'may apply, as in H.R. 5 of the 117th Congress, using',
-          ),
+        xml.replace(
+          'may apply using',
+          'may apply, as in H.R. 5 of the 117th Congress, using',
+        ),
       ),
       {
         sourceUrl: 'https://www.govinfo.gov/x.xml',
