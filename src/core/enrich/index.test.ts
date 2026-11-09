@@ -7,7 +7,8 @@ import {
   ExternalRef,
   type NormalizedDoc,
 } from '../model/index.js';
-import { parseText } from '../parse/index.js';
+import { parseText, parseXml } from '../parse/index.js';
+import { makeCongressionalBillXml } from '../../../tests/synth/index.js';
 import {
   describeWithFixture,
   fixturePath,
@@ -478,5 +479,55 @@ describeWithFixture('us-s202-119-is-html', () => {
       expect(() => Chunk.parse(c)).not.toThrow();
       expect(c.tokenCount).toBeLessThanOrEqual(480);
     }
+  });
+});
+
+describe('bill references across sections and subsections', () => {
+  const xml = new TextDecoder()
+    .decode(makeCongressionalBillXml().bytes)
+    .replace(
+      '<text>In this Act:</text>',
+      '<text>In this Act, the term "covered bill" means H.R. 5 of the 118th Congress:</text>',
+    )
+    .replace(
+      'means a nonprofit that maintains a shared garden.',
+      'means a nonprofit named in H.R. 5 that maintains a shared garden.',
+    );
+  const parsed = () =>
+    parseXml(new TextEncoder().encode(xml), {
+      sourceUrl: 'https://www.govinfo.gov/x.xml',
+      fetchedAt: '2026-10-13T00:00:00.000Z',
+    });
+
+  it('a bare repeat in a subsection reuses the session stated in section 1', () => {
+    const doc = parsed();
+    expect(doc.metadata.session).toMatch(/^119th Congress/);
+    const bills = run(doc)
+      .doc.externalRefs.map((r) => r.citation)
+      .filter((c) => c.startsWith('H.R.'));
+    expect(bills).toEqual(['H.R. 5 (118th Congress)']);
+  });
+
+  it('two different stated sessions leave a bare repeat plain', () => {
+    const doc = parseXml(
+      new TextEncoder().encode(
+        xml.replace(
+          'may apply using',
+          'may apply, as in H.R. 5 of the 117th Congress, using',
+        ),
+      ),
+      {
+        sourceUrl: 'https://www.govinfo.gov/x.xml',
+        fetchedAt: '2026-10-13T00:00:00.000Z',
+      },
+    );
+    const bills = run(doc)
+      .doc.externalRefs.map((r) => r.citation)
+      .filter((c) => c.startsWith('H.R.'))
+      .sort();
+    expect(bills).toEqual([
+      'H.R. 5 (117th Congress)',
+      'H.R. 5 (118th Congress)',
+    ]);
   });
 });

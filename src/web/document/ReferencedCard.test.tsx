@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
+import { BRAND } from '../../core/brand.js';
 import { ReferencedCard } from './ReferencedCard.js';
 
 afterEach(cleanup);
@@ -261,4 +262,38 @@ test('marks its section with the refs class the list styling is scoped to', () =
     />,
   );
   expect(container.querySelector('section.card.refs ul')).toBeTruthy();
+});
+
+test('a bill offers a deep link that opens it in the app; statutes never do', () => {
+  render(
+    <ReferencedCard
+      externalRefs={[
+        {
+          text: 'H.R. 1234 of the 117th Congress',
+          citation: 'H.R. 1234 (117th Congress)',
+          kind: 'other',
+          sectionIds: ['s'],
+        },
+        {
+          text: '42 U.S.C. 1983',
+          citation: '42 U.S.C. 1983',
+          kind: 'us_code',
+          sectionIds: ['s'],
+        },
+      ]}
+    />,
+  );
+  expect(screen.getByText(/^Bill · mentioned in 1 section/)).toBeTruthy();
+  const open = screen.getByRole<HTMLAnchorElement>('link', {
+    name: `Open H.R. 1234 (117th Congress) in ${BRAND.displayName}`,
+  });
+  expect(new URL(open.href).searchParams.get('url')).toBe(
+    'https://www.congress.gov/bill/117th-congress/house-bill/1234',
+  );
+  // The citation itself still links to the official page, in a new tab.
+  const official = screen.getByRole<HTMLAnchorElement>('link', {
+    name: 'H.R. 1234 (117th Congress)',
+  });
+  expect(official.target).toBe('_blank');
+  expect(screen.getAllByRole('link', { name: /^Open .* in / })).toHaveLength(1);
 });

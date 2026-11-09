@@ -1,3 +1,4 @@
+import { billIngestUrl } from './bill-refs.js';
 /**
  * Links from a citation to the official text, built by rule. No search engines: a search link
  * would tell a third party what the reader is looking at. A URL comes back only when the
@@ -84,6 +85,9 @@ export function usCodeUrl(title: number, section: string): string {
 
 export function officialUrl(citation: string): string | undefined {
   const text = citation.trim();
+  // A bill's official page is the same address Lawglass reads it from.
+  const bill = billIngestUrl(text);
+  if (bill) return bill;
   if (text === 'Ohio Revised Code, Title 35') return `${ORC}/title-35`;
   const rcSection = /^R\.C\. (\d+\.\d+(?:\.\d+)?)$/.exec(text);
   if (rcSection)

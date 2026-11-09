@@ -1,5 +1,8 @@
+import { BRAND } from '../../core/brand.js';
 import type { DocDetail } from '../../core/model/index.js';
+import { billIngestUrl } from '../../core/enrich/bill-refs.js';
 import { officialUrl } from '../../core/enrich/official-url.js';
+import { Link, openUrlPath } from '../nav.js';
 
 type ExternalRef = DocDetail['externalRefs'][number];
 
@@ -19,7 +22,11 @@ const CATEGORY_LABEL = {
 } as const;
 
 const label = (ref: ExternalRef): string =>
-  ref.category ? CATEGORY_LABEL[ref.category] : KIND_LABEL[ref.kind];
+  billIngestUrl(ref.citation)
+    ? 'Bill'
+    : ref.category
+      ? CATEGORY_LABEL[ref.category]
+      : KIND_LABEL[ref.kind];
 
 /** Read references first (answers can use them), then the most mentioned. Stable otherwise. */
 function ordered(refs: DocDetail['externalRefs']): ExternalRef[] {
@@ -56,6 +63,8 @@ export function ReferencedCard({
       <ul className="ref-list" role="list">
         {ordered(externalRefs).map((r) => {
           const href = officialUrl(r.citation);
+          // A bill (unlike a statute) can be read and questioned like any pasted address.
+          const billUrl = billIngestUrl(r.citation);
           const count = r.sectionIds.length;
           return (
             <li key={r.citation}>
@@ -70,6 +79,18 @@ export function ReferencedCard({
               <small className="muted">
                 {label(r)} · mentioned in {count}{' '}
                 {count === 1 ? 'section' : 'sections'}
+                {billUrl ? (
+                  <>
+                    {' · '}
+                    <Link
+                      to={openUrlPath(billUrl)}
+                      className="link-btn"
+                      aria-label={`Open ${r.citation} in ${BRAND.displayName}`}
+                    >
+                      Open in {BRAND.displayName}
+                    </Link>
+                  </>
+                ) : null}
                 {r.referenceId !== undefined && onOpenReference ? (
                   <>
                     {' · '}
