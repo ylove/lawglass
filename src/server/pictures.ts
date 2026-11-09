@@ -147,7 +147,12 @@ export function createPictureService(
   // Pictures drawn before the job's budget ran out: shown for a while, never cached as final.
   const stopped = new Map<
     string,
-    { at: number; entries: PictureEntry[]; reason: StoppedReason }
+    {
+      at: number;
+      entries: PictureEntry[];
+      reason: StoppedReason;
+      tier: string;
+    }
   >();
   const reasonOf = (): StoppedReason =>
     stopCause() === 'spend_gate' ? 'spend_gate' : 'budget_exhausted';
@@ -285,6 +290,7 @@ export function createPictureService(
             at: now(),
             entries: drawn.entries.length >= kept.length ? drawn.entries : kept,
             reason: reasonOf(),
+            tier,
           });
         }
         // Throwing keeps getOrCompute from storing a partial set as the finished one.
@@ -584,7 +590,9 @@ export function createPictureService(
       halted &&
       !(
         canSpend() &&
-        (halted.reason === 'spend_gate' || now() - halted.at >= FAILED_RETRY_MS)
+        (halted.reason === 'spend_gate' ||
+          halted.tier !== currentTier() ||
+          now() - halted.at >= FAILED_RETRY_MS)
       )
     )
       return respond(halted.entries);

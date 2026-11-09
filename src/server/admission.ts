@@ -68,6 +68,17 @@ export interface JobEnd {
   job: JobContext;
   ref: string | undefined;
   outcome: JobOutcome;
+  /**
+   * What the reader actually received: `full` for `ok`; `partial` when answer text or frames
+   * were streamed before the job was aborted or failed; `none` otherwise. A reader can leave a
+   * stream just before its end, so a host should keep what it held unless this is `none`.
+   */
+  delivered: 'none' | 'partial' | 'full';
+  /**
+   * Ingest only, with `ok`: whether this admission's budget was put to use (`used`) or no
+   * generation remained to do for the reader's tier (`unused`), so the host can refund a grant.
+   */
+  granted?: 'used' | 'unused';
   error?: ErrorPayload;
 }
 

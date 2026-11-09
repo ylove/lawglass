@@ -180,6 +180,32 @@ export function topUp(live: JobScope, paid: JobScope): void {
   Object.assign(live.spent, newSpend());
 }
 
+/**
+ * A new admission pays for a (document, tier) whose scope still has budget: its budget is added
+ * to the live one, and later calls are reported under the new job and reference. Nothing a
+ * reader paid for is dropped. An unbounded scope is left as it is.
+ */
+export function addBudget(live: JobScope, paid: JobScope): void {
+  // An unbounded scope needs no grant: it keeps its first admission and its attribution.
+  if (live.budget === undefined) return;
+  const sum = (a: number | undefined, b: number | undefined) =>
+    a === undefined ? b : b === undefined ? a : a + b;
+  const tokens = sum(live.budget.tokens, paid.budget?.tokens);
+  const dollars = sum(live.budget.dollars, paid.budget?.dollars);
+  // An unbounded grant makes the scope unbounded.
+  live.budget =
+    paid.budget === undefined
+      ? undefined
+      : {
+          ...(tokens === undefined ? {} : { tokens }),
+          ...(dollars === undefined ? {} : { dollars }),
+        };
+  live.context.jobId = paid.context.jobId;
+  live.context.readerId = paid.context.readerId;
+  if (paid.context.ref === undefined) delete live.context.ref;
+  else live.context.ref = paid.context.ref;
+}
+
 export function isBudgetExhausted(error: unknown): boolean {
   return error instanceof AppError && error.code === 'BUDGET_EXHAUSTED';
 }

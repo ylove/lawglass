@@ -225,7 +225,7 @@ export function createBreakdownService(
   // Runs the job's budget cut short. Their briefs are shown for a while but never cached as final.
   const stopped = new Map<
     string,
-    { at: number; briefs: SectionBrief[]; reason: StoppedReason }
+    { at: number; briefs: SectionBrief[]; reason: StoppedReason; tier: string }
   >();
 
   /** Wake waiters when a run ends, whatever the outcome. */
@@ -315,6 +315,7 @@ export function createBreakdownService(
             ...(stored.briefs.length >= kept.length ? stored.briefs : kept),
           ],
           reason: reasonOf(stopCause()),
+          tier: currentTier(),
         });
       } else if (!stored) failedAt.set(name, now());
       else {
@@ -331,6 +332,7 @@ export function createBreakdownService(
             at: now(),
             briefs: [...(progress.get(name)?.briefs ?? [])],
             reason: reasonOf(stopCause()),
+            tier: currentTier(),
           });
         } else failedAt.set(name, now());
         onError?.(error, now() - started);
@@ -447,6 +449,8 @@ export function createBreakdownService(
         request.start !== false &&
         canSpend() &&
         (halted.reason === 'spend_gate' ||
+          // Another tier's stop is no reason for this tier, which has budget, to wait.
+          halted.tier !== currentTier() ||
           now() - halted.at >= FAILED_RETRY_MS);
       if (!mayResume) {
         const counts = {

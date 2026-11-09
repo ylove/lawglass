@@ -40,6 +40,7 @@ import {
   type BillEstimate,
   type BillFacts,
   type FeatureEstimate,
+  addBudget,
   budgetRemaining,
   topUp,
   type JobKind,
@@ -1602,12 +1603,12 @@ export function createApp(
                   const key = scopeKey(done.doc.docId, tier);
                   const live = docScopes.get(key);
                   if (live) {
-                    // A new admission pays for the document again: if the old budget is spent,
-                    // the new one takes its place (and its job id), and stopped work goes on.
-                    if (!budgetRemaining(live)) {
-                      topUp(live, scope);
-                      resumeDoc(done.doc.docId, live);
-                    }
+                    // A new admission pays for the document again. If the old budget is spent,
+                    // the new one takes its place; if not, it is added to what is left. Either
+                    // way later calls are reported under the new job, and stopped work goes on.
+                    if (!budgetRemaining(live)) topUp(live, scope);
+                    else addBudget(live, scope);
+                    resumeDoc(done.doc.docId, live);
                   } else {
                     // After a restart the host may already hold this tier's scope (and what is
                     // left of its budget); that wins over the scope of the ingest that came first.
@@ -1622,8 +1623,9 @@ export function createApp(
                         : scope;
                       installScope(key, restored);
                       // The host's saved scope may be spent; this admission just paid.
-                      if (restored !== scope && !budgetRemaining(restored)) {
-                        topUp(restored, scope);
+                      if (restored !== scope) {
+                        if (!budgetRemaining(restored)) topUp(restored, scope);
+                        else addBudget(restored, scope);
                         resumeDoc(done.doc.docId, restored);
                       }
                     }
@@ -1637,7 +1639,16 @@ export function createApp(
               });
             // The document is registered: the job did what it was admitted for, even if the
             // reader left a moment later.
-            await settlement?.end('ok', undefined, { docId: result.doc.docId });
+            // Nothing left to generate for this tier means the grant bought nothing.
+            const granted = settlement
+              ? (await generationComplete(c, result.doc.docId, scope?.models))
+                ? 'unused'
+                : 'used'
+              : undefined;
+            await settlement?.end('ok', undefined, {
+              docId: result.doc.docId,
+              ...(granted ? { granted } : {}),
+            });
             signal.throwIfAborted();
             finished = true;
             log.event(c, {
@@ -1718,8 +1729,18 @@ export function createApp(
 
     return sse<AskEvent>(
       c,
-      (emit, signal) =>
+      (rawEmit, signal) =>
         runInJob(scope, async () => {
+          // Text or a frame that reaches the reader counts as delivered, even if the stream
+          // is later cut: a host decides what a half-delivered answer is worth.
+          const emit = (event: AskEvent): void => {
+            if (
+              !signal.aborted &&
+              (event.type === 'token' || event.type === 'scenario')
+            )
+              settlement?.markDelivered();
+            rawEmit(event);
+          };
           const result = await ask(
             entry.docId,
             body.chipId === undefined

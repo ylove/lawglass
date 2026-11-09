@@ -91,7 +91,15 @@ A host that holds funds at admission cannot tie a charge to an outcome with part
 | locate, scenario | a result is produced                                                                            | any error; for a scenario also an attempt that could not be made or failed (it still answers `none`)       | the reader disconnected                                                              |
 | example          | the example is stored (a validated "no honest example" is stored too)                           | any error, including a budget stop or a closed gate                                                        | the example was already running when the admitted job began, so this job did nothing |
 
-A host can then hold at admission, capture on `ok` and release on `failed` or `aborted`. Usage is charged separately, call by call, through `onUsage`, so a failed job that spent tokens still shows them. Exempt work (a metadata chip), refused admissions and servers without an `admission` hook produce no `onJobEnd`. Background generation is never a job of its own: it runs under the ingest's scope and its `ref`.
+`JobEnd.delivered` says what the reader actually received: `full` with `ok`, `partial` when any answer text or frames were streamed before an abort or failure, `none` otherwise. A reader can stream most of an answer and close the connection just before its end, so "capture on ok, release on the rest" would give those answers away. **Recommended policy:** capture (the fixed price, or the actual usage summed from `onUsage` by `ref`) when `outcome` is `ok` or `delivered` is not `none`; release only when `delivered` is `none`.
+
+For an ingest that ends `ok`, `granted` is `used` when the admission's budget was put to work and `unused` when no generation remained to do for the reader's tier (everything was already cached), so a host can refund an unused grant.
+
+A new admission for a (document, tier) whose live scope still has budget **adds** its budget to the live one (a spent scope is replaced, as before). Later calls are reported under the new job and `ref`, and stopped work goes on. A grant is never silently dropped.
+
+A subject scenario whose model attempt failed (an outage, a closed gate, a spent budget) answers `none` but is not cached, so the next request retries and settles by its own outcome. Only a genuine "no scenario" from the model is cached.
+
+A host can then hold at admission, capture on `ok` or any delivery, and release on `failed` or `aborted` with `delivered: 'none'`. Usage is charged separately, call by call, through `onUsage`, so a failed job that spent tokens still shows them. Exempt work (a metadata chip), refused admissions and servers without an `admission` hook produce no `onJobEnd`. Background generation is never a job of its own: it runs under the ingest's scope and its `ref`.
 
 A process that dies mid-job ends it without a callback. **Hosts must expire holds.** A graceful shutdown closes connections, which ends streamed jobs as `aborted`; an example drawing in the background is not tied to a connection and is not reported if the process exits first.
 
@@ -105,6 +113,8 @@ A process that dies mid-job ends it without a callback. **Hosts must expire hold
 - `/api/config` turns off free-form questions, scenarios and locate.
 
 A read-only request runs in a scope with a zero budget on the reader's own tier (so cached results are found under the right model), which is defence in depth: even a bug that reached for a model would be refused. The hook never has a chance to fail open: a hook that throws, or returns anything but `false`, makes the request read-only. Hosts use it for signed-out guests on featured bills.
+
+**Shared stop marks.** A tier with budget does not wait out another tier's budget stop on a breakdown or pictures run the tiers share; only a stop on its own tier cools down.
 
 **Quotes name exact bytes.** `QuoteFacts` gains `contentHash`, the SHA-256 that ingest uses as the document id, so a host can bind a quote to the bytes it measured.
 

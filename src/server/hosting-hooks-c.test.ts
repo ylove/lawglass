@@ -315,6 +315,7 @@ describe('onJobEnd: exactly once per admitted job', () => {
     await drive(kind, a, docId);
     const end = await onlyEnd(kind);
     expect(end.outcome).toBe('ok');
+    expect(end.delivered).toBe('full');
     expect(end.error).toBeUndefined();
   });
 
@@ -363,6 +364,7 @@ describe('onJobEnd: exactly once per admitted job', () => {
       await pending;
       const end = await onlyEnd(kind);
       expect(end.outcome).toBe('aborted');
+      expect(end.delivered).toBe('none');
       expect(end.error).toBeUndefined();
       // The work finishing later does not end the job a second time.
       release();
@@ -370,6 +372,55 @@ describe('onJobEnd: exactly once per admitted job', () => {
       expect(endsOf(kind)).toHaveLength(1);
     },
   );
+
+  test.each(['question', 'chip'] as const)(
+    '%s: leaving after some text was streamed is aborted with delivered partial',
+    async (kind) => {
+      const a = hosted();
+      const docId = await setup(kind, a);
+      vi.spyOn(provider, 'streamText').mockImplementation(() =>
+        (async function* () {
+          yield { type: 'text' as const, text: 'The department shall ' };
+          await hold;
+        })(),
+      );
+      const controller = new AbortController();
+      const pending = drive(kind, a, docId, controller.signal).catch(
+        () => undefined,
+      );
+      await sleep(250);
+      controller.abort();
+      await pending;
+      const end = await onlyEnd(kind);
+      expect(end.outcome).toBe('aborted');
+      expect(end.delivered).toBe('partial');
+    },
+  );
+
+  test('question: a failure after some text was streamed is failed with delivered partial', async () => {
+    const a = hosted();
+    const docId = await setup('question', a);
+    vi.spyOn(provider, 'streamText').mockImplementation(() => {
+      let sent = false;
+      return {
+        [Symbol.asyncIterator]: () => ({
+          next: () => {
+            if (sent)
+              return Promise.reject(new AppError('PROVIDER_ERROR', 'x'));
+            sent = true;
+            return Promise.resolve({
+              done: false,
+              value: { type: 'text', text: 'The department ' },
+            });
+          },
+        }),
+      } as never;
+    });
+    await drive('question', a, docId).catch(() => undefined);
+    const end = await onlyEnd('question');
+    expect(end.outcome).toBe('failed');
+    expect(end.delivered).toBe('partial');
+  });
 
   test('ingest: a source that changed after admission is failed', async () => {
     let admissions = 0;
@@ -959,3 +1010,215 @@ function currentJobId(): string {
 }
 // Types used above.
 export type { LlmProvider };
+
+// ---------------------------------------------------------------------------------------------
+
+describe('a failed scenario attempt is not cached as an answer', () => {
+  const scenario = async (a: Hono, docId: string, subject: string) =>
+    (await (
+      await call(a, `/api/docs/${docId}/scenario`, { body: { subject } })
+    ).json()) as { status: string };
+
+  test('after a provider error, the next request retries and settles by its own outcome', async () => {
+    const ends: JobEnd[] = [];
+    const a = app({
+      admission: allowWithRef,
+      onJobEnd: (e) => void ends.push(e),
+    });
+    const docId = await ingestDoc(a);
+    provider.scen.behavior = () =>
+      Promise.reject(new AppError('PROVIDER_ERROR', 'down'));
+    expect((await scenario(a, docId, 'a farmer')).status).toBe('none');
+    delete provider.scen.behavior;
+    const calls = provider.scen.scenarioCalls;
+    expect((await scenario(a, docId, 'a farmer')).status).toBe('ok');
+    expect(provider.scen.scenarioCalls).toBeGreaterThan(calls);
+    expect(
+      ends.filter((e) => e.job.jobKind === 'scenario').map((e) => e.outcome),
+    ).toEqual(['failed', 'ok']);
+  });
+
+  test('a gate that closes and reopens does not poison the subject', async () => {
+    let open = true;
+    const ends: JobEnd[] = [];
+    const a = app({
+      admission: allowWithRef,
+      spendGate: () => open,
+      onJobEnd: (e) => void ends.push(e),
+    });
+    const docId = await ingestDoc(a);
+    open = false;
+    expect((await scenario(a, docId, 'a baker')).status).toBe('none');
+    open = true;
+    expect((await scenario(a, docId, 'a baker')).status).toBe('ok');
+    expect(
+      ends.filter((e) => e.job.jobKind === 'scenario').map((e) => e.outcome),
+    ).toEqual(['failed', 'ok']);
+  });
+
+  test('a genuine "no scenario" from the model is still cached', async () => {
+    const a = app({ admission: allowWithRef });
+    const docId = await ingestDoc(a);
+    provider.scen.behavior = () =>
+      Promise.resolve({
+        object: { frames: [] },
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }) as never;
+    const first = await scenario(a, docId, 'a gardener');
+    delete provider.scen.behavior;
+    const calls = provider.scen.scenarioCalls;
+    const second = await scenario(a, docId, 'a gardener');
+    expect(second.status).toBe(first.status);
+    if (first.status === 'none')
+      expect(provider.scen.scenarioCalls).toBe(calls);
+  });
+});
+
+const manyParts = (count: number): { bytes: Uint8Array } => {
+  const lines = ['Synthetic Many Parts Bill'];
+  for (let i = 1; i <= count; i++)
+    lines.push(
+      `SECTION ${String(i)}. Heading ${String(i)}`,
+      `The department shall do thing number ${String(i)} for every garden group in the state.`,
+    );
+  return { bytes: new TextEncoder().encode(`${lines.join('\n')}\n`) };
+};
+
+describe('a paid re-ingest while the live scope still has budget', () => {
+  test('its budget is added, later calls run under its ref, and its end says the grant was used', async () => {
+    env.serve(url, manyParts(40), 'text/plain');
+    const usage: UsageEvent[] = [];
+    const ends: JobEnd[] = [];
+    const a = app({
+      breakdownMaxUnits: 'all',
+      pregenerateExamples: 'off',
+      admission: (c, job) =>
+        Promise.resolve({
+          allow: true,
+          ref: `ref-${c.req.header('x-reader') ?? ''}`,
+          ...(job.kind === 'ingest'
+            ? {
+                budget: {
+                  tokens: c.req.header('x-reader') === 'alice' ? 60 : 1e9,
+                },
+              }
+            : {}),
+        }),
+      backgroundScope: () => Promise.resolve(undefined),
+      onUsage: (e) => void usage.push(e),
+      onJobEnd: (e) => void ends.push(e),
+    });
+    const docId = await ingestDoc(a, 'alice');
+    const spentByIngest = usage.reduce(
+      (n, e) => n + e.usage.inputTokens + e.usage.outputTokens,
+      0,
+    );
+    // Precondition: alice's scope still has budget, but nowhere near enough for 40 parts.
+    expect(spentByIngest).toBeLessThan(60);
+    await ingestDoc(a, 'bob');
+    const bobEnd = ends.find((e) => e.ref === 'ref-bob');
+    expect(bobEnd).toMatchObject({
+      outcome: 'ok',
+      delivered: 'full',
+      granted: 'used',
+    });
+    const mark = usage.length;
+    await call(a, `/api/docs/${docId}/breakdown`);
+    await vi.waitFor(
+      async () => {
+        const r = (await (
+          await call(a, `/api/docs/${docId}/breakdown`)
+        ).json()) as { status: string; briefs?: unknown[] };
+        expect(r.status).toBe('cached');
+        expect(r.briefs).toHaveLength(40);
+      },
+      { timeout: 20_000 },
+    );
+    const after = usage.slice(mark).filter((e) => e.feature === 'breakdown');
+    expect(after.length).toBeGreaterThanOrEqual(4);
+    expect(new Set(after.map((e) => e.job?.ref))).toEqual(new Set(['ref-bob']));
+  }, 40_000);
+
+  test('when nothing is left to generate, the end says the grant was unused', async () => {
+    const ends: JobEnd[] = [];
+    const a = app({
+      pregenerateExamples: 'off',
+      admission: allowWithRef,
+      backgroundScope: () => Promise.resolve(undefined),
+      onJobEnd: (e) => void ends.push(e),
+    });
+    const docId = await ingestDoc(a, 'alice');
+    const get = async (path: string) =>
+      (await (await call(a, `/api/docs/${docId}/${path}`)).json()) as {
+        status: string;
+      };
+    await vi.waitFor(async () => {
+      expect((await get('summary')).status).toBe('cached');
+    });
+    await vi.waitFor(async () => {
+      expect((await get('breakdown')).status).toBe('cached');
+    });
+    for (const p of ['summary/pictures', 'breakdown/pictures'])
+      await vi.waitFor(async () => {
+        expect((await get(p)).status).toMatch(/cached|none/);
+      });
+    await ingestDoc(a, 'bob');
+    expect(
+      ends.find((e) => e.ref === 'ref-ingest' && e.job.readerId === 'bob'),
+    ).toMatchObject({ outcome: 'ok', granted: 'unused' });
+  }, 40_000);
+});
+
+describe('a tier with budget does not wait behind another tier on a shared breakdown', () => {
+  test("tier A's budget stop does not hold tier B back", async () => {
+    env.serve(url, manyParts(40), 'text/plain');
+    const a = app();
+    const docId = await ingestDoc(a);
+    const made = new Map<string, BreakdownProvider>();
+    env.runtime.providerFor = (_role, model) => {
+      const name = model ?? 'default';
+      let p = made.get(name);
+      if (!p) {
+        p = breakdownProvider(scenarioProvider(new MockProvider(model)));
+        made.set(name, p);
+      }
+      return p;
+    };
+    const service = createBreakdownService(routedRuntime(env.runtime), {
+      publicMode: false,
+      waitMs: 20,
+      pregenerateExamples: 'off',
+      breakdownMaxUnits: 'all',
+    });
+    // Same answer model, different extract model: one breakdown, two tiers.
+    const scope = (extract: string, tokens: number): JobScope => ({
+      context: { readerId: extract, jobKind: 'ingest', jobId: extract, docId },
+      models: { answer: 'shared', extract },
+      budget: { tokens },
+      spent: newSpend(),
+    });
+    const poorA = scope('x-a', 30);
+    const richB = scope('x-b', 1e9);
+    const look = (s: JobScope) =>
+      runInJob(s, () => service.get(docId, { wait: false }));
+    await look(poorA);
+    await vi.waitFor(
+      async () => {
+        const r = await look(poorA);
+        expect(r.stoppedReason ?? r.progress?.stoppedReason).toBeDefined();
+      },
+      { timeout: 15_000 },
+    );
+    // No clock moves: B must not be told to wait out A's stop.
+    await look(richB);
+    await vi.waitFor(
+      async () => {
+        const r = await look(richB);
+        expect(r.status).toBe('cached');
+        expect(r.briefs).toHaveLength(40);
+        expect(r.stoppedReason).toBeUndefined();
+      },
+      { timeout: 20_000 },
+    );
+  }, 40_000);
+});

@@ -25,6 +25,7 @@ export {
   type UsageFeature,
 } from './usage.js';
 export {
+  addBudget,
   assertBudget,
   canSpend,
   spendGateOpen,

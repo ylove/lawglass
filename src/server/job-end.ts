@@ -15,10 +15,12 @@ export interface JobSettlement {
   end(
     outcome: JobOutcome,
     error?: unknown,
-    extra?: { docId?: string },
+    extra?: { docId?: string; granted?: 'used' | 'unused' },
   ): Promise<void>;
   /** `failed` with the error, or `aborted` when the request's reader had already gone. */
   fail(error: unknown, extra?: { docId?: string }): Promise<void>;
+  /** Some of the answer reached the reader (a streamed token or frame). */
+  markDelivered(): void;
 }
 
 /** A job the host admitted: the scope to run it in, and how to tell the host it ended. */
@@ -39,6 +41,7 @@ export function createSettlement(input: {
   // still name the job that was admitted.
   const job: JobContext = { ...input.context };
   let ended = false;
+  let partial = false;
   const end: JobSettlement['end'] = async (outcome, error, extra) => {
     if (ended) return;
     ended = true;
@@ -49,6 +52,8 @@ export function createSettlement(input: {
       },
       ref: job.ref,
       outcome,
+      delivered: outcome === 'ok' ? 'full' : partial ? 'partial' : 'none',
+      ...(outcome === 'ok' && extra?.granted ? { granted: extra.granted } : {}),
       ...(error === undefined || outcome === 'ok'
         ? {}
         : { error: input.payload(error) }),
@@ -60,6 +65,9 @@ export function createSettlement(input: {
     }
   };
   return {
+    markDelivered: () => {
+      partial = true;
+    },
     end,
     fail: (error, extra) =>
       input.signal?.aborted
