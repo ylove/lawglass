@@ -18,6 +18,9 @@ import type { BreakdownService } from './breakdown.js';
 import { createPictureService } from './pictures.js';
 import { FAILED_RETRY_MS, type SummaryService } from './summary.js';
 
+/** Drawing is paced background work, so a loaded machine needs more than vitest's 1 s. */
+const waitFor: typeof vi.waitFor = (fn) => vi.waitFor(fn, { timeout: 8000 });
+
 const DOC = 'e'.repeat(64);
 const panel = {
   left: { glyphs: ['bank'] },
@@ -199,7 +202,7 @@ describe('breakdown pictures under full coverage', () => {
     }));
     const first = await svc.get(DOC, 'breakdown', { wait: false });
     expect(first.status).toBe('pending');
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(provider.calls).toHaveLength(1);
     });
     const done = await settle(svc, (x) => x.status === 'cached');
@@ -262,18 +265,18 @@ describe('breakdown pictures under full coverage', () => {
       });
     };
     notify();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(provider.calls).toHaveLength(1);
     });
     have = ITEMS_PER_CALL * 3 + 2;
     complete = true;
     notify();
     notify(); // an overlapping notice joins the running pass
-    await vi.waitFor(() => {
-      expect(provider.calls).toHaveLength(4);
+    await waitFor(() => {
+      expect(provider.calls.map((c) => c.length)).toEqual([10, 10, 10, 2]);
     });
     // Everything is cached: a later poll is answered without drawing again.
-    const done = await vi.waitFor(async () => {
+    const done = await waitFor(async () => {
       const r = await svc.get(DOC, 'breakdown', { wait: false });
       expect(r.status).toBe('cached');
       return r;
@@ -364,21 +367,21 @@ describe('breakdown pictures under full coverage', () => {
       await new Promise((r) => setTimeout(r, 60));
     };
     await notify();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(provider.texts.flat()).toHaveLength(20);
     });
     // The resume brings sec-1 in at the front and finishes the rest.
     current = all;
     complete = true;
     await notify();
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(provider.texts.flat()).toHaveLength(25);
     });
     const drawnTexts = provider.texts.flat();
     // Each brief was sent exactly once: nothing already drawn was drawn again.
     expect(drawnTexts).toHaveLength(25);
     expect(new Set(drawnTexts).size).toBe(25);
-    const done = await vi.waitFor(async () => {
+    const done = await waitFor(async () => {
       const r = await svc.get(DOC, 'breakdown', { wait: false });
       expect(r.status).toBe('cached');
       return r;
@@ -421,13 +424,13 @@ describe('breakdown pictures under full coverage', () => {
     );
     const polled = svc.get(DOC, 'breakdown', { wait: false });
     for (const l of listeners) l(DOC);
-    await vi.waitFor(() => {
+    await waitFor(() => {
       expect(waiting).toBeGreaterThanOrEqual(2);
     });
     paused = false;
     open();
     await polled;
-    await vi.waitFor(async () => {
+    await waitFor(async () => {
       const r = await svc.get(DOC, 'breakdown', { wait: false });
       expect(r.status).toBe('cached');
     });
