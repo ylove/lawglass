@@ -94,9 +94,17 @@ function service(
   current: () => BreakdownResponse,
   progressive = true,
   listeners: ((docId: string) => void)[] = [],
+  extra: {
+    cache?: PictureCache;
+    knownLimit?: number;
+    registered?: () => boolean;
+  } = {},
 ) {
   const runtime = {
-    registry: { touch: vi.fn().mockResolvedValue(undefined) },
+    registry: {
+      touch: vi.fn().mockResolvedValue(undefined),
+      isRegistered: () => Promise.resolve(extra.registered?.() ?? true),
+    },
     extractProvider: provider,
   } as unknown as CliRuntime;
   const summary: SummaryService = {
@@ -119,7 +127,8 @@ function service(
     breakdown,
     now: () => clock,
     waitMs: 2000,
-    cache: new PictureCache({ dir, now: () => clock }),
+    cache: extra.cache ?? new PictureCache({ dir, now: () => clock }),
+    knownLimit: extra.knownLimit,
   });
 }
 
@@ -378,5 +387,72 @@ describe('breakdown pictures under full coverage', () => {
       Array.from({ length: 25 }, (_, i) => i),
     );
     expect(done.entries?.[0]?.sectionId).toBe('sec-1');
+  });
+
+  it('a poll and the background pass looking at the same time submit each brief once', async () => {
+    const provider = drawingProvider();
+    // Hold every cache read until both have looked, so both see the same briefs as missing.
+    const real = new PictureCache({ dir, now: () => clock });
+    let waiting = 0;
+    let open!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const originalGet = real.get.bind(real);
+    let paused = true;
+    real.get = async (key) => {
+      if (paused) {
+        waiting++;
+        await gate;
+      }
+      return originalGet(key);
+    };
+    const listeners: ((docId: string) => void)[] = [];
+    const svc = service(
+      provider,
+      () => ({
+        status: 'cached',
+        briefs: briefs(ITEMS_PER_CALL),
+        omitted: 0,
+      }),
+      true,
+      listeners,
+      { cache: real },
+    );
+    const polled = svc.get(DOC, 'breakdown', { wait: false });
+    for (const l of listeners) l(DOC);
+    await vi.waitFor(() => {
+      expect(waiting).toBeGreaterThanOrEqual(2);
+    });
+    paused = false;
+    open();
+    await polled;
+    await vi.waitFor(async () => {
+      const r = await svc.get(DOC, 'breakdown', { wait: false });
+      expect(r.status).toBe('cached');
+    });
+    expect(provider.texts.flat()).toHaveLength(ITEMS_PER_CALL);
+    expect(provider.calls).toHaveLength(1);
+  });
+
+  it("remembers a bounded number of records, and forgets a removed document's", async () => {
+    const provider = drawingProvider();
+    let registered = true;
+    const svc = service(
+      provider,
+      () => ({
+        status: 'cached',
+        briefs: briefs(ITEMS_PER_CALL * 2),
+        omitted: 0,
+      }),
+      true,
+      [],
+      { knownLimit: 12, registered: () => registered },
+    );
+    await settle(svc, (x) => x.status === 'cached');
+    expect(svc.knownRecords?.()).toBe(12);
+    registered = false;
+    await svc.get(DOC, 'breakdown', { wait: false });
+    expect(svc.knownRecords?.()).toBe(0);
   });
 });

@@ -35,6 +35,7 @@ import {
 } from '../core/picture/prompt.js';
 import { sharedLimits } from '../core/pipeline/limits.js';
 import type { BreakdownService } from './breakdown.js';
+import { LruMap } from './lru.js';
 import {
   FAILED_RETRY_MS,
   waitForSummary,
@@ -49,6 +50,8 @@ export interface PictureRequestOptions {
 }
 
 export interface PictureService {
+  /** Test seam: per-brief records remembered in memory. */
+  knownRecords?(): number;
   get(
     docId: string,
     source: PictureSource,
@@ -67,6 +70,8 @@ export interface PictureLogEvent {
 
 export interface PictureServiceOptions {
   publicMode: boolean;
+  /** Test seam: how many per-brief picture records are remembered in memory. */
+  knownLimit?: number | undefined;
   summary: SummaryService;
   breakdown: BreakdownService;
   now?: (() => number) | undefined;
@@ -90,6 +95,9 @@ type SourceItems =
       complete: boolean;
     }
   | { status: 'pending' | 'none' | 'disabled' };
+
+/** Per-brief records kept in memory (each is also on disk); the oldest are forgotten first. */
+const KNOWN_RECORDS = 10_000;
 
 export function createPictureService(
   runtime: CliRuntime,
@@ -180,6 +188,13 @@ export function createPictureService(
       if (started - at >= FAILED_RETRY_MS) failedAt.delete(other);
     running.set(name, new Set());
     const compute = async (): Promise<PictureEntry[]> => {
+      // Right before the call: another look may have drawn some of these since they were
+      // chosen, and a brief is never sent twice.
+      if (perBrief) {
+        const fresh = await stillMissing(key.docId, llm, items);
+        if (fresh.length === 0) return [];
+        items = fresh;
+      }
       // Nobody waits on this; it yields to readers' own questions (`Limits.paced`).
       let usage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
       let drawn: DrawnPictures;
@@ -266,7 +281,7 @@ export function createPictureService(
     promptVersion: PICTURE_PROMPT_VERSION,
   });
   /** Records are immutable once written, so a found one is remembered for later looks. */
-  const known = new Map<string, PictureEntry[]>();
+  const known = new LruMap<PictureEntry[]>(options.knownLimit ?? KNOWN_RECORDS);
 
   async function briefState(
     docId: string,
@@ -279,12 +294,17 @@ export function createPictureService(
   }> {
     const entries: PictureEntry[] = [];
     const missing: PictureItem[] = [];
+    // A document that was removed or evicted takes its remembered records with it.
+    const registered = await Promise.resolve()
+      .then(() => registry.isRegistered(docId))
+      .catch(() => true);
+    if (!registered) known.deletePrefix(`${docId}:`);
     for (const item of items) {
       const key = briefKey(docId, llm, item);
-      const id = pictureCacheHash(key);
+      const id = `${docId}:${pictureCacheHash(key)}`;
       const hit = known.get(id) ?? (await cache.get(key));
       if (hit) {
-        known.set(id, hit);
+        if (registered) known.set(id, hit);
         // The record may have been made when the brief sat at another position.
         entries.push(...hit.map((e) => ({ ...e, item: item.index })));
       } else missing.push(item);
@@ -307,6 +327,20 @@ export function createPictureService(
       });
     }
     return { entries, batches };
+  }
+
+  async function stillMissing(
+    docId: string,
+    llm: LlmProvider,
+    items: readonly PictureItem[],
+  ): Promise<PictureItem[]> {
+    const left: PictureItem[] = [];
+    for (const item of items) {
+      const key = briefKey(docId, llm, item);
+      const id = `${docId}:${pictureCacheHash(key)}`;
+      if (!known.get(id) && !(await cache.get(key))) left.push(item);
+    }
+    return left;
   }
 
   const isCooling = (name: string): boolean => {
@@ -353,11 +387,17 @@ export function createPictureService(
             (batch) => !tried.has(batch.name) && !isCooling(batch.name),
           );
           if (!next) break;
+          // One draw at a time per document, whoever asked for it: join the one in flight, then
+          // look again, since it may have drawn these briefs.
+          const busy = [...running].find(([name]) =>
+            name.startsWith(`${docId}:`),
+          );
+          if (busy) {
+            await waitForSummary(busy[1], 120_000);
+            continue;
+          }
           tried.add(next.name);
-          const inFlight = running.get(next.name);
-          if (inFlight) await waitForSummary(inFlight, 120_000);
-          else
-            await start(next.key, next.name, llm, next.items, undefined, true);
+          await start(next.key, next.name, llm, next.items, undefined, true);
         }
       } while (drainAgain.has(docId));
     } catch {
@@ -463,5 +503,5 @@ export function createPictureService(
     return { status: 'pending' };
   }
 
-  return { get };
+  return { get, knownRecords: () => known.size };
 }
