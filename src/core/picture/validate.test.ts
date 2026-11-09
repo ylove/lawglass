@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { PicturePanel } from '../model/index.js';
+import type { PicturePanel, StampId } from '../model/index.js';
 import type { PictureItem } from './prompt.js';
 import { validatePictures } from './validate.js';
 
@@ -96,6 +96,179 @@ describe('validatePictures', () => {
       ).toEqual([{ item: 0, reason }]);
   });
 
+  const stampCases: [StampId, string[], string[]][] = [
+    [
+      'warning',
+      [
+        'penalties',
+        'fine',
+        'fines',
+        'fined',
+        'violations',
+        'sanctions',
+        'liability',
+        'risk',
+        'revoked',
+        'revocation',
+        'suspended',
+        'prison',
+        'imprisonment',
+        'civil action',
+        'enforcement',
+        'forfeiture',
+      ],
+      ['finance', 'refined', 'privileged'],
+    ],
+    [
+      'seal',
+      [
+        'approved',
+        'licensed',
+        'chartered',
+        'certified',
+        'registered',
+        'authorized',
+        'permitted',
+        'regulated',
+        'supervised',
+        'accredited',
+      ],
+      ['disapproval', 'unregistered', 'records'],
+    ],
+    [
+      'no',
+      [
+        'no',
+        'not',
+        'non',
+        'un',
+        'never',
+        'none',
+        'nor',
+        'without',
+        'cannot',
+        "can't",
+        'isn’t',
+        'prohibited',
+        'ban',
+        'bans',
+        'banned',
+        'forbidden',
+        'bar',
+        'bars',
+        'barred',
+        'may not',
+        'shall not',
+        'must not',
+      ],
+      ['notice', 'nonprofit', 'bank', 'bargain'],
+    ],
+    [
+      'calendar',
+      [
+        'days',
+        'monthly',
+        'years',
+        'date',
+        'deadline',
+        'within',
+        'before',
+        'after',
+        'annually',
+        'quarterly',
+        'effective',
+        'period',
+        'weeks',
+        'hours',
+      ],
+      ['someday', 'updated', 'thereafter'],
+    ],
+    [
+      'clock',
+      [
+        'days',
+        'monthly',
+        'years',
+        'date',
+        'deadline',
+        'within',
+        'before',
+        'after',
+        'annually',
+        'quarterly',
+        'effective',
+        'period',
+        'weeks',
+        'hours',
+      ],
+      ['someday', 'updated', 'thereafter'],
+    ],
+    [
+      'check',
+      [
+        'may',
+        'must',
+        'shall',
+        'requires',
+        'allowed',
+        'permitted',
+        'eligible',
+        'entitled',
+      ],
+      ['mayor', 'mustard', 'shallow'],
+    ],
+  ];
+
+  for (const [glyph, supported, unsupported] of stampCases)
+    it(`requires the item's own words to support a ${glyph} stamp, even without a label`, () => {
+      const reason = (
+        text: string,
+        panel: PicturePanel = {
+          left: { glyphs: ['bank'] },
+          link: 'none',
+          stamp: { glyph },
+        },
+      ) =>
+        validatePictures({ pictures: [{ item: 0, panels: [panel] }] }, [
+          { index: 0, text },
+        ]).dropped[0]?.reason;
+
+      for (const word of supported)
+        expect(
+          reason(`Banks: ${word.toUpperCase()} [S:sec-1].`),
+          word,
+        ).toBeUndefined();
+      for (const word of unsupported)
+        expect(reason(`Banks send ${word} reports.`), word).toBe(
+          'stamp-unsupported',
+        );
+      // Citation ids and labels cannot supply the claim missing from the caption.
+      expect(reason(`Banks send reports [S:${supported[0]!}].`)).toBe(
+        'stamp-unsupported',
+      );
+      expect(
+        reason('Banks send reports.', {
+          left: { glyphs: ['bank'] },
+          link: 'none',
+          stamp: { glyph, label: supported[0]! },
+        }),
+      ).toBe('stamp-unsupported');
+      expect(reason('Banks send reports.')).toBe('stamp-unsupported');
+      expect(
+        reason('Banks send reports.', {
+          left: { glyphs: ['bank'] },
+          link: 'none',
+        }),
+      ).toBeUndefined();
+      expect(
+        reason('Banks send reports.', {
+          left: { glyphs: ['bank'] },
+          link: 'to',
+          stamp: { glyph },
+        }),
+      ).toBe('shape');
+    });
+
   it('allows a different ending of the same word, but not a short shared stem', () => {
     const label = (text: string) =>
       validatePictures(
@@ -166,7 +339,7 @@ describe('validatePictures', () => {
 
   it('closes the label holes found in review: other scripts, negation, derived words', () => {
     const items: PictureItem[] = [
-      { index: 0, text: 'Banks pay 5 dollars to the state [S:sec-1].' },
+      { index: 0, text: 'Banks must pay 5 dollars to the state [S:sec-1].' },
       { index: 1, text: 'Issuers may pay interest to holders [S:sec-2].' },
       { index: 2, text: 'No interest is paid to holders [S:sec-3].' },
       { index: 3, text: 'Approved issuers file a bill each year [S:sec-4].' },
@@ -181,7 +354,10 @@ describe('validatePictures', () => {
                 {
                   left: { glyphs: ['bank'] },
                   link: 'none',
-                  stamp: { glyph: 'check', label },
+                  stamp: {
+                    glyph: item === 2 ? 'no' : item === 3 ? 'seal' : 'check',
+                    label,
+                  },
                 },
               ],
             },
@@ -224,7 +400,7 @@ describe('validatePictures', () => {
                 {
                   left: { glyphs: ['bank'] },
                   link: 'none',
-                  stamp: { glyph: 'check', label },
+                  stamp: { glyph: item === 1 ? 'no' : 'check', label },
                 },
               ],
             },

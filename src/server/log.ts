@@ -152,6 +152,8 @@ export function createLogger(
         event: e.event,
         status: 200,
         count: e.count,
+        ...(e.retried === undefined ? {} : { retried: e.retried }),
+        ...(e.recovered === undefined ? {} : { recovered: e.recovered }),
         ms: 0,
         route: `/api/docs/:docId/${e.source}/pictures`,
         method: 'GET',

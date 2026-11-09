@@ -5,7 +5,7 @@
  * item stays text-only; nothing is repaired, because a repaired picture is one nobody checked.
  */
 import { stripCitations } from '../answer/readability.js';
-import type { PictureEntry, PicturePanel } from '../model/index.js';
+import type { PictureEntry, PicturePanel, StampId } from '../model/index.js';
 import { evaluative, markup } from '../scenario/validate.js';
 import type { PictureItem, PictureSet } from './prompt.js';
 
@@ -13,6 +13,7 @@ export type PictureDropReason =
   | 'unknown-item'
   | 'repeat'
   | 'shape'
+  | 'stamp-unsupported'
   | 'label-markup'
   | 'label-judgment'
   | 'label-words'
@@ -24,6 +25,9 @@ export interface PictureValidation {
   entries: PictureEntry[];
   dropped: { item: number; reason: PictureDropReason }[];
 }
+
+/** Validation and retry rule changes must invalidate pictures checked under older rules. */
+export const PICTURE_RULES_VERSION = 1;
 
 const WORD = /\p{L}+/gu;
 /**
@@ -55,6 +59,28 @@ const NUMBER = /\p{Nd}+(?:[.,]\p{Nd}+)*/gu;
 /** Words that turn a label into its opposite; a label may use one only if the item does. */
 const NEGATION =
   /\b(?:no|not|non|un|never|none|nor|without|cannot)\b|n['’]t\b/iu;
+/** Stamps make claims even without labels; their meanings come from the drawing prompt. */
+const STAMP_SUPPORT: Record<StampId, RegExp> = {
+  // A warning says the actor faces a penalty or risk.
+  warning:
+    /\b(?:penalt\w*|fines?|fined|violat\w*|sanction\w*|liab\w*|risk\w*|revok\w*|revoc\w*|suspen\w*|prison\w*|imprison\w*|civil action\w*|enforce\w*|forfeit\w*)\b/iu,
+  // A seal says the actor is approved, licensed or under official oversight.
+  seal: /\b(?:approv|licens|charter|certif|regist|authoriz|permit|regulat|supervis|accredit)\w*\b/iu,
+  // A no badge needs the same negation as labels, or an explicit prohibition.
+  no: new RegExp(
+    `${NEGATION.source}|\\b(?:prohibit\\w*|bans?|banned|forbid\\w*|bars?|barred|(?:may|shall|must) not)\\b`,
+    'iu',
+  ),
+  // A calendar says when the actor must act, so the item must mention time.
+  calendar:
+    /\b(?:day|month|year|date|deadline|within|before|after|annual|quarter|effective|period|week|hour)\w*\b/iu,
+  // A clock makes the same timing claim as a calendar.
+  clock:
+    /\b(?:day|month|year|date|deadline|within|before|after|annual|quarter|effective|period|week|hour)\w*\b/iu,
+  // A check says the actor may or must act, or qualifies to do so.
+  check:
+    /\b(?:may|must|shall|require\w*|allow\w*|permit\w*|eligib\w*|entitle\w*)\b/iu,
+};
 /**
  * Inflections only. "Federal" may label "federally" and "Reserves" "reserve", but derivations
  * are other words: "Billion" is not "bill", "Statement" is not "state".
@@ -133,6 +159,7 @@ function shapeIsSound(panel: PicturePanel): boolean {
 }
 
 interface ItemFacts {
+  plain: string;
   stems: ReadonlySet<string>;
   numbers: ReadonlySet<string>;
   negated: boolean;
@@ -141,6 +168,7 @@ interface ItemFacts {
 function itemFacts(text: string): ItemFacts {
   const plain = normalize(stripCitations(text));
   return {
+    plain,
     stems: new Set(words(plain).flatMap((word) => [...stems(word)])),
     numbers: new Set(plain.match(NUMBER) ?? []),
     negated: NEGATION.test(plain),
@@ -152,6 +180,8 @@ function panelReason(
   item: ItemFacts,
 ): PictureDropReason | undefined {
   if (!shapeIsSound(panel)) return 'shape';
+  if (panel.stamp && !STAMP_SUPPORT[panel.stamp.glyph].test(item.plain))
+    return 'stamp-unsupported';
   for (const raw of labels(panel)) {
     if (markup(raw)) return 'label-markup';
     // Plain characters only, and at least one letter or digit: "$" or "()" alone says nothing.

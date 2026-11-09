@@ -73,7 +73,9 @@ function service(opts: {
   publicMode?: boolean;
 }) {
   const events: PictureLogEvent[] = [];
+  const touch = vi.fn().mockResolvedValue(undefined);
   const runtime = {
+    registry: { touch },
     get extractProvider() {
       const p = opts.provider ?? scriptedObjects([{ pictures: [] }]);
       return typeof p === 'function' ? p() : p;
@@ -101,7 +103,7 @@ function service(opts: {
     log: (e) => events.push(e),
     cache: new PictureCache({ dir, now: () => clock }),
   });
-  return { svc, events };
+  return { svc, events, touch };
 }
 
 describe('summary pictures', () => {
@@ -138,7 +140,7 @@ describe('summary pictures', () => {
     expect(provider.calls[0]?.prompt).not.toContain('payment stablecoins');
     expect(provider.calls[0]?.prompt).toContain('not securities');
     expect(events).toEqual([
-      { event: 'pictures_made', source: 'summary', count: 1 },
+      { event: 'pictures_made', source: 'summary', count: 1, recovered: 0 },
     ]);
     // A later look is a cache hit: no second call.
     expect((await svc.get(DOC, 'summary')).status).toBe('cached');
@@ -177,9 +179,38 @@ describe('summary pictures', () => {
       event: 'pictures_dropped',
       source: 'summary',
       count: 1,
+      retried: 1,
     });
     expect(await svc.get(DOC, 'summary')).toEqual({ status: 'none' });
-    expect(provider.calls).toHaveLength(1);
+    expect(provider.calls).toHaveLength(2);
+  });
+
+  it('records usage from the initial draw and retry once, and logs recovery counts', async () => {
+    const provider = scriptedObjects([
+      {
+        pictures: [
+          { item: 0, panels: [{ ...issuePanel, stamp: { glyph: 'warning' } }] },
+        ],
+      },
+      { pictures: [{ item: 0, panels: [issuePanel] }] },
+    ]);
+    const { svc, events, touch } = service({
+      provider,
+      summary: { status: 'cached', answer: answer(SUMMARY_TEXT) },
+    });
+    await svc.get(DOC, 'summary', { wait: false });
+    expect((await svc.get(DOC, 'summary')).status).toBe('cached');
+    expect(touch).toHaveBeenCalledExactlyOnceWith(DOC, {
+      llmInputTokens: 20,
+      llmOutputTokens: 10,
+    });
+    expect(events).toEqual([
+      { event: 'pictures_made', source: 'summary', count: 1, recovered: 1 },
+      { event: 'pictures_dropped', source: 'summary', count: 0, retried: 1 },
+    ]);
+    expect((await svc.get(DOC, 'summary')).status).toBe('cached');
+    expect(provider.calls).toHaveLength(2);
+    expect(touch).toHaveBeenCalledTimes(1);
   });
 
   it('a failed run reads as none and is not repeated until the cool-down has passed', async () => {

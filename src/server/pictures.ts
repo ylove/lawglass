@@ -56,6 +56,8 @@ export interface PictureLogEvent {
   event: 'pictures_made' | 'pictures_dropped';
   source: PictureSource;
   count: number;
+  retried?: number;
+  recovered?: number;
 }
 
 export interface PictureServiceOptions {
@@ -165,16 +167,22 @@ export function createPictureService(
           provider: sharedLimits().paced(llm, { background: true }),
           items,
         });
+        await registry.touch(key.docId, {
+          llmInputTokens: drawn.usage.inputTokens,
+          llmOutputTokens: drawn.usage.outputTokens,
+        });
         options.log?.({
           event: 'pictures_made',
           source: key.source,
           count: drawn.entries.length,
+          recovered: drawn.recovered,
         });
-        if (drawn.dropped.length > 0)
+        if (drawn.dropped.length > 0 || drawn.retried > 0)
           options.log?.({
             event: 'pictures_dropped',
             source: key.source,
             count: drawn.dropped.length,
+            retried: drawn.retried,
           });
         return drawn.entries;
       })

@@ -75,6 +75,169 @@ describe('drawPictures', () => {
     ).toEqual([]);
   });
 
+  it('retries only rejected items once with their reasons and keeps recovered entries in order', async () => {
+    const provider = scriptedObjects([
+      {
+        pictures: [
+          { item: 0, panels: [{ ...panel, stamp: { glyph: 'warning' } }] },
+          { item: 1, panels: [panel] },
+          { item: 2, panels: [{ left: { glyphs: ['bank'] }, link: 'to' }] },
+        ],
+      },
+      {
+        pictures: [
+          { item: 2, panels: [panel] },
+          { item: 0, panels: [panel] },
+        ],
+      },
+    ]);
+    const drawn = await drawPictures({
+      provider,
+      items: [item(0), item(1), item(2), item(3)],
+    });
+    expect(provider.calls).toHaveLength(2);
+    const retry = provider.calls[1]!;
+    expect(retry.system).toBe(PICTURE_SYSTEM_PROMPT);
+    expect(retry.schemaName).toBe('pictures');
+    expect(retry.prompt).toContain('<item n="0">');
+    expect(retry.prompt).toContain('<item n="2">');
+    expect(retry.prompt).not.toContain('<item n="1">');
+    expect(retry.prompt).not.toContain('<item n="3">');
+    expect(retry.prompt).not.toContain('[S:');
+    expect(retry.prompt).toContain(
+      "Item 0: The stamp 'warning' needs a penalty or risk in the item's words.",
+    );
+    expect(retry.prompt).toContain('Item 2: A link needs a right side');
+    expect(drawn.entries.map((entry) => entry.item)).toEqual([0, 1, 2]);
+    expect(drawn.dropped).toEqual([]);
+    expect(drawn).toMatchObject({
+      retried: 2,
+      recovered: 2,
+      usage: { inputTokens: 20, outputTokens: 10 },
+    });
+  });
+
+  it('checks retry output and leaves a still-rejected item text-only', async () => {
+    const provider = scriptedObjects([
+      {
+        pictures: [
+          { item: 0, panels: [{ ...panel, stamp: { glyph: 'warning' } }] },
+        ],
+      },
+      { pictures: [{ item: 0, panels: [{ ...panel, note: '$99' }] }] },
+    ]);
+    const drawn = await drawPictures({ provider, items: [item(0)] });
+    expect(provider.calls).toHaveLength(2);
+    expect(drawn.entries).toEqual([]);
+    expect(drawn.dropped).toEqual([{ item: 0, reason: 'label-number' }]);
+    expect(drawn).toMatchObject({ retried: 1, recovered: 0 });
+  });
+
+  it.each([
+    { pictures: [] },
+    { pictures: [{ item: 0, panels: [] }] },
+    new AppError('PROVIDER_BAD_OUTPUT'),
+  ])(
+    'does not extend the retry budget when a redraw skips the item or is malformed (%j)',
+    async (redraw) => {
+      const provider = scriptedObjects([
+        {
+          pictures: [
+            { item: 0, panels: [{ ...panel, stamp: { glyph: 'warning' } }] },
+          ],
+        },
+        redraw,
+      ]);
+      const drawn = await drawPictures({ provider, items: [item(0)] });
+      expect(provider.calls).toHaveLength(2);
+      expect(drawn.entries).toEqual([]);
+      expect(drawn.dropped).toEqual([{ item: 0, reason: 'stamp-unsupported' }]);
+      expect(drawn).toMatchObject({ retried: 1, recovered: 0 });
+    },
+  );
+
+  it('keeps the malformed-output retry before the single validation retry', async () => {
+    const provider = scriptedObjects([
+      new AppError('PROVIDER_BAD_OUTPUT'),
+      {
+        pictures: [
+          { item: 0, panels: [{ ...panel, stamp: { glyph: 'warning' } }] },
+        ],
+      },
+      { pictures: [{ item: 0, panels: [panel] }] },
+    ]);
+    const drawn = await drawPictures({ provider, items: [item(0)] });
+    expect(provider.calls).toHaveLength(3);
+    expect(drawn.entries).toHaveLength(1);
+    expect(drawn).toMatchObject({
+      retried: 1,
+      recovered: 1,
+      usage: { inputTokens: 20, outputTokens: 10 },
+    });
+  });
+
+  it('does not retry unknown items or duplicates of an accepted item', async () => {
+    const provider = scriptedObjects([
+      {
+        pictures: [
+          { item: 0, panels: [panel] },
+          { item: 0, panels: [panel] },
+          { item: 9, panels: [panel] },
+        ],
+      },
+    ]);
+    const drawn = await drawPictures({ provider, items: [item(0), item(1)] });
+    expect(provider.calls).toHaveLength(1);
+    expect(drawn.entries.map((entry) => entry.item)).toEqual([0]);
+    expect(drawn).toMatchObject({ retried: 0, recovered: 0 });
+  });
+
+  it('a redraw cannot replace accepted pictures or add omitted items', async () => {
+    const provider = scriptedObjects([
+      {
+        pictures: [
+          { item: 0, panels: [{ ...panel, stamp: { glyph: 'warning' } }] },
+          { item: 1, panels: [panel] },
+        ],
+      },
+      {
+        pictures: [
+          { item: 0, panels: [panel] },
+          {
+            item: 1,
+            panels: [{ left: { glyphs: ['document'] }, link: 'none' }],
+          },
+          { item: 2, panels: [panel] },
+        ],
+      },
+    ]);
+    const drawn = await drawPictures({
+      provider,
+      items: [item(0), item(1), item(2)],
+    });
+    expect(drawn.entries.map((entry) => [entry.item, entry.panels])).toEqual([
+      [0, [panel]],
+      [1, [panel]],
+    ]);
+    expect(drawn).toMatchObject({ retried: 1, recovered: 1 });
+    expect(provider.calls).toHaveLength(2);
+  });
+
+  it('an outage during the redraw stops the run', async () => {
+    const provider = scriptedObjects([
+      {
+        pictures: [
+          { item: 0, panels: [{ ...panel, stamp: { glyph: 'warning' } }] },
+        ],
+      },
+      new AppError('PROVIDER_ERROR'),
+    ]);
+    await expect(drawPictures({ provider, items: [item(0)] })).rejects.toThrow(
+      AppError,
+    );
+    expect(provider.calls).toHaveLength(2);
+  });
+
   it('an outage stops the run', async () => {
     const provider = scriptedObjects([new AppError('PROVIDER_ERROR')]);
     await expect(drawPictures({ provider, items: [item(0)] })).rejects.toThrow(
