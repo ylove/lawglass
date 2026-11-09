@@ -16,6 +16,7 @@ import {
 import { makeSectionedText } from '../../tests/synth/index.js';
 import { envVar } from '../core/brand.js';
 import {
+  currentJob,
   newSpend,
   runInJob,
   tierName,
@@ -1004,7 +1005,6 @@ describe('example passes of two tiers interleave while one tier is spent', () =>
   }, 60_000);
 });
 
-import { currentJob } from '../core/cost/index.js';
 function currentJobId(): string {
   return currentJob()?.context.jobId ?? 'none';
 }
@@ -1220,5 +1220,143 @@ describe('a tier with budget does not wait behind another tier on a shared break
       },
       { timeout: 20_000 },
     );
+  }, 40_000);
+});
+
+describe('settling an ingest the moment it is registered', () => {
+  test('a reader who leaves while the grant is being installed still settles ok/full, and the grant is installed', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let held = false;
+    const ends: JobEnd[] = [];
+    const usage: UsageEvent[] = [];
+    const a = app({
+      admission: allowWithRef,
+      // The window after registration: the host is asked what it saved for this document.
+      backgroundScope: async () => {
+        held = true;
+        await gate;
+        return undefined;
+      },
+      onUsage: (e) => void usage.push(e),
+      onJobEnd: (e) => void ends.push(e),
+    });
+    const controller = new AbortController();
+    const res = await call(a, '/api/ingest', {
+      body: { url },
+      signal: controller.signal,
+    });
+    const reader = res.body?.getReader();
+    await vi.waitFor(() => {
+      expect(held).toBe(true);
+    });
+    controller.abort();
+    await reader?.cancel().catch(() => undefined);
+    await sleep(200);
+    expect(ends).toHaveLength(1);
+    expect(ends[0]).toMatchObject({
+      outcome: 'ok',
+      delivered: 'full',
+      granted: 'used',
+      ref: 'ref-ingest',
+    });
+    release();
+    await sleep(300);
+    expect(ends).toHaveLength(1);
+    const docs = await env.registry.list();
+    expect(docs).toHaveLength(1);
+    // The grant was installed after the reader left: the document's generation runs under it.
+    const mark = usage.length;
+    await call(a, `/api/docs/${docs[0]?.docId ?? ''}/summary`);
+    await vi.waitFor(() => {
+      expect(usage.length).toBeGreaterThan(mark);
+    });
+    expect(new Set(usage.slice(mark).map((e) => e.job?.ref))).toEqual(
+      new Set(['ref-ingest']),
+    );
+  });
+});
+
+describe('a restored scope and a new grant', () => {
+  test('are added exactly once: the saved remaining amount plus the grant', async () => {
+    const docId = await ingestDoc(app()); // an earlier process
+    const budgets: (number | undefined)[] = [];
+    const original = provider.generateObject.bind(provider);
+    vi.spyOn(provider, 'generateObject').mockImplementation((req) => {
+      if (req.schemaName === 'section_briefs')
+        budgets.push(currentJob()?.budget?.tokens);
+      return original(req);
+    });
+    const a = app({
+      admission: (_c, job) =>
+        Promise.resolve({
+          allow: true,
+          ...(job.kind === 'ingest' ? { budget: { tokens: 30 } } : {}),
+        }),
+      // The host saved 30 tokens remaining, NOT counting the grant being admitted.
+      backgroundScope: () => Promise.resolve({ budget: { tokens: 30 } }),
+    });
+    await ingestDoc(a, 'bob');
+    await call(a, `/api/docs/${docId}/breakdown`);
+    await vi.waitFor(() => {
+      expect(budgets.length).toBeGreaterThan(0);
+    });
+    expect(budgets[0]).toBe(60);
+  });
+});
+
+describe('attribution when a top-up lands during a call', () => {
+  test('a call in flight is reported under the ref it started with', async () => {
+    env.serve(url, manyParts(40), 'text/plain');
+    const usage: UsageEvent[] = [];
+    const a = app({
+      breakdownMaxUnits: 'all',
+      pregenerateExamples: 'off',
+      admission: (c, job) =>
+        Promise.resolve({
+          allow: true,
+          ref: `ref-${c.req.header('x-reader') ?? ''}`,
+          ...(job.kind === 'ingest'
+            ? {
+                budget: {
+                  tokens: c.req.header('x-reader') === 'alice' ? 60 : 1e9,
+                },
+              }
+            : {}),
+        }),
+      backgroundScope: () => Promise.resolve(undefined),
+      onUsage: (e) => void usage.push(e),
+    });
+    const docId = await ingestDoc(a, 'alice');
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let calls = 0;
+    provider.gate = () => (++calls === 2 ? gate : Promise.resolve());
+    await call(a, `/api/docs/${docId}/breakdown`);
+    await vi.waitFor(() => {
+      expect(calls).toBe(2);
+    });
+    // Bob pays while alice's second batch is in the model's hands.
+    await ingestDoc(a, 'bob');
+    release();
+    await vi.waitFor(
+      async () => {
+        const r = (await (
+          await call(a, `/api/docs/${docId}/breakdown`)
+        ).json()) as { status: string };
+        expect(r.status).toBe('cached');
+      },
+      { timeout: 20_000 },
+    );
+    const refs = usage
+      .filter((e) => e.feature === 'breakdown')
+      .map((e) => e.job?.ref);
+    expect(refs.length).toBeGreaterThanOrEqual(4);
+    expect(refs.slice(0, 2)).toEqual(['ref-alice', 'ref-alice']);
+    expect(new Set(refs.slice(2))).toEqual(new Set(['ref-bob']));
   }, 40_000);
 });

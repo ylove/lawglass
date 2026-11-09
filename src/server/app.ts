@@ -1452,6 +1452,8 @@ export function createApp(
         scope: JobScope;
         admitted?: { docId: string; doc?: NormalizedDoc };
         settlement?: JobSettlement | undefined;
+        /** Everything already exists for the reader's tier: the grant will have nothing to do. */
+        docComplete?: boolean;
       }
     | undefined
   > {
@@ -1502,6 +1504,7 @@ export function createApp(
     return {
       scope,
       admitted,
+      docComplete,
       // Only a job the host admitted has an end to report.
       settlement: options.admission ? settlementFor(c, scope) : undefined,
     };
@@ -1542,6 +1545,42 @@ export function createApp(
       host: sourceHost,
       ms: 0,
     });
+    /** Makes this admission's scope (and grant) the document's, as soon as it is registered. */
+    const installPaidScope = async (docId: string): Promise<void> => {
+      if (scope) {
+        // The first admitted ingest of a document owns its background generation.
+        scope.context.docId = docId;
+        const tier = tierName(scope.models);
+        const key = scopeKey(docId, tier);
+        const live = docScopes.get(key);
+        if (live) {
+          // A new admission pays for the document again. If the old budget is spent,
+          // the new one takes its place; if not, it is added to what is left. Either
+          // way later calls are reported under the new job, and stopped work goes on.
+          if (!budgetRemaining(live)) topUp(live, scope);
+          else addBudget(live, scope);
+          resumeDoc(docId, live);
+        } else {
+          // After a restart the host may already hold this tier's scope (and what is
+          // left of its budget); that wins over the scope of the ingest that came first.
+          const saved = await lookupSaved(docId, tier, scope.models).catch(
+            () => undefined,
+          );
+          if (!docScopes.has(key)) {
+            const restored = saved
+              ? scopeFromSaved(c, docId, saved, scope.models)
+              : scope;
+            installScope(key, restored);
+            // The host's saved scope may be spent; this admission just paid.
+            if (restored !== scope) {
+              if (!budgetRemaining(restored)) topUp(restored, scope);
+              else addBudget(restored, scope);
+              resumeDoc(docId, restored);
+            }
+          }
+        }
+      }
+    };
     return sse<IngestEvent>(
       c,
       (emit, signal) =>
@@ -1579,6 +1618,17 @@ export function createApp(
               {
                 ...(body.label === undefined ? {} : { label: body.label }),
                 signal,
+                // Settle first, then install: the reader leaving after this instant cannot
+                // turn a registered document into an `aborted` job, and the grant is the
+                // document's whether or not they stay. `granted` is what admission saw.
+                onRegistered: async (docId) => {
+                  const ended = settlement?.end('ok', undefined, {
+                    docId,
+                    granted: admission?.docComplete ? 'unused' : 'used',
+                  });
+                  await installPaidScope(docId);
+                  await ended;
+                },
                 onProgress: (p) => {
                   emit({ type: 'progress', ...stripUndefined(p) });
                 },
@@ -1596,59 +1646,14 @@ export function createApp(
               },
             )
               .then(async (done) => {
-                if (scope) {
-                  // The first admitted ingest of a document owns its background generation.
-                  scope.context.docId = done.doc.docId;
-                  const tier = tierName(scope.models);
-                  const key = scopeKey(done.doc.docId, tier);
-                  const live = docScopes.get(key);
-                  if (live) {
-                    // A new admission pays for the document again. If the old budget is spent,
-                    // the new one takes its place; if not, it is added to what is left. Either
-                    // way later calls are reported under the new job, and stopped work goes on.
-                    if (!budgetRemaining(live)) topUp(live, scope);
-                    else addBudget(live, scope);
-                    resumeDoc(done.doc.docId, live);
-                  } else {
-                    // After a restart the host may already hold this tier's scope (and what is
-                    // left of its budget); that wins over the scope of the ingest that came first.
-                    const saved = await lookupSaved(
-                      done.doc.docId,
-                      tier,
-                      scope.models,
-                    ).catch(() => undefined);
-                    if (!docScopes.has(key)) {
-                      const restored = saved
-                        ? scopeFromSaved(c, done.doc.docId, saved, scope.models)
-                        : scope;
-                      installScope(key, restored);
-                      // The host's saved scope may be spent; this admission just paid.
-                      if (restored !== scope) {
-                        if (!budgetRemaining(restored)) topUp(restored, scope);
-                        else addBudget(restored, scope);
-                        resumeDoc(done.doc.docId, restored);
-                      }
-                    }
-                  }
-                }
                 if (!signal.aborted) await rememberForReader(c, done.doc.docId);
                 return done;
               })
               .finally(() => {
                 releaseDocuments(held);
               });
-            // The document is registered: the job did what it was admitted for, even if the
-            // reader left a moment later.
-            // Nothing left to generate for this tier means the grant bought nothing.
-            const granted = settlement
-              ? (await generationComplete(c, result.doc.docId, scope?.models))
-                ? 'unused'
-                : 'used'
-              : undefined;
-            await settlement?.end('ok', undefined, {
-              docId: result.doc.docId,
-              ...(granted ? { granted } : {}),
-            });
+            // Normally settled at registration; this covers an ingest that did not call back.
+            await settlement?.end('ok', undefined, { docId: result.doc.docId });
             signal.throwIfAborted();
             finished = true;
             log.event(c, {

@@ -151,6 +151,11 @@ export interface IngestOptions {
   onDiagnostic?:
     | ((diagnostic: { event: 'metadata_failed'; code: string }) => void)
     | undefined;
+  /**
+   * Called the moment the document is registered (new, or already held), before anything else
+   * can fail or be abandoned. A host settling the job needs this instant, not the end.
+   */
+  onRegistered?: ((docId: string) => void | Promise<void>) | undefined;
   signal?: AbortSignal | undefined;
 }
 
@@ -688,6 +693,7 @@ async function ingestLocked(
   // Zero-token path: nothing to fetch-parse-embed.
   if (known && alreadyIndexed) {
     let touched = await registry.touch(docId);
+    await opts.onRegistered?.(docId);
     const attached = attachHistory(
       await registry.getDocument(docId),
       attachment,
@@ -827,6 +833,7 @@ async function ingestLocked(
     throw new AppError('BACKEND_UNAVAILABLE', undefined, { cause: error });
   }
 
+  await opts.onRegistered?.(docId);
   await enforceCap(deps, docId);
   progress({ stage: 'done' });
   return {

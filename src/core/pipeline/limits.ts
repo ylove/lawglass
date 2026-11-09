@@ -24,7 +24,12 @@ import {
   type UsageFeature,
   type UsageSink,
 } from '../cost/usage.js';
-import { assertBudget, chargeJob, currentJob } from '../cost/job.js';
+import {
+  assertBudget,
+  chargeJob,
+  currentJob,
+  type JobContext,
+} from '../cost/job.js';
 
 export const DEFAULT_MAX_CONCURRENT_INGEST = 2;
 export const DEFAULT_MAX_CONCURRENT_ASK = 4;
@@ -271,13 +276,20 @@ export class Limits {
       schemaName === 'scenario' && feature !== 'examples'
         ? 'scenario'
         : feature;
+    const startContext = (): JobContext | undefined => {
+      const job = currentJob();
+      return job ? { ...job.context } : undefined;
+    };
     // Accounting failures must not discard a paid-for model answer or cause a retry.
     const report = async (
       usage: LlmUsage,
       callFeature = feature,
       estimated = false,
+      /** Who the call was for when it STARTED: a top-up may switch the scope's payer meanwhile. */
+      started?: JobContext,
     ): Promise<void> => {
-      // Read when the call finishes, inside the async chain that made it (ADR 0018, section 5).
+      // The scope is read when the call finishes, inside the async chain that made it (ADR 0018,
+      // section 5); the context it is reported under was fixed when the call began.
       const job = currentJob();
       if (job) chargeJob(job, provider.model, usage);
       const event = {
@@ -285,7 +297,7 @@ export class Limits {
         model: provider.model,
         usage: { ...usage },
         ...(estimated ? { estimated: true } : {}),
-        ...(job ? { job: { ...job.context } } : {}),
+        ...(job ? { job: { ...(started ?? job.context) } } : {}),
       };
       try {
         await sink.record(event);
@@ -310,6 +322,7 @@ export class Limits {
       streamText: (req) => {
         assertBudget();
         this.ceiling.admit();
+        const started = startContext();
         let partial: LlmUsage | undefined;
         const stream = provider.streamText({
           ...req,
@@ -327,50 +340,63 @@ export class Limits {
               if (event.type === 'text') chars += event.text.length;
               if (event.type === 'done') {
                 finished = true;
-                await report(event.usage);
+                await report(event.usage, feature, false, started);
               }
               yield event;
             }
           } catch (error) {
             failed = true;
             if (!finished && error instanceof AppError && error.usage)
-              await report(error.usage);
-            else if (!finished && partial) await report(partial);
+              await report(error.usage, feature, false, started);
+            else if (!finished && partial)
+              await report(partial, feature, false, started);
             else if (
               !finished &&
               (chars > 0 || req.signal?.aborted || maybeBilled(error))
             )
               // A timeout or an overload mid-answer: the provider billed what it produced.
-              await report(guess(req, chars), feature, true);
+              await report(guess(req, chars), feature, true, started);
             throw error;
           } finally {
             // The reader left mid-answer: the provider billed what it had produced so far.
             if (!finished && !failed)
               await (partial
-                ? report(partial)
-                : report(guess(req, chars), feature, true));
+                ? report(partial, feature, false, started)
+                : report(guess(req, chars), feature, true, started));
           }
         })();
       },
       generateObject: async (req) => {
         assertBudget();
         this.ceiling.admit();
+        const started = startContext();
         let result;
         try {
           result = await provider.generateObject(req);
         } catch (error) {
           // A reply that arrived but was unusable (cut off, invalid) was still billed.
           if (error instanceof AppError && error.usage)
-            await report(error.usage, objectFeature(req.schemaName));
+            await report(
+              error.usage,
+              objectFeature(req.schemaName),
+              false,
+              started,
+            );
           else if (req.signal?.aborted || maybeBilled(error))
             await report(
               { inputTokens: promptTokens(req), outputTokens: req.maxTokens },
               objectFeature(req.schemaName),
               true,
+              started,
             );
           throw error;
         }
-        await report(result.usage, objectFeature(req.schemaName));
+        await report(
+          result.usage,
+          objectFeature(req.schemaName),
+          false,
+          started,
+        );
         return result;
       },
     };

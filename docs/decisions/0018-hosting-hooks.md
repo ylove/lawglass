@@ -95,7 +95,11 @@ A host that holds funds at admission cannot tie a charge to an outcome with part
 
 For an ingest that ends `ok`, `granted` is `used` when the admission's budget was put to work and `unused` when no generation remained to do for the reader's tier (everything was already cached), so a host can refund an unused grant.
 
-A new admission for a (document, tier) whose live scope still has budget **adds** its budget to the live one (a spent scope is replaced, as before). Later calls are reported under the new job and `ref`, and stopped work goes on. A grant is never silently dropped.
+An ingest is settled `ok` at the instant its document is registered, before the grant is installed or anything else is awaited. A reader who disconnects afterwards cannot turn a registered document into an `aborted` job, so a host that releases on `aborted` with `delivered: 'none'` never releases a grant the server then spends. `granted` is taken from the `docComplete` the admission already computed.
+
+A new admission for a (document, tier) whose live scope still has budget **adds** its budget to the live one (a spent scope is replaced, as before). Later calls are reported under the new job and `ref`, and stopped work goes on. A call already in flight when the top-up lands is reported under the `ref` that was current when it started. A grant is never silently dropped.
+
+**`backgroundScope` must return the remaining budget EXCLUDING any admission still in flight.** After a restart the server adds the new admission's grant to the restored scope itself, so a host that also credits the grant at admission time would have it counted twice.
 
 A subject scenario whose model attempt failed (an outage, a closed gate, a spent budget) answers `none` but is not cached, so the next request retries and settles by its own outcome. Only a genuine "no scenario" from the model is cached.
 
