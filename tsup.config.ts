@@ -1,7 +1,13 @@
 import { defineConfig } from 'tsup';
 
 export default defineConfig({
-  entry: { cli: 'src/cli/index.ts', server: 'src/server/index.ts' },
+  entry: {
+    cli: 'src/cli/index.ts',
+    server: 'src/server/index.ts',
+    // The cost calibration job (deploy/calibration). Built so the container, which prunes dev
+    // dependencies and so has no tsx, can run it; kept out of the npm package (package.json files).
+    calibrate: 'scripts/calibrate.ts',
+  },
   format: ['esm'],
   target: 'node22',
   platform: 'node',
