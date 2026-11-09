@@ -10,7 +10,7 @@ export function syntheticBill(): {
   for (let t = 1; t <= 3; t++) {
     outline.push({
       id: `title-${String(t)}`,
-      num: `${String(t)}`,
+      num: String(t),
       heading: `Title ${String(t)} ${['Farms', 'Schools', 'Roads'][t - 1] ?? ''}`,
       level: 1,
     });

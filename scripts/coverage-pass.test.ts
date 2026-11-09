@@ -29,7 +29,7 @@ function pictureProvider(refuse: ReadonlySet<number>): LlmProvider {
   return {
     id: 'anthropic',
     model: 'claude-haiku-5-5',
-    // eslint-disable-next-line require-yield -- pictures never stream
+
     async *streamText() {
       await Promise.resolve();
       throw new Error('not scripted');
@@ -95,7 +95,7 @@ describe('coverage pass against the mock provider', () => {
       server: 'http://127.0.0.1/',
       bills: [bill],
       fetch: ((input: Request | string | URL, init?: RequestInit) =>
-        app.request(input as string, init)) as typeof fetch,
+        app.request(input, init)) as typeof fetch,
       pollMs: 10,
       stallMs: 15_000,
       log: (line) => lines.push(line),
@@ -127,7 +127,7 @@ describe('coverage pass against the mock provider', () => {
       server: 'http://127.0.0.1/',
       bills: ['https://example.gov/missing.txt'],
       fetch: ((input: Request | string | URL, init?: RequestInit) =>
-        app.request(input as string, init)) as typeof fetch,
+        app.request(input, init)) as typeof fetch,
       pollMs: 5,
     });
     expect(report?.error).toBeTruthy();

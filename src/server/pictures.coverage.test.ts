@@ -43,7 +43,7 @@ function drawingProvider(fail?: () => Error | undefined) {
     id: 'anthropic',
     model: 'claude-haiku-5-5',
     calls,
-    // eslint-disable-next-line require-yield -- pictures never stream
+
     async *streamText() {
       await Promise.resolve();
       throw new Error('not scripted');
