@@ -98,6 +98,8 @@ export interface BreakdownService {
    * after the whole breakdown (#382).
    */
   readonly progressivePictures?: boolean;
+  /** Told with the document id whenever a batch of briefs lands, and when the run is whole. */
+  subscribe?(listener: (docId: string) => void): void;
 }
 
 export interface BreakdownServiceOptions {
@@ -140,6 +142,10 @@ export function createBreakdownService(
   const { registry } = runtime;
   const breakdowns = defaultBreakdownCache(registry);
   const examples = defaultExampleCache(registry, now);
+  const listeners: ((docId: string) => void)[] = [];
+  const notify = (docId: string): void => {
+    for (const listener of listeners) listener(docId);
+  };
   const unitCap = unitCapOf(
     options.breakdownMaxUnits ?? breakdownMaxUnitsFromEnv(),
   );
@@ -222,13 +228,17 @@ export function createBreakdownService(
           progress.set(name, { briefs, ...counts });
           // Under 'all', each finished batch's examples start drawing without waiting for the end.
           startPregeneration(docId, briefs, context.mode, false);
+          notify(docId);
         },
         onStopped: (reason) => {
           stopped.set(name, reason);
         },
       });
       if (!stored) failedAt.set(name, now());
-      else startPregeneration(docId, stored.briefs, stored.context);
+      else {
+        startPregeneration(docId, stored.briefs, stored.context);
+        notify(docId);
+      }
     })()
       .catch((error: unknown) => {
         failedAt.set(name, now());
@@ -303,8 +313,10 @@ export function createBreakdownService(
     const hit = await breakdowns.get(key);
     if (hit) {
       // A report-only look (pictures) must not start the examples' model calls either.
-      if (!options.publicMode && request.start !== false)
+      if (!options.publicMode && request.start !== false) {
         startPregeneration(docId, hit.briefs, hit.context);
+        notify(docId);
+      }
       const reason = examplesStopped.get(passKey(docId));
       return {
         status: 'cached',
@@ -631,5 +643,12 @@ export function createBreakdownService(
     }
   }
 
-  return { get, example, progressivePictures: isFullCoverage(unitCap) };
+  return {
+    get,
+    example,
+    progressivePictures: isFullCoverage(unitCap),
+    subscribe: (listener) => {
+      listeners.push(listener);
+    },
+  };
 }

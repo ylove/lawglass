@@ -172,13 +172,13 @@ export function createPictureService(
     llm: LlmProvider,
     items: PictureItem[],
     onError: PictureRequestOptions['onError'],
-  ): void {
+  ): Promise<void> {
     const started = now();
     // Forget cool-downs that are over, so the map holds only recent failures.
     for (const [other, at] of failedAt)
       if (started - at >= FAILED_RETRY_MS) failedAt.delete(other);
     running.set(name, new Set());
-    void cache
+    return cache
       .getOrCompute(key, async () => {
         // Nobody waits on this; it yields to readers' own questions (`Limits.paced`).
         let usage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
@@ -217,6 +217,7 @@ export function createPictureService(
           });
         return drawn.entries;
       })
+      .then(() => undefined)
       .catch((error: unknown) => {
         failedAt.set(name, now());
         // A spent job budget ends drawing for this document; nothing else is started for it.
@@ -229,6 +230,75 @@ export function createPictureService(
         for (const finish of waiters ?? []) finish();
       });
   }
+
+  /**
+   * Background drawing (#382): under full coverage the server draws each finished group of
+   * briefs without waiting for a reader. A batch finishing in the breakdown calls this; one
+   * drain runs per document, picks up groups that appeared meanwhile, draws one group at a
+   * time (paced as background work), and ends when nothing is left, a group has failed (it
+   * cools down, never retried in this pass) or the job budget is spent. The poll path above
+   * stays the same: it serves the cache or joins whatever draw is in flight.
+   */
+  const draining = new Set<string>();
+  const drainAgain = new Set<string>();
+  async function drainBackground(docId: string): Promise<void> {
+    if (options.publicMode || !options.breakdown.progressivePictures) return;
+    if (draining.has(docId)) {
+      drainAgain.add(docId);
+      return;
+    }
+    draining.add(docId);
+    try {
+      const llm = provider();
+      if (!llm) return;
+      const tried = new Set<string>();
+      do {
+        drainAgain.delete(docId);
+        for (;;) {
+          const found = await sourceItems(docId, 'breakdown');
+          if (found.status !== 'ready') break;
+          const stoppedAt = budgetStoppedAt.get(docId);
+          if (stoppedAt !== undefined && now() - stoppedAt < FAILED_RETRY_MS)
+            return;
+          const groups: PictureItem[][] = [];
+          for (let i = 0; i < found.items.length; i += ITEMS_PER_CALL)
+            groups.push(found.items.slice(i, i + ITEMS_PER_CALL));
+          const ready = found.complete
+            ? groups
+            : groups.filter((g) => g.length === ITEMS_PER_CALL);
+          let next:
+            | { key: PictureCacheKey; name: string; items: PictureItem[] }
+            | undefined;
+          for (const group of ready) {
+            const key: PictureCacheKey = {
+              docId,
+              source: 'breakdown',
+              sourceHash: pictureSourceHash(group),
+              provider: llm.id,
+              model: llm.model,
+              promptVersion: PICTURE_PROMPT_VERSION,
+            };
+            const name = `${docId}:${pictureCacheHash(key)}`;
+            if (tried.has(name) || (await cache.get(key))) continue;
+            next = { key, name, items: group };
+            break;
+          }
+          if (!next) break;
+          tried.add(next.name);
+          const inFlight = running.get(next.name);
+          if (inFlight) await waitForSummary(inFlight, 120_000);
+          else await start(next.key, next.name, llm, next.items, undefined);
+        }
+      } while (drainAgain.has(docId));
+    } catch {
+      // Pictures are an enhancement: a failure here must never reach the breakdown.
+    } finally {
+      draining.delete(docId);
+    }
+  }
+  options.breakdown.subscribe?.((docId) => {
+    void drainBackground(docId);
+  });
 
   /**
    * Full coverage (#382): pictures for a breakdown are drawn and cached in fixed groups of
@@ -310,7 +380,7 @@ export function createPictureService(
       return finish(true);
     }
     const next = todo[0];
-    if (next) start(next.key, next.name, llm, next.items, request.onError);
+    if (next) void start(next.key, next.name, llm, next.items, request.onError);
     return finish(true);
   }
 
@@ -356,7 +426,7 @@ export function createPictureService(
     if (failed !== undefined && now() - failed < FAILED_RETRY_MS)
       return { status: 'none' };
     failedAt.delete(name);
-    start(key, name, llm, found.items, request.onError);
+    void start(key, name, llm, found.items, request.onError);
     return { status: 'pending' };
   }
 

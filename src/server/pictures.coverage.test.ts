@@ -82,6 +82,7 @@ function service(
   provider: LlmProvider,
   current: () => BreakdownResponse,
   progressive = true,
+  listeners: ((docId: string) => void)[] = [],
 ) {
   const runtime = {
     registry: { touch: vi.fn().mockResolvedValue(undefined) },
@@ -94,6 +95,9 @@ function service(
     get: () => Promise.resolve(current()),
     example: () => Promise.reject(new Error('unused')),
     progressivePictures: progressive,
+    subscribe: (l) => {
+      listeners.push(l);
+    },
   };
   return createPictureService(runtime, {
     publicMode: false,
@@ -211,5 +215,75 @@ describe('breakdown pictures under full coverage', () => {
     await svc.get(DOC, 'breakdown', { wait: false });
     await svc.get(DOC, 'breakdown', { wait: false });
     expect(provider.calls).toHaveLength(calls);
+  });
+
+  it('draws every group in the background when a batch lands, with nobody polling', async () => {
+    const provider = drawingProvider();
+    let have = ITEMS_PER_CALL + 4;
+    let complete = false;
+    const listeners: ((docId: string) => void)[] = [];
+    const svc = service(
+      provider,
+      () =>
+        complete
+          ? { status: 'cached', briefs: briefs(have), omitted: 0 }
+          : { status: 'partial', briefs: briefs(have) },
+      true,
+      listeners,
+    );
+    const notify = () => {
+      listeners.forEach((l) => {
+        l(DOC);
+      });
+    };
+    notify();
+    await vi.waitFor(() => {
+      expect(provider.calls).toHaveLength(1);
+    });
+    have = ITEMS_PER_CALL * 3 + 2;
+    complete = true;
+    notify();
+    notify(); // an overlapping notice joins the running pass
+    await vi.waitFor(() => {
+      expect(provider.calls).toHaveLength(4);
+    });
+    // Everything is cached: a later poll is answered without drawing again.
+    const done = await svc.get(DOC, 'breakdown', { wait: false });
+    expect(done.status).toBe('cached');
+    expect(done.entries).toHaveLength(have);
+    expect(provider.calls).toHaveLength(4);
+  });
+
+  it('the background pass ends on a spent budget and starts nothing more', async () => {
+    let spent = false;
+    const provider = drawingProvider(() => {
+      if (!spent) return undefined;
+      const error = new AppError('RATE_LIMITED', 'budget');
+      Object.defineProperty(error, 'code', { value: 'BUDGET_EXHAUSTED' });
+      return error;
+    });
+    const listeners: ((docId: string) => void)[] = [];
+    service(
+      provider,
+      () => ({
+        status: 'cached',
+        briefs: briefs(ITEMS_PER_CALL * 3),
+        omitted: 0,
+      }),
+      true,
+      listeners,
+    );
+    spent = true;
+    listeners.forEach((l) => {
+      l(DOC);
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(provider.calls).toHaveLength(0);
+    spent = false;
+    listeners.forEach((l) => {
+      l(DOC);
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    expect(provider.calls).toHaveLength(0);
   });
 });
