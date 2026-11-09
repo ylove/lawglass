@@ -296,8 +296,24 @@ With external auth, the host serves its own landing and account pages from its m
 return a response there or call `next()` to reach the app. The default `landingPage`,
 `gatePage` and `quickstartHtml` builders are exported. `runtime.providerFor(role, model?)`
 builds a provider with the configured credentials and endpoint, without changing the defaults.
-See [ADR 0018](docs/decisions/0018-hosting-hooks.md) for the hooks and the later admission,
-usage and budget work.
+Money-free hooks for paid hosting (see [ADR 0018](docs/decisions/0018-hosting-hooks.md)):
+
+- `POST /api/quote {url}` fetches and parses a bill (no model call, nothing stored) and returns
+  `{quoteId, facts, estimates}`, one estimate per `quote.tiers` entry. Quotes live 30 minutes and
+  are rate limited per address; public mode refuses them unless `quote.allowInPublicMode`.
+- `admission(c, job)` runs before any paid model work (ingest, questions and model-backed chips,
+  locate, scenario, and examples that would be generated) and returns
+  `{allow: true, budget?}`, `{allow: false, status: 402, quote}` or a 403/429 denial. A 402
+  becomes `{error: {code: 'PAYMENT_REQUIRED'}, quote}` and the SPA shows a quote dialog; Confirm
+  resubmits with `quote.quoteId`. Include `quoteId`, `display` (price text) and `facts` in your
+  quote. A host that allows everyone has opened your model budget to everyone.
+- `onUsage(event)` receives every model call's usage with `{readerId, jobKind, jobId, docId}`,
+  including background generation, which runs under the first admitted ingest of a document.
+- A job `budget` (`{tokens?, dollars?}`) stops the job with `BUDGET_EXHAUSTED`, overshooting by
+  at most one call. Breakdown and pictures keep what they wrote.
+- `modelFor(job)` returns `{answer?, extract?}`; cache keys include the model.
+- The SPA dispatches `lawglass:event` `CustomEvent`s on `window` (name plus a few non-identifying
+  fields, never text or addresses). Nothing is sent anywhere by this repository.
 
 ### Providers, keys and backends
 

@@ -1,6 +1,6 @@
 # 0018: Hosting hooks for a separate paid product
 
-**Status:** proposed (2026-11-09), issue #383
+**Status:** accepted (2026-11-09), issue #383. Part A (auth, read access, presentation seams, pinning, packaging) and part B (quotes, admission, usage, budgets, model routing, SPA seams) are implemented.
 
 ## Context
 

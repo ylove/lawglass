@@ -5,6 +5,7 @@
 import type { Context, Hono } from 'hono';
 import type { BreakdownLog } from '../core/breakdown/generate.js';
 import type { CliRuntime } from '../cli/runtime.js';
+import { runInJob, type JobScope } from '../core/cost/index.js';
 import { AppError, isAppError } from '../core/model/index.js';
 import type { SummaryService } from './summary.js';
 import { createBreakdownService, type BreakdownService } from './breakdown.js';
@@ -40,6 +41,10 @@ export function registerBreakdownRoutes(
     summary: SummaryService;
     waitMs?: number | undefined;
     onError?: (c: Context, error: unknown, ms: number) => void;
+    /** Hosting hook: called only when an example would be generated (not on a cache hit). */
+    admitExample?:
+      | ((c: Context, docId: string) => Promise<JobScope | undefined>)
+      | undefined;
     service?: BreakdownService;
   },
 ): BreakdownService {
@@ -81,6 +86,14 @@ export function registerBreakdownRoutes(
           wait: c.req.method !== 'HEAD',
           signal: c.req.raw.signal,
           onError: (error, ms) => options.onError?.(c, error, ms),
+          ...(options.admitExample
+            ? {
+                admit: async (begin: () => void) => {
+                  const scope = await options.admitExample?.(c, docId);
+                  runInJob(scope, begin);
+                },
+              }
+            : {}),
         }),
       );
     } catch (error) {

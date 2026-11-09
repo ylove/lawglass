@@ -4,6 +4,7 @@
  * one after another, so a long breakdown never fans out into parallel calls.
  */
 import { addLlmUsage } from '../cost/usage.js';
+import { isBudgetExhausted } from '../cost/job.js';
 import {
   AppError,
   type LlmProvider,
@@ -127,7 +128,14 @@ export async function drawPictures(input: {
   for (let i = 0; i < input.items.length; i += ITEMS_PER_CALL) {
     const batch = input.items.slice(i, i + ITEMS_PER_CALL);
     // Preserve the malformed-output retry; other failures stop the run.
-    const reply = await generate(picturePrompt(batch), 2);
+    let reply: PictureSet | undefined;
+    try {
+      reply = await generate(picturePrompt(batch), 2);
+    } catch (error) {
+      // A spent job budget ends the run cleanly: the pictures already drawn are kept.
+      if (isBudgetExhausted(error)) break;
+      throw error;
+    }
     if (!reply) continue;
     const checked = validatePictures(reply, batch);
     entries.push(...checked.entries);
@@ -152,10 +160,16 @@ export async function drawPictures(input: {
         });
       retried += retryItems.length;
       // This is the one extra call for rejected items, even if its output is malformed.
-      const redrawn = await generate(
-        `${picturePrompt(retryItems)}\n\nRedraw only these items using the feedback below. Skip any item you cannot draw honestly.\n${feedback.join('\n')}`,
-        1,
-      );
+      let redrawn: PictureSet | undefined;
+      try {
+        redrawn = await generate(
+          `${picturePrompt(retryItems)}\n\nRedraw only these items using the feedback below. Skip any item you cannot draw honestly.\n${feedback.join('\n')}`,
+          1,
+        );
+      } catch (error) {
+        // The first draws are valid; keep them and stop.
+        if (!isBudgetExhausted(error)) throw error;
+      }
       if (redrawn) {
         const rechecked = validatePictures(redrawn, retryItems);
         entries.push(...rechecked.entries);

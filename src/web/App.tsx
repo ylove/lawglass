@@ -24,9 +24,11 @@ import {
 import { dataNote } from './provider-label.js';
 import { Sidebar } from './Sidebar.js';
 import { ApiError } from './sse.js';
+import { withEvents } from './events.js';
+import { QuoteDialog, withQuoteConfirmation, type QuoteView } from './quote.js';
 
 export function App({ api: provided }: { api?: ApiClient }) {
-  const api = useMemo(
+  const baseApi = useMemo(
     () =>
       provided ??
       selectApi(
@@ -34,6 +36,30 @@ export function App({ api: provided }: { api?: ApiClient }) {
         (import.meta.env as Record<string, string | undefined>).VITE_MOCK_API,
       ),
     [provided],
+  );
+  // A host's 402 asks the reader to confirm; the dialog's promise resolves with their choice.
+  const [pendingQuote, setPendingQuote] = useState<{
+    quote: QuoteView;
+    settle: (confirmed: boolean) => void;
+  } | null>(null);
+  const api = useMemo(
+    () =>
+      withEvents(
+        withQuoteConfirmation(
+          baseApi,
+          (quote) =>
+            new Promise<boolean>((resolve) => {
+              setPendingQuote({
+                quote,
+                settle: (confirmed) => {
+                  setPendingQuote(null);
+                  resolve(confirmed);
+                },
+              });
+            }),
+        ),
+      ),
+    [baseApi],
   );
   const [config, setConfig] = useState<ClientConfig | null>(null);
   const [docs, setDocs] = useState<DocSummary[]>([]);
@@ -265,6 +291,17 @@ export function App({ api: provided }: { api?: ApiClient }) {
           </p>
         </footer>
       </div>
+      {pendingQuote && (
+        <QuoteDialog
+          quote={pendingQuote.quote}
+          onConfirm={() => {
+            pendingQuote.settle(true);
+          }}
+          onCancel={() => {
+            pendingQuote.settle(false);
+          }}
+        />
+      )}
     </NavContext.Provider>
   );
 }

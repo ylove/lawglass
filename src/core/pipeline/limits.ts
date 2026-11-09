@@ -18,6 +18,7 @@ import {
   type UsageFeature,
   type UsageSink,
 } from '../cost/usage.js';
+import { assertBudget, chargeJob, currentJob } from '../cost/job.js';
 
 export const DEFAULT_MAX_CONCURRENT_INGEST = 2;
 export const DEFAULT_MAX_CONCURRENT_ASK = 4;
@@ -206,6 +207,8 @@ export class Limits {
         );
         const signal =
           signals.length > 0 ? AbortSignal.any(signals) : undefined;
+        // Refuse before queueing: a spent job must not hold a slot a reader could use.
+        assertBudget();
         const releaseBackground = background
           ? await this.background.acquire(signal)
           : undefined;
@@ -263,14 +266,24 @@ export class Limits {
       usage: LlmUsage,
       callFeature = feature,
     ): Promise<void> => {
+      // Read when the call finishes, inside the async chain that made it (ADR 0018, section 5).
+      const job = currentJob();
+      if (job) chargeJob(job, provider.model, usage);
+      const event = {
+        feature: callFeature,
+        model: provider.model,
+        usage: { ...usage },
+        ...(job ? { job: { ...job.context } } : {}),
+      };
       try {
-        await sink.record({
-          feature: callFeature,
-          model: provider.model,
-          usage: { ...usage },
-        });
+        await sink.record(event);
       } catch {
         /* The sink owns delivery/retry policy. */
+      }
+      try {
+        await job?.onUsage?.(event);
+      } catch {
+        /* The host's accounting failing must not discard a paid-for answer. */
       }
     };
     return {
@@ -283,6 +296,7 @@ export class Limits {
         return provider.model;
       },
       streamText: (req) => {
+        assertBudget();
         this.ceiling.admit();
         const stream = provider.streamText(req);
         return (async function* () {
@@ -293,6 +307,7 @@ export class Limits {
         })();
       },
       generateObject: async (req) => {
+        assertBudget();
         this.ceiling.admit();
         const result = await provider.generateObject(req);
         await report(

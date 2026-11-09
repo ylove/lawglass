@@ -6,6 +6,7 @@
  *   GET    /api/health                              -> Health
  *   GET    /api/config                              -> ClientConfig
  *   POST   /api/ingest            IngestRequest     -> SSE stream of IngestEvent
+ *   POST   /api/quote             {url}             -> {quoteId, facts, estimates} (hosting hooks)
  *   GET    /api/docs                                -> DocSummary[]
  *   GET    /api/docs/:docId                         -> DocDetail
  *   DELETE /api/docs/:docId                         -> 204
@@ -81,6 +82,8 @@ export const IngestRequest = z.object({
   label: z.string().trim().min(1).max(80).optional(),
   /** Public-mode bot check token (Turnstile stub). */
   turnstileToken: z.string().optional(),
+  /** From `POST /api/quote` or a host's 402 quote; opaque to this server's own logic (ADR 0018). */
+  quoteId: z.string().min(1).max(128).optional(),
 });
 export type IngestRequest = z.infer<typeof IngestRequest>;
 
@@ -209,6 +212,8 @@ export const AskRequest = z
     /** Freeform question; rejected in public mode. */
     question: z.string().trim().min(1).max(500).optional(),
     turnstileToken: z.string().optional(),
+    /** Echoed from a host's 402 quote when the reader confirms (ADR 0018). */
+    quoteId: z.string().min(1).max(128).optional(),
   })
   .refine((r) => (r.chipId === undefined) !== (r.question === undefined), {
     message: 'Provide exactly one of chipId or question',

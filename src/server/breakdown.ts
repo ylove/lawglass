@@ -59,6 +59,8 @@ export interface RequestOptions {
   start?: boolean;
   signal?: AbortSignal;
   onError?: (error: unknown, ms: number) => void;
+  /** Runs `begin` (which starts a paid generation) after the host admits it; throws to refuse. */
+  admit?: (begin: () => void) => Promise<void>;
 }
 
 export interface BreakdownService {
@@ -317,7 +319,13 @@ export function createBreakdownService(
       throw new AppError('PROVIDER_ERROR', 'Example is cooling down.', {
         userMessage: "Couldn't draw an example right now. Try again.",
       });
-    void startExample(docId, sectionId, name, context, request.onError);
+    const begin = (): void => {
+      // Another look may have started this run while admission was pending.
+      if (running.has(name)) return;
+      void startExample(docId, sectionId, name, context, request.onError);
+    };
+    if (request.admit) await request.admit(begin);
+    else begin();
     return { status: 'pending' };
   }
 

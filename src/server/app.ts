@@ -3,6 +3,7 @@
  * (ingest, ask, excerpts) is delegated to core/pipeline; this layer only does HTTP, SSE framing,
  * public-mode policy and error mapping.
  */
+import { randomUUID } from 'node:crypto';
 import { deleteIndexedDocument } from '../core/answer/context.js';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
@@ -28,6 +29,20 @@ import {
 import { parsePdf as defaultParsePdf } from '../core/parse/index.js';
 import { readParseLimits } from '../core/parse/limits.js';
 import { ask, ingest, sectionExcerpt } from '../core/pipeline/index.js';
+import { fetchAndParseDocument } from '../core/pipeline/ingest.js';
+import {
+  billFacts,
+  newSpend,
+  runInJob,
+  type BillEstimate,
+  type BillFacts,
+  type FeatureEstimate,
+  type JobKind,
+  type JobScope,
+  type ModelAssignment,
+  type ModelChoice,
+  type UsageEvent,
+} from '../core/cost/index.js';
 import type { RegistryEntry } from '../core/registry.js';
 import { buildDocDetail } from './doc-detail.js';
 import { CHIP_LABELS } from './chips.js';
@@ -49,6 +64,23 @@ import {
   ingestHosts,
 } from './ingest-hosts.js';
 import { createLogger, type LogWriter } from './log.js';
+import {
+  AdmissionRefused,
+  interpretAdmission,
+  type AdmissionHook,
+  type AdmissionJob,
+  type ModelForHook,
+} from './admission.js';
+import { routedRuntime } from './model-routing.js';
+import {
+  estimatesFor,
+  QuoteRequest,
+  questionEstimate,
+  quoteFacts,
+  QuoteStore,
+  quoteTiers,
+  type QuoteOptions,
+} from './quotes.js';
 import { readExamples } from './examples.js';
 import {
   isReaderId,
@@ -94,6 +126,17 @@ export interface AppOptions {
   accountUrl?: string;
   /** Pinned documents count toward capacity but are never automatically removed. */
   pinned?: (docId: string) => boolean | Promise<boolean>;
+  /**
+   * Called before any request that would start paid model work (ADR 0018, section 3). A host
+   * that returns `allow` for everyone has opened the server's model budget to every reader.
+   */
+  admission?: AdmissionHook;
+  /** Every model call's usage with its job context, including background generation. */
+  onUsage?: (event: UsageEvent) => void | Promise<void>;
+  /** Chooses the answer and extract models for a job. Cache keys include the model. */
+  modelFor?: ModelForHook;
+  /** Quote API settings and the plans admission estimates use. */
+  quote?: QuoteOptions;
   publicMode?: boolean;
   privateMode?: boolean;
   accessKey?: string;
@@ -126,7 +169,9 @@ export interface AppOptions {
 const HOUR_MS = 60 * 60 * 1000;
 const GENERIC_ERROR = 'Something went wrong. Please try again.';
 
-const STATUS: Partial<Record<AppError['code'], 400 | 403 | 404 | 429>> = {
+const STATUS: Partial<Record<AppError['code'], 400 | 402 | 403 | 404 | 429>> = {
+  PAYMENT_REQUIRED: 402,
+  BUDGET_EXHAUSTED: 403,
   INVALID_INPUT: 400,
   SSRF_BLOCKED: 400,
   UNSUPPORTED_FORMAT: 400,
@@ -150,7 +195,13 @@ function invalid(userMessage: string): AppError {
 /** Chip strategies whose answer needs no model, or only an optional one. */
 const LAZY_STRATEGIES: ReadonlySet<string> = new Set(['metadata', 'extract']);
 
-export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
+export function createApp(
+  rawRuntime: CliRuntime,
+  options: AppOptions = {},
+): Hono {
+  // With model routing, services reading `runtime.answerProvider` get the model of the job in
+  // scope (the tier an admitted ingest fixed for background generation).
+  const runtime = options.modelFor ? routedRuntime(rawRuntime) : rawRuntime;
   const publicMode = options.publicMode ?? false;
   const privateMode = options.privateMode ?? false;
   const configuredAuth: unknown = options.auth;
@@ -172,6 +223,9 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   for (const [name, hook] of Object.entries({
     canRead: options.canRead,
     pinned: options.pinned,
+    admission: options.admission,
+    onUsage: options.onUsage,
+    modelFor: options.modelFor,
     landing: options.site?.landing,
     quickstart: options.site?.quickstart,
   })) {
@@ -458,7 +512,170 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     return id;
   };
 
+  // --- hosting hooks: job scopes, admission, quotes (ADR 0018) --------------------------------
+  const hooked =
+    options.admission !== undefined ||
+    options.onUsage !== undefined ||
+    options.modelFor !== undefined;
+  const estimating =
+    options.admission !== undefined || options.modelFor !== undefined;
+  const quotes = new QuoteStore(now);
+  const quoteLimiter = new SlidingWindowLimiter(
+    options.quote?.perHour ?? 20,
+    HOUR_MS,
+    now,
+  );
+  // The scope of the first admitted ingest of each document. Background generation (summary,
+  // breakdown, pictures, pre-drawn examples) runs under it, so one budget and one tier cover it.
+  const docScopes = new Map<string, JobScope>();
+  const DOC_SCOPE_CAP = 2000;
+  const factsCache = new Map<string, BillFacts>();
+  const FACTS_CACHE_CAP = 200;
+  const readerFor = (c: Context): string => (hosted ? readerId(c) : 'local');
+
+  /** The models this server is set up with; a missing key just means the built-in defaults price it. */
+  const configuredModels = (): Partial<ModelAssignment> => {
+    const configured: Partial<ModelAssignment> = {};
+    try {
+      configured.answerModel = rawRuntime.answerProvider.model;
+    } catch {
+      /* unconfigured */
+    }
+    try {
+      configured.extractModel = rawRuntime.extractProvider.model;
+    } catch {
+      /* unconfigured */
+    }
+    return configured;
+  };
+  const tiers = (): Record<string, ModelAssignment> =>
+    quoteTiers(options.quote, configuredModels);
+  const defaultAssignment = (): ModelAssignment => firstOf(tiers());
+
+  /** A host's model choice, kept only when it is a pair of nonempty strings. */
+  const checkedChoice = (choice: unknown): ModelChoice | undefined => {
+    if (typeof choice !== 'object' || choice === null) return undefined;
+    const { answer, extract } = choice as ModelChoice;
+    const ok = (m: unknown): m is string =>
+      typeof m === 'string' && m.length > 0;
+    return {
+      ...(ok(answer) ? { answer } : {}),
+      ...(ok(extract) ? { extract } : {}),
+    };
+  };
+
+  const makeScope = (
+    c: Context,
+    job: { kind: JobKind; docId?: string | undefined },
+    extra: { budget?: JobScope['budget']; models?: ModelChoice | undefined },
+  ): JobScope => ({
+    context: {
+      readerId: readerFor(c),
+      jobKind: job.kind,
+      jobId: randomUUID(),
+      ...(job.docId === undefined ? {} : { docId: job.docId }),
+    },
+    budget: extra.budget,
+    models: extra.models,
+    prices: options.quote?.prices,
+    onUsage: options.onUsage,
+    onBudgetExhausted: (spent) => {
+      log.budgetExhausted(job.kind, spent.calls);
+    },
+    spent: newSpend(),
+  });
+
+  /** Forecasts need only the parsed document, which the registry already holds. */
+  const factsFor = async (docId: string): Promise<BillFacts> => {
+    const hit = factsCache.get(docId);
+    if (hit) return hit;
+    const doc = await runtime.registry.getDocument(docId);
+    const facts = billFacts(doc.sections);
+    if (factsCache.size >= FACTS_CACHE_CAP) evictOldest(factsCache);
+    factsCache.set(docId, facts);
+    return facts;
+  };
+
+  /** Asks the host, if it has an admission hook. A refusal throws `AdmissionRefused`. */
+  const consult = async (
+    c: Context,
+    job: AdmissionJob,
+  ): Promise<{ budget: JobScope['budget'] }> => {
+    if (!options.admission) return { budget: undefined };
+    const decision = interpretAdmission(await options.admission(c, job));
+    if (!decision.allowed) throw new AdmissionRefused(decision.response);
+    return { budget: decision.budget };
+  };
+
+  /**
+   * Admission for a question, chip, locate, scenario or example, before any model call. Returns
+   * the scope to run the work in, or undefined when no hook is installed. `exempt` work makes no
+   * model call, so it is attributed but never admitted.
+   */
+  async function admitJob(
+    c: Context,
+    job: {
+      kind: Exclude<JobKind, 'ingest'>;
+      docId: string;
+      chipId?: string | undefined;
+      quoteId?: string | undefined;
+    },
+    opts: { exempt?: boolean } = {},
+  ): Promise<JobScope | undefined> {
+    if (!hooked) return undefined;
+    // An example is drawn by the document's own tier so its cache key matches its brief's.
+    const inherited =
+      job.kind === 'example' ? docScopes.get(job.docId)?.models : undefined;
+    if (opts.exempt || !estimating)
+      return makeScope(c, job, { models: inherited });
+    const facts = await factsFor(job.docId);
+    const base = defaultAssignment();
+    const estimateFor = (models: ModelChoice | undefined): FeatureEstimate =>
+      questionEstimate(
+        facts,
+        {
+          answerModel: models?.answer ?? base.answerModel,
+          extractModel: models?.extract ?? base.extractModel,
+        },
+        options.quote,
+      );
+    const fields = {
+      kind: job.kind,
+      docId: job.docId,
+      ...(job.chipId === undefined ? {} : { chipId: job.chipId }),
+      ...(job.quoteId === undefined ? {} : { quoteId: job.quoteId }),
+    };
+    const models =
+      job.kind !== 'example' && options.modelFor
+        ? checkedChoice(
+            options.modelFor({ ...fields, estimate: estimateFor(inherited) }),
+          )
+        : inherited;
+    const { budget } = await consult(c, {
+      ...fields,
+      estimate: estimateFor(models),
+    });
+    return makeScope(c, job, { budget, models });
+  }
+
+  // Background generation runs under the first admitted ingest's scope. After a restart that
+  // scope is gone; the request that restarts generation then stands in, unbudgeted.
+  if (hooked) {
+    const inDocScope: MiddlewareHandler = (c, next) => {
+      if (c.req.method !== 'GET' && c.req.method !== 'HEAD') return next();
+      const docId = c.req.param('docId');
+      if (!docId) return next();
+      return runInJob(
+        docScopes.get(docId) ?? makeScope(c, { kind: 'ingest', docId }, {}),
+        next,
+      );
+    };
+    app.use('/api/docs/:docId', inDocScope);
+    app.use('/api/docs/:docId/*', inDocScope);
+  }
+
   app.onError((error, c) => {
+    if (error instanceof AdmissionRefused) return error.response;
     if (isAppError(error))
       return c.json(
         { error: toErrorPayload(error) },
@@ -793,6 +1010,115 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     held.ids.clear();
   };
 
+  /** The ingest fetcher: in hosted modes every hop is checked against the ingest host allowlist. */
+  const ingestFetcher = (): typeof runtime.fetcher =>
+    hosted
+      ? async (url, fetchOptions) => {
+          const validateUrl = (target: URL): void => {
+            checkIngestFetchHost(target, hosts);
+            fetchOptions?.validateUrl?.(target);
+          };
+          validateUrl(new URL(url));
+          const result = await runtime.fetcher(url, {
+            ...fetchOptions,
+            validateUrl,
+          });
+          validateUrl(new URL(result.finalUrl));
+          return result;
+        }
+      : runtime.fetcher;
+  const ingestParseLimits = () => ({
+    ...readParseLimits(publicMode),
+    ...(publicMode ? { maxPages: limits.maxPages } : {}),
+  });
+
+  /** Fetch and parse only, down the same path ingest takes: no model, no embedding, no registry. */
+  async function measure(url: string, signal: AbortSignal) {
+    const doc = await fetchAndParseDocument(
+      url,
+      {
+        fetcher: ingestFetcher(),
+        now: runtime.now,
+        parsePdf: runtime.parsePdf ?? defaultParsePdf,
+        parseLimits: ingestParseLimits(),
+      },
+      signal,
+    );
+    const facts = billFacts(doc.sections);
+    return {
+      doc,
+      publicFacts: quoteFacts(doc, facts),
+      estimates: estimatesFor(facts, tiers(), options.quote),
+    };
+  }
+
+  app.post('/api/quote', async (c) => {
+    if (publicMode && !options.quote?.allowInPublicMode)
+      throw new AppError('PUBLIC_MODE_FORBIDDEN');
+    const body = await parseBody(
+      c,
+      QuoteRequest.extend({ turnstileToken: z.string().optional() }),
+      'Enter a full web address, starting with http:// or https://.',
+    );
+    if (!/^https?:$/.test(new URL(body.url).protocol))
+      throw invalid(
+        'Enter a full web address, starting with http:// or https://.',
+      );
+    if (hosted) checkIngestHost(body.url, hosts);
+    if (publicMode) await guardPublic(c, quoteLimiter, body.turnstileToken);
+    else if (hosted && !quoteLimiter.take(clientIp(c)))
+      throw new AppError('RATE_LIMITED');
+    const measured = await measure(body.url, c.req.raw.signal);
+    const { quoteId } = quotes.add({
+      url: body.url,
+      contentHash: measured.doc.docId,
+      facts: measured.publicFacts,
+      estimates: measured.estimates,
+      readerId: readerFor(c),
+    });
+    return c.json({
+      quoteId,
+      facts: measured.publicFacts,
+      estimates: measured.estimates,
+    });
+  });
+
+  /**
+   * Admission for an ingest, new or reused. Needs the bill's size, so it fetches and parses
+   * first (or reuses the quote the reader confirmed); no model has been called yet.
+   */
+  async function admitIngest(
+    c: Context,
+    body: { url: string; quoteId?: string | undefined },
+  ): Promise<JobScope | undefined> {
+    if (!hooked) return undefined;
+    if (!estimating) return makeScope(c, { kind: 'ingest' }, {});
+    const live = quotes.get(body.quoteId, readerFor(c), body.url);
+    let docId: string;
+    let estimates: Record<string, BillEstimate>;
+    if (live) {
+      docId = live.contentHash;
+      estimates = live.estimates;
+    } else {
+      const measured = await measure(body.url, c.req.raw.signal);
+      docId = measured.doc.docId;
+      estimates = measured.estimates;
+    }
+    const first = firstOf(estimates);
+    const fields = {
+      kind: 'ingest' as const,
+      docId,
+      ...(live && body.quoteId ? { quoteId: body.quoteId } : {}),
+      estimate: first,
+      estimates,
+    };
+    const models = options.modelFor
+      ? checkedChoice(options.modelFor(fields))
+      : undefined;
+    const { budget } = await consult(c, fields);
+    return makeScope(c, { kind: 'ingest', docId }, { budget, models });
+  }
+
   app.post('/api/ingest', async (c) => {
     const body = await parseBody(
       c,
@@ -808,6 +1134,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       });
     if (hosted) checkIngestHost(body.url, hosts);
     await guardPublic(c, ingests, body.turnstileToken);
+    const scope = await admitIngest(c, body);
 
     // Resource policy reaches both the default parser and runtime-injected parsers.
     const parsePdf = runtime.parsePdf ?? defaultParsePdf;
@@ -824,109 +1151,101 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     });
     return sse<IngestEvent>(
       c,
-      async (emit, signal) => {
-        try {
-          // The holds last as long as the pipeline run, which can outlive a closed stream
-          // (it may still be waiting on a lock). The reader's list is written first, so a
-          // finished document is never both unlisted and unprotected.
-          const result = await ingest(
-            body.url,
-            {
-              backend: runtime.backend,
-              provider: runtime.extractProvider,
-              registry: runtime.registry,
-              fetcher: hosted
-                ? async (url, options) => {
-                    const validateUrl = (url: URL): void => {
-                      checkIngestFetchHost(url, hosts);
-                      options?.validateUrl?.(url);
-                    };
-                    validateUrl(new URL(url));
-                    const result = await runtime.fetcher(url, {
-                      ...options,
-                      validateUrl,
-                    });
-                    validateUrl(new URL(result.finalUrl));
-                    return result;
+      (emit, signal) =>
+        runInJob(scope, async () => {
+          try {
+            // The holds last as long as the pipeline run, which can outlive a closed stream
+            // (it may still be waiting on a lock). The reader's list is written first, so a
+            // finished document is never both unlisted and unprotected.
+            const result = await ingest(
+              body.url,
+              {
+                backend: runtime.backend,
+                provider: runtime.extractProvider,
+                registry: runtime.registry,
+                fetcher: ingestFetcher(),
+                now: runtime.now,
+                // Public servers never evict: a visitor must not push out someone else's document.
+                maxDocs: publicMode ? limits.maxDocs : runtime.maxDocs,
+                pinned: options.pinned,
+                ...(readers
+                  ? {
+                      evictionGuard: {
+                        listed: () => readers.listedDocIds(),
+                        inFlight: () => new Set(holds.keys()),
+                        neverEvictListed: publicMode,
+                      },
+                      admit: admitDocuments(held, signal),
+                    }
+                  : {}),
+                parseLimits: ingestParseLimits(),
+                parsePdf,
+                onReferenceSkip: log.referenceSkipped,
+              },
+              {
+                ...(body.label === undefined ? {} : { label: body.label }),
+                signal,
+                onProgress: (p) => {
+                  emit({ type: 'progress', ...stripUndefined(p) });
+                },
+                // The reader sees a plain note; the operator sees why (#270).
+                onDiagnostic: (d) => {
+                  log.event(c, {
+                    level: 'warn',
+                    event: d.event,
+                    status: 200,
+                    code: d.code,
+                    host: sourceHost,
+                    ms: now() - started,
+                  });
+                },
+              },
+            )
+              .then(async (done) => {
+                if (scope) {
+                  // The first admitted ingest of a document owns its background generation.
+                  scope.context.docId = done.doc.docId;
+                  if (!docScopes.has(done.doc.docId)) {
+                    if (docScopes.size >= DOC_SCOPE_CAP) evictOldest(docScopes);
+                    docScopes.set(done.doc.docId, scope);
                   }
-                : runtime.fetcher,
-              now: runtime.now,
-              // Public servers never evict: a visitor must not push out someone else's document.
-              maxDocs: publicMode ? limits.maxDocs : runtime.maxDocs,
-              pinned: options.pinned,
-              ...(readers
-                ? {
-                    evictionGuard: {
-                      listed: () => readers.listedDocIds(),
-                      inFlight: () => new Set(holds.keys()),
-                      neverEvictListed: publicMode,
-                    },
-                    admit: admitDocuments(held, signal),
-                  }
-                : {}),
-              parseLimits: {
-                ...readParseLimits(publicMode),
-                ...(publicMode ? { maxPages: limits.maxPages } : {}),
-              },
-              parsePdf,
-              onReferenceSkip: log.referenceSkipped,
-            },
-            {
-              ...(body.label === undefined ? {} : { label: body.label }),
-              signal,
-              onProgress: (p) => {
-                emit({ type: 'progress', ...stripUndefined(p) });
-              },
-              // The reader sees a plain note; the operator sees why (#270).
-              onDiagnostic: (d) => {
-                log.event(c, {
-                  level: 'warn',
-                  event: d.event,
-                  status: 200,
-                  code: d.code,
-                  host: sourceHost,
-                  ms: now() - started,
-                });
-              },
-            },
-          )
-            .then(async (done) => {
-              if (!signal.aborted) await rememberForReader(c, done.doc.docId);
-              return done;
-            })
-            .finally(() => {
-              releaseDocuments(held);
+                }
+                if (!signal.aborted) await rememberForReader(c, done.doc.docId);
+                return done;
+              })
+              .finally(() => {
+                releaseDocuments(held);
+              });
+            signal.throwIfAborted();
+            finished = true;
+            log.event(c, {
+              level: 'info',
+              event: 'ingest_finish',
+              status: 200,
+              docId: result.doc.docId,
+              host: sourceHost,
+              chunks: Object.values(result.stats.chunkCountsByType).reduce(
+                (sum, count) => sum + count,
+                0,
+              ),
+              ms: now() - started,
             });
-          signal.throwIfAborted();
-          finished = true;
-          log.event(c, {
-            level: 'info',
-            event: 'ingest_finish',
-            status: 200,
-            docId: result.doc.docId,
-            host: sourceHost,
-            chunks: Object.values(result.stats.chunkCountsByType).reduce(
-              (sum, count) => sum + count,
-              0,
-            ),
-            ms: now() - started,
-          });
-          emit({ type: 'done', doc: result.doc, stats: result.stats });
-        } catch (error) {
-          if (isAppError(error) && error.code === 'WRAPPER_PAGE') {
-            // Never auto-followed: the user picks which linked file to ingest.
-            const links = z
-              .array(CandidateLink)
-              .safeParse(error.details?.links);
-            emit({
-              type: 'candidates',
-              links: links.success ? links.data : [],
-            });
-            return;
+            emit({ type: 'done', doc: result.doc, stats: result.stats });
+          } catch (error) {
+            if (isAppError(error) && error.code === 'WRAPPER_PAGE') {
+              // Never auto-followed: the user picks which linked file to ingest.
+              const links = z
+                .array(CandidateLink)
+                .safeParse(error.details?.links);
+              emit({
+                type: 'candidates',
+                links: links.success ? links.data : [],
+              });
+              return;
+            }
+            throw error;
           }
-          throw error;
-        }
-      },
+        }),
       (error) => ({ type: 'error', error }),
       () => {
         if (!finished)
@@ -952,67 +1271,92 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       throw new AppError('PUBLIC_MODE_FORBIDDEN');
     const entry = await entryFor(c.req.param('docId'));
     await guardPublic(c, questions, body.turnstileToken);
+    const scope = await admitJob(
+      c,
+      {
+        kind: 'question',
+        docId: entry.docId,
+        chipId: body.chipId,
+        quoteId: body.quoteId,
+      },
+      // A metadata chip reads the stored document and never calls a model.
+      {
+        exempt:
+          body.chipId !== undefined &&
+          getChip(body.chipId).strategy === 'metadata',
+      },
+    );
 
     return sse<AskEvent>(
       c,
-      async (emit, signal) => {
-        const result = await ask(
-          entry.docId,
-          body.chipId === undefined
-            ? { question: body.question ?? '' }
-            : { chipId: body.chipId },
-          {
-            backend: runtime.backend,
-            // Chips that may not need the model (sponsors) or may do without it (delegations)
-            // read the key lazily. Every other request fails on a missing key before retrieval.
-            provider:
-              body.chipId !== undefined &&
-              LAZY_STRATEGIES.has(getChip(body.chipId).strategy)
-                ? lazyProvider(() => runtime.answerProvider)
-                : runtime.answerProvider,
-            registry: runtime.registry,
-            retrievalMode: runtime.retrievalMode,
-            chips: runtime.chips,
-            // A public visitor's question costs one model call, not two: no rewrite there.
-            readingLevel: publicMode ? undefined : {},
-            log: (e) => {
-              log.answerEvent(c, e, 0);
+      (emit, signal) =>
+        runInJob(scope, async () => {
+          const result = await ask(
+            entry.docId,
+            body.chipId === undefined
+              ? { question: body.question ?? '' }
+              : { chipId: body.chipId },
+            {
+              backend: runtime.backend,
+              // Chips that may not need the model (sponsors) or may do without it (delegations)
+              // read the key lazily. Every other request fails on a missing key before retrieval.
+              provider:
+                body.chipId !== undefined &&
+                LAZY_STRATEGIES.has(getChip(body.chipId).strategy)
+                  ? lazyProvider(() => runtime.answerProvider)
+                  : runtime.answerProvider,
+              registry: runtime.registry,
+              retrievalMode: runtime.retrievalMode,
+              chips: runtime.chips,
+              // A public visitor's question costs one model call, not two: no rewrite there.
+              readingLevel: publicMode ? undefined : {},
+              log: (e) => {
+                log.answerEvent(c, e, 0);
+              },
+              // Public servers make no extra model call for a visitor's story.
+              scenario: { enabled: !publicMode },
+              publicMode,
             },
-            // Public servers make no extra model call for a visitor's story.
-            scenario: { enabled: !publicMode },
-            publicMode,
-          },
-          {
-            signal,
-            deferScenario: true,
-            onToken: (text) => {
-              emit({ type: 'token', text });
+            {
+              signal,
+              deferScenario: true,
+              onToken: (text) => {
+                emit({ type: 'token', text });
+              },
             },
-          },
-        );
-        emit({
-          type: 'retrieval',
-          mode: result.mode,
-          refs: result.refs,
-          latencyMs: result.latencyMs,
-        });
-        // Event order: token* (while writing), retrieval, done, then scenario (only when one was
-        // made). The answer is complete at `done`, so it never waits for the scenario; the
-        // scenario is generated afterwards (bounded by its own timeout) and sent before the
-        // stream closes. `done.answer` carries no scenario. Clients must keep reading after
-        // `done` (#131 renders the late event).
-        emit({ type: 'done', answer: result.answer });
-        const scenario = await result.scenario;
-        if (scenario) emit({ type: 'scenario', scenario });
-      },
+          );
+          emit({
+            type: 'retrieval',
+            mode: result.mode,
+            refs: result.refs,
+            latencyMs: result.latencyMs,
+          });
+          // Event order: token* (while writing), retrieval, done, then scenario (only when one was
+          // made). The answer is complete at `done`, so it never waits for the scenario; the
+          // scenario is generated afterwards (bounded by its own timeout) and sent before the
+          // stream closes. `done.answer` carries no scenario. Clients must keep reading after
+          // `done` (#131 renders the late event).
+          emit({ type: 'done', answer: result.answer });
+          const scenario = await result.scenario;
+          if (scenario) emit({ type: 'scenario', scenario });
+        }),
       (error) => ({ type: 'error', error }),
     );
   });
 
-  registerScenarioRoute(app, runtime, { publicMode, now });
+  registerScenarioRoute(app, runtime, {
+    publicMode,
+    now,
+    admit: hooked
+      ? (c, docId) => admitJob(c, { kind: 'scenario', docId })
+      : undefined,
+  });
   registerLocateRoute(app, runtime, {
     publicMode,
     rateLimit: (c) => questions.take(clientIp(c)),
+    admit: hooked
+      ? (c, docId) => admitJob(c, { kind: 'locate', docId })
+      : undefined,
     validateUrl: hosted
       ? (url) => {
           checkIngestFetchHost(url, hosts);
@@ -1028,6 +1372,9 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     now,
     summary,
     waitMs: options.summaryWaitMs,
+    admitExample: hooked
+      ? (c, docId) => admitJob(c, { kind: 'example', docId })
+      : undefined,
     onError: (c, error, ms) => {
       log.error(c, error, ms);
     },
@@ -1057,6 +1404,20 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     app.use('*', staticAssets(options.webRoot, options.head));
 
   return app;
+}
+
+/** The first entry of a record that is known to be nonempty. */
+function firstOf<T>(record: Record<string, T>): T {
+  for (const value of Object.values(record)) return value;
+  throw new Error('Expected at least one entry.');
+}
+
+/** Maps iterate in insertion order, so this drops the entry added longest ago. */
+function evictOldest<K>(map: Map<K, unknown>): void {
+  for (const key of map.keys()) {
+    map.delete(key);
+    return;
+  }
 }
 
 function stripUndefined<T extends object>(value: T): T {

@@ -26,6 +26,8 @@ export const ERROR_CODES = {
   RATE_LIMITED: 'Too many requests. Please wait and try again.',
   PUBLIC_MODE_FORBIDDEN: 'That action is turned off on this public server.',
   DOC_CAP_REACHED: 'The document limit has been reached.',
+  PAYMENT_REQUIRED: 'This needs a confirmed quote before it can start.',
+  BUDGET_EXHAUSTED: 'This job reached its spending limit and stopped.',
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_CODES;

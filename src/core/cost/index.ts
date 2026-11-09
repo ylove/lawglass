@@ -24,3 +24,17 @@ export {
   type UsageEvent,
   type UsageFeature,
 } from './usage.js';
+export {
+  assertBudget,
+  chargeJob,
+  currentJob,
+  isBudgetExhausted,
+  newSpend,
+  runInJob,
+  type JobBudget,
+  type JobContext,
+  type JobKind,
+  type JobScope,
+  type JobSpend,
+  type ModelChoice,
+} from './job.js';

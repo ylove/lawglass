@@ -35,6 +35,7 @@ import {
 } from '../answer/regenerate.js';
 import { fleschKincaidGrade, stripCitations } from '../answer/readability.js';
 import { jsonSchema, validateObject } from '../llm/shared.js';
+import { isBudgetExhausted } from '../cost/job.js';
 import {
   AppError,
   type AnswerWarning,
@@ -257,15 +258,25 @@ export async function generateBreakdown(
     // are counted as dropped), not the whole breakdown. Anything else (a budget, an abort, a
     // provider outage) must stop the run.
     let reply: BriefBatch | undefined;
+    let budgetStop = false;
     for (let attempt = 0; attempt < 2 && !reply; attempt++) {
       try {
         reply = await call(built);
       } catch (error) {
+        // A spent job budget ends the run cleanly: the parts already written are kept.
+        if (isBudgetExhausted(error)) {
+          budgetStop = true;
+          break;
+        }
         if (!(
           error instanceof AppError && error.code === 'PROVIDER_BAD_OUTPUT'
         ))
           throw error;
       }
+    }
+    if (budgetStop) {
+      dropped += input.units.length - i;
+      break;
     }
     if (!reply) {
       dropped += batch.length;

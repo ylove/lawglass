@@ -3,7 +3,8 @@
  * Kept out of app.ts, which several other changes are editing; app.ts registers it with one line.
  */
 import { join } from 'node:path';
-import type { Hono } from 'hono';
+import type { Context, Hono } from 'hono';
+import { runInJob, type JobScope } from '../core/cost/index.js';
 import type { CliRuntime } from '../cli/runtime.js';
 import { AnswerCache } from '../core/answer-cache.js';
 import {
@@ -17,7 +18,14 @@ import { summaryCacheKey } from './summary.js';
 export function registerScenarioRoute(
   app: Hono,
   runtime: CliRuntime,
-  options: { publicMode: boolean; now?: (() => number) | undefined },
+  options: {
+    publicMode: boolean;
+    now?: (() => number) | undefined;
+    /** Hosting hook: admission before the model call; returns the job scope to run in. */
+    admit?:
+      | ((c: Context, docId: string) => Promise<JobScope | undefined>)
+      | undefined;
+  },
 ): void {
   app.post('/api/docs/:docId/scenario', async (c) => {
     // Public servers never start a model call for a visitor, so there is nothing to serve.
@@ -35,28 +43,31 @@ export function registerScenarioRoute(
       (e) => e.docId === docId,
     );
     if (!known) throw new AppError('DOC_NOT_FOUND');
-    const provider = runtime.answerProvider;
+    const scope = await options.admit?.(c, docId);
 
     const answers = new AnswerCache({
       dir: join(runtime.registry.configDir, 'cache', 'answers'),
     });
-    const result = await runScenario(docId, parsed.data.subject, {
-      backend: runtime.backend,
-      provider,
-      registry: runtime.registry,
-      retrievalMode: runtime.retrievalMode,
-      now: options.now,
-      signal: c.req.raw.signal,
-      // Passages the cached summary cited anchor the example in what the reader already saw.
-      summaryChunkIds: async () => {
-        const summary = await answers.get(
-          await summaryCacheKey(runtime, docId),
-        );
-        return (summary?.citations ?? [])
-          .filter((citation) => citation.valid)
-          .flatMap((citation) => citation.chunkIds);
-      },
-    });
+    const result = await runInJob(scope, () =>
+      runScenario(docId, parsed.data.subject, {
+        backend: runtime.backend,
+        // Read inside the job scope, so a routed model applies.
+        provider: runtime.answerProvider,
+        registry: runtime.registry,
+        retrievalMode: runtime.retrievalMode,
+        now: options.now,
+        signal: c.req.raw.signal,
+        // Passages the cached summary cited anchor the example in what the reader already saw.
+        summaryChunkIds: async () => {
+          const summary = await answers.get(
+            await summaryCacheKey(runtime, docId),
+          );
+          return (summary?.citations ?? [])
+            .filter((citation) => citation.valid)
+            .flatMap((citation) => citation.chunkIds);
+        },
+      }),
+    );
     return c.json(result);
   });
 }
