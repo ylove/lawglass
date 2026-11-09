@@ -43,7 +43,7 @@ function features(): Feature[] {
       title: 'In brief, in pictures',
       body: "Each main part of a bill becomes a small picture: who acts, what moves, what is required or not allowed. The bill's own words sit underneath, so nothing is left to the imagination.",
       bullets: [
-        'Made for readers of every level',
+        'Each main part broken out into its own picture',
         "Picture labels use only the sentence's own words",
         'Every point links to the text behind it',
       ],
@@ -54,7 +54,7 @@ function features(): Feature[] {
       title: 'Section by section',
       body: 'A plain brief of what each part of the bill does, with an example of how it could affect one person or business.',
       bullets: [
-        'Briefs above an 8th-grade level are rewritten',
+        'Every section broken down into a few plain sentences',
         'Examples are clearly labelled as made up',
         'Cited to the section they describe',
       ],

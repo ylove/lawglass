@@ -2,7 +2,14 @@ import * as fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import {
+  afterEach,
+  beforeEach,
+  expect,
+  test,
+  vi,
+  type MockInstance,
+} from 'vitest';
 import { AppError } from '../model/index.js';
 import { DEFAULT_MAX_BYTES, documentId } from './cache.js';
 import { readLocalFile } from './local-file.js';
@@ -83,10 +90,16 @@ test('directories and non-files are rejected before reading', async () => {
     userMessage: expect.stringContaining('directory') as string,
   });
   const path = await file();
-  const info = await fs.stat(path);
-  vi.spyOn(fs, 'stat').mockResolvedValueOnce(
-    Object.assign(info, { isFile: () => false }),
-  );
+  // The check runs on the opened handle (fstat), so make the handle report a non-file.
+  const realOpen = fs.open.bind(fs);
+  vi.spyOn(fs, 'open').mockImplementationOnce(async (...args) => {
+    const handle = await realOpen(...args);
+    const info = await handle.stat();
+    vi.spyOn(handle, 'stat').mockResolvedValueOnce(
+      Object.assign(info, { isFile: () => false }),
+    );
+    return handle;
+  });
   await expect(readLocalFile(path)).rejects.toMatchObject({
     userMessage: expect.stringContaining('not a regular file') as string,
   });
@@ -104,16 +117,22 @@ test('an unreadable file has a friendly AppError', async () => {
   });
 });
 
-test('the default size cap matches safeFetch and is checked before open', async () => {
+test('the default size cap matches safeFetch and is checked before any read', async () => {
   const path = await file();
   const handle = await fs.open(path, 'r+');
   await handle.truncate(DEFAULT_MAX_BYTES + 1);
   await handle.close();
-  const open = vi.spyOn(fs, 'open').mockClear();
+  const realOpen = fs.open.bind(fs);
+  let read: MockInstance | undefined;
+  vi.spyOn(fs, 'open').mockImplementationOnce(async (...args) => {
+    const handle = await realOpen(...args);
+    read = vi.spyOn(handle, 'read');
+    return handle;
+  });
   await expect(readLocalFile(path)).rejects.toMatchObject({
     code: 'TOO_LARGE',
   });
-  expect(open).not.toHaveBeenCalled();
+  expect(read?.mock.calls).toEqual([]);
 });
 
 test('files exactly at a custom cap are allowed', async () => {

@@ -13,6 +13,7 @@ import {
   type SummaryResponse,
 } from '../core/model/index.js';
 import { PictureCache } from '../core/picture/cache.js';
+import { ITEMS_PER_CALL } from '../core/picture/prompt.js';
 import { resetSharedLimits } from '../core/pipeline/limits.js';
 import type { BreakdownService } from './breakdown.js';
 import { createPictureService, type PictureLogEvent } from './pictures.js';
@@ -73,9 +74,9 @@ function service(opts: {
   publicMode?: boolean;
 }) {
   const events: PictureLogEvent[] = [];
-  const usage = vi.fn().mockResolvedValue(undefined);
+  const touch = vi.fn().mockResolvedValue(undefined);
   const runtime = {
-    registry: { touch: usage },
+    registry: { touch },
     get extractProvider() {
       const p = opts.provider ?? scriptedObjects([{ pictures: [] }]);
       return typeof p === 'function' ? p() : p;
@@ -103,7 +104,7 @@ function service(opts: {
     log: (e) => events.push(e),
     cache: new PictureCache({ dir, now: () => clock }),
   });
-  return { svc, events, usage };
+  return { svc, events, touch, usage: touch };
 }
 
 describe('summary pictures', () => {
@@ -140,7 +141,7 @@ describe('summary pictures', () => {
     expect(provider.calls[0]?.prompt).not.toContain('payment stablecoins');
     expect(provider.calls[0]?.prompt).toContain('not securities');
     expect(events).toEqual([
-      { event: 'pictures_made', source: 'summary', count: 1 },
+      { event: 'pictures_made', source: 'summary', count: 1, recovered: 0 },
     ]);
     // A later look is a cache hit: no second call.
     expect((await svc.get(DOC, 'summary')).status).toBe('cached');
@@ -185,9 +186,40 @@ describe('summary pictures', () => {
       event: 'pictures_dropped',
       source: 'summary',
       count: 1,
+      retried: 1,
     });
     expect(await svc.get(DOC, 'summary')).toEqual({ status: 'none' });
-    expect(provider.calls).toHaveLength(1);
+    expect(provider.calls).toHaveLength(2);
+  });
+
+  it('records usage from the initial draw and retry once, and logs recovery counts', async () => {
+    const provider = scriptedObjects([
+      {
+        pictures: [
+          { item: 0, panels: [{ ...issuePanel, stamp: { glyph: 'warning' } }] },
+        ],
+      },
+      { pictures: [{ item: 0, panels: [issuePanel] }] },
+    ]);
+    const { svc, events, touch } = service({
+      provider,
+      summary: { status: 'cached', answer: answer(SUMMARY_TEXT) },
+    });
+    await svc.get(DOC, 'summary', { wait: false });
+    expect((await svc.get(DOC, 'summary')).status).toBe('cached');
+    expect(touch).toHaveBeenCalledExactlyOnceWith(DOC, {
+      llmInputTokens: 20,
+      llmOutputTokens: 10,
+      llmCacheReadTokens: 0,
+      llmCacheWriteTokens: 0,
+    });
+    expect(events).toEqual([
+      { event: 'pictures_made', source: 'summary', count: 1, recovered: 1 },
+      { event: 'pictures_dropped', source: 'summary', count: 0, retried: 1 },
+    ]);
+    expect((await svc.get(DOC, 'summary')).status).toBe('cached');
+    expect(provider.calls).toHaveLength(2);
+    expect(touch).toHaveBeenCalledTimes(1);
   });
 
   it('a failed run reads as none and is not repeated until the cool-down has passed', async () => {
@@ -209,6 +241,117 @@ describe('summary pictures', () => {
     );
     await vi.waitFor(() => {
       expect(provider.calls).toHaveLength(2);
+    });
+  });
+
+  it.each([
+    new AppError('PROVIDER_ERROR'),
+    new AppError('RATE_LIMITED'),
+    new DOMException('Aborted', 'AbortError'),
+  ])('records completed call usage when a redraw throws: %s', async (error) => {
+    const provider = scriptedObjects([
+      {
+        pictures: [
+          { item: 0, panels: [{ ...issuePanel, stamp: { glyph: 'warning' } }] },
+        ],
+      },
+      error,
+    ]);
+    const onError = vi.fn();
+    const { svc, touch } = service({
+      provider,
+      summary: { status: 'cached', answer: answer(SUMMARY_TEXT) },
+    });
+    await svc.get(DOC, 'summary', { wait: false, onError });
+    await vi.waitFor(() => {
+      expect(onError).toHaveBeenCalledExactlyOnceWith(error, 0);
+    });
+    expect(touch).toHaveBeenCalledExactlyOnceWith(DOC, {
+      llmInputTokens: 10,
+      llmOutputTokens: 5,
+      llmCacheReadTokens: 0,
+      llmCacheWriteTokens: 0,
+    });
+    expect(await svc.get(DOC, 'summary')).toEqual({ status: 'none' });
+  });
+
+  it('records earlier batches when a later batch fails', async () => {
+    const error = new AppError('PROVIDER_ERROR');
+    const provider = scriptedObjects([{ pictures: [] }, error]);
+    const { svc, touch } = service({
+      provider,
+      breakdown: {
+        status: 'cached',
+        omitted: 0,
+        briefs: Array.from({ length: ITEMS_PER_CALL + 1 }, (_, i) =>
+          brief(`sec-${String(i)}`, 'Banks report.'),
+        ),
+      },
+    });
+    const onError = vi.fn();
+    await svc.get(DOC, 'breakdown', { wait: false, onError });
+    await vi.waitFor(() => {
+      expect(onError).toHaveBeenCalledExactlyOnceWith(error, 0);
+    });
+    expect(touch).toHaveBeenCalledExactlyOnceWith(DOC, {
+      llmInputTokens: 10,
+      llmOutputTokens: 5,
+      llmCacheReadTokens: 0,
+      llmCacheWriteTokens: 0,
+    });
+  });
+
+  it('logs a registry failure and still caches and serves drawn entries', async () => {
+    const provider = scriptedObjects([
+      { pictures: [{ item: 0, panels: [issuePanel] }] },
+    ]);
+    const { svc, touch } = service({
+      provider,
+      summary: { status: 'cached', answer: answer(SUMMARY_TEXT) },
+    });
+    const error = new Error('Registry unavailable');
+    touch.mockRejectedValue(error);
+    const onError = vi.fn();
+    await svc.get(DOC, 'summary', { wait: false, onError });
+    const done = await svc.get(DOC, 'summary');
+    expect(done.status).toBe('cached');
+    expect(done.entries).toHaveLength(1);
+    expect(onError).toHaveBeenCalledExactlyOnceWith(error, 0);
+    expect((await svc.get(DOC, 'summary')).status).toBe('cached');
+    expect(provider.calls).toHaveLength(1);
+    expect(touch).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs a registry failure without hiding the original drawing failure', async () => {
+    const error = new AppError('PROVIDER_ERROR');
+    const registryError = new Error('Registry unavailable');
+    const { svc, touch } = service({
+      provider: scriptedObjects([
+        {
+          pictures: [
+            {
+              item: 0,
+              panels: [{ ...issuePanel, stamp: { glyph: 'warning' } }],
+            },
+          ],
+        },
+        error,
+      ]),
+      summary: { status: 'cached', answer: answer(SUMMARY_TEXT) },
+    });
+    touch.mockRejectedValue(registryError);
+    const onError = vi.fn();
+    await svc.get(DOC, 'summary', { wait: false, onError });
+    await vi.waitFor(() => {
+      expect(onError).toHaveBeenCalledTimes(2);
+    });
+    expect(onError).toHaveBeenNthCalledWith(1, registryError, 0);
+    expect(onError).toHaveBeenNthCalledWith(2, error, 0);
+    expect(touch).toHaveBeenCalledExactlyOnceWith(DOC, {
+      llmInputTokens: 10,
+      llmOutputTokens: 5,
+      llmCacheReadTokens: 0,
+      llmCacheWriteTokens: 0,
     });
   });
 

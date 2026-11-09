@@ -18,13 +18,17 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { BRAND, envVar } from '../src/core/brand.js';
+import { READER_COOKIE } from '../src/server/readers.js';
 import { sessionCookieName } from '../src/server/session.js';
 
 const PORT = 18_080;
 const BASE = `http://127.0.0.1:${String(PORT)}`;
 const SAMPLE_BILL =
   'https://www.congress.gov/bill/119th-congress/senate-bill/202';
-const OUT_OF_SCOPE_BILL = 'https://pub.njleg.gov/Bills/2024/S0500/1_I1.HTM';
+// A state Lawglass does not read yet (see src/server/ingest-hosts.ts). Do not use a New Jersey
+// or New York host here: both are allowed since v1.1.
+const OUT_OF_SCOPE_BILL =
+  'https://capitol.texas.gov/BillLookup/Text.aspx?LegSess=89R&Bill=SB1';
 
 /** The `name=value` pair of the session cookie in a Set-Cookie header, or undefined. */
 export function sessionCookie(setCookie: string | null): string | undefined {
@@ -33,6 +37,40 @@ export function sessionCookie(setCookie: string | null): string | undefined {
   return pair?.startsWith(`${sessionCookieName(8080, true)}=`)
     ? pair
     : undefined;
+}
+
+/**
+ * The cookies a browser would hold: the session cookie from the key exchange and the reader
+ * cookie the server issues on the first /api call. The reader cookie decides which documents
+ * /api/docs lists (ADR 0016), so every request after the first must send it back.
+ */
+export class CookieJar {
+  private readonly pairs = new Map<string, string>();
+
+  /** Remember every cookie a response sets. */
+  keep(response: Response): void {
+    for (const header of response.headers.getSetCookie()) {
+      const pair = header.split(';')[0]?.trim() ?? '';
+      const eq = pair.indexOf('=');
+      if (eq > 0) this.pairs.set(pair.slice(0, eq), pair.slice(eq + 1));
+    }
+  }
+
+  /** Add a ready-made `name=value` pair, e.g. the session cookie. */
+  set(pair: string): void {
+    const eq = pair.indexOf('=');
+    this.pairs.set(pair.slice(0, eq), pair.slice(eq + 1));
+  }
+
+  has(name: string): boolean {
+    return this.pairs.has(name);
+  }
+
+  header(): string {
+    return [...this.pairs]
+      .map(([name, value]) => `${name}=${value}`)
+      .join('; ');
+  }
 }
 
 /** The JSON payloads of every `data:` line in a server-sent event stream. */
@@ -92,17 +130,21 @@ function startContainer(
 }
 
 /** The raw response body: an event stream, or a JSON error when the request is refused early. */
-async function ingest(cookie: string, url: string): Promise<string> {
+async function ingest(jar: CookieJar, url: string): Promise<string> {
   const response = await fetch(`${BASE}/api/ingest`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', cookie },
+    headers: { 'content-type': 'application/json', cookie: jar.header() },
     body: JSON.stringify({ url }),
   });
+  jar.keep(response);
   return response.text();
 }
 
-async function listedDocs(cookie: string): Promise<unknown[]> {
-  const response = await fetch(`${BASE}/api/docs`, { headers: { cookie } });
+async function listedDocs(jar: CookieJar): Promise<unknown[]> {
+  const response = await fetch(`${BASE}/api/docs`, {
+    headers: { cookie: jar.header() },
+  });
+  jar.keep(response);
   assert.equal(response.status, 200);
   const body = (await response.json()) as { docs?: unknown[] } | unknown[];
   return Array.isArray(body) ? body : (body.docs ?? []);
@@ -148,6 +190,9 @@ async function main(): Promise<void> {
     );
     const cookie = sessionCookie(exchange.headers.get('set-cookie'));
     assert.ok(cookie, 'the key exchange sets the session cookie');
+    // One jar for the whole run, so the reader cookie issued on the first API call is reused.
+    const jar = new CookieJar();
+    jar.set(cookie);
     assert.match(exchange.headers.get('set-cookie') ?? '', /Secure/);
     assert.equal(
       cookie.includes(accessKey),
@@ -155,15 +200,19 @@ async function main(): Promise<void> {
       'the cookie never holds the key itself',
     );
 
-    const refused = await ingest(cookie, OUT_OF_SCOPE_BILL);
+    const refused = await ingest(jar, OUT_OF_SCOPE_BILL);
     assert.match(refused, /roadmap/, 'other states get the roadmap message');
 
-    const events = sseEvents(await ingest(cookie, SAMPLE_BILL));
+    const events = sseEvents(await ingest(jar, SAMPLE_BILL));
     assert.ok(
       events.some((event) => (event as { type?: string }).type === 'done'),
       `the sample bill ingests: ${JSON.stringify(events.at(-1))}`,
     );
-    assert.equal((await listedDocs(cookie)).length, 1);
+    assert.ok(
+      jar.has(READER_COOKIE),
+      'the server issues a reader cookie on the first API call',
+    );
+    assert.equal((await listedDocs(jar)).length, 1);
 
     // Cloud Run stops an instance with SIGTERM and allows 10 seconds.
     docker('stop', '--time', '10', name);
@@ -176,7 +225,7 @@ async function main(): Promise<void> {
     startContainer(image, name, accessKey, snapshots);
     await waitForServer();
     assert.equal(
-      (await listedDocs(cookie)).length,
+      (await listedDocs(jar)).length,
       1,
       'the document survives a restart',
     );

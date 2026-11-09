@@ -10,12 +10,14 @@ You can expect an acknowledgement within 3 days and a first assessment within 7.
 
 ## Supported versions
 
-Only the latest release gets security fixes.
+Only the latest minor release (for example 1.2.x) gets security fixes. Please confirm the problem on the latest version first.
 
 ## Scope
 
-In scope: the CLI, the local web server and UI, `serve --public` and `serve --private`, and the deployment files in `deploy/`.
+In scope: the CLI, the local web server and UI, `serve --public` and `serve --private`, the hosted preview at lawglass.xyz, and the deployment files in `deploy/`.
 
 Out of scope: the security of the model providers, Pinecone, GovInfo and the state legislature sites themselves, and attacks that need control of the user's own account or machine.
+
+There is no bug bounty. Credit in the advisory is offered if you want it.
 
 The threat model (`docs/security/threat-model.md`) lists the threats we design against and the controls in place.
