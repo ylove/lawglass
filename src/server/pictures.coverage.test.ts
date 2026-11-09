@@ -16,7 +16,7 @@ import { ITEMS_PER_CALL } from '../core/picture/prompt.js';
 import { resetSharedLimits } from '../core/pipeline/limits.js';
 import type { BreakdownService } from './breakdown.js';
 import { createPictureService } from './pictures.js';
-import type { SummaryService } from './summary.js';
+import { FAILED_RETRY_MS, type SummaryService } from './summary.js';
 
 const DOC = 'e'.repeat(64);
 const panel = {
@@ -39,10 +39,12 @@ const briefs = (count: number): SectionBrief[] =>
 /** Draws every item it is sent, and records which item numbers each call carried. */
 function drawingProvider(fail?: () => Error | undefined) {
   const calls: number[][] = [];
-  const provider: LlmProvider & { calls: number[][] } = {
+  const texts: string[][] = [];
+  const provider: LlmProvider & { calls: number[][]; texts: string[][] } = {
     id: 'anthropic',
     model: 'claude-haiku-5-5',
     calls,
+    texts,
 
     async *streamText() {
       await Promise.resolve();
@@ -55,6 +57,13 @@ function drawingProvider(fail?: () => Error | undefined) {
         ...JSON.stringify(req.prompt).matchAll(/<item n=\\"(\d+)\\"/g),
       ].map((m) => Number(m[1]));
       calls.push(items);
+      texts.push(
+        [
+          ...JSON.stringify(req.prompt).matchAll(
+            /<item n=\\"\d+\\">([^<]*)<\/item>/g,
+          ),
+        ].map((m) => m[1] ?? ''),
+      );
       return Promise.resolve({
         object: {
           pictures: items.map((item) => ({ item, panels: [panel] })),
@@ -200,9 +209,10 @@ describe('breakdown pictures under full coverage', () => {
   });
 
   it('stops starting groups once the job budget is spent, and keeps what is drawn', async () => {
-    let spent = false;
+    // The budget runs out after the first batch has been drawn.
+    let drawn = 0;
     const provider = drawingProvider(() => {
-      if (!spent) return undefined;
+      if (drawn++ === 0) return undefined;
       const error = new AppError('RATE_LIMITED', 'budget');
       Object.defineProperty(error, 'code', { value: 'BUDGET_EXHAUSTED' });
       return error;
@@ -212,8 +222,6 @@ describe('breakdown pictures under full coverage', () => {
       briefs: briefs(ITEMS_PER_CALL * 3),
       omitted: 0,
     }));
-    await settle(svc, (x) => (x.entries?.length ?? 0) === ITEMS_PER_CALL);
-    spent = true;
     // The next group hits the budget; after that no further group is started at all.
     const last = await settle(svc, (x) => x.status !== 'pending');
     expect(last.status).toBe('cached');
@@ -256,8 +264,11 @@ describe('breakdown pictures under full coverage', () => {
       expect(provider.calls).toHaveLength(4);
     });
     // Everything is cached: a later poll is answered without drawing again.
-    const done = await svc.get(DOC, 'breakdown', { wait: false });
-    expect(done.status).toBe('cached');
+    const done = await vi.waitFor(async () => {
+      const r = await svc.get(DOC, 'breakdown', { wait: false });
+      expect(r.status).toBe('cached');
+      return r;
+    });
     expect(done.entries).toHaveLength(have);
     expect(provider.calls).toHaveLength(4);
   });
@@ -294,5 +305,78 @@ describe('breakdown pictures under full coverage', () => {
     });
     await new Promise((r) => setTimeout(r, 100));
     expect(provider.calls).toHaveLength(0);
+  });
+
+  it('repeated notices after a failure do not retry a cooling batch; it is retried after the cool-down', async () => {
+    let attempts = 0;
+    const provider = drawingProvider(() => {
+      attempts++;
+      return new AppError('PROVIDER_ERROR');
+    });
+    const listeners: ((docId: string) => void)[] = [];
+    service(
+      provider,
+      () => ({ status: 'cached', briefs: briefs(ITEMS_PER_CALL), omitted: 0 }),
+      true,
+      listeners,
+    );
+    const notify = async () => {
+      for (const l of listeners) l(DOC);
+      await new Promise((r) => setTimeout(r, 40));
+    };
+    await notify();
+    expect(attempts).toBe(1);
+    await notify();
+    await notify();
+    expect(attempts).toBe(1);
+    clock += FAILED_RETRY_MS + 1;
+    await notify();
+    expect(attempts).toBe(2);
+  });
+
+  it('a part that gets its brief late does not make finished pictures draw again (25 sections)', async () => {
+    const provider = drawingProvider();
+    const all = briefs(25);
+    // First pass: sec-1 has no valid brief yet, so every later brief sits one place earlier.
+    let current = all.slice(1);
+    let complete = false;
+    const listeners: ((docId: string) => void)[] = [];
+    const svc = service(
+      provider,
+      () =>
+        complete
+          ? { status: 'cached', briefs: current, omitted: 0 }
+          : { status: 'partial', briefs: current },
+      true,
+      listeners,
+    );
+    const notify = async () => {
+      for (const l of listeners) l(DOC);
+      await new Promise((r) => setTimeout(r, 60));
+    };
+    await notify();
+    await vi.waitFor(() => {
+      expect(provider.texts.flat()).toHaveLength(20);
+    });
+    // The resume brings sec-1 in at the front and finishes the rest.
+    current = all;
+    complete = true;
+    await notify();
+    await vi.waitFor(() => {
+      expect(provider.texts.flat()).toHaveLength(25);
+    });
+    const drawnTexts = provider.texts.flat();
+    // Each brief was sent exactly once: nothing already drawn was drawn again.
+    expect(drawnTexts).toHaveLength(25);
+    expect(new Set(drawnTexts).size).toBe(25);
+    const done = await vi.waitFor(async () => {
+      const r = await svc.get(DOC, 'breakdown', { wait: false });
+      expect(r.status).toBe('cached');
+      return r;
+    });
+    expect(done.entries?.map((e) => e.item)).toEqual(
+      Array.from({ length: 25 }, (_, i) => i),
+    );
+    expect(done.entries?.[0]?.sectionId).toBe('sec-1');
   });
 });

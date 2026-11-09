@@ -172,51 +172,64 @@ export function createPictureService(
     llm: LlmProvider,
     items: PictureItem[],
     onError: PictureRequestOptions['onError'],
+    perBrief = false,
   ): Promise<void> {
     const started = now();
     // Forget cool-downs that are over, so the map holds only recent failures.
     for (const [other, at] of failedAt)
       if (started - at >= FAILED_RETRY_MS) failedAt.delete(other);
     running.set(name, new Set());
-    return cache
-      .getOrCompute(key, async () => {
-        // Nobody waits on this; it yields to readers' own questions (`Limits.paced`).
-        let usage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
-        let drawn: DrawnPictures;
-        try {
-          drawn = await drawPictures({
-            provider: sharedLimits().paced(llm, {
-              background: true,
-              feature: 'pictures',
-            }),
-            items,
-            onUsage: (spent) => {
-              usage = addLlmUsage(usage, spent);
-            },
-          });
-        } finally {
-          // A later batch or redraw can fail after earlier calls have already cost tokens.
-          // Registry errors are logged through the same callback as other background errors,
-          // but must not discard completed pictures or replace the original drawing error.
-          await registry
-            .touch(key.docId, registryLlmUsage(usage))
-            .catch((error: unknown) => onError?.(error, now() - started));
-        }
-        options.log?.({
-          event: 'pictures_made',
-          source: key.source,
-          count: drawn.entries.length,
-          recovered: drawn.recovered,
+    const compute = async (): Promise<PictureEntry[]> => {
+      // Nobody waits on this; it yields to readers' own questions (`Limits.paced`).
+      let usage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
+      let drawn: DrawnPictures;
+      try {
+        drawn = await drawPictures({
+          provider: sharedLimits().paced(llm, {
+            background: true,
+            feature: 'pictures',
+          }),
+          items,
+          onUsage: (spent) => {
+            usage = addLlmUsage(usage, spent);
+          },
         });
-        if (drawn.dropped.length > 0 || drawn.retried > 0)
-          options.log?.({
-            event: 'pictures_dropped',
-            source: key.source,
-            count: drawn.dropped.length,
-            retried: drawn.retried,
-          });
-        return drawn.entries;
-      })
+      } finally {
+        // A later batch or redraw can fail after earlier calls have already cost tokens.
+        // Registry errors are logged through the same callback as other background errors,
+        // but must not discard completed pictures or replace the original drawing error.
+        await registry
+          .touch(key.docId, registryLlmUsage(usage))
+          .catch((error: unknown) => onError?.(error, now() - started));
+      }
+      options.log?.({
+        event: 'pictures_made',
+        source: key.source,
+        count: drawn.entries.length,
+        recovered: drawn.recovered,
+      });
+      if (drawn.dropped.length > 0 || drawn.retried > 0)
+        options.log?.({
+          event: 'pictures_dropped',
+          source: key.source,
+          count: drawn.dropped.length,
+          retried: drawn.retried,
+        });
+      // Full coverage: remember each brief's own result (an empty one too, so a refused
+      // picture is not asked for again), so a later grouping never redraws it.
+      if (perBrief)
+        await Promise.all(
+          items.map((item) =>
+            cache.put(
+              briefKey(key.docId, llm, item),
+              drawn.entries.filter((e) => e.item === item.index),
+            ),
+          ),
+        );
+      return drawn.entries;
+    };
+    // Per-brief records are the cache then; a batch-level hit could skip writing them.
+    return (perBrief ? compute() : cache.getOrCompute(key, compute))
       .then(() => undefined)
       .catch((error: unknown) => {
         failedAt.set(name, now());
@@ -235,12 +248,79 @@ export function createPictureService(
   }
 
   /**
-   * Background drawing (#382): under full coverage the server draws each finished group of
-   * briefs without waiting for a reader. A batch finishing in the breakdown calls this; one
-   * drain runs per document, picks up groups that appeared meanwhile, draws one group at a
-   * time (paced as background work), and ends when nothing is left, a group has failed (it
-   * cools down, never retried in this pass) or the job budget is spent. The poll path above
-   * stays the same: it serves the cache or joins whatever draw is in flight.
+   * Full coverage (#382): a picture is remembered per brief, keyed by its part and caption text,
+   * so it is found again however the briefs are later grouped (a resume can add a part that had
+   * no brief at first, which moves every later brief into a different group). Groups only
+   * batch the briefs that have no record yet, ten to a model call.
+   */
+  const briefKey = (
+    docId: string,
+    llm: LlmProvider,
+    item: PictureItem,
+  ): PictureCacheKey => ({
+    docId,
+    source: 'breakdown',
+    sourceHash: pictureSourceHash([item]),
+    provider: llm.id,
+    model: llm.model,
+    promptVersion: PICTURE_PROMPT_VERSION,
+  });
+  /** Records are immutable once written, so a found one is remembered for later looks. */
+  const known = new Map<string, PictureEntry[]>();
+
+  async function briefState(
+    docId: string,
+    llm: LlmProvider,
+    items: readonly PictureItem[],
+    complete: boolean,
+  ): Promise<{
+    entries: PictureEntry[];
+    batches: { key: PictureCacheKey; name: string; items: PictureItem[] }[];
+  }> {
+    const entries: PictureEntry[] = [];
+    const missing: PictureItem[] = [];
+    for (const item of items) {
+      const key = briefKey(docId, llm, item);
+      const id = pictureCacheHash(key);
+      const hit = known.get(id) ?? (await cache.get(key));
+      if (hit) {
+        known.set(id, hit);
+        // The record may have been made when the brief sat at another position.
+        entries.push(...hit.map((e) => ({ ...e, item: item.index })));
+      } else missing.push(item);
+    }
+    const batches = [];
+    for (let i = 0; i < missing.length; i += ITEMS_PER_CALL) {
+      const chunk = missing.slice(i, i + ITEMS_PER_CALL);
+      // A short last batch is final only once the breakdown is.
+      if (!complete && chunk.length < ITEMS_PER_CALL) break;
+      const [first] = chunk;
+      if (!first) break;
+      const key: PictureCacheKey = {
+        ...briefKey(docId, llm, first),
+        sourceHash: pictureSourceHash(chunk),
+      };
+      batches.push({
+        key,
+        name: `${docId}:${pictureCacheHash(key)}`,
+        items: chunk,
+      });
+    }
+    return { entries, batches };
+  }
+
+  const isCooling = (name: string): boolean => {
+    const failed = failedAt.get(name);
+    return failed !== undefined && now() - failed < FAILED_RETRY_MS;
+  };
+
+  /**
+   * Background drawing (#382): under full coverage the server draws the finished briefs without
+   * waiting for a reader. A batch finishing in the breakdown calls this; one drain runs per
+   * document, picks up briefs that appeared meanwhile, draws one batch at a time (paced as
+   * background work), and ends when nothing is left, a batch is cooling down after a failure
+   * (a repeated notice never retries it early) or the job budget is spent. The poll path stays
+   * the same: it serves the cache or joins whatever draw is in flight.
    */
   const draining = new Set<string>();
   const drainAgain = new Set<string>();
@@ -263,34 +343,21 @@ export function createPictureService(
           const stoppedAt = budgetStoppedAt.get(docId);
           if (stoppedAt !== undefined && now() - stoppedAt < FAILED_RETRY_MS)
             return;
-          const groups: PictureItem[][] = [];
-          for (let i = 0; i < found.items.length; i += ITEMS_PER_CALL)
-            groups.push(found.items.slice(i, i + ITEMS_PER_CALL));
-          const ready = found.complete
-            ? groups
-            : groups.filter((g) => g.length === ITEMS_PER_CALL);
-          let next:
-            | { key: PictureCacheKey; name: string; items: PictureItem[] }
-            | undefined;
-          for (const group of ready) {
-            const key: PictureCacheKey = {
-              docId,
-              source: 'breakdown',
-              sourceHash: pictureSourceHash(group),
-              provider: llm.id,
-              model: llm.model,
-              promptVersion: PICTURE_PROMPT_VERSION,
-            };
-            const name = `${docId}:${pictureCacheHash(key)}`;
-            if (tried.has(name) || (await cache.get(key))) continue;
-            next = { key, name, items: group };
-            break;
-          }
+          const { batches } = await briefState(
+            docId,
+            llm,
+            found.items,
+            found.complete,
+          );
+          const next = batches.find(
+            (batch) => !tried.has(batch.name) && !isCooling(batch.name),
+          );
           if (!next) break;
           tried.add(next.name);
           const inFlight = running.get(next.name);
           if (inFlight) await waitForSummary(inFlight, 120_000);
-          else await start(next.key, next.name, llm, next.items, undefined);
+          else
+            await start(next.key, next.name, llm, next.items, undefined, true);
         }
       } while (drainAgain.has(docId));
     } catch {
@@ -304,12 +371,9 @@ export function createPictureService(
   });
 
   /**
-   * Full coverage (#382): pictures for a breakdown are drawn and cached in fixed groups of
-   * `ITEMS_PER_CALL` briefs (one model call each), so a group that is finished is never drawn
-   * again when more briefs arrive. Briefs only ever append in document order, so a group's
-   * contents, and therefore its cache key, do not change once it is full. The client attaches a
-   * picture only when its text matches the brief's, so a stale entry can never mislabel one.
-   * Groups are drawn one at a time per document, each look starting the next one.
+   * Full coverage (#382): the answer to a look. Records found per brief are returned; the first
+   * batch without one is started (one at a time per document, each look starting the next);
+   * the client attaches a picture only when its text matches the brief's.
    */
   async function getByGroup(
     docId: string,
@@ -319,38 +383,7 @@ export function createPictureService(
     request: PictureRequestOptions,
     waited = false,
   ): Promise<PicturesResponse> {
-    const groups: PictureItem[][] = [];
-    for (let i = 0; i < items.length; i += ITEMS_PER_CALL)
-      groups.push(items.slice(i, i + ITEMS_PER_CALL));
-    // A short last group is final only once the breakdown is.
-    const ready = complete
-      ? groups
-      : groups.filter((g) => g.length === ITEMS_PER_CALL);
-
-    const entries: PictureEntry[] = [];
-    const missing: {
-      key: PictureCacheKey;
-      name: string;
-      items: PictureItem[];
-    }[] = [];
-    for (const group of ready) {
-      const key: PictureCacheKey = {
-        docId,
-        source: 'breakdown',
-        sourceHash: pictureSourceHash(group),
-        provider: llm.id,
-        model: llm.model,
-        promptVersion: PICTURE_PROMPT_VERSION,
-      };
-      const hit = await cache.get(key);
-      if (hit) entries.push(...hit);
-      else
-        missing.push({
-          key,
-          name: `${docId}:${pictureCacheHash(key)}`,
-          items: group,
-        });
-    }
+    const { entries, batches } = await briefState(docId, llm, items, complete);
     const finish = (more: boolean): PicturesResponse => {
       if (more)
         return entries.length > 0
@@ -364,12 +397,8 @@ export function createPictureService(
     const stoppedAt = budgetStoppedAt.get(docId);
     const budgetStopped =
       stoppedAt !== undefined && now() - stoppedAt < FAILED_RETRY_MS;
-    const cooling = (name: string): boolean => {
-      const failed = failedAt.get(name);
-      return failed !== undefined && now() - failed < FAILED_RETRY_MS;
-    };
-    // Briefs still to come keep the reader polling; so does a group being drawn or about to be.
-    const todo = budgetStopped ? [] : missing.filter((m) => !cooling(m.name));
+    // Briefs still to come keep the reader polling; so does a batch being drawn or about to be.
+    const todo = budgetStopped ? [] : batches.filter((b) => !isCooling(b.name));
     const more = !complete ? !budgetStopped : todo.length > 0;
     if (todo.length === 0) return finish(more);
 
@@ -383,7 +412,8 @@ export function createPictureService(
       return finish(true);
     }
     const next = todo[0];
-    if (next) void start(next.key, next.name, llm, next.items, request.onError);
+    if (next)
+      void start(next.key, next.name, llm, next.items, request.onError, true);
     return finish(true);
   }
 

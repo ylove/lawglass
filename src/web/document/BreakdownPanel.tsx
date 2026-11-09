@@ -26,6 +26,8 @@ export const BREAKDOWN_POLL_MS = 2000;
  * clock restarts whenever a new part arrives.
  */
 export const BREAKDOWN_MAX_WAIT_MS = 360_000;
+/** How many times a finished long bill is looked at again for a late stop (with backoff). */
+export const LATE_REFRESHES = 8;
 /** A long bill shows this many cards, then a button for the rest. */
 export const INITIAL_VISIBLE_BRIEFS = 6;
 
@@ -305,6 +307,46 @@ export function BreakdownPanel({
       clearTimeout(timer);
     };
   }, [api, docId, enabled, pollMs, maxWaitMs, coolDownMs, attempt]);
+
+  // A long bill's pictures and examples are still being drawn in the background after the
+  // briefs are whole, and a budget can run out then. Look again a few times, backing off, so a
+  // late stop is shown; the cap keeps a finished bill from being asked about forever.
+  const settledLong =
+    state.kind === 'cached' &&
+    state.briefs.length > GROUPING_THRESHOLD &&
+    !state.examplesStopped;
+  useEffect(() => {
+    if (!enabled || !settledLong) return;
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let attempt = 0;
+    const later = () => {
+      if (attempt >= LATE_REFRESHES) return;
+      const delay = Math.min(pollMs * 2 ** attempt, pollMs * 30);
+      attempt++;
+      timer = setTimeout(() => {
+        api
+          .getBreakdown(docId)
+          .then((r) => {
+            if (!live) return;
+            if (r.progress?.stoppedReason) {
+              setState((now) =>
+                now.kind === 'cached' ? { ...now, examplesStopped: true } : now,
+              );
+            } else later();
+          })
+          .catch(() => {
+            // A failed look is not an error for a finished breakdown; try the next one.
+            if (live) later();
+          });
+      }, delay);
+    };
+    later();
+    return () => {
+      live = false;
+      clearTimeout(timer);
+    };
+  }, [api, docId, enabled, settledLong, pollMs]);
 
   // A short bill's pictures wait for its finished briefs. A long one is drawn a group of briefs
   // at a time as they arrive; a server that does not do that answers `none` until the end, and

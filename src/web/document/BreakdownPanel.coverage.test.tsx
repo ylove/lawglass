@@ -10,7 +10,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest';
 import type { BreakdownResponse } from '../../core/model/index.js';
 import type { ApiClient } from '../api.js';
 import { createMockApi } from '../mock-api.js';
-import { BreakdownPanel } from './BreakdownPanel.js';
+import { BreakdownPanel, LATE_REFRESHES } from './BreakdownPanel.js';
 import { syntheticBill } from './synthetic-bill.js';
 
 afterEach(cleanup);
@@ -179,5 +179,47 @@ describe('groups and filter for a long bill', () => {
     expect(screen.getAllByRole('article')).toHaveLength(6);
     expect(screen.queryByRole('searchbox')).toBeNull();
     expect(screen.queryByRole('button', { name: /Title/ })).toBeNull();
+  });
+});
+
+describe('background work after the briefs are whole', () => {
+  test('a budget stop that arrives after cached is shown', async () => {
+    const { briefs } = syntheticBill();
+    const done: BreakdownResponse = { status: 'cached', briefs, omitted: 0 };
+    const api = scripted([
+      done,
+      done,
+      {
+        ...done,
+        progress: { done: 120, total: 120, stoppedReason: 'budget_exhausted' },
+      },
+    ]);
+    panel(api);
+    await screen.findByText(/Some pictures or examples were not drawn ahead/);
+    const calls = api.spy.breakdown.mock.calls.length;
+    await new Promise((r) => setTimeout(r, 60));
+    // Once the stop is shown, no further looks.
+    expect(api.spy.breakdown.mock.calls.length).toBe(calls);
+  });
+
+  test('looks a bounded number of times, then stops; a short bill is not looked at again', async () => {
+    const { briefs } = syntheticBill();
+    const long = scripted([{ status: 'cached', briefs, omitted: 0 }]);
+    panel(long);
+    await screen.findAllByRole('button', { name: /Title \d/ });
+    await waitFor(
+      () => {
+        expect(long.spy.breakdown.mock.calls.length).toBe(1 + LATE_REFRESHES);
+      },
+      { timeout: 4000 },
+    );
+    cleanup();
+    const short = scripted([
+      { status: 'cached', briefs: briefs.slice(0, 5), omitted: 0 },
+    ]);
+    panel(short);
+    await screen.findByText(/Show all 5 sections|This part|Part 1/);
+    await new Promise((r) => setTimeout(r, 60));
+    expect(short.spy.breakdown).toHaveBeenCalledTimes(1);
   });
 });
