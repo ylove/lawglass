@@ -259,9 +259,9 @@ describe('self references', () => {
   });
   test('a different session or type is another bill', () => {
     const ctx = { ...federal, billNumber: 'H.R. 1234' };
-    expect(refsFor('H.R. 1234 of the 117th Congress and S. 1234', ctx)).toEqual(
-      ['H.R. 1234 (117th Congress)', 'S. 1234 (118th Congress)'],
-    );
+    expect(
+      refsFor('H.R. 1234 of the 117th Congress. See also S. 1234.', ctx),
+    ).toEqual(['H.R. 1234 (117th Congress)', 'S. 1234 (118th Congress)']);
   });
 });
 
@@ -292,7 +292,6 @@ describe('New York and New Jersey short forms', () => {
     'Exhibit CA-3000',
     '347 U. S. 483',
     'P.L.2023, c.100',
-    'S. 1000 of the 118th Congress (2021)',
     'Senate Bill 1000 (2021-2022 session)',
     'A-3000:4',
   ])('does not link %s', (text) => {
@@ -301,5 +300,169 @@ describe('New York and New Jersey short forms', () => {
   test('only with a known session in a document of that state', () => {
     expect(citations('S. 1000')).toEqual([]);
     expect(citations('S. 1000', { jurisdiction: 'New Jersey' })).toEqual([]);
+  });
+});
+
+describe('real Ohio boilerplate (SB 113, 136th General Assembly)', () => {
+  const sb113 = {
+    jurisdiction: 'Ohio',
+    session: '136th General Assembly, Regular Session 2025-2026',
+    billNumber: 'S.B. No. 113',
+  };
+  const text =
+    'Section 3314.03 of the Revised Code as amended by H.B. 214, H.B. 250, and S.B. 168, all of the 135th General Assembly. Section 3326.11 of the Revised Code as amended by H.B. 47, H.B. 214, and S.B. 168, all of the 135th General Assembly. Section 3328.24 of the Revised Code as amended by H.B. 47 and H.B. 214 of the 135th General Assembly.';
+  test("every bill takes the list-level or stated assembly, never the document's own", () => {
+    const got = citations(text, sb113);
+    expect(got).toEqual([
+      'H.B. 214 (135th General Assembly)',
+      'H.B. 250 (135th General Assembly)',
+      'S.B. 168 (135th General Assembly)',
+      'H.B. 47 (135th General Assembly)',
+      'H.B. 214 (135th General Assembly)',
+      'S.B. 168 (135th General Assembly)',
+      // "H.B. 47 and H.B. 214 of the 135th..." could qualify only the last bill, so H.B. 47
+      // stays plain; H.B. 214 states its own assembly.
+      'H.B. 214 (135th General Assembly)',
+    ]);
+    expect(got.join()).not.toContain('136th');
+  });
+  test('a list whose qualifier cannot be read stays plain', () => {
+    expect(
+      citations(
+        'as amended by H.B. 214, H.B. 250, and S.B. 168, all of the 135th session.',
+        sb113,
+      ),
+    ).toEqual([]);
+    expect(
+      citations(
+        'as amended by H.R. 5 and S. 6, all of the 135th General Assembly',
+        {
+          jurisdiction: 'United States',
+          session: '118th Congress, 1st Session',
+        },
+      ),
+    ).toEqual([]);
+  });
+  test("a mention with no session phrase in its sentence inherits the document's", () => {
+    expect(citations('This act supersedes H.B. 47.', sb113)).toEqual([
+      'H.B. 47 (136th General Assembly)',
+    ]);
+    expect(
+      citations(
+        'The act was enacted in the 135th General Assembly. See H.B. 47.',
+        sb113,
+      ),
+    ).toEqual(['H.B. 47 (136th General Assembly)']);
+    expect(citations('H.B. 47, enacted that session.', sb113)).toEqual([]);
+  });
+  test('Am. Sub., Sub., Am. and Cf. prefixes still link', () => {
+    expect(
+      citations(
+        'Section 265.10 of Am. Sub. H.B. 110 of the 134th General Assembly, as amended by Am. Sub. H.B. 33 of the 135th General Assembly',
+        sb113,
+      ),
+    ).toEqual([
+      'H.B. 110 (134th General Assembly)',
+      'H.B. 33 (135th General Assembly)',
+    ]);
+    expect(
+      citations('Sub. H.B. 166 of the 133rd General Assembly', sb113),
+    ).toEqual(['H.B. 166 (133rd General Assembly)']);
+    expect(
+      citations('Am. S.B. 9 of the 130th General Assembly', sb113),
+    ).toEqual(['S.B. 9 (130th General Assembly)']);
+    expect(citations('Cf. H.R. 5 of the 118th Congress', sb113)).toEqual([
+      'H.R. 5 (118th Congress)',
+    ]);
+  });
+  test("the bill's own number, written with its prefixes, is a self reference", () => {
+    const refs = collectExternalRefs(
+      [
+        {
+          id: 's1',
+          heading: null,
+          number: '1',
+          kind: 'section',
+          spans: [
+            {
+              text: 'This amends Am. Sub. S.B. 113 and H.B. 47.',
+              status: 'normal',
+            },
+          ],
+          children: [],
+        } as never,
+      ],
+      buildSectionIndex([]),
+      [],
+      { ...sb113, billNumber: 'Am. Sub. S.B. No. 113' },
+    ).map((r) => r.citation);
+    expect(refs).toEqual(['H.B. 47 (136th General Assembly)']);
+  });
+});
+
+describe('qualifier wordings', () => {
+  test.each([
+    ['H.R. 3746, 118th Congress', 'H.R. 3746 (118th Congress)'],
+    ['H.R. 3746 (118th Cong.)', 'H.R. 3746 (118th Congress)'],
+    [
+      'H.R. 3746 of the One Hundred Eighteenth Congress',
+      'H.R. 3746 (118th Congress)',
+    ],
+    [
+      'H.R. 3746 of the One Hundred Thirteenth Congress',
+      'H.R. 3746 (113th Congress)',
+    ],
+    ['H.R. 3746 of the One Hundred Twenty-Nine Congress', undefined],
+    ['H.B. 33 (134th G.A.)', 'H.B. 33 (134th General Assembly)'],
+    [
+      'S.B. 9, as enacted by the 133rd General Assembly',
+      'S.B. 9 (133rd General Assembly)',
+    ],
+    [
+      'H.R. 2617 (117th Congress) (Consolidated Appropriations Act, 2023)',
+      'H.R. 2617 (117th Congress)',
+    ],
+    [
+      'accompanying S.2226 of the 118th Congress (Senate Report 118–58)',
+      'S. 2226 (118th Congress)',
+    ],
+  ])('%s', (text, expected) => {
+    expect(
+      citations(text, {
+        jurisdiction: 'Ohio',
+        session: '136th General Assembly',
+      }),
+    ).toEqual(expected ? [expected] : []);
+  });
+  test('a federal document with a different stated congress keeps the stated one', () => {
+    expect(citations('S. 1000 of the 118th Congress (2021)', federal)).toEqual([
+      'S. 1000 (118th Congress)',
+    ]);
+  });
+});
+
+describe('labels are not NY/NJ bills', () => {
+  const nj = { jurisdiction: 'New Jersey', session: '221st Legislature' };
+  const ny = {
+    jurisdiction: 'New York',
+    session: '2025-2026 Regular Sessions',
+  };
+  test.each([
+    'See Exhibit A-100.',
+    'Schedule A-1000 applies.',
+    'on Form A-1040',
+    'Route S-100',
+    'room S-110',
+    'Part A-1000',
+    'subpart A-100 of part 200',
+    'section 9 of part S-100',
+  ])('%s', (text) => {
+    expect(citations(text, nj)).toEqual([]);
+    expect(citations(text, ny)).toEqual([]);
+  });
+  test('a bill cue keeps the real thing', () => {
+    expect(citations('Introduced as S. 1000.', nj)).toEqual([
+      'N.J. S1000 (2024)',
+    ]);
   });
 });

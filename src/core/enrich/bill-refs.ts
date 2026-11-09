@@ -34,52 +34,170 @@ const FIRST_FEDERAL_CONGRESS = 113;
 const FIRST_OHIO_GA = 126;
 const MIN_YEAR = 1996;
 
-// "(?<![A-Za-z.])" keeps "S." out of "U.S. 113", "U.S.C." and "H.R." out of other initials.
-// A trailing ".5", ",5" or "%" means it was a figure, not a bill number.
-// Not preceded by a letter, period, section sign or dollar sign, nor by "U. " (spaced reporter
-// abbreviations: "347 U. S. 483", "98 S. Ct.") or a figure ("5 S. 12").
-const NOT_AFTER = String.raw`(?<![A-Za-z.§$]|[A-Za-z]\.\s|\d\s)`;
+// Not preceded by a letter, period, section sign or dollar sign (keeps "S." out of "U.S. 113"
+// and "U.S.C."), nor by a single capital initial and a space ("347 U. S. 483", "98 S. Ct."), nor
+// by a figure ("5 S. 12"). A lone initial, not any abbreviation: "Am. Sub. H.B. 110", "Sub. H.B.
+// 166" and "Cf. H.R. 5" must still match. A trailing ".5", ",5" or "%" means a figure.
+const NOT_AFTER = String.raw`(?<![A-Za-z.§$]|\b[A-Z]\.\s|\d\s)`;
+const NUMBER = String.raw`(\d{1,5})(?![\d]|[.,]\d|%)`;
 const FEDERAL_DESIGNATOR = String.raw`(H\.\s?R\.|S\.|H\.\s?J\.\s?Res\.|S\.\s?J\.\s?Res\.|H\.\s?Con\.\s?Res\.|S\.\s?Con\.\s?Res\.|H\.\s?Res\.|S\.\s?Res\.)`;
 const FEDERAL_BILL = new RegExp(
-  String.raw`${NOT_AFTER}${FEDERAL_DESIGNATOR}\s?(\d{1,5})(?![\d]|[.,]\d|%)(?:\s*(?:\(|of\s+the\s+)${ORDINAL}\s+Congress\)?)?`,
+  String.raw`${NOT_AFTER}${FEDERAL_DESIGNATOR}\s?${NUMBER}`,
   'g',
 );
-const FEDERAL_WORDS = new RegExp(
-  String.raw`\b(House|Senate)\s+Bill\s+(?:No\.\s*)?(\d{1,5})(?![\d]|[.,]\d|%)(?:\s*(?:\(|of\s+the\s+)${ORDINAL}\s+Congress\)?)?`,
-  'g',
-);
-/** "of the 135th General Assembly" or "(135th General Assembly)". */
-export const OHIO_SESSION = String.raw`(?:\s+of\s+the\s+${ORDINAL}\s+General\s+Assembly|\s*\(${ORDINAL}\s+General\s+Assembly\))?`;
 const OHIO_BILL_ABBR = new RegExp(
-  String.raw`${NOT_AFTER}(H\.\s?B\.|S\.\s?B\.)\s?(?:No\.\s*)?(\d{1,5})(?![\d]|[.,]\d|%)${OHIO_SESSION}`,
+  String.raw`${NOT_AFTER}(H\.\s?B\.|S\.\s?B\.)\s?(?:No\.\s*)?${NUMBER}`,
   'g',
 );
-const OHIO_BILL_WORDS = new RegExp(
-  String.raw`\b(House|Senate)\s+Bill\s+(?:No\.\s*)?(\d{1,5})(?![\d]|[.,]\d|%)${OHIO_SESSION}`,
+/** "House Bill 5" names a federal or an Ohio bill; the session decides which. */
+const BILL_WORDS = new RegExp(
+  String.raw`\b(House|Senate)\s+Bill\s+(?:No\.\s*)?${NUMBER}`,
   'g',
 );
 // "Senate Bill S1234", "Assembly Bill No. A567"; a bare "S1234" needs three or more digits.
 const STATE_WORDS = new RegExp(
-  String.raw`\b(Senate|Assembly)\s+Bill\s+(?:No\.\s*)?([SA])?0*(\d{1,5})(?![\d]|[.,]\d|%)`,
+  String.raw`\b(Senate|Assembly)\s+Bill\s+(?:No\.\s*)?([SA])?0*${NUMBER}`,
   'g',
 );
 // "S. 1000", "A. 3000", "S1000", "A-3000": a letter alone is too common, so three or more digits
-// are required, and a trailing ":digit" or "-digit" means a statute chapter, not a bill.
+// are required, a trailing ":digit" or "-digit" means a statute chapter, and a label word before
+// it ("Exhibit A-100", "Route S-100", "Part A-1000") means it is not a bill at all.
+const LABELS =
+  'Exhibit Schedule Form Part Subpart Appendix Route Room Model Type Rule Table Figure Chapter Title Article Section Class Grade Zone Plan Lot Block Unit Suite Policy Level Tier Category Item Annex Attachment Highway Interstate'
+    .split(' ')
+    .map(
+      (word) =>
+        `[${word.charAt(0)}${word.charAt(0).toLowerCase()}]${word.slice(1)}`,
+    )
+    .join('|');
+const LABEL_BEFORE = String.raw`(?<!\b(?:${LABELS})s?\s)`;
 const STATE_LETTER = new RegExp(
-  String.raw`${NOT_AFTER}(?<!\d-)\b([SA])(?:\.\s?|-)?0*(\d{3,5})(?![\w]|[.,:;]\d|-\d|%)`,
+  String.raw`${NOT_AFTER}${LABEL_BEFORE}(?<!\d-)\b([SA])(?:\.\s?|-)?0*(\d{3,5})(?![\w]|[.,:;]\d|-\d|%)`,
   'g',
 );
 
+// ---------------------------------------------------------------------------------------
+// Sessions. A mention takes its session from, in order: a qualifier right after it, a list
+// qualifier after the bills it shares ("H.B. 214, H.B. 250, and S.B. 168, all of the 135th
+// General Assembly"), or the current document, but only when its whole sentence has no
+// session-like phrase. Anything else stays plain text: a wrong link is worse than none.
+// ---------------------------------------------------------------------------------------
+
+const ORDINAL_ANY = String.raw`(\d{1,3}(?:st|nd|rd|th)|One\s+Hundred\s+(?:and\s+)?[A-Za-z]+(?:-[A-Za-z]+)?)`;
+const SESSION_NAME = String.raw`(Congress|Cong\.|General\s+Assembly|G\.\s?A\.)`;
+/** ", 118th Congress", "(118th Cong.)", "of the 134th G.A.", "as enacted by the 133rd General Assembly". */
+const QUALIFIER = new RegExp(
+  String.raw`^(?:,?\s+of\s+the\s+|\s*\(\s*(?:the\s+)?|,\s*(?:the\s+)?|,?\s+as\s+(?:enacted|passed|adopted)\s+by\s+the\s+|\s+in\s+the\s+)${ORDINAL_ANY}\s+${SESSION_NAME}(?:\s*\))?`,
+  'i',
+);
+const LIST_BILL = String.raw`(?:(?:Am\.|Sub\.|Substitute|Amended)\s+)*(?:H\.\s?B\.|S\.\s?B\.|H\.\s?R\.|S\.|H\.\s?J\.\s?Res\.|S\.\s?J\.\s?Res\.|H\.\s?Con\.\s?Res\.|S\.\s?Con\.\s?Res\.|H\.\s?Res\.|S\.\s?Res\.)\s?(?:No\.\s*)?\d{1,5}`;
+/** What follows a list of bills when one qualifier covers them all. */
+const LIST_TAIL = new RegExp(
+  String.raw`^(?:[\s,]+(?:(?:and|or)\s+)?${LIST_BILL})*[\s,]+(?:all|each|both)\s+of\s+the\s+${ORDINAL_ANY}\s+${SESSION_NAME}`,
+  'i',
+);
+const SESSION_LIKE = new RegExp(
+  String.raw`\b(?:Congress|Cong\b|General\s+Assembly|G\.\s?A\b|Legislature|Sessions?|One\s+Hundred)\b|\b(?:19|20)\d{2}\s*[-–]\s*(?:19|20)?\d{2}\b`,
+  'i',
+);
 /**
- * An explicit session or year qualifier left over after a mention was parsed ("(134th General
- * Assembly)" on a federal match, "(2021-2022 session)", "of the 2019 Legislature"). It names a
- * session this extractor did not read, so the mention must stay plain text rather than inherit
- * the current document's session.
+ * A qualifier the parsers above did not read, e.g. "H.R. 5 in the 117th". Only matters for a
+ * mention that would inherit the document's session.
  */
 const LEFTOVER_QUALIFIER = new RegExp(
   String.raw`^\s*(?:\((?=[^)]{0,60}(?:Congress|General\s+Assembly|Legislature|Session|\b(?:19|20)\d{2}\b))|(?:of|in|from)\s+the\s+(?:${ORDINAL}|(?:19|20)\d{2})\b)`,
   'i',
 );
+
+const ORDINAL_WORDS: Readonly<Record<string, number>> = {
+  first: 1,
+  second: 2,
+  third: 3,
+  fourth: 4,
+  fifth: 5,
+  sixth: 6,
+  seventh: 7,
+  eighth: 8,
+  ninth: 9,
+  tenth: 10,
+  eleventh: 11,
+  twelfth: 12,
+  thirteenth: 13,
+  fourteenth: 14,
+  fifteenth: 15,
+  sixteenth: 16,
+  seventeenth: 17,
+  eighteenth: 18,
+  nineteenth: 19,
+  twentieth: 20,
+  thirtieth: 30,
+};
+const TENS_WORDS: Readonly<Record<string, number>> = { twenty: 20, thirty: 30 };
+
+/** "118th" or "One Hundred Eighteenth" as a number, or undefined. */
+function parseOrdinal(raw: string): number | undefined {
+  const numeric = /^(\d{1,3})(?:st|nd|rd|th)$/i.exec(raw);
+  if (numeric) return Number(numeric[1]);
+  const words = raw
+    .toLowerCase()
+    .replace(/^one\s+hundred\s+(?:and\s+)?/, '')
+    .split(/[\s-]+/);
+  const [first, second] = words;
+  if (words.length === 1 && first && first in ORDINAL_WORDS)
+    return 100 + (ORDINAL_WORDS[first] ?? 0);
+  if (
+    words.length === 2 &&
+    first &&
+    second &&
+    first in TENS_WORDS &&
+    second in ORDINAL_WORDS
+  )
+    return 100 + (TENS_WORDS[first] ?? 0) + (ORDINAL_WORDS[second] ?? 0);
+  return undefined;
+}
+
+/** Words whose final period does not end a sentence. */
+const ABBREVIATIONS = new Set(
+  'sub am cong sess stat supp rept rep sen res sec sect secs inc art vol ann rev amd adm dept govt fed reg ch pub jr sr mrs msr dr no nos vs cf ed ct'.split(
+    ' ',
+  ),
+);
+
+/** The sentence around `at`: bounded by a period that ends a word, not an abbreviation. */
+function sentenceAround(text: string, start: number, end: number): string {
+  let from = 0;
+  let to = text.length;
+  for (const m of text.matchAll(/\.\s+(?=[A-Z])/g)) {
+    const period = m.index;
+    // The word the period ends: letters going back, or a digit or ")" for a figure.
+    let wordStart = period;
+    while (wordStart > 0 && /[A-Za-z]/.test(text.charAt(wordStart - 1)))
+      wordStart--;
+    const word = text.slice(wordStart, period);
+    const previous = text.charAt(period - 1);
+    const endsWord = word.length >= 2 || /[\d)]/.test(previous);
+    if (!endsWord || ABBREVIATIONS.has(word.toLowerCase())) continue;
+    const next = period + m[0].length;
+    if (next <= start) from = next;
+    else if (period >= end) {
+      to = period + 1;
+      break;
+    }
+  }
+  return text.slice(from, to);
+}
+
+type Family = 'federal' | 'ohio';
+interface Resolved {
+  session: number;
+  /** Undefined when inherited by a New York or New Jersey document, whose bills are not these. */
+  family: Family | undefined;
+  /** End of the mention, including a qualifier that was read. */
+  end: number;
+}
+
+const familyOf = (name: string): Family =>
+  /^con/i.test(name) ? 'federal' : 'ohio';
 
 export interface BillMention {
   start: number;
@@ -159,57 +277,96 @@ export function findBillMentions(
 ): BillMention[] {
   const here = currentPlace(ctx);
   const out: BillMention[] = [];
-  const push = (m: RegExpMatchArray, citation: string | undefined): void => {
-    if (citation === undefined) return;
+
+  /** The session of the bill matched by `m`, or undefined when it cannot be known for sure. */
+  const resolve = (m: RegExpMatchArray): Resolved | undefined => {
     const start = m.index ?? 0;
-    if (
-      LEFTOVER_QUALIFIER.test(
-        text.slice(start + m[0].length, start + m[0].length + 80),
-      )
-    )
-      return;
-    out.push({ start, end: start + m[0].length, text: m[0], citation });
+    const end = start + m[0].length;
+    const rest = text.slice(end, end + 300);
+    const direct = QUALIFIER.exec(rest);
+    const stated = direct ?? LIST_TAIL.exec(rest);
+    if (stated) {
+      const groups = stated.slice(-2);
+      const session = parseOrdinal(groups[0] ?? '');
+      if (session === undefined) return undefined;
+      return {
+        session,
+        family: familyOf(groups[1] ?? ''),
+        // A list qualifier belongs to the whole list, so this mention ends where it did.
+        end: direct ? end + direct[0].length : end,
+      };
+    }
+    // Inheriting the document's session is safe only when nothing nearby names another one.
+    if (SESSION_LIKE.test(sentenceAround(text, start, end))) return undefined;
+    if (LEFTOVER_QUALIFIER.test(rest)) return undefined;
+    if (here?.session === undefined) return undefined;
+    const family =
+      here.place === 'federal' || here.place === 'ohio'
+        ? here.place
+        : undefined;
+    return { session: here.session, family, end };
   };
 
-  for (const m of text.matchAll(FEDERAL_BILL)) {
-    const stated = m[3] ? Number(m[3]) : undefined;
-    const congress =
-      stated ?? (here?.place === 'federal' ? here.session : undefined);
-    const type = federalType(m[1] ?? '');
-    if (type && congress !== undefined)
-      push(m, federalCitation(type, m[2] ?? '', congress));
-  }
-  for (const m of text.matchAll(FEDERAL_WORDS)) {
-    const stated = m[3] ? Number(m[3]) : undefined;
-    // Without a stated congress, "House Bill 5" is federal only inside a federal document.
-    const congress =
-      stated ?? (here?.place === 'federal' ? here.session : undefined);
-    const type = m[1] === 'House' ? 'hr' : 's';
-    if (congress !== undefined)
-      push(m, federalCitation(type, m[2] ?? '', congress));
-  }
+  const push = (
+    m: RegExpMatchArray,
+    resolved: Resolved,
+    citation: string | undefined,
+  ): void => {
+    if (citation === undefined) return;
+    const start = m.index ?? 0;
+    out.push({
+      start,
+      end: resolved.end,
+      text: text.slice(start, resolved.end),
+      citation,
+    });
+  };
+
+  const federal = (m: RegExpMatchArray, type: string | undefined): void => {
+    const r = resolve(m);
+    // A federal bill, whether stated or inherited from a federal document.
+    if (!r || !type || r.family !== 'federal') return;
+    push(m, r, federalCitation(type, m[2] ?? '', r.session));
+  };
+  for (const m of text.matchAll(FEDERAL_BILL))
+    federal(m, federalType(m[1] ?? ''));
+
   const ohio = (m: RegExpMatchArray, chamber: string): void => {
-    const given = m[3] ?? m[4];
-    const stated = given ? Number(given) : undefined;
-    const ga = stated ?? (here?.place === 'ohio' ? here.session : undefined);
-    if (ga === undefined || ga < FIRST_OHIO_GA || Number(m[2]) < 1) return;
+    const r = resolve(m);
+    if (r?.family !== 'ohio') return;
+    if (r.session < FIRST_OHIO_GA || Number(m[2]) < 1) return;
     const label = /^h/i.test(chamber) ? 'H.B.' : 'S.B.';
     push(
       m,
-      `${label} ${String(Number(m[2]))} (${ordinal(ga)} General Assembly)`,
+      r,
+      `${label} ${String(Number(m[2]))} (${ordinal(r.session)} General Assembly)`,
     );
   };
   for (const m of text.matchAll(OHIO_BILL_ABBR)) ohio(m, m[1] ?? '');
-  for (const m of text.matchAll(OHIO_BILL_WORDS)) ohio(m, m[1] ?? '');
+  for (const m of text.matchAll(BILL_WORDS)) {
+    const chamber = m[1] ?? '';
+    const r = resolve(m);
+    if (!r) continue;
+    if (r.family === 'federal') federal(m, chamber === 'House' ? 'hr' : 's');
+    else ohio(m, chamber);
+  }
 
   if (here?.place === 'new-york' || here?.place === 'new-jersey') {
     const prefix = here.place === 'new-york' ? 'N.Y.' : 'N.J.';
     const add = (m: RegExpMatchArray, letter: string, n: string): void => {
-      if (here.session !== undefined && here.session >= MIN_YEAR)
-        push(
-          m,
-          `${prefix} ${letter}${String(Number(n))} (${String(here.session)})`,
-        );
+      const start = m.index ?? 0;
+      const end = start + m[0].length;
+      const rest = text.slice(end, end + 300);
+      // These bills belong to the document's own session; a stated one is another matter.
+      if (QUALIFIER.test(rest) || LIST_TAIL.test(rest)) return;
+      if (SESSION_LIKE.test(sentenceAround(text, start, end))) return;
+      if (LEFTOVER_QUALIFIER.test(rest)) return;
+      if (here.session === undefined || here.session < MIN_YEAR) return;
+      push(
+        m,
+        { session: here.session, family: undefined, end },
+        `${prefix} ${letter}${String(Number(n))} (${String(here.session)})`,
+      );
     };
     for (const m of text.matchAll(STATE_WORDS)) {
       const letter = (m[2] ?? (m[1] === 'Senate' ? 'S' : 'A')).toUpperCase();
@@ -217,7 +374,8 @@ export function findBillMentions(
       if (m[2] && (m[1] === 'Senate') !== (letter === 'S')) continue;
       add(m, letter, m[3] ?? '');
     }
-    for (const m of text.matchAll(STATE_LETTER)) add(m, m[1] ?? '', m[2] ?? '');
+    for (const m of text.matchAll(STATE_LETTER))
+      add(m, (m[1] ?? '').toUpperCase(), m[2] ?? '');
   }
 
   // A span claimed by an earlier, longer match is reported once ("Senate Bill S1234").
