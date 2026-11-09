@@ -103,7 +103,9 @@ describe('generateBreakdown in whole-bill mode', () => {
     const seen: number[] = [];
     const out = await generateBreakdown({
       ...input(provider, WHOLE_BATCH_SIZE * 2 + 1),
-      onProgress: (b) => seen.push(b.length),
+      onProgress: (b) => {
+        seen.push(b.length);
+      },
     });
     expect(provider.breakdownCalls).toBe(3);
     expect(peak).toBe(1);
@@ -497,6 +499,32 @@ describe('brief reading-level regeneration', () => {
       expect(provider.breakdownCalls).toBe(2);
     },
   );
+
+  it('a spent budget during the rewrite keeps the first drafts, then stops before the next batch', async () => {
+    const provider = rewriteProvider(EASY);
+    const first = provider.behavior;
+    let call = 0;
+    provider.behavior = (req) => {
+      if (call++ === 1) {
+        const error = new AppError('RATE_LIMITED');
+        Object.defineProperty(error, 'code', { value: 'BUDGET_EXHAUSTED' });
+        throw error;
+      }
+      return first ? first(req) : undefined;
+    };
+    const seen: number[] = [];
+    const out = await generateBreakdown({
+      ...input(provider, WHOLE_BATCH_SIZE + 2),
+      onProgress: (briefs) => {
+        seen.push(briefs.length);
+      },
+    });
+    expect(out.stoppedReason).toBe('budget');
+    expect(out.briefs).toHaveLength(WHOLE_BATCH_SIZE);
+    // The whole first batch was recorded (hard first draft included); no second batch ran.
+    expect(seen).toEqual([WHOLE_BATCH_SIZE]);
+    expect(provider.breakdownCalls).toBe(2);
+  });
 
   it('rethrows a caller abort during the rewrite', async () => {
     const provider = rewriteProvider(EASY);

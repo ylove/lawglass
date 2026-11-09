@@ -241,3 +241,39 @@ describe('chooseBreakdownUnits', () => {
     expect(units).toEqual([]);
   });
 });
+
+describe('chooseBreakdownUnits under full coverage (#382)', () => {
+  const flat = (count: number): Section[] =>
+    Array.from({ length: count }, (_, i) =>
+      section(`sec-${String(i + 1)}`, `Topic ${String(i + 1)}`, SUBSTANTIVE),
+    );
+
+  it("keeps today's 30 and the summary's 60-part cut by default", () => {
+    const out = chooseBreakdownUnits(flat(100));
+    expect(out.units).toHaveLength(MAX_BREAKDOWN_UNITS);
+    expect(out.omitted).toBe(100 - 60 + (60 - MAX_BREAKDOWN_UNITS));
+  });
+
+  it('with an unlimited cap briefs every substantive part of a long flat bill', () => {
+    const out = chooseBreakdownUnits(flat(150), Infinity);
+    expect(out.units).toHaveLength(150);
+    expect(out.omitted).toBe(0);
+  });
+
+  it('a numeric cap past the default counts from the whole bill, in document order', () => {
+    const out = chooseBreakdownUnits(flat(150), 100);
+    expect(out.units.map((u) => u.id)).toEqual(flat(100).map((u) => u.id));
+    expect(out.omitted).toBe(50);
+  });
+
+  it('opens containers of any depth and still skips boilerplate', () => {
+    const tree = [
+      section('title-1', 'Title I', '', [
+        section('sec-1', 'Short title', SUBSTANTIVE),
+        ...flat(70).slice(1),
+      ]),
+    ];
+    const out = chooseBreakdownUnits(tree, Infinity);
+    expect(out.units).toHaveLength(69);
+  });
+});

@@ -98,6 +98,17 @@ describe('estimateBill', () => {
     expect(capped.features.breakdown.low.calls).toBe(2);
     expect(capped.features.examples.low.calls).toBe(2);
   });
+  it('derives the example count from the pre-generation policy; an explicit count wins', () => {
+    const facts = billFacts(many(80), { breakdownUnitCap: 'all' });
+    const examples = (p: Partial<typeof plan>) =>
+      estimateBill(facts, { ...plan, ...p }).features.examples.low.calls;
+    expect(examples({})).toBe(8);
+    expect(examples({ pregenerateExamples: 'small' })).toBe(8);
+    expect(examples({ pregenerateExamples: 'off' })).toBe(0);
+    // Every unit, because which briefs offer an example is unknown until they exist.
+    expect(examples({ pregenerateExamples: 'all' })).toBe(facts.breakdownUnits);
+    expect(examples({ pregenerateExamples: 'all', exampleCount: 3 })).toBe(3);
+  });
   it('uses a single excerpt summary without map/reduce for ten or fewer units', () => {
     const { features } = estimateBill(
       billFacts(many(2), { wholeBillMaxTokens: 0 }),

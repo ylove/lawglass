@@ -119,8 +119,16 @@ export interface BreakdownInput {
   context: DocumentContext;
   units: readonly Section[];
   signal?: AbortSignal | undefined;
-  /** Called after each batch with every brief finished so far (for a partial view). */
-  onProgress?: ((briefs: readonly SectionBrief[]) => void) | undefined;
+  /**
+   * Called after each batch with every brief finished so far and the count of parts dropped so
+   * far (for a partial view). Awaited, so a caller can persist the batch before the next one.
+   */
+  onProgress?:
+    | ((
+        briefs: readonly SectionBrief[],
+        dropped: number,
+      ) => void | Promise<void>)
+    | undefined;
 }
 
 export interface BreakdownOutput {
@@ -284,6 +292,7 @@ export async function generateBreakdown(
     }
     if (!reply) {
       dropped += batch.length;
+      await input.onProgress?.([...briefs], dropped);
       continue;
     }
 
@@ -301,6 +310,9 @@ export async function generateBreakdown(
       const grade = finished.get(unit.id)?.brief.readingGrade;
       return ceiling > 0 && grade != null && grade > ceiling;
     });
+    // A spent budget during the optional rewrite keeps the validated first drafts, then ends the
+    // run once this batch is recorded, so no further batch starts.
+    let rewriteStopped = false;
     if (difficult.length > 0) {
       let rewritten = 0;
       const timeout = AbortSignal.timeout(REGENERATION_TIMEOUT_MS);
@@ -340,6 +352,7 @@ export async function generateBreakdown(
         }
       } catch (error) {
         if (input.signal?.aborted) throw error;
+        if (isBudgetExhausted(error)) rewriteStopped = true;
         // A failed optional rewrite must not discard validated briefs. A call that never
         // returned usage may still have been billed; its cost is unknown to us.
       }
@@ -354,7 +367,11 @@ export async function generateBreakdown(
       if (brief) briefs.push(brief.brief);
       else dropped++;
     }
-    input.onProgress?.([...briefs]);
+    await input.onProgress?.([...briefs], dropped);
+    if (rewriteStopped) {
+      stoppedReason = 'budget';
+      break;
+    }
   }
   return {
     briefs,

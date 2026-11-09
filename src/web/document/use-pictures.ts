@@ -15,6 +15,8 @@ export function usePictures(
   key: string,
   pollMs: number,
   maxWaitMs: number,
+  /** Changing it looks again, e.g. when the text the pictures illustrate has been completed. */
+  phase = 0,
 ): readonly PictureEntry[] {
   // Tagged with the key it was loaded for, so pictures of a previous document or text are never
   // shown for the next one while the new ones load.
@@ -33,7 +35,9 @@ export function usePictures(
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
-    const started = Date.now();
+    // Restarts whenever more pictures arrive: a long bill is drawn a group at a time (#382).
+    let lastProgress = Date.now();
+    let seen = 0;
     const look = () => {
       loadRef
         .current(controller.signal)
@@ -41,8 +45,16 @@ export function usePictures(
           if (!live) return;
           if (r.status === 'cached')
             setLoaded({ key, entries: r.entries ?? [] });
-          else if (r.status === 'pending' && Date.now() - started < maxWaitMs)
-            timer = setTimeout(look, pollMs);
+          else if (r.status === 'pending') {
+            const entries = r.entries ?? [];
+            if (entries.length > seen) {
+              seen = entries.length;
+              lastProgress = Date.now();
+              setLoaded({ key, entries });
+            }
+            if (Date.now() - lastProgress < maxWaitMs)
+              timer = setTimeout(look, pollMs);
+          }
         })
         .catch(() => {
           // Pictures are optional: no error state, no retry.
@@ -54,7 +66,7 @@ export function usePictures(
       clearTimeout(timer);
       controller.abort();
     };
-  }, [active, key, pollMs, maxWaitMs]);
+  }, [active, key, pollMs, maxWaitMs, phase]);
 
   return active && loaded.key === key ? loaded.entries : NO_PICTURES;
 }

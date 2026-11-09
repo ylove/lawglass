@@ -48,7 +48,10 @@ describe('billFacts', () => {
     ).toBe(50);
     expect(
       billFacts(sections(80), { breakdownUnitCap: Infinity }).breakdownUnits,
-    ).toBe(60);
+    ).toBe(80); // full coverage (#382): the summary's 60-part cut no longer applies
+    expect(
+      billFacts(sections(80), { breakdownUnitCap: 'all' }).breakdownUnits,
+    ).toBe(80);
     expect(billFacts(sections(2), { breakdownUnitCap: 0 }).breakdownUnits).toBe(
       0,
     );

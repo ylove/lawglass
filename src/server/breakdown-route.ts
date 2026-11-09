@@ -4,6 +4,10 @@
  */
 import type { Context, Hono } from 'hono';
 import type { BreakdownLog } from '../core/breakdown/generate.js';
+import type {
+  BreakdownMaxUnits,
+  PregenerateExamples,
+} from '../core/breakdown/coverage.js';
 import type { CliRuntime } from '../cli/runtime.js';
 import { runInJob, type JobScope } from '../core/cost/index.js';
 import { AppError, isAppError } from '../core/model/index.js';
@@ -40,6 +44,8 @@ export function registerBreakdownRoutes(
     now?: (() => number) | undefined;
     summary: SummaryService;
     waitMs?: number | undefined;
+    breakdownMaxUnits?: BreakdownMaxUnits | undefined;
+    pregenerateExamples?: PregenerateExamples | undefined;
     onError?: (c: Context, error: unknown, ms: number) => void;
     /** Hosting hook: called only when an example would be generated (not on a cache hit). */
     admitExample?:
@@ -57,6 +63,8 @@ export function registerBreakdownRoutes(
       now,
       waitMs: options.waitMs,
       afterSummary: settledSummary(options.summary),
+      breakdownMaxUnits: options.breakdownMaxUnits,
+      pregenerateExamples: options.pregenerateExamples,
     });
 
   const known = async (docId: string): Promise<string> => {

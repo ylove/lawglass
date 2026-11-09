@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
 import { scriptedObjects } from '../../../tests/support/picture-provider.js';
-import { AppError } from '../model/index.js';
+import {
+  AppError,
+  type LlmProvider,
+  type ObjectRequest,
+} from '../model/index.js';
 import { drawPictures } from './generate.js';
 import {
   ITEMS_PER_CALL,
@@ -36,7 +40,8 @@ describe('drawPictures', () => {
     };
     const provider = scriptedObjects([
       { pictures: [{ item: 0, panels: [panel] }] },
-      { pictures: [{ item: ITEMS_PER_CALL + 1, panels: [panel] }] },
+      // The second call numbers its items from 0, whatever the bill's own numbers are.
+      { pictures: [{ item: 1, panels: [panel] }] },
     ]);
     const drawn = await drawPictures({ provider, items });
     expect(provider.calls).toHaveLength(2);
@@ -295,5 +300,37 @@ describe('drawPictures', () => {
       AppError,
     );
     expect(provider.calls).toHaveLength(1);
+  });
+});
+
+describe('drawPictures on a very long bill', () => {
+  it('draws pictures past item 200 by numbering each call from 0', async () => {
+    const items = Array.from({ length: 1500 }, (_, i) => item(i));
+    const seen: number[][] = [];
+    const provider: LlmProvider = {
+      id: 'anthropic',
+      model: 'm',
+      // eslint-disable-next-line @typescript-eslint/require-await
+      async *streamText() {
+        throw new Error('not used');
+      },
+      generateObject<T>(req: ObjectRequest<T>) {
+        const numbers = [
+          ...JSON.stringify(req.prompt).matchAll(/<item n=\\"(\d+)\\"/g),
+        ].map((m) => Number(m[1]));
+        seen.push(numbers);
+        return Promise.resolve({
+          object: {
+            pictures: numbers.map((n) => ({ item: n, panels: [panel] })),
+          } as T,
+          usage: { inputTokens: 1, outputTokens: 1 },
+        });
+      },
+    };
+    const drawn = await drawPictures({ provider, items });
+    expect(Math.max(...seen.flat())).toBeLessThan(ITEMS_PER_CALL);
+    expect(drawn.entries).toHaveLength(1500);
+    expect(drawn.entries.at(-1)?.item).toBe(1499);
+    expect(drawn.entries.map((e) => e.item)).toEqual(items.map((i) => i.index));
   });
 });

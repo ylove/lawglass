@@ -21,7 +21,11 @@ import {
   generateBreakdown,
 } from '../breakdown/generate.js';
 import { EXAMPLE_FAILED_NOTE } from '../breakdown/notes.js';
-import { chooseBreakdownUnits } from '../breakdown/units.js';
+import { isBudgetExhausted } from '../cost/job.js';
+import {
+  chooseBreakdownUnits,
+  MAX_BREAKDOWN_UNITS,
+} from '../breakdown/units.js';
 import {
   AppError,
   type LlmProvider,
@@ -52,8 +56,21 @@ export interface BreakdownDeps {
   /** Concurrency and per-minute budgets, shared with asks. Defaults to the process-wide limits. */
   limits?: Limits | undefined;
   signal?: AbortSignal | undefined;
-  /** Briefs finished so far, after each batch. */
-  onProgress?: ((briefs: readonly SectionBrief[]) => void) | undefined;
+  /**
+   * Cap on briefed parts (`unitCapOf`); default 30. Changing it changes the cache key, so a
+   * bill briefed under one cap is not served as complete under another.
+   */
+  unitCap?: number | undefined;
+  /**
+   * Briefs finished so far, after each batch has been written to the cache, and how many of the
+   * run's parts that covers (`done` counts parts given up on too, so a bar always reaches 100%).
+   */
+  onProgress?:
+    | ((
+        briefs: readonly SectionBrief[],
+        progress: { done: number; total: number },
+      ) => void)
+    | undefined;
 }
 
 export function breakdownCacheKey(
@@ -61,6 +78,7 @@ export function breakdownCacheKey(
   provider: Pick<LlmProvider, 'id' | 'model'>,
   endpoint: string,
   context: DocumentContext['mode'],
+  unitCap = MAX_BREAKDOWN_UNITS,
 ): BreakdownCacheKey {
   return {
     docId,
@@ -69,6 +87,10 @@ export function breakdownCacheKey(
     endpoint,
     promptVersion: breakdownPromptVersion(),
     context,
+    // Absent for the default, so keys written before full coverage stay valid.
+    ...(unitCap === MAX_BREAKDOWN_UNITS
+      ? {}
+      : { unitCap: unitCap === Infinity ? ('all' as const) : unitCap }),
   };
 }
 
@@ -97,43 +119,93 @@ export async function runBreakdown(
     deps.provider,
     deps.endpoint,
     context.mode,
+    deps.unitCap,
   );
   const cache = deps.cache ?? defaultBreakdownCache(registry);
 
-  return cache.getOrCompute(key, async () => {
+  return cache.getOrCompute(key, async (checkpoint) => {
     const limits = deps.limits ?? sharedLimits();
     if (!(await backend.hasDocument(docId)))
       throw new AppError('DOC_NOT_FOUND', 'The document has no index.', {
         userMessage:
           "This document's search index is missing. Run ingest again for its URL.",
       });
-    const { units, omitted } = chooseBreakdownUnits(doc.sections);
+    const { units, omitted } = chooseBreakdownUnits(doc.sections, deps.unitCap);
     if (units.length === 0) return undefined;
     if (context.mode === 'excerpts') await backend.ensureReady(deps.signal);
-    const made = await generateBreakdown({
-      // Nobody is waiting on this run, so it yields to readers (`Limits.paced`).
-      provider: limits.paced(deps.provider, {
-        background: true,
-        feature: 'breakdown',
+
+    // Resume: parts a stopped or interrupted run already finished are not briefed again.
+    const saved = await cache.getPartial(key);
+    const order = new Map(units.map((unit, index) => [unit.id, index]));
+    const resumed = (saved?.briefs ?? []).filter((b) => order.has(b.sectionId));
+    const finished = new Set(resumed.map((b) => b.sectionId));
+    const remaining = units.filter((unit) => !finished.has(unit.id));
+    // Document order, whatever order the batches landed in (a retried part comes back late).
+    const inOrder = (briefs: readonly SectionBrief[]): SectionBrief[] =>
+      [...resumed, ...briefs].sort(
+        (a, b) => (order.get(a.sectionId) ?? 0) - (order.get(b.sectionId) ?? 0),
+      );
+    // The newest batch written, for a run that ends early without a result of its own.
+    let latest: SectionBrief[] = inOrder([]);
+    const writeBatch = async (
+      briefs: readonly SectionBrief[],
+      dropped: number,
+    ): Promise<void> => {
+      const all = inOrder(briefs);
+      latest = all;
+      await checkpoint({
+        briefs: all,
+        total: units.length,
+        dropped,
+        omitted,
+        context: context.mode,
+        provider: deps.provider.id,
+        model: deps.provider.model,
+      });
+      deps.onProgress?.(all, {
+        done: Math.min(units.length, all.length + dropped),
+        total: units.length,
+      });
+    };
+    let made: Awaited<ReturnType<typeof generateBreakdown>>;
+    try {
+      made = await generateBreakdown({
+        // Nobody is waiting on this run, so it yields to readers (`Limits.paced`).
+        provider: limits.paced(deps.provider, {
+          background: true,
+          feature: 'breakdown',
+          signal: deps.signal,
+        }),
+        docId,
+        backend,
+        doc,
+        context,
+        units: remaining,
         signal: deps.signal,
-      }),
-      docId,
-      backend,
-      doc,
-      context,
-      units,
-      signal: deps.signal,
-      onProgress: deps.onProgress,
-      log: deps.log,
-    });
+        onProgress: writeBatch,
+        log: deps.log,
+      });
+    } catch (error) {
+      // A spent budget ends the run, not the breakdown: every finished batch is already written.
+      if (!isBudgetExhausted(error)) throw error;
+      return {
+        briefs: latest,
+        omitted,
+        context: context.mode,
+        provider: deps.provider.id,
+        model: deps.provider.model,
+        stoppedReason: 'budget',
+      };
+    }
     await registry.touch(docId, {
       embedTokens: made.backendUsage.embedTokens,
       rerankUnits: made.backendUsage.rerankUnits,
       ...registryLlmUsage(made.usage),
     });
-    if (made.briefs.length === 0 && !made.stoppedReason) return undefined;
+    const briefs = inOrder(made.briefs);
+    if (briefs.length === 0 && !made.stoppedReason) return undefined;
     return {
-      briefs: made.briefs,
+      briefs,
       // Parts left out by choice, plus parts whose brief could not be made or checked.
       omitted: omitted + made.dropped,
       context: context.mode,
@@ -159,6 +231,8 @@ export interface SectionExampleDeps {
   cache?: ScenarioCache | undefined;
   now?: (() => number) | undefined;
   limits?: Limits | undefined;
+  /** Must match the breakdown's cap, so a part past the default 30 can be drawn (#382). */
+  unitCap?: number | undefined;
   /** Drawn ahead of time, with nobody waiting: yields to readers like a breakdown does. */
   background?: boolean | undefined;
   signal?: AbortSignal | undefined;
@@ -205,7 +279,7 @@ export async function runSectionExample(
 ): Promise<ScenarioResponse> {
   const { registry, backend } = deps;
   const doc = await registry.getDocument(docId);
-  const unit = chooseBreakdownUnits(doc.sections).units.find(
+  const unit = chooseBreakdownUnits(doc.sections, deps.unitCap).units.find(
     (u) => u.id === sectionId,
   );
   if (!unit)

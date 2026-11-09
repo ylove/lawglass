@@ -69,6 +69,16 @@ export function currentJob(): JobScope | undefined {
   return storage.getStore();
 }
 
+/** The name of a (answer model, extract model) choice; `default` for a model not chosen. */
+export function tierName(models: ModelChoice | undefined): string {
+  return `${models?.answer ?? 'default'}+${models?.extract ?? 'default'}`;
+}
+
+/** The tier of the job this code runs in. Background state is kept per (document, tier). */
+export function currentTier(): string {
+  return tierName(currentJob()?.models);
+}
+
 /** Throws BUDGET_EXHAUSTED when this job has already spent its budget. Overshoot is one call. */
 export function assertBudget(scope: JobScope | undefined = currentJob()): void {
   const budget = scope?.budget;

@@ -140,6 +140,12 @@ export class PictureCache {
     });
   }
 
+  /** Stores entries directly (a per-brief record); a failure to write is not an error. */
+  async put(key: PictureCacheKey, entries: PictureEntry[]): Promise<void> {
+    const startedAt = evictionCount(join(this.dir, key.docId));
+    await this.store(key, entries, startedAt).catch(() => undefined);
+  }
+
   /** Cached entries, or the one in-flight run shared by concurrent callers. */
   getOrCompute(
     key: PictureCacheKey,

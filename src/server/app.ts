@@ -36,6 +36,7 @@ import {
   billFacts,
   newSpend,
   runInJob,
+  tierName,
   type BillEstimate,
   type BillFacts,
   type FeatureEstimate,
@@ -54,6 +55,10 @@ import { getChip } from '../core/chips.js';
 import { lazyProvider } from '../core/llm/lazy-provider.js';
 import { SlidingWindowLimiter } from './rate-limit.js';
 import { registerLocateRoute } from './locate-route.js';
+import type {
+  BreakdownMaxUnits,
+  PregenerateExamples,
+} from '../core/breakdown/coverage.js';
 import { registerBreakdownRoutes } from './breakdown-route.js';
 import { registerPictureRoutes } from './pictures-route.js';
 import { registerScenarioRoute } from './scenario-route.js';
@@ -176,6 +181,13 @@ export interface AppOptions {
   sessionPort?: () => number;
   /** Example bills for the homepage; defaults to the examples environment variable. */
   examples?: ClientConfig['examples'];
+  /**
+   * Full coverage (#382), both opt-in. Parts that get a brief: default `<PREFIX>_BREAKDOWN_MAX_UNITS`,
+   * else 30; `'all'` briefs every substantive part.
+   */
+  breakdownMaxUnits?: BreakdownMaxUnits;
+  /** Examples drawn ahead: default `<PREFIX>_PREGENERATE_EXAMPLES`, else `'small'` (1-8 parts). */
+  pregenerateExamples?: PregenerateExamples;
   now?: () => number;
 }
 
@@ -587,21 +599,20 @@ export function createApp(
   const defaultAssignment = (): ModelAssignment => firstOf(tiers());
 
   // --- generation scopes: one per (document, tier) -------------------------------------------
-  const tierName = (models: ModelChoice | undefined): string =>
-    `${models?.answer ?? 'default'}+${models?.extract ?? 'default'}`;
   const scopeKey = (docId: string, tier: string): string => `${docId}\n${tier}`;
   const installScope = (key: string, scope: JobScope): JobScope => {
     if (docScopes.size >= DOC_SCOPE_CAP) evictOldest(docScopes);
     docScopes.set(key, scope);
     // Someone just paid for this document: failures that happened while it was unpaid are over.
-    resumeDoc(key.slice(0, key.indexOf('\n')));
+    resumeDoc(key.slice(0, key.indexOf('\n')), scope);
     return scope;
   };
   /** Forget failure cool-downs and let budget-stopped runs go on, for a document just paid for. */
-  function resumeDoc(docId: string): void {
+  function resumeDoc(docId: string, live: JobScope): void {
     summary.resume?.(docId);
-    breakdown.resume?.(docId);
-    pictures.resume(docId);
+    // Work that goes on runs in the live scope of the (document, tier), never in the caller's.
+    breakdown.resume?.(docId, live);
+    pictures.resume(docId, live);
   }
   /** Zero budget: every model call is refused, so only cached results are served. */
   const failClosed = (
@@ -1484,7 +1495,7 @@ export function createApp(
                     // the new one takes its place (and its job id), and stopped work goes on.
                     if (!budgetRemaining(live)) {
                       topUp(live, scope);
-                      resumeDoc(done.doc.docId);
+                      resumeDoc(done.doc.docId, live);
                     }
                   } else {
                     // After a restart the host may already hold this tier's scope (and what is
@@ -1502,7 +1513,7 @@ export function createApp(
                       // The host's saved scope may be spent; this admission just paid.
                       if (restored !== scope && !budgetRemaining(restored)) {
                         topUp(restored, scope);
-                        resumeDoc(done.doc.docId);
+                        resumeDoc(done.doc.docId, restored);
                       }
                     }
                   }
@@ -1669,6 +1680,8 @@ export function createApp(
     now,
     summary,
     waitMs: options.summaryWaitMs,
+    breakdownMaxUnits: options.breakdownMaxUnits,
+    pregenerateExamples: options.pregenerateExamples,
     admitExample: hooked
       ? (c, docId) => admitJob(c, { kind: 'example', docId })
       : undefined,

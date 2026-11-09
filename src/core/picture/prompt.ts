@@ -19,7 +19,7 @@ export const PictureSet = z.object({
   pictures: z
     .array(
       z.object({
-        item: z.number().int().min(0).max(199),
+        item: z.number().int().min(0).max(99),
         panels: z.array(PicturePanel).min(1).max(3),
       }),
     )
