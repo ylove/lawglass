@@ -221,7 +221,10 @@ export function createPictureService(
       .catch((error: unknown) => {
         failedAt.set(name, now());
         // A spent job budget ends drawing for this document; nothing else is started for it.
-        if (isBudgetExhausted(error)) budgetStoppedAt.set(key.docId, now());
+        if (isBudgetExhausted(error)) {
+          budgetStoppedAt.set(key.docId, now());
+          options.breakdown.reportPicturesStopped?.(key.docId);
+        }
         onError?.(error, now() - started);
       })
       .finally(() => {

@@ -46,7 +46,7 @@ type State =
       kind: 'cached';
       briefs: readonly SectionBrief[];
       omitted: number;
-      /** Some examples were not drawn ahead, because this bill's budget ran out. */
+      /** Some pictures or examples were not drawn ahead, because this bill's budget ran out. */
       examplesStopped?: boolean;
     }
   /** The server stopped on purpose (a spent budget); what is written is kept. */
@@ -465,8 +465,8 @@ export function BreakdownPanel({
       )}
       {state.kind === 'cached' && state.examplesStopped && (
         <p className="muted breakdown-note">
-          Some examples were not drawn ahead because the limit set for this bill
-          was reached. You can still open any of them.
+          Some pictures or examples were not drawn ahead because the limit set
+          for this bill was reached. You can still open any example.
         </p>
       )}
       {state.kind === 'cooling' && (

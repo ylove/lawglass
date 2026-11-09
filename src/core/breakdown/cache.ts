@@ -87,6 +87,8 @@ export interface BreakdownCacheOptions {
   fs?: ConfigFileSystem;
   /** Prevents writing for a document removed while the breakdown was being generated. */
   isStillRegistered?: (docId: string) => boolean | Promise<boolean>;
+  /** Told when the final write fails (never the message, which may hold a path). */
+  onWriteError?: (error: unknown) => void;
 }
 
 // In-process de-duplication of concurrent identical runs.
@@ -97,7 +99,20 @@ export class BreakdownCache {
   private readonly fs: ConfigFileSystem;
   private readonly isStillRegistered: BreakdownCacheOptions['isStillRegistered'];
 
+  private readonly onWriteError: (error: unknown) => void;
+
   constructor(options: BreakdownCacheOptions) {
+    this.onWriteError =
+      options.onWriteError ??
+      ((error) => {
+        const code =
+          typeof error === 'object' && error !== null && 'code' in error
+            ? String(error.code)
+            : 'unknown';
+        console.error(
+          `breakdown cache: final write failed (${code}); kept the checkpoint`,
+        );
+      });
     this.dir = resolve(options.dir);
     this.fs = options.fs ?? configFileSystem;
     this.isStillRegistered = options.isStillRegistered;
@@ -224,8 +239,16 @@ export class BreakdownCache {
           this.storePartial(key, partial, startedAt).catch(() => undefined),
         );
         if (result && result.briefs.length > 0) {
-          await this.store(key, result, startedAt).catch(() => undefined);
-          await this.removePartial(key).catch(() => undefined);
+          // The checkpoint goes only once the final result is safely written; if that write
+          // fails, the finished batches stay on disk for the next run to resume from.
+          const written = await this.store(key, result, startedAt).then(
+            () => true,
+            (error: unknown) => {
+              this.onWriteError(error);
+              return false;
+            },
+          );
+          if (written) await this.removePartial(key).catch(() => undefined);
         }
         return result;
       })

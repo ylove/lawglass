@@ -66,11 +66,13 @@ function drawingProvider(fail?: () => Error | undefined) {
   return provider;
 }
 
+const reported: string[] = [];
 let dir: string;
 let clock: number;
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'pictures-coverage-'));
   clock = 1_000_000;
+  reported.length = 0;
   resetSharedLimits();
 });
 afterEach(async () => {
@@ -95,6 +97,9 @@ function service(
     get: () => Promise.resolve(current()),
     example: () => Promise.reject(new Error('unused')),
     progressivePictures: progressive,
+    reportPicturesStopped: (docId) => {
+      reported.push(docId);
+    },
     subscribe: (l) => {
       listeners.push(l);
     },
@@ -158,9 +163,11 @@ describe('breakdown pictures under full coverage', () => {
     complete = true;
     const done = await settle(svc, (x) => x.status === 'cached');
     expect(done.entries).toHaveLength(have);
-    // Three groups drawn in all: each item was sent once.
+    // Three groups drawn in all, each sent once with numbers local to the call.
     expect(provider.calls).toHaveLength(3);
-    expect(provider.calls.flat().sort((a, b) => a - b)).toEqual(
+    expect(provider.calls.map((c) => c.length)).toEqual([10, 10, 4]);
+    expect(provider.calls[2]?.[0]).toBe(0);
+    expect(done.entries?.map((e) => e.item)).toEqual(
       Array.from({ length: have }, (_, i) => i),
     );
   });
@@ -211,6 +218,7 @@ describe('breakdown pictures under full coverage', () => {
     const last = await settle(svc, (x) => x.status !== 'pending');
     expect(last.status).toBe('cached');
     expect(last.entries).toHaveLength(ITEMS_PER_CALL);
+    expect(reported).toContain(DOC);
     const calls = provider.calls.length;
     await svc.get(DOC, 'breakdown', { wait: false });
     await svc.get(DOC, 'breakdown', { wait: false });
@@ -279,6 +287,7 @@ describe('breakdown pictures under full coverage', () => {
     });
     await new Promise((r) => setTimeout(r, 100));
     expect(provider.calls).toHaveLength(0);
+    expect(reported).toEqual([DOC]);
     spent = false;
     listeners.forEach((l) => {
       l(DOC);

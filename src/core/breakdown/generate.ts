@@ -17,6 +17,7 @@
  * removed, and a brief left with no valid citation is dropped. The model never chooses a
  * reading grade; we compute it.
  */
+import { isBudgetExhausted } from './coverage.js';
 import { addLlmUsage } from '../cost/usage.js';
 import { z } from 'zod';
 import { coveredSectionIds, validateCitations } from '../answer/citations.js';
@@ -295,6 +296,9 @@ export async function generateBreakdown(
       const grade = finished.get(unit.id)?.brief.readingGrade;
       return ceiling > 0 && grade != null && grade > ceiling;
     });
+    // A spent budget during the optional rewrite keeps the validated first drafts, then ends the
+    // run once this batch is recorded, so no further batch starts.
+    let stop: Error | undefined;
     if (difficult.length > 0) {
       let rewritten = 0;
       const timeout = AbortSignal.timeout(REGENERATION_TIMEOUT_MS);
@@ -334,6 +338,7 @@ export async function generateBreakdown(
         }
       } catch (error) {
         if (input.signal?.aborted) throw error;
+        if (isBudgetExhausted(error)) stop = error;
         // A failed optional rewrite must not discard validated briefs. A call that never
         // returned usage may still have been billed; its cost is unknown to us.
       }
@@ -349,6 +354,7 @@ export async function generateBreakdown(
       else dropped++;
     }
     await input.onProgress?.([...briefs], dropped);
+    if (stop) throw stop;
   }
   return { briefs, dropped, usage, backendUsage };
 }

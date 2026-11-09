@@ -25,7 +25,7 @@ afterEach(async () => {
 });
 
 /** Draws a one-panel picture for every item it is sent, except the item numbers in `refuse`. */
-function pictureProvider(refuse: ReadonlySet<number>): LlmProvider {
+function pictureProvider(refuseText: string): LlmProvider {
   return {
     id: 'anthropic',
     model: 'claude-haiku-5-5',
@@ -35,24 +35,27 @@ function pictureProvider(refuse: ReadonlySet<number>): LlmProvider {
       throw new Error('not scripted');
     },
     generateObject<T>(req: ObjectRequest<T>) {
+      // Items are numbered from 0 in each call; the text says which brief each one is.
       const items = [
-        ...JSON.stringify(req.prompt).matchAll(/<item n=\\"(\d+)\\"/g),
-      ].map((m) => Number(m[1]));
+        ...JSON.stringify(req.prompt).matchAll(
+          /<item n=\\"(\d+)\\">([^<]*)<\/item>/g,
+        ),
+      ]
+        .filter((m) => !(m[2] ?? '').includes(refuseText))
+        .map((m) => Number(m[1]));
       return Promise.resolve({
         object: {
-          pictures: items
-            .filter((item) => !refuse.has(item))
-            .map((item) => ({
-              item,
-              panels: [
-                {
-                  left: { glyphs: ['bank'] },
-                  link: 'to',
-                  carry: 'coins',
-                  right: { glyphs: ['person'] },
-                },
-              ],
-            })),
+          pictures: items.map((item) => ({
+            item,
+            panels: [
+              {
+                left: { glyphs: ['bank'] },
+                link: 'to',
+                carry: 'coins',
+                right: { glyphs: ['person'] },
+              },
+            ],
+          })),
         } as T,
         usage: { inputTokens: 1, outputTokens: 1 },
       });
@@ -80,7 +83,7 @@ describe('coverage pass against the mock provider', () => {
     answers.noExample.add('sec-3').add('sec-4');
     Object.assign(env.runtime, { answerProvider: answers });
     Object.defineProperty(env.runtime, 'extractProvider', {
-      get: () => pictureProvider(new Set([5])),
+      get: () => pictureProvider('for sec-6.'),
       configurable: true,
     });
     const app = createSessionTestApp(env.runtime, {

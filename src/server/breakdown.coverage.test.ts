@@ -176,10 +176,13 @@ describe('progressive breakdown', () => {
     const done = await until(a, docId, 'cached');
     expect(done.briefs).toHaveLength(25);
     expect(done.progress).toBeUndefined();
-    const after = await readdir(
-      join(env.runtime.registry.configDir, 'cache', 'answers', docId),
-    );
-    expect(after.some((f) => f.startsWith('breakdown-partial-'))).toBe(false);
+    // The checkpoint is removed just after the final write lands.
+    await vi.waitFor(async () => {
+      const after = await readdir(
+        join(env.runtime.registry.configDir, 'cache', 'answers', docId),
+      );
+      expect(after.some((f) => f.startsWith('breakdown-partial-'))).toBe(false);
+    });
   });
 
   test('a run that failed midway resumes with the parts already written', async () => {
@@ -245,6 +248,50 @@ describe('progressive breakdown', () => {
     for (let i = 0; i < 3; i++) await breakdown(a, docId);
     await new Promise((resolve) => setTimeout(resolve, 60));
     expect(provider.breakdownCalls).toBe(made);
+  });
+});
+
+describe('stops that readers are told about', () => {
+  test('a stop before the first batch still answers with progress and the reason', async () => {
+    const a = app({ breakdownMaxUnits: 'all' });
+    const docId = await ingestMany(a, 25);
+    provider.behavior = () => {
+      throw budgetError();
+    };
+    await breakdown(a, docId);
+    const r = await vi.waitFor(async () => {
+      const x = await breakdown(a, docId);
+      expect(x.progress?.stoppedReason).toBe('budget_exhausted');
+      return x;
+    });
+    expect(r.status).toBe('pending');
+    expect(r.progress).toEqual({
+      done: 0,
+      total: 25,
+      stoppedReason: 'budget_exhausted',
+    });
+  });
+
+  test("pictures that ended on a spent budget show up in the cached breakdown's progress", async () => {
+    const { createBreakdownService } = await import('./breakdown.js');
+    const service = createBreakdownService(env.runtime, {
+      publicMode: false,
+      breakdownMaxUnits: 'all',
+      pregenerateExamples: 'off',
+    });
+    const a = app({ breakdownMaxUnits: 'all', pregenerateExamples: 'off' });
+    const docId = await ingestMany(a, 12);
+    await service.get(docId, { wait: false });
+    const done = await vi.waitFor(async () => {
+      const x = await service.get(docId, { wait: false });
+      expect(x.status).toBe('cached');
+      return x;
+    });
+    expect(done.progress).toBeUndefined();
+    service.reportPicturesStopped?.(docId);
+    expect((await service.get(docId, { wait: false })).progress).toMatchObject({
+      stoppedReason: 'budget_exhausted',
+    });
   });
 });
 

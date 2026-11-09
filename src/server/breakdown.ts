@@ -99,6 +99,8 @@ export interface BreakdownService {
    */
   readonly progressivePictures?: boolean;
   /** Told with the document id whenever a batch of briefs lands, and when the run is whole. */
+  /** Pictures ended on a spent budget; readers are told in `progress.stoppedReason`. */
+  reportPicturesStopped?(docId: string): void;
   subscribe?(listener: (docId: string) => void): void;
 }
 
@@ -162,6 +164,15 @@ export function createBreakdownService(
   const stopped = new Map<string, StoppedReason>();
   /** Documents whose example pass ended on a spent budget. */
   const examplesStopped = new Map<string, StoppedReason>();
+  /** When the picture drawing of a document ended on a spent budget (reported by pictures). */
+  const picturesStoppedAt = new Map<string, number>();
+  /** Why the examples or pictures of a document are missing, while that still holds. */
+  function docStopReason(docId: string): StoppedReason | undefined {
+    const at = picturesStoppedAt.get(passKey(docId));
+    if (at !== undefined && now() - at < FAILED_RETRY_MS)
+      return 'budget_exhausted';
+    return examplesStopped.get(passKey(docId));
+  }
 
   /** Wake waiters when a run ends, whatever the outcome. */
   function settle(name: string): void {
@@ -270,15 +281,14 @@ export function createBreakdownService(
           done: Math.min(total, saved.briefs.length + saved.dropped),
         };
     }
-    const stoppedReason =
-      stopped.get(name) ?? examplesStopped.get(passKey(docId));
+    const stoppedReason = stopped.get(name) ?? docStopReason(docId);
     const counts = {
       done: seen?.done ?? 0,
       total,
       ...(stoppedReason ? { stoppedReason } : {}),
     };
     if (!seen?.briefs.length)
-      return running.has(name) && !stoppedReason
+      return running.has(name) || stoppedReason
         ? { status: 'pending', progress: counts }
         : { status: 'pending' };
     return {
@@ -317,7 +327,7 @@ export function createBreakdownService(
         startPregeneration(docId, hit.briefs, hit.context);
         notify(docId);
       }
-      const reason = examplesStopped.get(passKey(docId));
+      const reason = docStopReason(docId);
       return {
         status: 'cached',
         briefs: hit.briefs,
@@ -647,6 +657,9 @@ export function createBreakdownService(
     get,
     example,
     progressivePictures: isFullCoverage(unitCap),
+    reportPicturesStopped: (docId) => {
+      picturesStoppedAt.set(passKey(docId), now());
+    },
     subscribe: (listener) => {
       listeners.push(listener);
     },

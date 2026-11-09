@@ -102,13 +102,27 @@ it('reads configured model/rate overrides without API or backend credentials', a
     expect(result.plan).toEqual({
       answerModel: 'custom',
       extractModel: 'claude-opus-5-5',
+      pregenerateExamples: 'small',
     });
+    expect(result.breakdownUnitCap).toBe(30);
+    const full = await createEstimateRuntime({
+      homeDir,
+      env: {
+        [envVar('PREGENERATE_EXAMPLES')]: 'all',
+        [envVar('BREAKDOWN_MAX_UNITS')]: 'all',
+      },
+    });
+    expect(full.plan.pregenerateExamples).toBe('all');
+    expect(full.breakdownUnitCap).toBe('all');
     expect(result.prices).toEqual({ custom: rates });
     const fallback = await createEstimateRuntime({
       homeDir: join(homeDir, 'empty'),
       env: {},
     });
-    expect(fallback.plan).toEqual(runtime().plan);
+    expect(fallback.plan).toEqual({
+      ...runtime().plan,
+      pregenerateExamples: 'small',
+    });
   } finally {
     await rm(homeDir, { recursive: true, force: true });
   }

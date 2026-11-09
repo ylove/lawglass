@@ -500,6 +500,32 @@ describe('brief reading-level regeneration', () => {
     },
   );
 
+  it('a spent budget during the rewrite keeps the first drafts, then stops before the next batch', async () => {
+    const provider = rewriteProvider(EASY);
+    const first = provider.behavior;
+    let call = 0;
+    provider.behavior = (req) => {
+      if (call++ === 1) {
+        const error = new AppError('RATE_LIMITED');
+        Object.defineProperty(error, 'code', { value: 'BUDGET_EXHAUSTED' });
+        throw error;
+      }
+      return first ? first(req) : undefined;
+    };
+    const seen: number[] = [];
+    await expect(
+      generateBreakdown({
+        ...input(provider, WHOLE_BATCH_SIZE + 2),
+        onProgress: (briefs) => {
+          seen.push(briefs.length);
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'BUDGET_EXHAUSTED' });
+    // The whole first batch was recorded (hard first draft included); no second batch ran.
+    expect(seen).toEqual([WHOLE_BATCH_SIZE]);
+    expect(provider.breakdownCalls).toBe(2);
+  });
+
   it('rethrows a caller abort during the rewrite', async () => {
     const provider = rewriteProvider(EASY);
     const controller = new AbortController();

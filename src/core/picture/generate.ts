@@ -125,12 +125,16 @@ export async function drawPictures(input: {
   }
 
   for (let i = 0; i < input.items.length; i += ITEMS_PER_CALL) {
-    const batch = input.items.slice(i, i + ITEMS_PER_CALL);
+    // The model and the checks see numbers local to the call (0..9), so the reply schema stays
+    // small whatever the bill's length; results are mapped back to the item's own index.
+    const original = input.items.slice(i, i + ITEMS_PER_CALL);
+    const batch = original.map((item, k) => ({ ...item, index: k }));
+    const batchEntries: PictureEntry[] = [];
     // Preserve the malformed-output retry; other failures stop the run.
     const reply = await generate(picturePrompt(batch), 2);
     if (!reply) continue;
     const checked = validatePictures(reply, batch);
-    entries.push(...checked.entries);
+    batchEntries.push(...checked.entries);
     const failures = new Map<number, PictureValidation['dropped'][number]>();
     for (const drop of checked.dropped)
       if (!failures.has(drop.item)) failures.set(drop.item, drop);
@@ -158,7 +162,7 @@ export async function drawPictures(input: {
       );
       if (redrawn) {
         const rechecked = validatePictures(redrawn, retryItems);
-        entries.push(...rechecked.entries);
+        batchEntries.push(...rechecked.entries);
         recovered += rechecked.entries.length;
         const retryFailures = new Set<number>();
         for (const drop of rechecked.dropped) {
@@ -172,7 +176,18 @@ export async function drawPictures(input: {
         for (const entry of rechecked.entries) failures.delete(entry.item);
       }
     }
-    dropped.push(...failures.values());
+    entries.push(
+      ...batchEntries.map((e) => ({
+        ...e,
+        item: original[e.item]?.index ?? e.item,
+      })),
+    );
+    dropped.push(
+      ...[...failures.values()].map((d) => ({
+        ...d,
+        item: original[d.item]?.index ?? d.item,
+      })),
+    );
   }
   entries.sort((a, b) => a.item - b.item);
   return { entries, dropped, retried, recovered, usage };

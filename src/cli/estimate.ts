@@ -9,7 +9,11 @@ import {
   fetchAndParseDocument,
   type ReadDocumentDeps,
 } from '../core/pipeline/ingest.js';
-import { breakdownMaxUnitsFromEnv } from '../core/breakdown/coverage.js';
+import {
+  breakdownMaxUnitsFromEnv,
+  type BreakdownMaxUnits,
+  pregenerateExamplesFromEnv,
+} from '../core/breakdown/coverage.js';
 import {
   billFacts,
   estimateBill,
@@ -22,6 +26,8 @@ import { safeText } from './sanitize.js';
 
 export interface EstimateRuntime extends ReadDocumentDeps {
   plan: EstimatePlan;
+  /** The server's `breakdownMaxUnits`, so the quote prices what would be made. */
+  breakdownUnitCap?: BreakdownMaxUnits;
   prices?: PriceTable;
   wholeBillMaxTokens?: number;
 }
@@ -41,8 +47,11 @@ export async function createEstimateRuntime(
     plan: {
       answerModel: config.answerModel,
       extractModel: config.extractModel,
+      // Price the examples the server would draw ahead under the same setting.
+      pregenerateExamples: pregenerateExamplesFromEnv(options.env),
     },
     ...(config.costPrices ? { prices: config.costPrices } : {}),
+    breakdownUnitCap: breakdownMaxUnitsFromEnv(options.env),
     wholeBillMaxTokens: wholeBillBudget(),
     now: () => new Date(),
     fetcher: (url, opts) =>
@@ -66,7 +75,7 @@ export async function estimateUrl(
   const doc = await fetchAndParseDocument(url, runtime);
   const facts = billFacts(doc.sections, {
     // The same cap the server will run with, so the estimate prices what would be made.
-    breakdownUnitCap: breakdownMaxUnitsFromEnv(),
+    breakdownUnitCap: runtime.breakdownUnitCap ?? breakdownMaxUnitsFromEnv(),
     ...(runtime.wholeBillMaxTokens === undefined
       ? {}
       : { wholeBillMaxTokens: runtime.wholeBillMaxTokens }),

@@ -65,7 +65,7 @@ export const BUDGET_EXHAUSTED = 'BUDGET_EXHAUSTED';
 /** Why a background loop ended early; surfaced as `progress.stoppedReason`. */
 export type StoppedReason = 'budget_exhausted';
 
-export function isBudgetExhausted(error: unknown): boolean {
+export function isBudgetExhausted(error: unknown): error is AppError {
   return (
     error instanceof AppError && (error.code as string) === BUDGET_EXHAUSTED
   );

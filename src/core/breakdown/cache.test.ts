@@ -2,6 +2,7 @@ import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { configFileSystem } from '../config-files.js';
 import {
   BreakdownCache,
   breakdownCacheHash,
@@ -179,5 +180,33 @@ describe('breakdown cache: unit cap and checkpoints (#382)', () => {
     )!;
     await writeFile(join(dir, DOC, file), '{not json');
     expect(await cache.getPartial(KEY)).toBeUndefined();
+  });
+
+  it('keeps the checkpoint, and says so, when the final write fails', async () => {
+    const failures: unknown[] = [];
+    const fs = {
+      ...configFileSystem,
+      // The checkpoint write goes through; the final result's write is refused.
+      rename: (from: string, to: string) => {
+        if (to.includes('breakdown-partial-'))
+          return configFileSystem.rename(from, to);
+        return Promise.reject(
+          Object.assign(new Error('disk full'), { code: 'ENOSPC' }),
+        );
+      },
+    } as typeof configFileSystem;
+    const cache = new BreakdownCache({
+      dir,
+      fs,
+      onWriteError: (e) => failures.push(e),
+    });
+    const out = await cache.getOrCompute(KEY, async (checkpoint) => {
+      await checkpoint(partial(2));
+      return STORED;
+    });
+    expect(out).toEqual(STORED);
+    expect(failures).toHaveLength(1);
+    expect(await cache.get(KEY)).toBeUndefined();
+    expect((await cache.getPartial(KEY))?.briefs).toHaveLength(2);
   });
 });

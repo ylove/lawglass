@@ -1,3 +1,4 @@
+import type { PregenerateExamples } from '../breakdown/coverage.js';
 import { MAP_UNITS_PER_CALL } from '../chip-summary.js';
 import { EXCERPT_BATCH_SIZE, WHOLE_BATCH_SIZE } from '../breakdown/generate.js';
 import {
@@ -30,8 +31,14 @@ export interface EstimatePlan extends ModelAssignment {
   summaryScenario?: boolean;
   breakdown?: boolean;
   pictures?: boolean;
-  /** Requested examples, capped to available breakdown units. Default 8. */
+  /** Requested examples, capped to available breakdown units. Wins over `pregenerateExamples`. */
   exampleCount?: number;
+  /**
+   * The server's pre-generation policy (#382). `all` counts every breakdown unit, since which
+   * briefs say `example: 'available'` is not known before they exist, so it is a high bound;
+   * `off` counts none; `small` (default) counts up to 8, the most it ever pre-draws.
+   */
+  pregenerateExamples?: PregenerateExamples;
   /** Additional BILLABLE thinking tokens per answer-model call, within maxTokens.
    * Low adds this to the visible-output forecast; high already reserves maxTokens,
    * including thinking. Default 0; calibrate from the usage sink for the selected effort.
@@ -191,6 +198,12 @@ function validatePlan(plan: EstimatePlan): void {
  * output budget and performs every malformed retry and reading-level rewrite. Neither is
  * a statistical confidence interval: input framing and generated item counts are forecasts.
  */
+function examplesForPolicy(policy: PregenerateExamples | undefined): number {
+  if (policy === 'all') return Infinity;
+  if (policy === 'off') return 0;
+  return 8;
+}
+
 export function estimateBill(
   facts: BillFacts,
   plan: EstimatePlan,
@@ -249,7 +262,7 @@ export function estimateBill(
           cachedPrefix: whole,
         }));
   const examples: CallSpec[] = facts.breakdownUnitTokens
-    .slice(0, plan.exampleCount ?? 8)
+    .slice(0, plan.exampleCount ?? examplesForPolicy(plan.pregenerateExamples))
     .map((tokens) => ({
       context: { low: tokens, high: tokens + RELATED_TOKENS },
       visibleOutput: 800,
