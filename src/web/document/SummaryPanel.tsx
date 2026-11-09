@@ -3,7 +3,6 @@ import type { AnswerResult, DocDetail } from '../../core/model/index.js';
 import type { ApiClient } from '../api.js';
 import { linkifyGov } from '../linkify.js';
 import { AnswerText, type OpenCitation } from '../AnswerText.js';
-import { ReadingLevel } from './ReadingLevel.js';
 import { PicturePanels } from './PicturePanels.js';
 import { usePictures } from './use-pictures.js';
 import { ScenarioStrip } from './ScenarioStrip.js';
@@ -164,7 +163,6 @@ export function SummaryPanel({
             Written from the bill's own text.
           </p>
         )}
-        {cached && <ReadingLevel answer={cached} />}
         {officialSummary && (
           <details className="official-summary">
             <summary>Official summary ({officialSummary.source})</summary>
