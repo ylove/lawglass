@@ -6,6 +6,7 @@
  * provider error, a dropped scenario or a client disconnect all end in "no scenario", and the
  * answer is never touched. This function therefore never throws.
  */
+import { addLlmUsage } from '../cost/usage.js';
 import {
   type LlmUsage,
   type LlmProvider,
@@ -49,7 +50,7 @@ export interface AttachScenarioInput {
 export interface AttachedScenario {
   scenario?: Scenario;
   /** LLM tokens spent, including a failed or dropped attempt. */
-  usage: { inputTokens: number; outputTokens: number };
+  usage: LlmUsage;
   /** Only with `captureError`: why no scenario could be attempted or finished. */
   error?: unknown;
 }
@@ -57,7 +58,7 @@ export interface AttachedScenario {
 export async function attachScenario(
   input: AttachScenarioInput,
 ): Promise<AttachedScenario> {
-  let usage = { inputTokens: 0, outputTokens: 0 };
+  let usage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
   // Count tokens at the provider boundary, since `createScenario` returns only the scenario.
   const counting: LlmProvider = {
     id: input.provider.id,
@@ -65,10 +66,7 @@ export async function attachScenario(
     streamText: (request) => input.provider.streamText(request),
     generateObject: async <T>(request: ObjectRequest<T>) => {
       const result = await input.provider.generateObject(request);
-      usage = {
-        inputTokens: usage.inputTokens + result.usage.inputTokens,
-        outputTokens: usage.outputTokens + result.usage.outputTokens,
-      };
+      usage = addLlmUsage(usage, result.usage);
       return result;
     },
   };
@@ -116,11 +114,7 @@ export async function attachScenario(
 /** Adds scenario tokens to an answer's usage without mutating either. */
 export function addScenarioUsage(
   answerUsage: LlmUsage,
-  scenarioUsage: { inputTokens: number; outputTokens: number },
+  scenarioUsage: LlmUsage,
 ): LlmUsage {
-  return {
-    ...answerUsage,
-    inputTokens: answerUsage.inputTokens + scenarioUsage.inputTokens,
-    outputTokens: answerUsage.outputTokens + scenarioUsage.outputTokens,
-  };
+  return addLlmUsage(answerUsage, scenarioUsage);
 }

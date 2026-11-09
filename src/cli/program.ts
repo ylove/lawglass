@@ -34,8 +34,15 @@ import { launchMcp, type McpLauncher } from '../mcp/launch.js';
 import { getSection, searchDocument } from '../mcp/queries.js';
 import { toErrorPayload, ToolError } from '../mcp/errors.js';
 import { UntrustedText } from '../mcp/untrusted.js';
+import {
+  createEstimateRuntime,
+  estimateUrl,
+  formatEstimate,
+  type EstimateRuntime,
+} from './estimate.js';
 
 export interface CliDependencies {
+  estimateRuntime?: () => Promise<EstimateRuntime>;
   init?: (options: {
     force: boolean;
     nonInteractive?: boolean;
@@ -220,6 +227,20 @@ export function createProgram(dependencies: CliDependencies = {}): Command {
         });
       },
     );
+
+  program
+    .command('estimate <url>')
+    .description(
+      'fetch and parse a bill to estimate model costs before any model call',
+    )
+    .option('--json', 'print size facts and the full estimate as JSON')
+    .action(async (url: string, options: { json?: boolean }) => {
+      const runtime = await (
+        dependencies.estimateRuntime ?? createEstimateRuntime
+      )();
+      const report = await estimateUrl(url, runtime);
+      write(options.json ? formatJson(report, false) : formatEstimate(report));
+    });
 
   program
     .command('init')

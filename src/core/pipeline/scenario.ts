@@ -25,7 +25,7 @@ import {
   type ScenarioResponse,
   type SearchHit,
 } from '../model/index.js';
-import type { Registry } from '../registry.js';
+import { registryLlmUsage, type Registry } from '../registry.js';
 import { retrieve } from '../retrieve/index.js';
 import { attachScenario } from '../scenario/attach.js';
 import { SCENARIO_SUBJECT_PROMPT_VERSION } from '../scenario/generate.js';
@@ -165,7 +165,7 @@ export async function runScenario(
       }
 
       const attached = await attachScenario({
-        provider: limits.meter(deps.provider),
+        provider: limits.meter(deps.provider, 'scenario'),
         hits,
         whole: context.mode === 'whole',
         subject,
@@ -176,8 +176,7 @@ export async function runScenario(
       await registry.touch(docId, {
         embedTokens: backendUsage.embedTokens,
         rerankUnits: backendUsage.rerankUnits,
-        llmInputTokens: attached.usage.inputTokens,
-        llmOutputTokens: attached.usage.outputTokens,
+        ...registryLlmUsage(attached.usage),
       });
       return scenarioOutcome(attached.scenario);
     } finally {

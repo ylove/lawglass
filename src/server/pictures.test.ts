@@ -104,7 +104,7 @@ function service(opts: {
     log: (e) => events.push(e),
     cache: new PictureCache({ dir, now: () => clock }),
   });
-  return { svc, events, touch };
+  return { svc, events, touch, usage: touch };
 }
 
 describe('summary pictures', () => {
@@ -113,7 +113,7 @@ describe('summary pictures', () => {
       { pictures: [{ item: 0, panels: [issuePanel] }] },
     ]);
     let summary: SummaryResponse = { status: 'pending' };
-    const { svc, events } = service({
+    const { svc, events, usage } = service({
       provider,
       summary: () => Promise.resolve(summary),
     });
@@ -146,6 +146,12 @@ describe('summary pictures', () => {
     // A later look is a cache hit: no second call.
     expect((await svc.get(DOC, 'summary')).status).toBe('cached');
     expect(provider.calls).toHaveLength(1);
+    expect(usage).toHaveBeenCalledExactlyOnceWith(DOC, {
+      llmInputTokens: 10,
+      llmOutputTokens: 5,
+      llmCacheReadTokens: 0,
+      llmCacheWriteTokens: 0,
+    });
   });
 
   it('a summary without a list, or a disabled one, has nothing to draw', async () => {
@@ -204,6 +210,8 @@ describe('summary pictures', () => {
     expect(touch).toHaveBeenCalledExactlyOnceWith(DOC, {
       llmInputTokens: 20,
       llmOutputTokens: 10,
+      llmCacheReadTokens: 0,
+      llmCacheWriteTokens: 0,
     });
     expect(events).toEqual([
       { event: 'pictures_made', source: 'summary', count: 1, recovered: 1 },
@@ -261,6 +269,8 @@ describe('summary pictures', () => {
     expect(touch).toHaveBeenCalledExactlyOnceWith(DOC, {
       llmInputTokens: 10,
       llmOutputTokens: 5,
+      llmCacheReadTokens: 0,
+      llmCacheWriteTokens: 0,
     });
     expect(await svc.get(DOC, 'summary')).toEqual({ status: 'none' });
   });
@@ -286,6 +296,8 @@ describe('summary pictures', () => {
     expect(touch).toHaveBeenCalledExactlyOnceWith(DOC, {
       llmInputTokens: 10,
       llmOutputTokens: 5,
+      llmCacheReadTokens: 0,
+      llmCacheWriteTokens: 0,
     });
   });
 
@@ -338,6 +350,8 @@ describe('summary pictures', () => {
     expect(touch).toHaveBeenCalledExactlyOnceWith(DOC, {
       llmInputTokens: 10,
       llmOutputTokens: 5,
+      llmCacheReadTokens: 0,
+      llmCacheWriteTokens: 0,
     });
   });
 

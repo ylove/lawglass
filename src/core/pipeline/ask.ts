@@ -30,7 +30,7 @@ import {
   type RetrievedRef,
   type Scenario,
 } from '../model/index.js';
-import type { Registry } from '../registry.js';
+import { registryLlmUsage, type Registry } from '../registry.js';
 import {
   addScenarioUsage,
   attachScenario,
@@ -238,8 +238,7 @@ function recorder(
 ): (usage: AttachedScenario['usage']) => Promise<void> {
   return async (usage) => {
     await registry.touch(docId, {
-      llmInputTokens: usage.inputTokens,
-      llmOutputTokens: usage.outputTokens,
+      ...registryLlmUsage(usage),
     });
   };
 }
@@ -295,7 +294,17 @@ export async function ask(
     result = await askWithinLimits(
       docId,
       checked,
-      { ...deps, provider: limits.meter(deps.provider) },
+      {
+        ...deps,
+        provider: limits.meter(
+          deps.provider,
+          'chipId' in checked
+            ? checked.chipId === 'summary'
+              ? 'summary'
+              : 'chip'
+            : 'question',
+        ),
+      },
       opts,
       started,
     );
@@ -376,8 +385,7 @@ async function askWithinLimits(
     await registry.touch(docId, {
       embedTokens: ran.backendUsage.embedTokens,
       rerankUnits: ran.backendUsage.rerankUnits,
-      llmInputTokens: settled.answer.usage.inputTokens,
-      llmOutputTokens: settled.answer.usage.outputTokens,
+      ...registryLlmUsage(settled.answer.usage),
     });
     return {
       answer: settled.answer,
@@ -472,8 +480,7 @@ async function askWithinLimits(
   await registry.touch(docId, {
     embedTokens: retrieved.usage.embedTokens,
     rerankUnits: retrieved.usage.rerankUnits,
-    llmInputTokens: settled.answer.usage.inputTokens,
-    llmOutputTokens: settled.answer.usage.outputTokens,
+    ...registryLlmUsage(settled.answer.usage),
   });
 
   return {
