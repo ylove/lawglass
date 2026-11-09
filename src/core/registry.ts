@@ -410,12 +410,18 @@ export class Registry {
   async evictionCandidates(
     maxDocs: number,
     listed: ReadonlySet<string> = new Set(),
+    pinned?: (docId: string) => boolean | Promise<boolean>,
   ): Promise<RegistryEntry[]> {
     if (!z.number().int().nonnegative().safeParse(maxDocs).success) {
       throw storageError('The document cap must be a nonnegative integer.');
     }
     const entries = await this.readEntries();
-    return entries
+    // Resolve every pin before returning candidates: a failed host lookup cannot cause deletion.
+    const evictable: RegistryEntry[] = [];
+    for (const entry of entries) {
+      if (!pinned || !(await pinned(entry.docId))) evictable.push(entry);
+    }
+    return evictable
       .sort(
         (a, b) =>
           Number(listed.has(a.docId)) - Number(listed.has(b.docId)) ||
