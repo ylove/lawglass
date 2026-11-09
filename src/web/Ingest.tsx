@@ -55,15 +55,18 @@ export function Ingest({
   api,
   onIngested,
   autoStart,
+  prefill,
 }: {
   api: ApiClient;
   onIngested: (doc: DocSummary, stats: IngestStats) => void;
   /** Read this address as soon as the form appears (an example chosen on the homepage). */
   autoStart?: string;
+  /** Fill the address field without reading it; the reader still has to press the button. */
+  prefill?: string;
 }) {
   const inputId = useId();
   const errorId = useId();
-  const [url, setUrl] = useState(autoStart ?? '');
+  const [url, setUrl] = useState(autoStart ?? prefill ?? '');
   const [fieldError, setFieldError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<Progress | null>(null);

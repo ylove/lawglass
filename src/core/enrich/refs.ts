@@ -1,3 +1,4 @@
+import { findBillMentions } from './bill-refs.js';
 import {
   sectionText,
   walkSections,
@@ -33,6 +34,8 @@ export interface ExternalMatch {
 export interface ExternalOptions {
   /** `metadata.jurisdiction`. The Ohio Revised Code mapping applies only when this says Ohio. */
   jurisdiction?: string | null | undefined;
+  /** `metadata.session`; lets a bare "S. 5" take the congress of the bill that mentions it. */
+  session?: string | null | undefined;
   /**
    * Normalized numbers of the charter sections this document restates. A charter citation links
    * inward only to one of these: an ordinance's own "Section 3" is not the charter's.
@@ -293,6 +296,11 @@ export function findExternalMatches(
     for (const m of text.matchAll(NJ_PUBLIC_LAW))
       add(m, `N.J. P.L.${m[1] ?? ''}, c.${m[2] ?? ''}`, 'state_code');
   }
+  for (const bill of findBillMentions(text, options))
+    found.push({
+      ...bill,
+      kind: 'other',
+    });
   for (const m of text.matchAll(PUBLIC_LAW))
     add(m, `Public Law ${m[1] ?? ''}-${m[2] ?? ''}`, 'public_law');
   for (const m of text.matchAll(CFR))

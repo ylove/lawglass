@@ -189,6 +189,7 @@ export function enrichDocument(
       : new Set();
   const refOptions = {
     jurisdiction: doc.metadata.jurisdiction,
+    session: doc.metadata.session,
     charterSections,
   };
   const externalRefs = collectExternalRefs(
