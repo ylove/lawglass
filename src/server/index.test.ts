@@ -26,9 +26,10 @@ test('the source server entry exports the hosting API without printing, listenin
       globalThis.fetch = forbidden;
       syncBuiltinESMExports();
       const server = await import(${JSON.stringify(source)});
-      for (const name of ['createApp', 'createRuntime', 'securityHeaders', 'contentSecurityPolicy', 'landingPage', 'quickstartHtml']) {
+      for (const name of ['createApp', 'createRuntime', 'securityHeaders', 'contentSecurityPolicy', 'landingPage', 'quickstartHtml', 'modelPrice', 'callDollars', 'billFacts', 'estimateBill', 'estimateQuestion']) {
         assert.equal(typeof server[name], 'function', name);
       }
+      assert.equal(typeof server.PRICES['claude-haiku-5-5'].input, 'number');
     `,
     ],
     { timeout: 40_000 },

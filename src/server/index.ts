@@ -30,3 +30,25 @@ export type {
 } from './serve.js';
 export { SlidingWindowLimiter } from './rate-limit.js';
 export { noopTurnstile, type TurnstileVerifier } from './turnstile.js';
+// The cost table and estimator, so a host prices bills with exactly the rates this server meters
+// with, instead of keeping a copy that can drift on upgrade.
+export {
+  PRICES,
+  modelPrice,
+  callDollars,
+  billFacts,
+  estimateBill,
+  estimateQuestion,
+} from '../core/cost/index.js';
+export type {
+  PriceTable,
+  ModelPrice,
+  CallTokens,
+  BillFacts,
+  BillEstimate,
+  EstimatePlan,
+  FeatureEstimate,
+  TokenEstimate,
+  UsageEvent,
+  JobBudget,
+} from '../core/cost/index.js';
