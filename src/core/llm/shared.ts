@@ -28,13 +28,39 @@ export function requireKey(key: string | undefined): string {
  */
 export class ProviderFailure extends AppError {
   readonly providerStatus: number | undefined;
+  /** The call was cut off by a timeout or abort after the provider may have started work. */
+  readonly timedOut: boolean;
   constructor(
     code: 'PROVIDER_ERROR' | 'PROVIDER_BAD_OUTPUT',
     providerStatus?: number,
+    timedOut = false,
   ) {
     super(code);
     this.providerStatus = providerStatus;
+    this.timedOut = timedOut;
   }
+}
+
+/** A timeout or abort, by name, anywhere in the cause chain (SDK errors wrap the original). */
+function timeoutLike(error: unknown): boolean {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4 && current instanceof Error; depth++) {
+    if (
+      /Timeout|Abort/.test(current.name) ||
+      /Timeout|Abort/.test(current.constructor.name)
+    )
+      return true;
+    current = current.cause;
+  }
+  return false;
+}
+
+/** True for a failure that was a timeout or abort: the provider may have billed work already. */
+export function providerTimedOut(error: unknown): boolean {
+  return (
+    (error instanceof ProviderFailure && error.timedOut) ||
+    (error instanceof Error && /^(AbortError|TimeoutError)$/.test(error.name))
+  );
 }
 
 /** The HTTP status of an SDK error (all three SDKs set `status`), or undefined. */
@@ -60,7 +86,11 @@ export function providerFailure(error: unknown, usage?: LlmUsage): AppError {
   const failure =
     error instanceof AppError && error.code === 'PROVIDER_BAD_OUTPUT'
       ? new ProviderFailure('PROVIDER_BAD_OUTPUT')
-      : new ProviderFailure('PROVIDER_ERROR', httpStatus(error));
+      : new ProviderFailure(
+          'PROVIDER_ERROR',
+          httpStatus(error),
+          timeoutLike(error),
+        );
   // Billed even though nothing usable came back; the usage never carries text.
   const billed = usage ?? (error instanceof AppError ? error.usage : undefined);
   if (billed) failure.usage = billed;

@@ -1299,14 +1299,23 @@ export function createApp(
         makeScope(c, { kind: 'ingest', docId }, { models }),
         async () => {
           const look = { wait: false, start: false } as const;
-          const [s, b] = await Promise.all([
+          const [s, b, ps, pb, ex] = await Promise.all([
             summary.get(docId, look),
             breakdown.get(docId, look),
+            pictures.get(docId, 'summary', look),
+            pictures.get(docId, 'breakdown', look),
+            breakdown.examplesComplete?.(docId) ?? true,
           ]);
+          // Pictures are finished when drawn, or when there was nothing to draw.
+          const drawn = (r: { status: string }): boolean =>
+            r.status === 'cached' || r.status === 'none';
           return (
             s.status === 'cached' &&
             b.status === 'cached' &&
-            b.stoppedReason === undefined
+            b.stoppedReason === undefined &&
+            drawn(ps) &&
+            drawn(pb) &&
+            ex
           );
         },
       );
@@ -1485,18 +1494,17 @@ export function createApp(
                       tier,
                       scope.models,
                     ).catch(() => undefined);
-                    if (!docScopes.has(key))
-                      installScope(
-                        key,
-                        saved
-                          ? scopeFromSaved(
-                              c,
-                              done.doc.docId,
-                              saved,
-                              scope.models,
-                            )
-                          : scope,
-                      );
+                    if (!docScopes.has(key)) {
+                      const restored = saved
+                        ? scopeFromSaved(c, done.doc.docId, saved, scope.models)
+                        : scope;
+                      installScope(key, restored);
+                      // The host's saved scope may be spent; this admission just paid.
+                      if (restored !== scope && !budgetRemaining(restored)) {
+                        topUp(restored, scope);
+                        resumeDoc(done.doc.docId);
+                      }
+                    }
                   }
                 }
                 if (!signal.aborted) await rememberForReader(c, done.doc.docId);

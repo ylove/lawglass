@@ -18,7 +18,7 @@ import {
   type TextRequest,
 } from '../model/index.js';
 import { envVar } from '../brand.js';
-import { providerStatusOf } from '../llm/shared.js';
+import { providerTimedOut } from '../llm/shared.js';
 import {
   NOOP_USAGE_SINK,
   type UsageFeature,
@@ -378,15 +378,11 @@ export class Limits {
 }
 
 /**
- * A provider failure with no HTTP status (a timeout, a dropped connection) may have been billed
- * for work the provider did; an HTTP error (auth, bad request) was not.
+ * Only a timeout or an abort is charged an estimate: the provider had the request and may have
+ * billed work it did. A refused connection, a DNS failure or an HTTP error never got that far.
  */
 function maybeBilled(error: unknown): boolean {
-  return (
-    error instanceof AppError &&
-    error.code === 'PROVIDER_ERROR' &&
-    providerStatusOf(error) === undefined
-  );
+  return providerTimedOut(error);
 }
 
 /** About four characters to a token, rounded up: a bound, not a tokenizer. */

@@ -70,6 +70,12 @@ Admission's fetch and parse hold an ingest slot, write nothing to the fetch cach
 
 A host also must return the REMAINING budget from `backgroundScope`, and should use base64url quote ids (`[A-Za-z0-9_-]`, up to 128): the SPA refuses to confirm any other id with a plain message. A new admission for a (document, tier) whose scope is spent replaces the scope's budget, job id and reader and restarts stopped work; written breakdown parts and pictures are kept until a finished run replaces them.
 
+## Amendment (part B): notes for hosts, round 3
+
+`docComplete` on an ingest admission means the text, the pictures and the pre-drawn examples exist for the reader's tier. A host may then charge nothing, or only for the cached read, but must never allow without a budget.
+
+`topUp` changes the job id and reader of a live scope in place, so calls already in flight when a new admission lands are reported under the new job. A scope restored from `backgroundScope` that is already spent takes the new admission's budget the same way. Only timeouts and aborts are charged an estimate when a provider gives no usage; a refused connection or an HTTP error never reached the provider.
+
 ## Consequences
 
 - The open-source server stays complete on its own. Local mode, `--private` and `--public` are unchanged, and every hook is optional with a no-op default.

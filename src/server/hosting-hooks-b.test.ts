@@ -1270,7 +1270,7 @@ describe('review round 2: an exhausted scope and the parts already written', () 
     expect(after?.job?.jobId).toBe(bobJob);
   });
 
-  test('admission is told when the document is already complete', async () => {
+  test('admission is told when the document is complete: summary, breakdown, pictures and examples', async () => {
     const seen: (boolean | undefined)[] = [];
     const a = app({
       admission: (_c, job) => {
@@ -1285,8 +1285,41 @@ describe('review round 2: an exhausted scope and the parts already written', () 
       expect((await summaryStatus(a, docId)).status).toBe('cached');
       expect((await breakdownOf(a, docId)).status).toBe('cached');
     });
+    // Text is done but the pictures are not drawn yet.
     await ingestDoc(a, 'bob');
-    expect(seen).toEqual([undefined, true]);
+    for (const source of ['summary', 'breakdown']) {
+      await call(a, `/api/docs/${docId}/${source}/pictures`);
+      await vi.waitFor(async () => {
+        const r = (await (
+          await call(a, `/api/docs/${docId}/${source}/pictures`)
+        ).json()) as { status: string };
+        expect(r.status).not.toBe('pending');
+      });
+    }
+    await ingestDoc(a, 'carol');
+    expect(seen).toEqual([undefined, undefined, true]);
+  });
+
+  test('R13: a saved scope that is already spent takes the budget of the reader who pays after a restart', async () => {
+    const docId = await withSummary(app());
+    const a = app({
+      admission: () =>
+        Promise.resolve({ allow: true, budget: { tokens: 1e9 } }),
+      backgroundScope: () =>
+        Promise.resolve({ budget: { tokens: 0 }, jobId: 'alice-spent' }),
+    });
+    await ingestDoc(a, 'bob', {}, many);
+    await call(a, `/api/docs/${docId}/breakdown`, { reader: 'bob' });
+    const done = await vi.waitFor(
+      async () => {
+        const r = await breakdownOf(a, docId, 'bob');
+        expect(r.status).toBe('cached');
+        expect(r.stoppedReason).toBeUndefined();
+        return r;
+      },
+      { timeout: 5000 },
+    );
+    expect(done.briefs?.length).toBe(25);
   });
 });
 

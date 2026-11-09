@@ -512,7 +512,10 @@ describe('failed and abandoned paid calls are charged', () => {
 });
 
 describe('streams and calls that fail after being billed', () => {
-  const timeout = (): AppError => providerFailure(new Error('timed out'));
+  const timeout = (): AppError =>
+    providerFailure(
+      Object.assign(new Error('timed out'), { name: 'TimeoutError' }),
+    );
   it('charges what the provider reported before a mid-stream failure', async () => {
     const p: LlmProvider = {
       id: 'anthropic',
@@ -555,5 +558,42 @@ describe('streams and calls that fail after being billed', () => {
       limits().meter(failWith(unauthorized)).generateObject(objReq),
     ).catch(() => undefined);
     expect(events).toHaveLength(1);
+  });
+});
+
+describe('R14: only timeouts and aborts are charged an estimate', () => {
+  const run = async (error: AppError) => {
+    const p: LlmProvider = {
+      id: 'anthropic',
+      model: 'claude-sonnet-5-5',
+
+      async *streamText() {
+        await Promise.resolve();
+        throw error;
+      },
+      generateObject: () => Promise.reject(error),
+    };
+    const s = scope({ budget: { tokens: 1e9 } });
+    const m = limits().meter(p);
+    await runInJob(s, () => m.generateObject(objReq)).catch(() => undefined);
+    await runInJob(s, async () => {
+      for await (const e of m.streamText(textReq)) expect(e).toBeDefined();
+    }).catch(() => undefined);
+    return s.spent.calls;
+  };
+  const named = (name: string) => Object.assign(new Error('x'), { name });
+
+  it('a refused connection, a DNS failure and an HTTP error are not charged', async () => {
+    expect(await run(providerFailure(named('Error')))).toBe(0);
+    expect(await run(providerFailure(named('FetchError')))).toBe(0);
+    expect(await run(providerFailure({ status: 529 }))).toBe(0);
+  });
+
+  it('the provider timeout and our own abort are charged', async () => {
+    expect(await run(providerFailure(named('APIConnectionTimeoutError')))).toBe(
+      2,
+    );
+    expect(await run(providerFailure(named('TimeoutError')))).toBe(2);
+    expect(await run(providerFailure(named('AbortError')))).toBe(2);
   });
 });

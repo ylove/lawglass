@@ -43,6 +43,8 @@ import {
 export interface PictureRequestOptions {
   /** False answers at once (HEAD, tests); default waits up to `waitMs` for a run in progress. */
   wait?: boolean;
+  /** False only reports: cached pictures, or `pending`; never starts a run. */
+  start?: boolean;
   signal?: AbortSignal;
   onError?: (error: unknown, ms: number) => void;
 }
@@ -264,6 +266,7 @@ export function createPictureService(
       const done = request.signal?.aborted ? undefined : await cache.get(key);
       return done ? respond(done) : { status: 'pending' };
     }
+    if (request.start === false) return { status: 'pending' };
     const halted = stopped.get(name);
     if (halted && !(budgetRemaining() && now() - halted.at >= FAILED_RETRY_MS))
       return respond(halted.entries);

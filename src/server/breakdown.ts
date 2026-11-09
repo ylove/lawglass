@@ -68,6 +68,8 @@ export interface BreakdownService {
   get(docId: string, options?: RequestOptions): Promise<BreakdownResponse>;
   /** A document was just paid for: forget its failure cool-downs and let a budget-stopped run go on. */
   resume?(docId: string): void;
+  /** True when the pre-drawn examples for this tier are all stored (or none are drawn ahead). */
+  examplesComplete?(docId: string): Promise<boolean>;
   example(
     docId: string,
     sectionId: string,
@@ -433,5 +435,30 @@ export function createBreakdownService(
       if (name.startsWith(`${docId}:`)) halted.at = Number.NEGATIVE_INFINITY;
   }
 
-  return { get, example, resume };
+  async function examplesComplete(docId: string): Promise<boolean> {
+    if (!pregenerationEnabled(options.pregenerate) || options.publicMode)
+      return true;
+    const llm = provider();
+    if (!llm) return true;
+    const doc = await registry.getDocument(docId);
+    const context = await documentContext(runtime.backend, docId, doc.sections);
+    if (context.mode !== 'whole') return true;
+    const hit = await breakdowns.get(
+      breakdownCacheKey(docId, llm, runtime.answerEndpoint, context.mode),
+    );
+    const available =
+      hit?.briefs.filter((b) => b.example === 'available') ?? [];
+    if (!hit || available.length > MAX_PREGENERATED_EXAMPLES)
+      return Boolean(hit);
+    for (const { sectionId } of available)
+      if (
+        !(await examples.has(
+          sectionExampleKey(docId, sectionId, llm, context.mode),
+        ))
+      )
+        return false;
+    return true;
+  }
+
+  return { get, example, resume, examplesComplete };
 }
