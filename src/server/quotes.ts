@@ -50,6 +50,8 @@ export interface QuoteOptions {
   allowInPublicMode?: boolean;
   /** Quotes per client address per hour in hosted modes. Default 20. */
   perHour?: number;
+  /** Quotes and, separately, ingests per signed-in reader per hour in auth and private modes. Default 60. */
+  perReaderPerHour?: number;
 }
 
 export const QUOTE_TTL_MS = 30 * 60 * 1000;

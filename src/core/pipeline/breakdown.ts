@@ -131,7 +131,7 @@ export async function runBreakdown(
       rerankUnits: made.backendUsage.rerankUnits,
       ...registryLlmUsage(made.usage),
     });
-    if (made.briefs.length === 0) return undefined;
+    if (made.briefs.length === 0 && !made.stoppedReason) return undefined;
     return {
       briefs: made.briefs,
       // Parts left out by choice, plus parts whose brief could not be made or checked.
@@ -139,6 +139,7 @@ export async function runBreakdown(
       context: context.mode,
       provider: deps.provider.id,
       model: deps.provider.model,
+      ...(made.stoppedReason ? { stoppedReason: made.stoppedReason } : {}),
     };
   });
 }

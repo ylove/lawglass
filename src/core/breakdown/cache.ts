@@ -36,6 +36,8 @@ const StoredBreakdown = z.object({
   context: z.enum(['whole', 'excerpts']),
   provider: z.string(),
   model: z.string(),
+  /** A run the job's budget cut short. Never written to the cache: a later run with budget resumes. */
+  stoppedReason: z.literal('budget').optional(),
 });
 export type StoredBreakdown = z.infer<typeof StoredBreakdown>;
 
@@ -140,7 +142,7 @@ export class BreakdownCache {
         const hit = await this.get(key);
         if (hit) return hit;
         const result = await compute();
-        if (result && result.briefs.length > 0)
+        if (result && !result.stoppedReason && result.briefs.length > 0)
           await this.store(key, result, startedAt).catch(() => undefined);
         return result;
       })

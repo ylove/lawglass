@@ -3,71 +3,25 @@
 // quote's id. This repository never computes or shows a price of its own: any price text comes
 // from the host, in `quote.display`.
 import { useEffect, useId, useRef } from 'react';
-import { z } from 'zod';
 import type { ApiClient } from './api.js';
 import { emitEvent } from './events.js';
-import { ApiError } from './sse.js';
+import { withQuoteFlow, type QuoteView } from './quote-flow.js';
 
-/** What the dialog reads from the host's quote object. Everything is optional and unknown keys are ignored. */
-const QuoteView = z.object({
-  quoteId: z.string().min(1).max(128).optional(),
-  /** Price or terms text, written by the host. Shown as plain text. */
-  display: z.string().max(500).optional(),
-  facts: z
-    .object({
-      pages: z.number().nullable().optional(),
-      sections: z.number().optional(),
-      tokens: z.number().optional(),
-      mode: z.string().optional(),
-      units: z.number().optional(),
-    })
-    .optional(),
-});
-export type QuoteView = z.infer<typeof QuoteView>;
+export { CANCELLED, parseQuote, type QuoteView } from './quote-flow.js';
 
-export function parseQuote(raw: unknown): QuoteView {
-  const parsed = QuoteView.safeParse(raw);
-  return parsed.success ? parsed.data : {};
-}
-
-export const CANCELLED = 'You cancelled that request.';
-
-type Confirm = (quote: QuoteView) => Promise<boolean>;
-
-/**
- * Retries a request once, with the quote's id, after the reader confirms a 402. Only ingest and
- * questions can be quoted; every other call passes through untouched.
- */
+/** The quote flow, announcing the dialog and the reader's confirmation as reader events. */
 export function withQuoteConfirmation(
   api: ApiClient,
-  confirm: Confirm,
+  confirm: (quote: QuoteView) => Promise<boolean>,
 ): ApiClient {
-  async function* retrying<T>(
-    run: (quoteId: string | undefined) => AsyncIterable<T>,
-  ): AsyncGenerator<T> {
-    try {
-      yield* run(undefined);
-      return;
-    } catch (e) {
-      if (!(e instanceof ApiError) || e.code !== 'PAYMENT_REQUIRED') throw e;
-      const quote = parseQuote(e.quote);
+  return withQuoteFlow(api, confirm, {
+    shown: () => {
       emitEvent('quote_shown');
-      if (!(await confirm(quote))) throw new ApiError('CANCELLED', CANCELLED);
+    },
+    confirmed: () => {
       emitEvent('quote_confirmed');
-      yield* run(quote.quoteId);
-    }
-  }
-  return {
-    ...api,
-    ingest: (req, signal) =>
-      retrying((quoteId) =>
-        api.ingest(quoteId ? { ...req, quoteId } : req, signal),
-      ),
-    ask: (docId, req, signal) =>
-      retrying((quoteId) =>
-        api.ask(docId, quoteId ? { ...req, quoteId } : req, signal),
-      ),
-  };
+    },
+  });
 }
 
 const number = new Intl.NumberFormat('en-US');

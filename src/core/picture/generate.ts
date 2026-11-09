@@ -82,6 +82,8 @@ export interface DrawnPictures {
   retried: number;
   recovered: number;
   usage: LlmUsage;
+  /** Set when the job's budget ended the run; the entries are what was drawn before. */
+  stoppedReason?: 'budget';
 }
 
 export async function drawPictures(input: {
@@ -96,6 +98,7 @@ export async function drawPictures(input: {
   const usage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
   let retried = 0;
   let recovered = 0;
+  let stoppedReason: 'budget' | undefined;
 
   async function generate(
     prompt: string,
@@ -133,7 +136,10 @@ export async function drawPictures(input: {
       reply = await generate(picturePrompt(batch), 2);
     } catch (error) {
       // A spent job budget ends the run cleanly: the pictures already drawn are kept.
-      if (isBudgetExhausted(error)) break;
+      if (isBudgetExhausted(error)) {
+        stoppedReason = 'budget';
+        break;
+      }
       throw error;
     }
     if (!reply) continue;
@@ -169,6 +175,7 @@ export async function drawPictures(input: {
       } catch (error) {
         // The first draws are valid; keep them and stop.
         if (!isBudgetExhausted(error)) throw error;
+        stoppedReason = 'budget';
       }
       if (redrawn) {
         const rechecked = validatePictures(redrawn, retryItems);
@@ -189,5 +196,12 @@ export async function drawPictures(input: {
     dropped.push(...failures.values());
   }
   entries.sort((a, b) => a.item - b.item);
-  return { entries, dropped, retried, recovered, usage };
+  return {
+    entries,
+    dropped,
+    retried,
+    recovered,
+    usage,
+    ...(stoppedReason ? { stoppedReason } : {}),
+  };
 }

@@ -11,7 +11,12 @@
  * `_MAX_CONCURRENT_ASK`, `_MAX_CONCURRENT_CLAUDE_CLI` and `_MAX_CALLS_PER_MINUTE`
  * (not `ConfigSettings`, which is strict).
  */
-import { AppError, type LlmProvider, type LlmUsage } from '../model/index.js';
+import {
+  AppError,
+  type LlmProvider,
+  type LlmUsage,
+  type TextRequest,
+} from '../model/index.js';
 import { envVar } from '../brand.js';
 import {
   NOOP_USAGE_SINK,
@@ -261,10 +266,15 @@ export class Limits {
    */
   meter(provider: LlmProvider, feature: UsageFeature = 'unknown'): LlmProvider {
     const sink = this.configuredSink;
+    const objectFeature = (schemaName: string): UsageFeature =>
+      schemaName === 'scenario' && feature !== 'examples'
+        ? 'scenario'
+        : feature;
     // Accounting failures must not discard a paid-for model answer or cause a retry.
     const report = async (
       usage: LlmUsage,
       callFeature = feature,
+      estimated = false,
     ): Promise<void> => {
       // Read when the call finishes, inside the async chain that made it (ADR 0018, section 5).
       const job = currentJob();
@@ -273,6 +283,7 @@ export class Limits {
         feature: callFeature,
         model: provider.model,
         usage: { ...usage },
+        ...(estimated ? { estimated: true } : {}),
         ...(job ? { job: { ...job.context } } : {}),
       };
       try {
@@ -298,28 +309,85 @@ export class Limits {
       streamText: (req) => {
         assertBudget();
         this.ceiling.admit();
-        const stream = provider.streamText(req);
+        let partial: LlmUsage | undefined;
+        const stream = provider.streamText({
+          ...req,
+          onPartialUsage: (usage) => {
+            partial = usage;
+            req.onPartialUsage?.(usage);
+          },
+        });
         return (async function* () {
-          for await (const event of stream) {
-            if (event.type === 'done') await report(event.usage);
-            yield event;
+          let finished = false;
+          let failed = false;
+          let chars = 0;
+          try {
+            for await (const event of stream) {
+              if (event.type === 'text') chars += event.text.length;
+              if (event.type === 'done') {
+                finished = true;
+                await report(event.usage);
+              }
+              yield event;
+            }
+          } catch (error) {
+            failed = true;
+            if (!finished && error instanceof AppError && error.usage)
+              await report(error.usage);
+            else if (!finished && req.signal?.aborted)
+              await report(guess(req, chars), feature, true);
+            throw error;
+          } finally {
+            // The reader left mid-answer: the provider billed what it had produced so far.
+            if (!finished && !failed)
+              await (partial
+                ? report(partial)
+                : report(guess(req, chars), feature, true));
           }
         })();
       },
       generateObject: async (req) => {
         assertBudget();
         this.ceiling.admit();
-        const result = await provider.generateObject(req);
-        await report(
-          result.usage,
-          req.schemaName === 'scenario' && feature !== 'examples'
-            ? 'scenario'
-            : feature,
-        );
+        let result;
+        try {
+          result = await provider.generateObject(req);
+        } catch (error) {
+          // A reply that arrived but was unusable (cut off, invalid) was still billed.
+          if (error instanceof AppError && error.usage)
+            await report(error.usage, objectFeature(req.schemaName));
+          else if (req.signal?.aborted)
+            await report(
+              { inputTokens: promptTokens(req), outputTokens: req.maxTokens },
+              objectFeature(req.schemaName),
+              true,
+            );
+          throw error;
+        }
+        await report(result.usage, objectFeature(req.schemaName));
         return result;
       },
     };
   }
+}
+
+/** About four characters to a token, rounded up: a bound, not a tokenizer. */
+function promptTokens(req: {
+  system: string;
+  messages?: unknown;
+  prompt?: unknown;
+}): number {
+  return Math.ceil(
+    (req.system.length + JSON.stringify(req.messages ?? req.prompt).length) / 4,
+  );
+}
+
+/** What an abandoned stream is charged when the provider could not say: the prompt plus what was read. */
+function guess(req: TextRequest, chars: number): LlmUsage {
+  return {
+    inputTokens: promptTokens(req),
+    outputTokens: Math.min(req.maxTokens, Math.ceil(chars / 4)),
+  };
 }
 
 /** A positive integer from the environment; anything else (unset, 0, "abc") keeps the default. */

@@ -17,6 +17,7 @@ import { BRAND, envVar } from '../core/brand.js';
 import {
   AppError,
   AskRequest,
+  type NormalizedDoc,
   CandidateLink,
   ClientConfig,
   DocSummary,
@@ -30,6 +31,7 @@ import { parsePdf as defaultParsePdf } from '../core/parse/index.js';
 import { readParseLimits } from '../core/parse/limits.js';
 import { ask, ingest, sectionExcerpt } from '../core/pipeline/index.js';
 import { fetchAndParseDocument } from '../core/pipeline/ingest.js';
+import { sharedLimits } from '../core/pipeline/limits.js';
 import {
   billFacts,
   newSpend,
@@ -37,7 +39,6 @@ import {
   type BillEstimate,
   type BillFacts,
   type FeatureEstimate,
-  type JobBudget,
   type JobKind,
   type JobScope,
   type ModelAssignment,
@@ -69,6 +70,8 @@ import {
   AdmissionRefused,
   interpretAdmission,
   type AdmissionHook,
+  type BackgroundScopeHook,
+  type SavedScope,
   type AdmissionJob,
   type ModelForHook,
 } from './admission.js';
@@ -138,18 +141,11 @@ export interface AppOptions {
   /** Chooses the answer and extract models for a job. Cache keys include the model. */
   modelFor?: ModelForHook;
   /**
-   * Consulted when background work for a document starts and no live scope exists (the first
-   * request after a restart, a resumed run). Return the persisted budget, models and job id, or
-   * undefined when the document is unknown. With `admission` set, unknown means no paid work.
+   * Consulted when background work for a (document, tier) starts and no live scope exists (the
+   * first request after a restart, a resumed run). Return the persisted REMAINING budget, models
+   * and job id, or undefined when unknown, which means no paid work. Required with `admission`.
    */
-  backgroundScope?: (docId: string) => Promise<
-    | {
-        budget?: JobBudget;
-        models?: { answer?: string; extract?: string };
-        jobId?: string;
-      }
-    | undefined
-  >;
+  backgroundScope?: BackgroundScopeHook;
   /** Quote API settings and the plans admission estimates use. */
   quote?: QuoteOptions;
   publicMode?: boolean;
@@ -234,6 +230,11 @@ export function createApp(
   )
     throw invalid('External auth requires middleware and readerId functions.');
   const auth = options.auth;
+  // Without it a restart would leave every document's background generation unbudgeted.
+  if (options.admission && !options.backgroundScope)
+    throw invalid(
+      'admission requires backgroundScope: background generation needs a persisted budget.',
+    );
   if (auth && (privateMode || publicMode))
     throw invalid(
       'External auth cannot be combined with privateMode or publicMode.',
@@ -540,6 +541,17 @@ export function createApp(
   const estimating =
     options.admission !== undefined || options.modelFor !== undefined;
   const quotes = new QuoteStore(now);
+  // Per signed-in reader (auth and private modes), so one account cannot drive unbounded fetches.
+  const readerQuotes = new SlidingWindowLimiter(
+    options.quote?.perReaderPerHour ?? 60,
+    HOUR_MS,
+    now,
+  );
+  const readerIngests = new SlidingWindowLimiter(
+    options.quote?.perReaderPerHour ?? 60,
+    HOUR_MS,
+    now,
+  );
   const quoteLimiter = new SlidingWindowLimiter(
     options.quote?.perHour ?? 20,
     HOUR_MS,
@@ -572,54 +584,128 @@ export function createApp(
     quoteTiers(options.quote, configuredModels);
   const defaultAssignment = (): ModelAssignment => firstOf(tiers());
 
-  const resolving = new Map<string, Promise<JobScope>>();
+  // --- generation scopes: one per (document, tier) -------------------------------------------
+  const tierName = (models: ModelChoice | undefined): string =>
+    `${models?.answer ?? 'default'}+${models?.extract ?? 'default'}`;
+  const scopeKey = (docId: string, tier: string): string => `${docId}\n${tier}`;
+  const installScope = (key: string, scope: JobScope): JobScope => {
+    if (docScopes.size >= DOC_SCOPE_CAP) evictOldest(docScopes);
+    docScopes.set(key, scope);
+    return scope;
+  };
+  /** Zero budget: every model call is refused, so only cached results are served. */
+  const failClosed = (
+    c: Context,
+    docId: string,
+    models: ModelChoice | undefined,
+  ): JobScope =>
+    makeScope(
+      c,
+      { kind: 'ingest', docId },
+      { budget: { tokens: 0, dollars: 0 }, models },
+    );
+
+  const LOOKUP_TTL_MS = 60_000;
+  const LOOKUP_CAP = 2000;
+  const lookups = new Map<
+    string,
+    { at: number; value: Promise<SavedScope | undefined> }
+  >();
+  /** The host's persisted scope for (document, tier), asked at most once a minute. */
+  function lookupSaved(
+    docId: string,
+    tier: string,
+    models: ModelChoice | undefined,
+  ): Promise<SavedScope | undefined> {
+    const key = scopeKey(docId, tier);
+    const hit = lookups.get(key);
+    if (hit && now() - hit.at < LOOKUP_TTL_MS) return hit.value;
+    const hook = options.backgroundScope;
+    if (!hook) return Promise.resolve(undefined);
+    const value = Promise.resolve().then(() => hook(docId, tier, models));
+    const entry = { at: now(), value };
+    if (lookups.size >= LOOKUP_CAP) evictOldest(lookups);
+    lookups.set(key, entry);
+    // A failed lookup is not remembered: the next paid request asks again.
+    value.catch(() => {
+      if (lookups.get(key) === entry) lookups.delete(key);
+    });
+    return value;
+  }
+
+  function scopeFromSaved(
+    c: Context,
+    docId: string,
+    saved: SavedScope,
+    fallback: ModelChoice | undefined,
+  ): JobScope {
+    const budget = saved.budget;
+    if (budget !== undefined && !validBudget(budget))
+      throw new Error('Invalid job budget.');
+    const scope = makeScope(
+      c,
+      { kind: 'ingest', docId },
+      { budget, models: checkedChoice(saved.models) ?? fallback },
+    );
+    if (typeof saved.jobId === 'string' && saved.jobId.length > 0)
+      scope.context.jobId = saved.jobId;
+    return scope;
+  }
+
+  /** The tier the reader's work runs on: what `modelFor` resolves for them on this document. */
+  async function readerModels(
+    c: Context,
+    docId: string,
+  ): Promise<ModelChoice | undefined> {
+    if (!options.modelFor) return undefined;
+    const estimates = estimatesFor(
+      await factsFor(docId),
+      tiers(),
+      options.quote,
+    );
+    return checkedChoice(
+      options.modelFor(
+        { kind: 'ingest', docId, estimate: firstOf(estimates), estimates },
+        c,
+      ),
+    );
+  }
+
   /**
-   * The scope background work for a document runs in: the live one from its first admitted
-   * ingest, else what the host persisted (`backgroundScope`), else, without that hook, the
-   * requester standing in (today's behaviour). When the host does not know the document and
-   * admission is configured, the scope has a zero budget: every model call is refused, so only
-   * cached results are served. That scope is not remembered, so the host is asked again.
+   * The scope background work for (document, tier) runs in: the live one; else what the host
+   * persisted (`backgroundScope`); else, when the host does not know it, a zero budget (cached
+   * results only). Without the hook (no `admission` either) the requester stands in, as before.
    */
-  function resolveDocScope(c: Context, docId: string): Promise<JobScope> {
-    const live = docScopes.get(docId);
-    if (live) return Promise.resolve(live);
-    if (!options.backgroundScope)
-      return Promise.resolve(makeScope(c, { kind: 'ingest', docId }, {}));
-    let pending = resolving.get(docId);
-    if (!pending) {
-      const lookup = options.backgroundScope;
-      pending = (async () => {
-        const saved = await lookup(docId);
-        if (!saved) {
-          const scope = makeScope(
-            c,
-            { kind: 'ingest', docId },
-            options.admission ? { budget: { tokens: 0, dollars: 0 } } : {},
-          );
-          return scope;
-        }
-        const budget = saved.budget;
-        if (budget !== undefined && !validBudget(budget))
-          throw new Error('Invalid job budget.');
-        const scope = makeScope(
-          c,
-          { kind: 'ingest', docId },
-          {
-            budget,
-            models: checkedChoice(saved.models),
-          },
-        );
-        if (typeof saved.jobId === 'string' && saved.jobId.length > 0)
-          scope.context.jobId = saved.jobId;
-        if (docScopes.size >= DOC_SCOPE_CAP) evictOldest(docScopes);
-        docScopes.set(docId, scope);
-        return scope;
-      })().finally(() => {
-        resolving.delete(docId);
-      });
-      resolving.set(docId, pending);
+  async function resolveDocScope(c: Context, docId: string): Promise<JobScope> {
+    let models: ModelChoice | undefined;
+    try {
+      models = await readerModels(c, docId);
+    } catch {
+      return options.admission
+        ? failClosed(c, docId, undefined)
+        : makeScope(c, { kind: 'ingest', docId }, {});
     }
-    return pending;
+    const tier = tierName(models);
+    const key = scopeKey(docId, tier);
+    const live = docScopes.get(key);
+    if (live) return live;
+    if (!options.backgroundScope)
+      return makeScope(c, { kind: 'ingest', docId }, { models });
+    let saved: SavedScope | undefined;
+    try {
+      saved = await lookupSaved(docId, tier, models);
+    } catch {
+      // A host outage stops paid work only; cached reads are still served.
+      return failClosed(c, docId, models);
+    }
+    if (!saved)
+      return options.admission
+        ? failClosed(c, docId, models)
+        : makeScope(c, { kind: 'ingest', docId }, { models });
+    return (
+      docScopes.get(key) ??
+      installScope(key, scopeFromSaved(c, docId, saved, models))
+    );
   }
 
   /** A host's model choice, kept only when it is a pair of nonempty strings. */
@@ -720,23 +806,36 @@ export function createApp(
     const models =
       job.kind !== 'example' && options.modelFor
         ? checkedChoice(
-            options.modelFor({ ...fields, estimate: estimateFor(inherited) }),
+            options.modelFor(
+              { ...fields, estimate: estimateFor(inherited) },
+              c,
+            ),
           )
         : inherited;
     const { budget } = await consult(c, {
       ...fields,
+      tier: tierName(models),
       estimate: estimateFor(models),
     });
     return makeScope(c, job, { budget, models });
   }
 
-  // Background generation runs under the first admitted ingest's scope. After a restart that
-  // scope is gone: `backgroundScope` restores it, or the requester stands in (see above).
+  // Background generation runs under the scope of its (document, tier); see `resolveDocScope`.
+  // Only routes that can start generation resolve it, and only once per request.
   if (hooked) {
+    const GENERATES =
+      /^\/api\/docs\/[^/]+\/(?:summary|breakdown|(?:summary|breakdown)\/pictures|sections\/[^/]+\/example)$/;
+    const resolved = new WeakSet<Request>();
     const inDocScope: MiddlewareHandler = async (c, next) => {
-      if (c.req.method !== 'GET' && c.req.method !== 'HEAD') return next();
       const docId = c.req.param('docId');
-      if (!docId) return next();
+      if (
+        (c.req.method !== 'GET' && c.req.method !== 'HEAD') ||
+        !docId ||
+        !GENERATES.test(c.req.path) ||
+        resolved.has(c.req.raw)
+      )
+        return next();
+      resolved.add(c.req.raw);
       await runInJob(await resolveDocScope(c, docId), next);
     };
     app.use('/api/docs/:docId', inDocScope);
@@ -1103,16 +1202,26 @@ export function createApp(
 
   /** Fetch and parse only, down the same path ingest takes: no model, no embedding, no registry. */
   async function measure(url: string, signal: AbortSignal) {
-    const doc = await fetchAndParseDocument(
-      url,
-      {
-        fetcher: ingestFetcher(),
-        now: runtime.now,
-        parsePdf: runtime.parsePdf ?? defaultParsePdf,
-        parseLimits: ingestParseLimits(),
-      },
-      signal,
-    );
+    // The same concurrency pool as an ingest, so a burst of quotes or refused ingests cannot
+    // start more downloads and parses than ingests could.
+    const release = await sharedLimits().acquire('ingest', signal);
+    let doc;
+    try {
+      doc = await fetchAndParseDocument(
+        url,
+        {
+          fetcher: ingestFetcher(),
+          now: runtime.now,
+          parsePdf: runtime.parsePdf ?? defaultParsePdf,
+          parseLimits: ingestParseLimits(),
+        },
+        signal,
+        // A quote stores nothing, not even the download.
+        { commitCache: false },
+      );
+    } finally {
+      release();
+    }
     const facts = billFacts(doc.sections);
     return {
       doc,
@@ -1137,6 +1246,8 @@ export function createApp(
     if (publicMode) await guardPublic(c, quoteLimiter, body.turnstileToken);
     else if (hosted && !quoteLimiter.take(clientIp(c)))
       throw new AppError('RATE_LIMITED');
+    if (hosted && !publicMode && !readerQuotes.take(readerFor(c)))
+      throw new AppError('RATE_LIMITED');
     const measured = await measure(body.url, c.req.raw.signal);
     const { quoteId } = quotes.add({
       url: body.url,
@@ -1154,38 +1265,59 @@ export function createApp(
 
   /**
    * Admission for an ingest, new or reused. Needs the bill's size, so it fetches and parses
-   * first (or reuses the quote the reader confirmed); no model has been called yet.
+   * first (or reuses the quote this server issued to the reader); no model has been called yet.
+   * The measured document is handed to the ingest so it is parsed once, and the ingest refuses
+   * if the bytes it fetches turn out to be a different document.
    */
   async function admitIngest(
     c: Context,
     body: { url: string; quoteId?: string | undefined },
-  ): Promise<JobScope | undefined> {
+  ): Promise<
+    | { scope: JobScope; admitted?: { docId: string; doc?: NormalizedDoc } }
+    | undefined
+  > {
     if (!hooked) return undefined;
-    if (!estimating) return makeScope(c, { kind: 'ingest' }, {});
+    if (!estimating) return { scope: makeScope(c, { kind: 'ingest' }, {}) };
     const live = quotes.get(body.quoteId, readerFor(c), body.url);
-    let docId: string;
+    let admitted: { docId: string; doc?: NormalizedDoc };
     let estimates: Record<string, BillEstimate>;
     if (live) {
-      docId = live.contentHash;
+      admitted = { docId: live.contentHash };
       estimates = live.estimates;
     } else {
       const measured = await measure(body.url, c.req.raw.signal);
-      docId = measured.doc.docId;
+      admitted = { docId: measured.doc.docId, doc: measured.doc };
       estimates = measured.estimates;
     }
-    const first = firstOf(estimates);
     const fields = {
       kind: 'ingest' as const,
-      docId,
-      ...(live && body.quoteId ? { quoteId: body.quoteId } : {}),
-      estimate: first,
+      docId: admitted.docId,
+      // The host's own quote id is passed as sent; a matching quote of ours rides alongside.
+      ...(body.quoteId ? { quoteId: body.quoteId } : {}),
+      ...(live
+        ? {
+            serverQuote: {
+              contentHash: live.contentHash,
+              facts: live.facts,
+              estimates: live.estimates,
+            },
+          }
+        : {}),
+      estimate: firstOf(estimates),
       estimates,
     };
     const models = options.modelFor
-      ? checkedChoice(options.modelFor(fields))
+      ? checkedChoice(options.modelFor(fields, c))
       : undefined;
-    const { budget } = await consult(c, fields);
-    return makeScope(c, { kind: 'ingest', docId }, { budget, models });
+    const { budget } = await consult(c, { ...fields, tier: tierName(models) });
+    return {
+      scope: makeScope(
+        c,
+        { kind: 'ingest', docId: admitted.docId },
+        { budget, models },
+      ),
+      admitted,
+    };
   }
 
   app.post('/api/ingest', async (c) => {
@@ -1203,7 +1335,10 @@ export function createApp(
       });
     if (hosted) checkIngestHost(body.url, hosts);
     await guardPublic(c, ingests, body.turnstileToken);
-    const scope = await admitIngest(c, body);
+    if (hosted && !publicMode && !readerIngests.take(readerFor(c)))
+      throw new AppError('RATE_LIMITED');
+    const admission = await admitIngest(c, body);
+    const scope = admission?.scope;
 
     // Resource policy reaches both the default parser and runtime-injected parsers.
     const parsePdf = runtime.parsePdf ?? defaultParsePdf;
@@ -1249,6 +1384,7 @@ export function createApp(
                   : {}),
                 parseLimits: ingestParseLimits(),
                 parsePdf,
+                admitted: admission?.admitted,
                 onReferenceSkip: log.referenceSkipped,
               },
               {
@@ -1274,9 +1410,28 @@ export function createApp(
                 if (scope) {
                   // The first admitted ingest of a document owns its background generation.
                   scope.context.docId = done.doc.docId;
-                  if (!docScopes.has(done.doc.docId)) {
-                    if (docScopes.size >= DOC_SCOPE_CAP) evictOldest(docScopes);
-                    docScopes.set(done.doc.docId, scope);
+                  const tier = tierName(scope.models);
+                  const key = scopeKey(done.doc.docId, tier);
+                  if (!docScopes.has(key)) {
+                    // After a restart the host may already hold this tier's scope (and what is
+                    // left of its budget); that wins over the scope of the ingest that came first.
+                    const saved = await lookupSaved(
+                      done.doc.docId,
+                      tier,
+                      scope.models,
+                    ).catch(() => undefined);
+                    if (!docScopes.has(key))
+                      installScope(
+                        key,
+                        saved
+                          ? scopeFromSaved(
+                              c,
+                              done.doc.docId,
+                              saved,
+                              scope.models,
+                            )
+                          : scope,
+                      );
                   }
                 }
                 if (!signal.aborted) await rememberForReader(c, done.doc.docId);

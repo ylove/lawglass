@@ -124,6 +124,12 @@ export interface IngestDeps {
    */
   admit?: ((docId: string, known: boolean) => Promise<boolean>) | undefined;
   parsePdf?: PdfParser | undefined;
+  /**
+   * A document a host already fetched and parsed to size and admit this ingest (ADR 0018). The
+   * ingest reuses its parse instead of parsing again, and refuses with PAYMENT_REQUIRED if the
+   * bytes it fetches now are a different document, so the reader is quoted again.
+   */
+  admitted?: { docId: string; doc?: NormalizedDoc | undefined } | undefined;
   /** Told when a U.S. Code reference could not be read: the citation and an error code only. */
   onReferenceSkip?: ((citation: string, code: string) => void) | undefined;
 }
@@ -619,11 +625,14 @@ export async function fetchAndParseDocument(
   url: string,
   deps: ReadDocumentDeps,
   signal?: AbortSignal,
+  /** False for a quote or an admission check: nothing is written to the fetch cache. */
+  options: { commitCache?: boolean } = {},
 ): Promise<NormalizedDoc> {
   const { fetched } = await fetchIngestDocument(url, deps, signal);
   const doc = await parseFetched(fetched, deps, signal);
   signal?.throwIfAborted();
-  await fetched.commitCache?.().catch(() => undefined);
+  if (options.commitCache !== false)
+    await fetched.commitCache?.().catch(() => undefined);
   return doc;
 }
 
@@ -637,6 +646,15 @@ async function ingestWithinLimits(
   opts.onProgress?.({ stage: 'fetching', detail: url });
   const { fetched, attachment } = await fetchIngestDocument(url, deps, signal);
   const docId = fetched.docId;
+  if (deps.admitted && deps.admitted.docId !== docId)
+    throw new AppError(
+      'PAYMENT_REQUIRED',
+      'The bill changed after admission.',
+      {
+        userMessage:
+          'This bill changed after it was quoted. Please start again to get a new quote.',
+      },
+    );
   return withDocLock(docId, () =>
     ingestLocked(docId, fetched, deps, opts, attachment),
   );
@@ -707,7 +725,10 @@ async function ingestLocked(
     ({ doc, chunks } = chunkAndEnrich(cachedDoc, deps, signal));
   } else {
     progress({ stage: 'parsing' });
-    const parsed = await parseFetched(fetched, deps, signal);
+    const parsed =
+      deps.admitted?.docId === docId && deps.admitted.doc
+        ? deps.admitted.doc
+        : await parseFetched(fetched, deps, signal);
     signal?.throwIfAborted();
     // Raw bytes reach the disk cache only once they have parsed, so a page that fails to parse
     // (or is not a bill at all) never lands there. The cache is an optimization: a write failure

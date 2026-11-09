@@ -303,7 +303,9 @@ describe('budgets', () => {
     const out = await runInJob(scope({ budget: { tokens: 20 } }), run);
     expect(base.breakdownCalls).toBe(1);
     expect(out.briefs).toHaveLength(10);
-    expect(out.dropped).toBe(15);
+    // The 15 parts the budget never reached are not counted as dropped.
+    expect(out.dropped).toBe(0);
+    expect(out.stoppedReason).toBe('budget');
   });
 
   it('pictures stop cleanly and keep what was drawn', async () => {
@@ -330,5 +332,180 @@ describe('budgets', () => {
     );
     expect(base.calls).toHaveLength(1);
     expect(drawn.entries.length).toBeGreaterThan(0);
+  });
+});
+
+describe('failed and abandoned paid calls are charged', () => {
+  const billedFailure = (usage: LlmUsage): AppError => {
+    const error = new AppError('PROVIDER_BAD_OUTPUT');
+    error.usage = usage;
+    return error;
+  };
+  const failing = (usage?: LlmUsage): LlmProvider & { calls: number } => {
+    const p = {
+      id: 'anthropic' as const,
+      model: 'claude-sonnet-5-5',
+      calls: 0,
+      // eslint-disable-next-line @typescript-eslint/require-await
+      async *streamText() {
+        yield { type: 'text' as const, text: 'x' };
+      },
+      generateObject() {
+        p.calls++;
+        return Promise.reject(
+          usage ? billedFailure(usage) : new AppError('PROVIDER_ERROR'),
+        );
+      },
+    };
+    return p;
+  };
+
+  it('a reply that was billed but unusable is charged to the job and reported', async () => {
+    const events: UsageEvent[] = [];
+    const s = scope({
+      onUsage: (e) => void events.push(e),
+      budget: { tokens: 1000 },
+    });
+    const metered = limits().meter(
+      failing({ inputTokens: 40, outputTokens: 60 }),
+    );
+    await runInJob(s, () => metered.generateObject(objReq)).catch(
+      () => undefined,
+    );
+    expect(s.spent.tokens).toBe(100);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.usage).toMatchObject({
+      inputTokens: 40,
+      outputTokens: 60,
+    });
+    expect(events[0]).not.toHaveProperty('estimated');
+  });
+
+  it('a failure with no usage is not charged (the API did not bill it)', async () => {
+    const s = scope({ budget: { tokens: 1000 } });
+    const metered = limits().meter(failing());
+    await runInJob(s, () => metered.generateObject(objReq)).catch(
+      () => undefined,
+    );
+    expect(s.spent.tokens).toBe(0);
+  });
+
+  it('a failing breakdown under a 1-token budget makes exactly one call', async () => {
+    const sections = Array.from({ length: 5 }, (_, i) =>
+      sec(
+        `sec-${String(i + 1)}`,
+        `Topic ${String(i + 1)}`,
+        `Rule ${String(i + 1)}.`,
+      ),
+    );
+    const hits = sections.map((x) => chunkHit(x.id, `Rule of ${x.id}.`));
+    const base = failing({ inputTokens: 500, outputTokens: 500 });
+    const out = await runInJob(scope({ budget: { tokens: 1 } }), () =>
+      generateBreakdown({
+        provider: limits().meter(base, 'breakdown'),
+        docId: DOC_ID,
+        backend: fakeBackend(hits),
+        doc: {
+          metadata: {
+            title: null,
+            billNumber: null,
+            jurisdiction: null,
+            session: null,
+            version: null,
+            sponsors: null,
+            source: 'structured',
+          },
+          sections,
+          externalRefs: [],
+          references: [],
+        },
+        context: { mode: 'whole', hits },
+        units: sections,
+      }),
+    );
+    // The first reply was invalid but billed; the retry and every later batch are refused.
+    expect(base.calls).toBe(1);
+    expect(out.stoppedReason).toBe('budget');
+  });
+
+  it('a stream the reader abandons is charged what the provider reported so far', async () => {
+    const events: UsageEvent[] = [];
+    const p: LlmProvider = {
+      id: 'anthropic',
+      model: 'claude-sonnet-5-5',
+      async *streamText(req) {
+        await Promise.resolve();
+        try {
+          yield { type: 'text' as const, text: 'hello' };
+        } finally {
+          // Like a real provider: leaving mid-stream reports what was billed so far.
+          req.onPartialUsage?.({ inputTokens: 200, outputTokens: 7 });
+        }
+      },
+      generateObject: () => Promise.reject(new Error('unused')),
+    };
+    const s = scope({
+      onUsage: (e) => void events.push(e),
+      budget: { tokens: 1000 },
+    });
+    const metered = limits().meter(p);
+    await runInJob(s, async () => {
+      // The generator's own finally runs when the reader stops reading.
+      for await (const e of metered.streamText(textReq)) {
+        expect(e).toBeDefined();
+        break;
+      }
+    });
+    expect(events).toHaveLength(1);
+    expect(events[0]?.usage).toMatchObject({
+      inputTokens: 200,
+      outputTokens: 7,
+    });
+    expect(events[0]).not.toHaveProperty('estimated');
+    expect(s.spent.tokens).toBe(207);
+  });
+
+  it('with no provider usage, an abandoned stream is charged a conservative estimate, flagged as such', async () => {
+    const events: UsageEvent[] = [];
+    const p: LlmProvider = {
+      id: 'openai',
+      model: 'claude-sonnet-5-5',
+      async *streamText() {
+        yield { type: 'text' as const, text: 'x'.repeat(400) };
+        await Promise.resolve();
+        yield { type: 'text' as const, text: 'more' };
+      },
+      generateObject: () => Promise.reject(new Error('unused')),
+    };
+    const s = scope({ onUsage: (e) => void events.push(e) });
+    await runInJob(s, async () => {
+      for await (const e of limits().meter(p).streamText(textReq)) {
+        expect(e).toBeDefined();
+        break;
+      }
+    });
+    expect(events[0]).toMatchObject({ estimated: true });
+    expect(events[0]?.usage.inputTokens).toBeGreaterThan(0);
+    expect(events[0]?.usage.outputTokens).toBeGreaterThan(0);
+    expect(s.spent.calls).toBe(1);
+  });
+
+  it('a stream that fails before any answer is not charged', async () => {
+    const s = scope();
+    const p: LlmProvider = {
+      id: 'openai',
+      model: 'claude-sonnet-5-5',
+
+      async *streamText() {
+        await Promise.resolve();
+        throw new AppError('MISSING_KEY');
+      },
+      generateObject: () => Promise.reject(new Error('unused')),
+    };
+    await runInJob(s, async () => {
+      for await (const e of limits().meter(p).streamText(textReq))
+        expect(e).toBeDefined();
+    }).catch(() => undefined);
+    expect(s.spent.calls).toBe(0);
   });
 });

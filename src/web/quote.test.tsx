@@ -358,7 +358,7 @@ describe('reader events', () => {
       getDoc: () =>
         Promise.resolve({
           ...({} as Awaited<ReturnType<ApiClient['getDoc']>>),
-          metadata: { jurisdiction: 'OH' } as never,
+          metadata: { jurisdiction: 'Ohio' } as never,
         }),
       getSummary: () => Promise.resolve({ status: 'cached' as const }),
       getSectionExample: () => Promise.resolve({ status: 'ok' as const }),
@@ -370,9 +370,9 @@ describe('reader events', () => {
     await api.getSectionExample('d1', 's1');
     await api.getSectionExample('d1', 's2');
     expect(events).toEqual([
-      { name: 'summary_viewed', jurisdiction: 'OH' },
-      { name: 'example_view', jurisdiction: 'OH' },
-      { name: 'example_view', jurisdiction: 'OH' },
+      { name: 'summary_viewed', jurisdiction: 'ohio' },
+      { name: 'example_view', jurisdiction: 'ohio' },
+      { name: 'example_view', jurisdiction: 'ohio' },
     ]);
   });
 
@@ -402,20 +402,29 @@ describe('reader events', () => {
     });
   });
 
-  test('emitEvent drops anything that is not a short label, number or flag', () => {
-    emitEvent('ingest_started', {
-      ok: 'OH',
-      long: 'x'.repeat(40),
-      sentence: 'A whole sentence, with punctuation!',
+  test('emitEvent is an allowlist: unlisted fields and unlisted values never leave', () => {
+    emitEvent('question_asked', {
+      jurisdiction: 'State of Ohio',
+      chipId: 'penalties',
+      format: 'pdf', // not allowed on this event
+      question: 'Can my landlord evict me?',
       url: 'https://example.gov/bill',
-      n: 3,
-      flag: true,
-      nothing: undefined,
-      nan: Number.NaN,
-      name: 'override',
+    } as never);
+    emitEvent('question_asked', {
+      jurisdiction: 'jane.doe.example.com',
+      chipId: 'can my landlord evict me',
     });
+    emitEvent('ingest_done', {
+      format: 'pdf',
+      size: 'a very long free text label here',
+      reused: 'yes',
+    });
+    emitEvent('quote_shown', { jurisdiction: 'Ohio' });
     expect(events).toEqual([
-      { name: 'ingest_started', ok: 'OH', n: 3, flag: true },
+      { name: 'question_asked', jurisdiction: 'ohio', chipId: 'penalties' },
+      { name: 'question_asked', jurisdiction: 'other' },
+      { name: 'ingest_done', format: 'pdf' },
+      { name: 'quote_shown' },
     ]);
   });
 

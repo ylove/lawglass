@@ -16,6 +16,8 @@ export interface UsageEvent {
   feature: UsageFeature;
   model: string;
   usage: LlmUsage;
+  /** True when the call failed or was abandoned and the provider gave no usage, so this is a conservative guess. */
+  estimated?: boolean;
   /** Who the call was for, when a hosted route admitted the work (ADR 0018). */
   job?: JobContext;
 }

@@ -54,9 +54,15 @@ The open-source server gains generic hooks. With none passed, behaviour is uncha
 9. **Eviction.** `pinned(docId)` lets the host protect documents from eviction, for example documents a reader has paid for.
 10. **Packaging.** `package.json` gains `exports` for `./server` (side-effect free), plus emitted `.d.ts` files. A `./web` export waits until a host needs to rebuild the SPA; for now a host serves the built `dist/web` and extends it through `head`. `createRuntime`, the security headers and the site pages are exported.
 
-## Amendment (part B): scope after a restart
+## Amendment (part B): generation scopes
 
-A document's generation scope (budget, models, job id) lives in memory, so a restart would lose it and an Advanced unlock could resume on the default tier with no budget. `backgroundScope(docId)` is an optional host hook, consulted when background work for a document starts and no live scope exists (the first request after a restart, a resumed run). The host persists the scope, for example from its entitlements, and returns `{budget?, models?, jobId?}`; the server uses it as the document's scope. With no hook, behaviour is unchanged (the requester stands in, unbudgeted, default tier). If the hook returns `undefined` while `admission` is configured, the server fails closed: the document runs under a zero budget, so no paid call is made and only cached results are served.
+A generation scope (budget, models, job id) is kept per (document, tier), where the tier is what `modelFor(job, c)` resolves for the reader. A reader at tier B never gets tier A's text or job; tiers do not share a scope or a cache.
+
+The scope is, in order: the live in-memory one; else the host's `backgroundScope(docId, tier, models)` (cached for a minute); else, at ingest only, the scope of the newly admitted ingest. Ingest asks the hook before installing its own scope, so a re-ingest after a restart cannot take over a persisted scope. `createApp` throws when `admission` is set without `backgroundScope`, so a host that charges money cannot run unbudgeted generation by omission. If the hook returns `undefined` or fails, the document runs under a zero budget: no paid call, cached results still served. The hook must return the REMAINING budget, since a restored scope counts from zero. Without both hooks the requester stands in, as before.
+
+Failed or abandoned paid calls are charged: a billed but unusable reply carries its usage on the `AppError`, and an abandoned stream is charged what the provider reported (Anthropic) or a conservative estimate flagged `estimated`. A budget-stopped breakdown or picture run is not cached as final.
+
+Admission's fetch and parse hold an ingest slot, write nothing to the fetch cache, are rate limited per reader, and hand the parsed document to the ingest; an ingest that fetches different bytes stops so the reader is quoted again.
 
 ## Consequences
 

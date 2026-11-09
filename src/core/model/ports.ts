@@ -179,6 +179,11 @@ export interface TextRequest {
    */
   effort?: 'low' | 'medium' | 'high' | undefined;
   signal?: AbortSignal | undefined;
+  /**
+   * Called when a stream ends before its final usage arrives (the reader left, a timeout), with
+   * what the provider knows was billed so far. Providers that cannot say never call it.
+   */
+  onPartialUsage?: ((usage: LlmUsage) => void) | undefined;
 }
 
 export type LlmStreamEvent =

@@ -312,10 +312,14 @@ Money-free hooks for paid hosting (see [ADR 0018](docs/decisions/0018-hosting-ho
 - A job `budget` (`{tokens?, dollars?}`) stops the job with `BUDGET_EXHAUSTED`, overshooting by
   at most one call per sequential job (concurrent calls within a job may each overshoot by
   one). Breakdown and pictures keep what they wrote.
-- `backgroundScope(docId)` restores a document's persisted `{budget?, models?, jobId?}` after a
-  restart, when no live scope exists. If it returns `undefined` and `admission` is set, the
-  document is served from cache only and no paid background work starts.
-- `modelFor(job)` returns `{answer?, extract?}`; cache keys include the model.
+- `backgroundScope(docId, tier, models)` is required with `admission`. Background generation runs
+  under one scope per (document, tier), where the tier is what `modelFor(job, c)` resolves for the
+  reader. After a restart the hook restores the persisted `{budget?, models?, jobId?}`; `budget` must
+  be the REMAINING budget (sum `onUsage` by `jobId`), because a restored scope counts from zero. If
+  it returns `undefined` or throws, no paid background work starts and cached results are served.
+  A failed or abandoned paid call is still charged: providers attach usage to unusable replies,
+  and an abandoned stream is charged what the provider reported or a flagged estimate.
+- `modelFor(job, c)` returns `{answer?, extract?}`; cache keys include the model. Admission jobs carry the host's own `quoteId` as sent, and `serverQuote` when it is also a quote this server issued.
 - The SPA dispatches `lawglass:event` `CustomEvent`s on `window` (name plus a few non-identifying
   fields, never text or addresses). Nothing is sent anywhere by this repository.
 

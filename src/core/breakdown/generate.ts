@@ -129,6 +129,8 @@ export interface BreakdownOutput {
   dropped: number;
   usage: { inputTokens: number; outputTokens: number };
   backendUsage: { embedTokens: number; rerankUnits: number };
+  /** Set when the job's budget ended the run: the parts after the last brief were not tried. */
+  stoppedReason?: 'budget';
 }
 
 function label(section: Section): string {
@@ -202,6 +204,7 @@ export async function generateBreakdown(
   const briefs: SectionBrief[] = [];
   const usage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
   let dropped = 0;
+  let stoppedReason: 'budget' | undefined;
   const backendUsage = { embedTokens: 0, rerankUnits: 0 };
 
   for (let i = 0; i < input.units.length; i += size) {
@@ -275,7 +278,8 @@ export async function generateBreakdown(
       }
     }
     if (budgetStop) {
-      dropped += input.units.length - i;
+      // Not a verdict on the skipped parts: they were never tried, so they are not `dropped`.
+      stoppedReason = 'budget';
       break;
     }
     if (!reply) {
@@ -352,5 +356,11 @@ export async function generateBreakdown(
     }
     input.onProgress?.([...briefs]);
   }
-  return { briefs, dropped, usage, backendUsage };
+  return {
+    briefs,
+    dropped,
+    usage,
+    backendUsage,
+    ...(stoppedReason ? { stoppedReason } : {}),
+  };
 }

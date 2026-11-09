@@ -56,10 +56,15 @@ export function providerStatusOf(error: unknown): number | undefined {
 }
 
 /** SDK errors can contain headers, credentials and request bodies, even in their cause. */
-export function providerFailure(error: unknown): AppError {
-  if (error instanceof AppError && error.code === 'PROVIDER_BAD_OUTPUT')
-    return new ProviderFailure('PROVIDER_BAD_OUTPUT');
-  return new ProviderFailure('PROVIDER_ERROR', httpStatus(error));
+export function providerFailure(error: unknown, usage?: LlmUsage): AppError {
+  const failure =
+    error instanceof AppError && error.code === 'PROVIDER_BAD_OUTPUT'
+      ? new ProviderFailure('PROVIDER_BAD_OUTPUT')
+      : new ProviderFailure('PROVIDER_ERROR', httpStatus(error));
+  // Billed even though nothing usable came back; the usage never carries text.
+  const billed = usage ?? (error instanceof AppError ? error.usage : undefined);
+  if (billed) failure.usage = billed;
+  return failure;
 }
 
 export function jsonSchema<T>(schema: z.ZodType<T>): Record<string, unknown> {

@@ -24,6 +24,8 @@ import {
 import { MockProvider } from '../core/llm/mock.js';
 import { resetSharedLimits } from '../core/pipeline/limits.js';
 import { readSseEvents } from '../web/sse.js';
+import { createHttpApi } from '../web/api.js';
+import { withQuoteFlow } from '../web/quote-flow.js';
 import { createApp, type AppOptions, type ExternalAuth } from './app.js';
 import type { Admission, AdmissionJob } from './admission.js';
 
@@ -68,6 +70,10 @@ const PRICES = {
 const app = (options: AppOptions = {}): Hono =>
   createApp(env.runtime, {
     auth,
+    // Admission requires the hook; this host has persisted nothing yet.
+    ...(options.admission && !options.backgroundScope
+      ? { backgroundScope: () => Promise.resolve(undefined) }
+      : {}),
     logWriter: (line) => logs.push(line),
     summaryWaitMs: 20,
     ...options,
@@ -90,10 +96,11 @@ async function ingestDoc(
   a: Hono,
   reader = 'alice',
   body: Record<string, unknown> = {},
+  target = url,
 ): Promise<string> {
   const res = await call(a, '/api/ingest', {
     reader,
-    body: { url, ...body },
+    body: { url: target, ...body },
   });
   expect(res.status).toBe(200);
   for await (const e of readSseEvents(res, IngestEvent))
@@ -234,10 +241,12 @@ describe('POST /api/quote', () => {
   test('the quote id reaches admission on ingest only while live and for the same reader and address', async () => {
     let now = 1_000_000;
     const seen: (string | undefined)[] = [];
+    const serverQuotes: (AdmissionJob['serverQuote'] | undefined)[] = [];
     const a = app({
       now: () => now,
       admission: (_c, job) => {
         seen.push(job.quoteId);
+        serverQuotes.push(job.serverQuote);
         return Promise.resolve(allow);
       },
     });
@@ -252,12 +261,18 @@ describe('POST /api/quote', () => {
     const q1 = await quote();
     await ingestDoc(a, 'alice', { quoteId: q1 });
     expect(seen.at(-1)).toBe(q1);
-    // Another reader cannot use it; neither can anyone after the 30 minute TTL.
+    expect(serverQuotes.at(-1)).toMatchObject({
+      contentHash: expect.any(String) as string,
+    });
+    // The id is always passed as sent; our own quote rides along only for the reader and
+    // address it was issued to, and only for 30 minutes.
     await ingestDoc(a, 'bob', { quoteId: q1 });
-    expect(seen.at(-1)).toBeUndefined();
+    expect(seen.at(-1)).toBe(q1);
+    expect(serverQuotes.at(-1)).toBeUndefined();
     now += 31 * 60_000;
     await ingestDoc(a, 'alice', { quoteId: q1 });
-    expect(seen.at(-1)).toBeUndefined();
+    expect(seen.at(-1)).toBe(q1);
+    expect(serverQuotes.at(-1)).toBeUndefined();
   });
 });
 
@@ -333,7 +348,14 @@ describe('admission', () => {
     const ask = (body: object) => call(a, `/api/docs/${docId}/ask`, { body });
     await (await ask({ chipId: 'summary' })).text();
     await (await ask({ question: 'Who pays?' })).text();
-    await (await ask({ chipId: 'sponsor' })).text();
+    const calls = modelCalls();
+    for (const chipId of ['sponsors', 'history']) {
+      const res = await ask({ chipId });
+      expect(res.status).toBe(200);
+      await res.text();
+    }
+    // Metadata chips read the stored document: attributed, never admitted, no model call.
+    expect(calls()).toBe(0);
     expect(jobs.map((j) => [j.kind, j.chipId, j.docId])).toEqual([
       ['question', 'summary', docId],
       ['question', undefined, docId],
@@ -585,7 +607,7 @@ describe('background scope after a restart', () => {
     });
     expect(used).toContain('tier-a');
     expect(lookup).toHaveBeenCalledTimes(1);
-    expect(lookup).toHaveBeenCalledWith(docId);
+    expect(lookup).toHaveBeenCalledWith(docId, 'default+default', undefined);
     const summary = events.filter((e) => e.feature === 'summary');
     for (const e of summary) expect(e.job?.jobId).toBe('persisted-job');
   });
@@ -718,3 +740,441 @@ describe('hook validation', () => {
 });
 
 export type { LlmProvider };
+
+function bigBill(n: number, tag = ''): { bytes: Uint8Array } {
+  const lines = [`Synthetic Many Parts Bill ${tag}`];
+  for (let i = 1; i <= n; i++) {
+    lines.push(`SECTION ${String(i)}. Heading ${String(i)}`);
+    lines.push(
+      `The department shall do thing number ${String(i)} for every garden group in the state.`,
+    );
+  }
+  lines.push('');
+  return { bytes: new TextEncoder().encode(lines.join('\n')) };
+}
+const settle = () => new Promise((r) => setTimeout(r, 300));
+const summaryStatus = async (a: Hono, docId: string, reader = 'alice') =>
+  SummaryResponse.parse(
+    await (await call(a, `/api/docs/${docId}/summary`, { reader })).json(),
+  );
+
+describe('review: the host quote id round trip', () => {
+  const hostQuote = (_c: Context, job: AdmissionJob): Promise<Admission> =>
+    Promise.resolve(
+      job.quoteId === 'host-q'
+        ? allow
+        : {
+            allow: false,
+            status: 402,
+            quote: { quoteId: 'host-q', display: '$1.00' },
+          },
+    );
+
+  test('ingest: 402 with a host quote id, resubmitted by the reader, is admitted', async () => {
+    const seen: (string | undefined)[] = [];
+    const a = app({
+      admission: (c, job) => {
+        seen.push(job.quoteId);
+        return hostQuote(c, job);
+      },
+    });
+    const first = await call(a, '/api/ingest', { body: { url } });
+    expect(first.status).toBe(402);
+    const { quote } = (await first.json()) as { quote: { quoteId: string } };
+    const retry = await call(a, '/api/ingest', {
+      body: { url, quoteId: quote.quoteId },
+    });
+    expect(retry.status).toBe(200);
+    await retry.text();
+    expect(seen).toEqual([undefined, 'host-q']);
+  });
+
+  test('through the SPA client: 402 with a host quote, Confirm, and the ingest completes', async () => {
+    const seen: (string | undefined)[] = [];
+    const a = app({
+      admission: (c, job) => {
+        seen.push(job.quoteId);
+        return hostQuote(c, job);
+      },
+    });
+    // The browser's own client and retry logic, talking to the real app.
+    const http = createHttpApi({
+      fetchImpl: (input, init) => {
+        const headers = new Headers(init?.headers);
+        headers.set('x-reader', 'alice');
+        return Promise.resolve(
+          a.request(
+            typeof input === 'string'
+              ? input
+              : input instanceof URL
+                ? input.href
+                : input.url,
+            { ...init, headers },
+          ),
+        );
+      },
+    });
+    const shown: unknown[] = [];
+    const api = withQuoteFlow(http, (quote) => {
+      shown.push(quote);
+      return Promise.resolve(true);
+    });
+    const types: string[] = [];
+    for await (const e of api.ingest({ url })) types.push(e.type);
+    expect(shown).toEqual([{ quoteId: 'host-q', display: '$1.00' }]);
+    expect(types.at(-1)).toBe('done');
+    expect(seen).toEqual([undefined, 'host-q']);
+  });
+
+  test('ask: the same flow, and a malformed quote id is refused as invalid input', async () => {
+    const a = app({ admission: hostQuote });
+    const docId = await ingestDoc(app());
+    const first = await call(a, `/api/docs/${docId}/ask`, {
+      body: { question: 'Who pays?' },
+    });
+    expect(first.status).toBe(402);
+    const retry = await call(a, `/api/docs/${docId}/ask`, {
+      body: { question: 'Who pays?', quoteId: 'host-q' },
+    });
+    expect(retry.status).toBe(200);
+    await retry.text();
+    for (const quoteId of ['has space', 'x'.repeat(129), '<script>', '']) {
+      const bad = await call(a, '/api/ingest', { body: { url, quoteId } });
+      expect(bad.status).toBe(400);
+    }
+  });
+});
+
+describe('review: admission requires backgroundScope', () => {
+  test('createApp throws, so a host cannot run background generation unbudgeted', () => {
+    expect(() =>
+      createApp(env.runtime, {
+        auth,
+        admission: () => Promise.resolve(allow),
+        logWriter: () => undefined,
+      }),
+    ).toThrow(/admission requires backgroundScope/);
+  });
+});
+
+describe('review: scopes are keyed by document and tier', () => {
+  const byReader = (_job: AdmissionJob, c: Context): { answer: string } => {
+    return {
+      answer: c.req.header('x-reader') === 'alice' ? 'tier-a' : 'tier-b',
+    };
+  };
+
+  test('after a restart, alice (tier A) and bob (tier B) are each generated on their own tier and job', async () => {
+    const docId = await ingestDoc(app());
+    const asked: string[] = [];
+    const events: UsageEvent[] = [];
+    const a = app({
+      admission: () => Promise.resolve(allow),
+      modelFor: byReader,
+      backgroundScope: (id, tier) => {
+        asked.push(`${id.slice(0, 6)}/${tier}`);
+        return Promise.resolve({ jobId: `job-${tier}`, models: undefined });
+      },
+      onUsage: (e) => {
+        events.push(e);
+      },
+    });
+    for (const reader of ['alice', 'bob']) {
+      await summaryStatus(a, docId, reader);
+      await vi.waitFor(async () => {
+        expect((await summaryStatus(a, docId, reader)).status).toBe('cached');
+      });
+    }
+    const summary = (model: string) =>
+      new Set(
+        events
+          .filter((e) => e.feature === 'summary' && e.model === model)
+          .map((e) => e.job?.jobId),
+      );
+    expect(summary('tier-a')).toEqual(new Set(['job-tier-a+default']));
+    expect(summary('tier-b')).toEqual(new Set(['job-tier-b+default']));
+    expect(new Set(asked)).toEqual(
+      new Set([
+        `${docId.slice(0, 6)}/tier-a+default`,
+        `${docId.slice(0, 6)}/tier-b+default`,
+      ]),
+    );
+  });
+
+  test("a re-ingest by bob after a restart does not take over alice's persisted tier, job or budget", async () => {
+    const docId = await ingestDoc(app());
+    const events: UsageEvent[] = [];
+    const a = app({
+      admission: () =>
+        Promise.resolve({ allow: true, budget: { tokens: 1_000_000 } }),
+      modelFor: byReader,
+      backgroundScope: (_id, tier) =>
+        Promise.resolve(
+          tier === 'tier-a+default'
+            ? { jobId: 'alice-persisted-job', budget: { tokens: 1_000_000 } }
+            : undefined,
+        ),
+      onUsage: (e) => {
+        events.push(e);
+      },
+    });
+    await ingestDoc(a, 'bob'); // first request after the restart
+    await summaryStatus(a, docId, 'alice');
+    await vi.waitFor(async () => {
+      expect((await summaryStatus(a, docId, 'alice')).status).toBe('cached');
+    });
+    const summary = events.filter((e) => e.feature === 'summary');
+    expect(summary.length).toBeGreaterThan(0);
+    for (const e of summary) {
+      expect(e.model).toBe('tier-a');
+      expect(e.job?.jobId).toBe('alice-persisted-job');
+    }
+  });
+
+  test("in one process, bob's tier is not served from alice's job", async () => {
+    const events: UsageEvent[] = [];
+    const a = app({
+      admission: () => Promise.resolve(allow),
+      modelFor: byReader,
+      onUsage: (e) => {
+        events.push(e);
+      },
+    });
+    const docId = await ingestDoc(a, 'alice');
+    await ingestDoc(a, 'bob');
+    for (const reader of ['alice', 'bob']) {
+      await summaryStatus(a, docId, reader);
+      await vi.waitFor(async () => {
+        expect((await summaryStatus(a, docId, reader)).status).toBe('cached');
+      });
+    }
+    const jobs = (model: string) =>
+      new Set(
+        events
+          .filter((e) => e.feature === 'summary' && e.model === model)
+          .map((e) => e.job?.readerId),
+      );
+    expect(jobs('tier-a')).toEqual(new Set(['alice']));
+    expect(jobs('tier-b')).toEqual(new Set(['bob']));
+  });
+
+  test('the admission job names the tier the reader will get', async () => {
+    const tiers: (string | undefined)[] = [];
+    const a = app({
+      admission: (_c, job) => {
+        tiers.push(job.tier);
+        return Promise.resolve(allow);
+      },
+      modelFor: byReader,
+    });
+    await ingestDoc(a, 'alice');
+    await ingestDoc(a, 'bob');
+    expect(tiers).toEqual(['tier-a+default', 'tier-b+default']);
+  });
+});
+
+describe('review: backgroundScope is consulted sparingly and cannot break reads', () => {
+  test('only generating routes ask the host, once a minute per document and tier', async () => {
+    const docId = await ingestDoc(app());
+    let lookups = 0;
+    const a = app({
+      admission: () => Promise.resolve(allow),
+      backgroundScope: () => {
+        lookups++;
+        return Promise.resolve(undefined);
+      },
+    });
+    for (let i = 0; i < 5; i++)
+      await (await call(a, `/api/docs/${docId}/sections/sec-1`)).text();
+    for (let i = 0; i < 5; i++)
+      await (await call(a, `/api/docs/${docId}`)).text();
+    expect(lookups).toBe(0);
+    for (let i = 0; i < 5; i++)
+      await (await call(a, `/api/docs/${docId}/summary`)).text();
+    expect(lookups).toBe(1);
+  });
+
+  test('a throwing host does not 500 plain reads or cached summaries, and fails closed for paid work', async () => {
+    const cached = app();
+    const docId = await ingestDoc(cached);
+    await summaryStatus(cached, docId);
+    await vi.waitFor(async () => {
+      expect((await summaryStatus(cached, docId)).status).toBe('cached');
+    });
+    const stream = vi.spyOn(provider, 'streamText');
+    const broken = app({
+      admission: () => Promise.resolve(allow),
+      backgroundScope: () => Promise.reject(new Error('host db down')),
+    });
+    expect((await call(broken, `/api/docs/${docId}`)).status).toBe(200);
+    expect(
+      (await call(broken, `/api/docs/${docId}/sections/sec-1`)).status,
+    ).toBe(200);
+    expect((await summaryStatus(broken, docId)).status).toBe('cached');
+    const breakdown = await call(broken, `/api/docs/${docId}/breakdown`);
+    expect(breakdown.status).toBe(200);
+    await settle();
+    expect(provider.breakdownCalls).toBe(0);
+    expect(stream).not.toHaveBeenCalled();
+  });
+});
+
+describe('review: fetch and parse for admission are bounded and stateless', () => {
+  function gatedFetcher() {
+    const original = env.runtime.fetcher;
+    let inFlight = 0;
+    const state = { peak: 0, release: (): void => undefined };
+    const gate = new Promise<void>((r) => {
+      state.release = r;
+    });
+    env.runtime.fetcher = async (u, o) => {
+      inFlight++;
+      state.peak = Math.max(state.peak, inFlight);
+      await gate;
+      try {
+        return await original(u, o);
+      } finally {
+        inFlight--;
+      }
+    };
+    return state;
+  }
+
+  test('a burst of refused ingests is bounded by the ingest pool', async () => {
+    const state = gatedFetcher();
+    const a = app({ admission: () => Promise.resolve(deny(403)) });
+    const all = Array.from({ length: 8 }, (_, i) =>
+      Promise.resolve(
+        call(a, '/api/ingest', { body: { url }, reader: `r${String(i)}` }),
+      ).then((r) => r.text()),
+    );
+    await new Promise((r) => setTimeout(r, 100));
+    expect(state.peak).toBeLessThanOrEqual(2);
+    state.release();
+    await Promise.all(all);
+  });
+
+  test('a quote writes nothing to the fetch cache; an ingest does', async () => {
+    const original = env.runtime.fetcher;
+    const commit = vi.fn(() => Promise.resolve());
+    env.runtime.fetcher = async (u, o) => ({
+      ...(await original(u, o)),
+      commitCache: commit,
+    });
+    const a = app();
+    await call(a, '/api/quote', { body: { url } });
+    expect(commit).not.toHaveBeenCalled();
+    await ingestDoc(a);
+    expect(commit).toHaveBeenCalled();
+  });
+
+  test('quotes and ingests are rate limited per reader, not just per address', async () => {
+    const a = app({
+      quote: { perReaderPerHour: 2 },
+      clientIp: () => '9.9.9.9',
+      limits: undefined,
+    });
+    const quote = (reader: string) =>
+      call(a, '/api/quote', { reader, body: { url } });
+    expect((await quote('alice')).status).toBe(200);
+    expect((await quote('alice')).status).toBe(200);
+    expect((await quote('alice')).status).toBe(429);
+    expect((await quote('bob')).status).toBe(200);
+    const ingest = (reader: string) =>
+      Promise.resolve(call(a, '/api/ingest', { reader, body: { url } })).then(
+        async (r) => {
+          await r.text();
+          return r.status;
+        },
+      );
+    expect(await ingest('carol')).toBe(200);
+    expect(await ingest('carol')).toBe(200);
+    expect(await ingest('carol')).toBe(429);
+  });
+
+  test('the measured document is reused, and a bill that changes before ingest is refused', async () => {
+    const original = env.runtime.fetcher;
+    const small = bigBill(3, 'small');
+    const large = bigBill(30, 'large');
+    env.serve('https://govinfo.gov/small.txt', small, 'text/plain');
+    env.serve('https://govinfo.gov/large.txt', large, 'text/plain');
+    let n = 0;
+    env.runtime.fetcher = async (u, o) => {
+      if (u !== url) return original(u, o);
+      n++;
+      const r = await original(
+        n === 1
+          ? 'https://govinfo.gov/small.txt'
+          : 'https://govinfo.gov/large.txt',
+        o,
+      );
+      return { ...r, finalUrl: url };
+    };
+    const jobs: AdmissionJob[] = [];
+    const a = app({
+      admission: (_c, job) => {
+        jobs.push(job);
+        return Promise.resolve(allow);
+      },
+    });
+    const res = await call(a, '/api/ingest', { body: { url } });
+    const events: { type: string; error?: { code: string } }[] = [];
+    for await (const e of readSseEvents(res, IngestEvent)) events.push(e);
+    expect(events.at(-1)).toMatchObject({
+      type: 'error',
+      error: { code: 'PAYMENT_REQUIRED' },
+    });
+    expect(await env.registry.list()).toEqual([]);
+    expect(jobs).toHaveLength(1);
+  });
+});
+
+describe('review: a budget stop is not a final result', () => {
+  test('a breakdown cut short by its budget is shown, never cached, and a later scope with budget completes it', async () => {
+    const many = 'https://govinfo.gov/many.txt';
+    env.serve(many, bigBill(25, 'many'), 'text/plain');
+    const plain = app();
+    const docId = await ingestDoc(plain, 'alice', {}, many);
+    await call(plain, `/api/docs/${docId}/summary`);
+    await vi.waitFor(async () => {
+      expect((await summaryStatus(plain, docId)).status).toBe('cached');
+    });
+    const tight = app({
+      admission: () => Promise.resolve(allow),
+      backgroundScope: () => Promise.resolve({ budget: { tokens: 1 } }),
+    });
+    await call(tight, `/api/docs/${docId}/breakdown`);
+    interface B {
+      status: string;
+      briefs?: unknown[];
+      omitted?: number;
+      stoppedReason?: string;
+    }
+    const stopped = await vi.waitFor(async () => {
+      const r = (await (
+        await call(tight, `/api/docs/${docId}/breakdown`)
+      ).json()) as B;
+      expect(r.status).toBe('cached');
+      return r;
+    });
+    expect(stopped.stoppedReason).toBe('budget');
+    expect(stopped.briefs?.length).toBe(10);
+    // Nothing is claimed about the parts the budget never reached.
+    expect(stopped.omitted).toBe(0);
+    const generous = app({
+      admission: () => Promise.resolve(allow),
+      backgroundScope: () =>
+        Promise.resolve({ budget: { tokens: 1_000_000_000 } }),
+    });
+    await call(generous, `/api/docs/${docId}/breakdown`);
+    const full = await vi.waitFor(async () => {
+      const r = (await (
+        await call(generous, `/api/docs/${docId}/breakdown`)
+      ).json()) as B;
+      expect(r.status).toBe('cached');
+      return r;
+    });
+    expect(full.stoppedReason).toBeUndefined();
+    expect(full.briefs?.length).toBeGreaterThan(10);
+  });
+});

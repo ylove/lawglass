@@ -9,7 +9,7 @@
  * keeps the words, with no error to dismiss.
  */
 import { addLlmUsage } from '../core/cost/usage.js';
-import type { LlmUsage } from '../core/model/index.js';
+import { AppError, type LlmUsage } from '../core/model/index.js';
 import { registryLlmUsage } from '../core/registry.js';
 import { join } from 'node:path';
 import type { CliRuntime } from '../cli/runtime.js';
@@ -99,6 +99,8 @@ export function createPictureService(
     });
   const running = new Map<string, Set<() => void>>();
   const failedAt = new Map<string, number>();
+  // Pictures drawn before the job's budget ran out: shown for a while, never cached as final.
+  const stopped = new Map<string, { at: number; entries: PictureEntry[] }>();
 
   function provider(): LlmProvider | undefined {
     try {
@@ -187,6 +189,11 @@ export function createPictureService(
             .touch(key.docId, registryLlmUsage(usage))
             .catch((error: unknown) => onError?.(error, now() - started));
         }
+        if (drawn.stoppedReason) {
+          stopped.set(name, { at: now(), entries: drawn.entries });
+          // Throwing keeps getOrCompute from storing a partial set as the finished one.
+          throw new AppError('BUDGET_EXHAUSTED');
+        }
         options.log?.({
           event: 'pictures_made',
           source: key.source,
@@ -249,6 +256,10 @@ export function createPictureService(
       const done = request.signal?.aborted ? undefined : await cache.get(key);
       return done ? respond(done) : { status: 'pending' };
     }
+    const halted = stopped.get(name);
+    if (halted && now() - halted.at < FAILED_RETRY_MS)
+      return respond(halted.entries);
+    stopped.delete(name);
     const failed = failedAt.get(name);
     if (failed !== undefined && now() - failed < FAILED_RETRY_MS)
       return { status: 'none' };

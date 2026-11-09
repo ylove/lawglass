@@ -4,6 +4,7 @@
  * nothing about money: the host sees an estimate and answers allow, quote or deny.
  */
 import type { Context } from 'hono';
+import type { QuoteFacts } from './quotes.js';
 import type { BillEstimate, FeatureEstimate } from '../core/cost/index.js';
 import type { JobBudget, JobKind } from '../core/cost/index.js';
 import { AppError, type ErrorPayload } from '../core/model/index.js';
@@ -13,8 +14,16 @@ export type { JobBudget, JobKind };
 export interface AdmissionJob {
   kind: JobKind;
   docId?: string;
-  /** From the request: a quote the reader confirmed. For ingest only a live quote from this server is passed. */
+  /** From the request, as sent: the id of a quote the reader confirmed. Opaque to this server (1 to 128 of A-Za-z0-9_-). */
   quoteId?: string;
+  /** Ingest only: set when `quoteId` is also a live quote this server issued to this reader for this address. */
+  serverQuote?: {
+    contentHash: string;
+    facts: QuoteFacts;
+    estimates: Record<string, BillEstimate>;
+  };
+  /** The model tier the reader's work will run on, as `answer+extract` model names ('default' when `modelFor` chose none). */
+  tier?: string;
   chipId?: string;
   /** Computed before any model call. A whole-bill estimate for ingest, one answer-like call otherwise. */
   estimate: BillEstimate | FeatureEstimate;
@@ -34,10 +43,25 @@ export type AdmissionHook = (
 ) => Promise<Admission>;
 
 /** Models for a job. Applied through `runtime.providerFor`. */
-export type ModelForHook = (job: AdmissionJob) => {
+export type ModelForHook = (
+  job: AdmissionJob,
+  c: Context,
+) => {
   answer?: string;
   extract?: string;
 };
+
+/** What a host persisted for a document's background generation: the REMAINING budget, the tier's models, the job id. */
+export interface SavedScope {
+  budget?: JobBudget;
+  models?: { answer?: string; extract?: string };
+  jobId?: string;
+}
+export type BackgroundScopeHook = (
+  docId: string,
+  tier: string,
+  models: { answer?: string; extract?: string } | undefined,
+) => Promise<SavedScope | undefined>;
 
 /** Thrown when admission refuses; `app.onError` turns it into the response. */
 export class AdmissionRefused extends AppError {

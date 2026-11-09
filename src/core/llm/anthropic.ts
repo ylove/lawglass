@@ -4,6 +4,7 @@ import {
   type LlmMessage,
   type LlmProvider,
   type LlmStreamEvent,
+  type LlmUsage,
   type ObjectRequest,
   type ProviderConfig,
   type TextRequest,
@@ -59,6 +60,11 @@ export class AnthropicProvider implements LlmProvider {
 
   async *streamText(req: TextRequest): AsyncIterable<LlmStreamEvent> {
     let stream: MessageStream | undefined;
+    let finished = false;
+    // What the API has said so far: input from message_start, output from message_delta.
+    let started: LlmUsage | undefined;
+    let outputSoFar = 0;
+    let chars = 0;
     try {
       const signal = requestSignal(req.signal, this.config.timeoutMs);
       stream = this.client.messages.stream(
@@ -73,6 +79,15 @@ export class AnthropicProvider implements LlmProvider {
         { signal },
       );
       for await (const event of stream) {
+        if (event.type === 'message_start')
+          started = anthropicUsage(event.message.usage);
+        if (event.type === 'message_delta')
+          outputSoFar = event.usage.output_tokens;
+        if (
+          event.type === 'content_block_delta' &&
+          event.delta.type === 'text_delta'
+        )
+          chars += event.delta.text.length;
         if (
           event.type === 'content_block_delta' &&
           event.delta.type === 'text_delta'
@@ -82,6 +97,7 @@ export class AnthropicProvider implements LlmProvider {
       }
       const message = await stream.finalMessage();
       signal.throwIfAborted();
+      finished = true;
       yield {
         type: 'done',
         usage: anthropicUsage(message.usage),
@@ -91,6 +107,11 @@ export class AnthropicProvider implements LlmProvider {
       throw providerFailure(error);
     } finally {
       stream?.abort();
+      if (!finished && started)
+        req.onPartialUsage?.({
+          ...started,
+          outputTokens: Math.max(outputSoFar, Math.ceil(chars / 4)),
+        });
     }
   }
 
@@ -115,14 +136,20 @@ export class AnthropicProvider implements LlmProvider {
         },
         { signal },
       );
-      signal.throwIfAborted();
-      const text = message.content
-        .flatMap((block) => (block.type === 'text' ? [block.text] : []))
-        .join('');
-      return {
-        object: validateObject(req.schema, parseJson(text)),
-        usage: anthropicUsage(message.usage),
-      };
+      // The API billed this call whatever happens next; failures below carry its usage.
+      const usage = anthropicUsage(message.usage);
+      try {
+        signal.throwIfAborted();
+        const text = message.content
+          .flatMap((block) => (block.type === 'text' ? [block.text] : []))
+          .join('');
+        return {
+          object: validateObject(req.schema, parseJson(text)),
+          usage,
+        };
+      } catch (error) {
+        throw providerFailure(error, usage);
+      }
     } catch (error) {
       throw providerFailure(error);
     }

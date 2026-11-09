@@ -103,6 +103,8 @@ export function createBreakdownService(
   const running = new Map<string, Set<() => void>>();
   const partial = new Map<string, readonly SectionBrief[]>();
   const failedAt = new Map<string, number>();
+  // Runs the job's budget cut short. Their briefs are shown for a while but never cached as final.
+  const stopped = new Map<string, { at: number; briefs: SectionBrief[] }>();
 
   /** Wake waiters when a run ends, whatever the outcome. */
   function settle(name: string): void {
@@ -167,7 +169,9 @@ export function createBreakdownService(
           partial.set(name, briefs);
         },
       });
-      if (!stored) failedAt.set(name, now());
+      if (stored?.stoppedReason)
+        stopped.set(name, { at: now(), briefs: [...stored.briefs] });
+      else if (!stored) failedAt.set(name, now());
       else startPregeneration(docId, stored.briefs, stored.context);
     })()
       .catch((error: unknown) => {
@@ -223,6 +227,18 @@ export function createBreakdownService(
         ? { status: 'pending', briefs: [...so_far] }
         : { status: 'pending' };
     }
+    const halted = stopped.get(name);
+    if (halted && now() - halted.at < FAILED_RETRY_MS)
+      return halted.briefs.length > 0
+        ? {
+            status: 'cached',
+            briefs: [...halted.briefs],
+            // Parts the budget never reached are not "left out": nothing is claimed about them.
+            omitted: 0,
+            stoppedReason: 'budget',
+          }
+        : { status: 'disabled', stoppedReason: 'budget' };
+    stopped.delete(name);
     if (request.start === false) return { status: 'disabled' };
     // A recent failure is an error the client can show with a retry, not "off": `disabled`
     // would hide the panel and the parts the reader was already reading.

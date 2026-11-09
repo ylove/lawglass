@@ -125,3 +125,45 @@ it('carries a cached prompt part and effort into structured output', async () =>
   expect(sent.output_config.effort).toBe('low');
   expect(sent.output_config.format).toBeDefined();
 });
+
+it('reports the billed input and the output so far when a reader leaves mid-stream', async () => {
+  const provider = new AnthropicProvider(
+    { provider: 'anthropic', model: 'claude-sonnet-5-5', apiKey: KEY },
+    {
+      fetch: httpReplay([{ body: asset('anthropic-stream.sse'), stream: true }])
+        .fetch,
+    },
+  );
+  const partial: unknown[] = [];
+  for await (const event of provider.streamText({
+    system: 'rules',
+    messages: [{ role: 'user', content: 'hello' }],
+    maxTokens: 100,
+    onPartialUsage: (usage) => partial.push(usage),
+  })) {
+    if (event.type === 'text') break;
+  }
+  expect(partial).toHaveLength(1);
+  expect(partial[0]).toMatchObject({ inputTokens: 10 });
+});
+
+it('does not report partial usage for a stream that finished', async () => {
+  const provider = new AnthropicProvider(
+    { provider: 'anthropic', model: 'claude-sonnet-5-5', apiKey: KEY },
+    {
+      fetch: httpReplay([{ body: asset('anthropic-stream.sse'), stream: true }])
+        .fetch,
+    },
+  );
+  const partial: unknown[] = [];
+  const events: string[] = [];
+  for await (const event of provider.streamText({
+    system: 'rules',
+    messages: [{ role: 'user', content: 'hello' }],
+    maxTokens: 100,
+    onPartialUsage: (usage) => partial.push(usage),
+  }))
+    events.push(event.type);
+  expect(events.at(-1)).toBe('done');
+  expect(partial).toEqual([]);
+});

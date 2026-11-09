@@ -23,21 +23,73 @@ export interface ReaderEvent extends EventFields {
   name: ReaderEventName;
 }
 
-/** Short labels only. A longer or odd-looking string could be someone's text, so it is dropped. */
-const SAFE_LABEL = /^[A-Za-z0-9][A-Za-z0-9 ._-]{0,31}$/;
+/**
+ * What each event may carry. An allowlist, not a filter: a field that is not listed for the event
+ * is dropped, and a listed field is kept only if its value is one of a fixed set, so no caller
+ * can put a reader's words, a bill's text or an address into an event by mistake.
+ */
+const SIZES = ['small', 'medium', 'large'];
+const FORMATS = ['xml', 'html', 'pdf', 'text'];
+const CHIPS = [
+  'summary',
+  'what-changes',
+  'who-affected',
+  'penalties',
+  'effective-date',
+  'money',
+  'definitions',
+  'sponsors',
+  'history',
+  'delegations',
+];
+
+/** Buckets a free-text jurisdiction (from bill metadata) into a fixed label. */
+function jurisdictionLabel(raw: unknown): string | undefined {
+  if (typeof raw !== 'string' || raw.trim() === '') return undefined;
+  if (/\bohio\b|^oh$/i.test(raw.trim())) return 'ohio';
+  if (/new york/i.test(raw)) return 'new-york';
+  if (/new jersey/i.test(raw)) return 'new-jersey';
+  if (/united states|congress|federal|^u\.?s\.?$/i.test(raw)) return 'federal';
+  return 'other';
+}
+
+const oneOf =
+  (allowed: readonly string[]) =>
+  (value: unknown): string | undefined =>
+    typeof value === 'string' && allowed.includes(value) ? value : undefined;
+const flag = (value: unknown): boolean | undefined =>
+  typeof value === 'boolean' ? value : undefined;
+
+const FIELDS = {
+  jurisdiction: jurisdictionLabel,
+  chipId: oneOf(CHIPS),
+  format: oneOf(FORMATS),
+  size: oneOf(SIZES),
+  reused: flag,
+} as const;
+type FieldName = keyof typeof FIELDS;
+
+const ALLOWED: Record<ReaderEventName, readonly FieldName[]> = {
+  ingest_started: [],
+  ingest_done: ['format', 'size', 'reused'],
+  summary_viewed: ['jurisdiction'],
+  section_brief_open: ['jurisdiction'],
+  example_view: ['jurisdiction'],
+  question_asked: ['jurisdiction', 'chipId'],
+  find_where_it_says: ['jurisdiction'],
+  reference_open: ['jurisdiction'],
+  quote_shown: [],
+  quote_confirmed: [],
+};
 
 export function emitEvent(
   name: ReaderEventName,
-  fields: Record<string, string | number | boolean | null | undefined> = {},
+  fields: Partial<Record<FieldName, unknown>> = {},
 ): void {
   const detail: ReaderEvent = { name };
-  for (const [key, value] of Object.entries(fields)) {
-    if (key === 'name') continue;
-    if (typeof value === 'number' && Number.isFinite(value))
-      detail[key] = value;
-    else if (typeof value === 'boolean') detail[key] = value;
-    else if (typeof value === 'string' && SAFE_LABEL.test(value))
-      detail[key] = value;
+  for (const field of ALLOWED[name]) {
+    const value = FIELDS[field](fields[field]);
+    if (value !== undefined) detail[field] = value;
   }
   try {
     window.dispatchEvent(new CustomEvent(EVENT_TYPE, { detail }));
