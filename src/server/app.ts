@@ -37,6 +37,7 @@ import {
   type BillEstimate,
   type BillFacts,
   type FeatureEstimate,
+  type JobBudget,
   type JobKind,
   type JobScope,
   type ModelAssignment,
@@ -71,6 +72,7 @@ import {
   type AdmissionJob,
   type ModelForHook,
 } from './admission.js';
+import { validBudget } from './admission.js';
 import { routedRuntime } from './model-routing.js';
 import {
   estimatesFor,
@@ -135,6 +137,19 @@ export interface AppOptions {
   onUsage?: (event: UsageEvent) => void | Promise<void>;
   /** Chooses the answer and extract models for a job. Cache keys include the model. */
   modelFor?: ModelForHook;
+  /**
+   * Consulted when background work for a document starts and no live scope exists (the first
+   * request after a restart, a resumed run). Return the persisted budget, models and job id, or
+   * undefined when the document is unknown. With `admission` set, unknown means no paid work.
+   */
+  backgroundScope?: (docId: string) => Promise<
+    | {
+        budget?: JobBudget;
+        models?: { answer?: string; extract?: string };
+        jobId?: string;
+      }
+    | undefined
+  >;
   /** Quote API settings and the plans admission estimates use. */
   quote?: QuoteOptions;
   publicMode?: boolean;
@@ -201,7 +216,10 @@ export function createApp(
 ): Hono {
   // With model routing, services reading `runtime.answerProvider` get the model of the job in
   // scope (the tier an admitted ingest fixed for background generation).
-  const runtime = options.modelFor ? routedRuntime(rawRuntime) : rawRuntime;
+  const runtime =
+    options.modelFor || options.backgroundScope
+      ? routedRuntime(rawRuntime)
+      : rawRuntime;
   const publicMode = options.publicMode ?? false;
   const privateMode = options.privateMode ?? false;
   const configuredAuth: unknown = options.auth;
@@ -224,6 +242,7 @@ export function createApp(
     canRead: options.canRead,
     pinned: options.pinned,
     admission: options.admission,
+    backgroundScope: options.backgroundScope,
     onUsage: options.onUsage,
     modelFor: options.modelFor,
     landing: options.site?.landing,
@@ -516,7 +535,8 @@ export function createApp(
   const hooked =
     options.admission !== undefined ||
     options.onUsage !== undefined ||
-    options.modelFor !== undefined;
+    options.modelFor !== undefined ||
+    options.backgroundScope !== undefined;
   const estimating =
     options.admission !== undefined || options.modelFor !== undefined;
   const quotes = new QuoteStore(now);
@@ -551,6 +571,56 @@ export function createApp(
   const tiers = (): Record<string, ModelAssignment> =>
     quoteTiers(options.quote, configuredModels);
   const defaultAssignment = (): ModelAssignment => firstOf(tiers());
+
+  const resolving = new Map<string, Promise<JobScope>>();
+  /**
+   * The scope background work for a document runs in: the live one from its first admitted
+   * ingest, else what the host persisted (`backgroundScope`), else, without that hook, the
+   * requester standing in (today's behaviour). When the host does not know the document and
+   * admission is configured, the scope has a zero budget: every model call is refused, so only
+   * cached results are served. That scope is not remembered, so the host is asked again.
+   */
+  function resolveDocScope(c: Context, docId: string): Promise<JobScope> {
+    const live = docScopes.get(docId);
+    if (live) return Promise.resolve(live);
+    if (!options.backgroundScope)
+      return Promise.resolve(makeScope(c, { kind: 'ingest', docId }, {}));
+    let pending = resolving.get(docId);
+    if (!pending) {
+      const lookup = options.backgroundScope;
+      pending = (async () => {
+        const saved = await lookup(docId);
+        if (!saved) {
+          const scope = makeScope(
+            c,
+            { kind: 'ingest', docId },
+            options.admission ? { budget: { tokens: 0, dollars: 0 } } : {},
+          );
+          return scope;
+        }
+        const budget = saved.budget;
+        if (budget !== undefined && !validBudget(budget))
+          throw new Error('Invalid job budget.');
+        const scope = makeScope(
+          c,
+          { kind: 'ingest', docId },
+          {
+            budget,
+            models: checkedChoice(saved.models),
+          },
+        );
+        if (typeof saved.jobId === 'string' && saved.jobId.length > 0)
+          scope.context.jobId = saved.jobId;
+        if (docScopes.size >= DOC_SCOPE_CAP) evictOldest(docScopes);
+        docScopes.set(docId, scope);
+        return scope;
+      })().finally(() => {
+        resolving.delete(docId);
+      });
+      resolving.set(docId, pending);
+    }
+    return pending;
+  }
 
   /** A host's model choice, kept only when it is a pair of nonempty strings. */
   const checkedChoice = (choice: unknown): ModelChoice | undefined => {
@@ -625,7 +695,9 @@ export function createApp(
     if (!hooked) return undefined;
     // An example is drawn by the document's own tier so its cache key matches its brief's.
     const inherited =
-      job.kind === 'example' ? docScopes.get(job.docId)?.models : undefined;
+      job.kind === 'example'
+        ? (await resolveDocScope(c, job.docId)).models
+        : undefined;
     if (opts.exempt || !estimating)
       return makeScope(c, job, { models: inherited });
     const facts = await factsFor(job.docId);
@@ -659,16 +731,13 @@ export function createApp(
   }
 
   // Background generation runs under the first admitted ingest's scope. After a restart that
-  // scope is gone; the request that restarts generation then stands in, unbudgeted.
+  // scope is gone: `backgroundScope` restores it, or the requester stands in (see above).
   if (hooked) {
-    const inDocScope: MiddlewareHandler = (c, next) => {
+    const inDocScope: MiddlewareHandler = async (c, next) => {
       if (c.req.method !== 'GET' && c.req.method !== 'HEAD') return next();
       const docId = c.req.param('docId');
       if (!docId) return next();
-      return runInJob(
-        docScopes.get(docId) ?? makeScope(c, { kind: 'ingest', docId }, {}),
-        next,
-      );
+      await runInJob(await resolveDocScope(c, docId), next);
     };
     app.use('/api/docs/:docId', inDocScope);
     app.use('/api/docs/:docId/*', inDocScope);

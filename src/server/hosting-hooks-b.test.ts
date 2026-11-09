@@ -548,6 +548,107 @@ describe('budgets', () => {
   });
 });
 
+describe('background scope after a restart', () => {
+  const summaryOf = async (a: Hono, docId: string) =>
+    SummaryResponse.parse(
+      await (await call(a, `/api/docs/${docId}/summary`)).json(),
+    );
+  /** A document ingested by an earlier process; nothing is cached for it. */
+  const earlierProcess = () => ingestDoc(app());
+  const restarted = (options: AppOptions) => app(options);
+
+  test('restores the persisted tier, job id and usage context; consulted once while live', async () => {
+    const docId = await earlierProcess();
+    const events: UsageEvent[] = [];
+    const used: string[] = [];
+    env.runtime.providerFor = (_role, model) => {
+      used.push(model ?? '');
+      return new MockProvider(model);
+    };
+    const lookup = vi.fn(() =>
+      Promise.resolve({
+        models: { answer: 'tier-a' },
+        jobId: 'persisted-job',
+        budget: { tokens: 1_000_000 },
+      }),
+    );
+    const a = restarted({
+      admission: () => Promise.resolve(allow),
+      backgroundScope: lookup,
+      onUsage: (e) => {
+        events.push(e);
+      },
+    });
+    await summaryOf(a, docId);
+    await vi.waitFor(async () => {
+      expect((await summaryOf(a, docId)).status).toBe('cached');
+    });
+    expect(used).toContain('tier-a');
+    expect(lookup).toHaveBeenCalledTimes(1);
+    expect(lookup).toHaveBeenCalledWith(docId);
+    const summary = events.filter((e) => e.feature === 'summary');
+    for (const e of summary) expect(e.job?.jobId).toBe('persisted-job');
+  });
+
+  test('enforces the persisted budget', async () => {
+    const docId = await earlierProcess();
+    const original = provider.streamText.bind(provider);
+    vi.spyOn(provider, 'streamText').mockImplementation((req) =>
+      (async function* () {
+        for await (const e of original(req))
+          yield e.type === 'done'
+            ? { ...e, usage: { inputTokens: 100, outputTokens: 50 } }
+            : e;
+      })(),
+    );
+    const a = restarted({
+      admission: () => Promise.resolve(allow),
+      backgroundScope: () => Promise.resolve({ budget: { tokens: 1 } }),
+    });
+    await summaryOf(a, docId);
+    await vi.waitFor(async () => {
+      expect((await summaryOf(a, docId)).status).toBe('cached');
+    });
+    // The summary spent the whole budget, so the breakdown is refused before any model call.
+    await call(a, `/api/docs/${docId}/breakdown`);
+    await vi.waitFor(() => {
+      expect(logs.some((l) => l.includes('budget_exhausted'))).toBe(true);
+    });
+    expect(provider.breakdownCalls).toBe(0);
+  });
+
+  test('an unknown document with admission configured is served from cache only', async () => {
+    const docId = await earlierProcess();
+    const stream = vi.spyOn(provider, 'streamText');
+    const a = restarted({
+      admission: () => Promise.resolve(allow),
+      backgroundScope: () => Promise.resolve(undefined),
+    });
+    await summaryOf(a, docId);
+    await vi.waitFor(async () => {
+      expect((await summaryOf(a, docId)).status).toBe('disabled');
+    });
+    expect(stream).not.toHaveBeenCalled();
+    expect(provider.breakdownCalls).toBe(0);
+    // Cached results are still served.
+    const plain = app();
+    await summaryOf(plain, docId);
+    await vi.waitFor(async () => {
+      expect((await summaryOf(plain, docId)).status).toBe('cached');
+    });
+    expect((await summaryOf(a, docId)).status).toBe('cached');
+  });
+
+  test("without the hook, or without admission, today's behaviour is kept", async () => {
+    const docId = await earlierProcess();
+    const a = restarted({ backgroundScope: () => Promise.resolve(undefined) });
+    await summaryOf(a, docId);
+    await vi.waitFor(async () => {
+      expect((await summaryOf(a, docId)).status).toBe('cached');
+    });
+  });
+});
+
 describe('model routing', () => {
   test('modelFor picks the models for a job and two tiers never share cached text', async () => {
     const built: string[] = [];
@@ -606,7 +707,7 @@ describe('model routing', () => {
 });
 
 describe('hook validation', () => {
-  test.each(['admission', 'onUsage', 'modelFor'] as const)(
+  test.each(['admission', 'onUsage', 'modelFor', 'backgroundScope'] as const)(
     '%s must be a function',
     (name) => {
       expect(() => app({ [name]: 'nope' })).toThrow(

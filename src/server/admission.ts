@@ -125,7 +125,7 @@ export function interpretAdmission(
   };
 }
 
-function validBudget(value: unknown): value is JobBudget {
+export function validBudget(value: unknown): value is JobBudget {
   if (typeof value !== 'object' || value === null) return false;
   const { dollars, tokens } = value as JobBudget;
   const ok = (n: unknown): boolean =>

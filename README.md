@@ -310,7 +310,11 @@ Money-free hooks for paid hosting (see [ADR 0018](docs/decisions/0018-hosting-ho
 - `onUsage(event)` receives every model call's usage with `{readerId, jobKind, jobId, docId}`,
   including background generation, which runs under the first admitted ingest of a document.
 - A job `budget` (`{tokens?, dollars?}`) stops the job with `BUDGET_EXHAUSTED`, overshooting by
-  at most one call. Breakdown and pictures keep what they wrote.
+  at most one call per sequential job (concurrent calls within a job may each overshoot by
+  one). Breakdown and pictures keep what they wrote.
+- `backgroundScope(docId)` restores a document's persisted `{budget?, models?, jobId?}` after a
+  restart, when no live scope exists. If it returns `undefined` and `admission` is set, the
+  document is served from cache only and no paid background work starts.
 - `modelFor(job)` returns `{answer?, extract?}`; cache keys include the model.
 - The SPA dispatches `lawglass:event` `CustomEvent`s on `window` (name plus a few non-identifying
   fields, never text or addresses). Nothing is sent anywhere by this repository.
