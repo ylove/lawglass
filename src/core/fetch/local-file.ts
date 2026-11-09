@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { open, stat } from 'node:fs/promises';
+import { open } from 'node:fs/promises';
 import { basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AppError } from '../model/index.js';
@@ -38,21 +38,16 @@ export async function readLocalFile(
   }
   opts.signal?.throwIfAborted();
   try {
-    const info = await stat(path);
-    if (!info.isFile())
-      throw new AppError('INVALID_INPUT', undefined, {
-        userMessage: info.isDirectory()
-          ? 'That path is a directory. Choose a PDF, XML, HTML, or text file.'
-          : 'That path is not a regular file. Choose a PDF, XML, HTML, or text file.',
-      });
-    if (info.size > maxBytes) throw new AppError('TOO_LARGE');
+    // Open first, then fstat the handle: checking by path and opening after would race a swap.
     // Nonblocking open prevents a file replaced with a FIFO from hanging before fstat.
     const handle = await open(path, constants.O_RDONLY | constants.O_NONBLOCK);
     try {
       const opened = await handle.stat();
       if (!opened.isFile())
         throw new AppError('INVALID_INPUT', undefined, {
-          userMessage: 'That path is not a regular file.',
+          userMessage: opened.isDirectory()
+            ? 'That path is a directory. Choose a PDF, XML, HTML, or text file.'
+            : 'That path is not a regular file. Choose a PDF, XML, HTML, or text file.',
         });
       if (opened.size > maxBytes) throw new AppError('TOO_LARGE');
       const chunks: Buffer[] = [];

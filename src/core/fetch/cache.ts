@@ -111,9 +111,16 @@ export async function readCache(
     );
     if (!metadata.success) return undefined;
     const path = join(cacheDir, docId);
-    if ((await realFs.stat(path)).size > maxBytes)
-      throw new AppError('TOO_LARGE');
-    const bytes = await realFs.readFile(path);
+    // One handle for size check, read and touch, so they all describe the same file.
+    const handle = await realFs.open(path, 'r');
+    let bytes: Buffer;
+    try {
+      if ((await handle.stat()).size > maxBytes)
+        throw new AppError('TOO_LARGE');
+      bytes = await handle.readFile();
+    } finally {
+      await handle.close();
+    }
     if (bytes.length > maxBytes) throw new AppError('TOO_LARGE');
     if (documentId(bytes) !== docId) return undefined;
     // Recency drives eviction: a hit makes this snapshot the last to go.
