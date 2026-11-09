@@ -43,6 +43,7 @@ beforeEach(async () => {
     answerProvider: provider,
     answerEndpoint: 'mock:local',
     extractProvider: provider,
+    providerFor: (_role, model) => new MockProvider(model),
   };
 });
 afterEach(async () => {

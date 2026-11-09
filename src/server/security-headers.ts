@@ -9,13 +9,65 @@ import type { MiddlewareHandler } from 'hono';
 /** Where Turnstile's widget script and challenge iframe load from (public mode only). */
 export const TURNSTILE_ORIGIN = 'https://challenges.cloudflare.com';
 
+export type CspExtensions = Partial<
+  Record<
+    | 'script-src'
+    | 'connect-src'
+    | 'img-src'
+    | 'frame-src'
+    | 'style-src'
+    | 'font-src'
+    | 'form-action',
+    string[]
+  >
+>;
+
+const EXTENSIBLE_DIRECTIVES = new Set([
+  'script-src',
+  'connect-src',
+  'img-src',
+  'frame-src',
+  'style-src',
+  'font-src',
+  'form-action',
+]);
+
+/** Sources are origins, never arbitrary CSP tokens or paths that could add directives. */
+function validSource(source: string): boolean {
+  if (source === "'self'") return true;
+  if (/\s/.test(source)) return false;
+  if (
+    !/^https:\/\/(?:\*\.)?(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?|\[[a-f0-9:]+\])(?::[0-9]{1,5})?$/i.test(
+      source,
+    )
+  )
+    return false;
+  try {
+    const url = new URL(source.replace('https://*.', 'https://'));
+    return url.protocol === 'https:' && url.hostname !== '';
+  } catch {
+    return false;
+  }
+}
+
 export interface SecurityHeadersOptions {
   /** Public servers also allow Cloudflare Turnstile's script and iframe. */
   publicMode: boolean;
   privateMode?: boolean;
+  /** External auth is also hosted behind a TLS terminator. */
+  externalAuth?: boolean;
+  csp?: CspExtensions;
 }
 
-export function contentSecurityPolicy(publicMode: boolean): string {
+export function contentSecurityPolicy(
+  publicMode: boolean,
+  extensions: CspExtensions = {},
+): string {
+  const input: unknown = extensions;
+  if (typeof input !== 'object' || input === null || Array.isArray(input))
+    throw new Error(
+      'Invalid CSP extensions: use a directive-to-sources object.',
+    );
   const directives: [string, string][] = [
     ['default-src', "'self'"],
     ['script-src', publicMode ? `'self' ${TURNSTILE_ORIGIN}` : "'self'"],
@@ -31,6 +83,23 @@ export function contentSecurityPolicy(publicMode: boolean): string {
     ['form-action', "'self'"],
     ['frame-ancestors', "'none'"],
   ];
+  for (const [name, sources] of Object.entries(extensions)) {
+    if (
+      !EXTENSIBLE_DIRECTIVES.has(name) ||
+      !Array.isArray(sources) ||
+      sources.some(
+        (source) => typeof source !== 'string' || !validSource(source),
+      )
+    )
+      throw new Error(
+        `Invalid CSP extension for ${name}: use HTTPS origins or 'self'.`,
+      );
+    if (!sources.length) continue;
+    const existing = directives.find(([directive]) => directive === name);
+    if (existing) existing[1] += ` ${sources.join(' ')}`;
+    // An absent directive inherits default-src 'self'; preserve that fallback when extending it.
+    else directives.push([name, `'self' ${sources.join(' ')}`]);
+  }
   return directives.map(([name, value]) => `${name} ${value}`).join('; ');
 }
 
@@ -64,11 +133,11 @@ export const PERMISSIONS_POLICY = [
 export function securityHeaders(
   options: SecurityHeadersOptions,
 ): MiddlewareHandler {
-  const csp = contentSecurityPolicy(options.publicMode);
+  const csp = contentSecurityPolicy(options.publicMode, options.csp);
   return async (c, next) => {
     await next();
     c.header('Content-Security-Policy', csp);
-    if (options.privateMode)
+    if (options.privateMode || options.externalAuth)
       c.header('Strict-Transport-Security', 'max-age=31536000');
     c.header('X-Content-Type-Options', 'nosniff');
     c.header('Referrer-Policy', 'no-referrer');

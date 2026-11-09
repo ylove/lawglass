@@ -17,11 +17,11 @@ import {
   AppError,
   AskRequest,
   CandidateLink,
+  ClientConfig,
   DocSummary,
   IngestRequest,
   isAppError,
   type AskEvent,
-  type ClientConfig,
   type ErrorPayload,
   type IngestEvent,
 } from '../core/model/index.js';
@@ -39,8 +39,8 @@ import { registerBreakdownRoutes } from './breakdown-route.js';
 import { registerPictureRoutes } from './pictures-route.js';
 import { registerScenarioRoute } from './scenario-route.js';
 import { createSummaryService } from './summary.js';
-import { securityHeaders } from './security-headers.js';
-import { staticAssets } from './static.js';
+import { securityHeaders, type CspExtensions } from './security-headers.js';
+import { staticAssets, validateHead } from './static.js';
 import { noopTurnstile, type TurnstileVerifier } from './turnstile.js';
 import { isLoopbackHost } from './bind.js';
 import {
@@ -57,7 +57,7 @@ import {
   READER_COOKIE_MAX_AGE_S,
   ReaderLibrary,
 } from './readers.js';
-import { gateAssets, quickstartHtml } from './gate.js';
+import { gateAssets, quickstartHtml, type SiteOptions } from './gate.js';
 import { createSessionToken, localSession, readAccessKey } from './session.js';
 
 export interface PublicLimits {
@@ -76,7 +76,24 @@ export const DEFAULT_PUBLIC_LIMITS: Omit<PublicLimits, 'maxDocs'> = {
   maxPages: 200,
 };
 
+export interface ExternalAuth {
+  /** Runs after request safety checks and public pages, before any API or SPA work. */
+  middleware: MiddlewareHandler;
+  /** Stable, nonempty opaque account id. Never logged or stored in a cookie. */
+  readerId: (c: Context) => string;
+}
+
 export interface AppOptions {
+  auth?: ExternalAuth;
+  /** A refusal deliberately looks exactly like an absent document, including for SSE routes. */
+  canRead?: (c: Context, docId: string) => boolean | Promise<boolean>;
+  csp?: CspExtensions;
+  site?: SiteOptions;
+  head?: string[];
+  /** Same-origin account page; the SPA uses a normal link so the host handles navigation. */
+  accountUrl?: string;
+  /** Pinned documents count toward capacity but are never automatically removed. */
+  pinned?: (docId: string) => boolean | Promise<boolean>;
   publicMode?: boolean;
   privateMode?: boolean;
   accessKey?: string;
@@ -95,7 +112,7 @@ export interface AppOptions {
   clientIp?: (c: Context) => string;
   /** Number of trusted proxies, counted from the right of X-Forwarded-For. */
   trustProxyHops?: number;
-  /** Reject requests whose Host is not loopback (DNS-rebinding defence). Default: not public. */
+  /** Reject requests whose Host is not loopback (DNS-rebinding defence). Default: local mode only. */
   localOnly?: boolean;
   /** Launch token; generated when omitted. Ignored in public mode. */
   sessionToken?: string | undefined;
@@ -136,9 +153,40 @@ const LAZY_STRATEGIES: ReadonlySet<string> = new Set(['metadata', 'extract']);
 export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   const publicMode = options.publicMode ?? false;
   const privateMode = options.privateMode ?? false;
+  const configuredAuth: unknown = options.auth;
+  if (
+    configuredAuth !== undefined &&
+    (typeof configuredAuth !== 'object' ||
+      configuredAuth === null ||
+      !('middleware' in configuredAuth) ||
+      typeof configuredAuth.middleware !== 'function' ||
+      !('readerId' in configuredAuth) ||
+      typeof configuredAuth.readerId !== 'function')
+  )
+    throw invalid('External auth requires middleware and readerId functions.');
+  const auth = options.auth;
+  if (auth && (privateMode || publicMode))
+    throw invalid(
+      'External auth cannot be combined with privateMode or publicMode.',
+    );
+  for (const [name, hook] of Object.entries({
+    canRead: options.canRead,
+    pinned: options.pinned,
+    landing: options.site?.landing,
+    quickstart: options.site?.quickstart,
+  })) {
+    if (hook !== undefined && typeof hook !== 'function')
+      throw invalid(`${name} must be a function.`);
+  }
+  validateHead(options.head);
+  if (
+    options.accountUrl !== undefined &&
+    !ClientConfig.shape.accountUrl.safeParse(options.accountUrl).success
+  )
+    throw invalid('accountUrl must be a same-origin path starting with /.');
   if (privateMode && publicMode)
     throw invalid('--private and --public cannot be used together.');
-  const hosted = publicMode || privateMode;
+  const hosted = publicMode || privateMode || auth !== undefined;
   const hosts = options.ingestHosts ?? ingestHosts();
   const hops = options.trustProxyHops ?? 0;
   if (!Number.isSafeInteger(hops) || hops < 0)
@@ -197,6 +245,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   const readers = hosted
     ? new ReaderLibrary(runtime.registry.configDir, {
         now: () => new Date(now()),
+        externalIds: auth !== undefined,
       })
     : undefined;
   const readerOf = new WeakMap<Request, string>();
@@ -204,7 +253,15 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   const freshReader = new WeakSet<Request>();
 
   // First, so its headers also land on responses that later middleware returns early.
-  app.use('*', securityHeaders({ publicMode, privateMode }));
+  app.use(
+    '*',
+    securityHeaders({
+      publicMode,
+      privateMode,
+      externalAuth: auth !== undefined,
+      csp: options.csp,
+    }),
+  );
 
   const log = createLogger(options.logWriter, now);
   app.use('*', log.middleware);
@@ -274,16 +331,25 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
   // fallback, so neither gates nor swallows it. It contains no per-user data.
   app.on(['GET', 'HEAD'], '/quickstart', async (c, next) => {
     // A key in the query string still goes through the session exchange (and its redirect).
-    if (c.req.query('k') !== undefined) return next();
+    if (!auth && c.req.query('k') !== undefined) return next();
     return c.html(
-      await quickstartHtml(
-        options.publicOrigin ?? process.env[envVar('PUBLIC_ORIGIN')],
-        options.webRoot,
-      ),
+      await (options.site?.quickstart
+        ? options.site.quickstart(c)
+        : quickstartHtml(
+            options.publicOrigin ?? process.env[envVar('PUBLIC_ORIGIN')],
+            options.webRoot,
+          )),
     );
   });
 
-  if (!publicMode) {
+  const health = (c: Context): Response =>
+    c.json({ ok: true as const, version: packageJson.version });
+  // External hosts need credential-free liveness probes. Health carries no reader data and
+  // stops before host middleware or reader setup, so it cannot create cookies or list files.
+  if (auth) app.get('/api/health', health);
+
+  if (auth) app.use('*', auth.middleware);
+  else if (!publicMode) {
     const token = privateMode
       ? readAccessKey(
           options.accessKey === undefined
@@ -310,8 +376,29 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
         privateMode,
         ...(options.webRoot ? { webRoot: options.webRoot } : {}),
         ...(publicOrigin ? { publicOrigin } : {}),
+        ...(options.site?.landing ? { landing: options.site.landing } : {}),
       }),
     );
+  }
+
+  if (options.canRead) {
+    const canRead = options.canRead;
+    const checked = new WeakSet<Context>();
+    const readAccess: MiddlewareHandler = async (c, next) => {
+      // Some Hono routers match the wildcard on the base path too. Authorize only once.
+      if (!checked.has(c)) {
+        const docId = c.req.param('docId');
+        if (!docId) throw new AppError('DOC_NOT_FOUND');
+        // Untyped hosts must grant access explicitly; a truthy non-boolean is still a refusal.
+        const allowed: unknown = await canRead(c, docId);
+        if (allowed !== true) throw new AppError('DOC_NOT_FOUND');
+        checked.add(c);
+      }
+      await next();
+    };
+    // Before body parsing, reader-list writes and every handler (including registered SSE routes).
+    app.use('/api/docs/:docId', readAccess);
+    app.use('/api/docs/:docId/*', readAccess);
   }
 
   const limitPostBody: MiddlewareHandler = bodyLimit({
@@ -334,6 +421,13 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     const ensureReader: MiddlewareHandler = async (c, next) => {
       // Health checks are not a reader; they must stay cookie-free.
       if (c.req.path === '/api/health') return next();
+      if (auth) {
+        const id = auth.readerId(c);
+        if (typeof id !== 'string' || id.length === 0)
+          throw new Error('Invalid reader id.');
+        readerOf.set(c.req.raw, id);
+        return next();
+      }
       const sent = getCookie(c, READER_COOKIE);
       let id = isReaderId(sent) ? sent : undefined;
       if (!id) {
@@ -367,9 +461,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     return c.json({ error: toErrorPayload(error) }, 500);
   });
 
-  app.get('/api/health', (c) =>
-    c.json({ ok: true as const, version: packageJson.version }),
-  );
+  if (!auth) app.get('/api/health', health);
 
   app.get('/api/config', (c) => {
     // The provider may be unconfigured (no API key yet); the UI still needs to load.
@@ -394,6 +486,9 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
       locateEnabled: !publicMode,
       library: hosted ? 'reader' : 'local',
       ...(examples && examples.length > 0 ? { examples } : {}),
+      ...(options.accountUrl !== undefined
+        ? { accountUrl: options.accountUrl }
+        : {}),
     };
     return c.json(config);
   });
@@ -649,7 +744,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
           ? await readers.listedDocIds()
           : new Set<string>();
         // Other backends' entries are left alone: only their own backend can delete the index.
-        const reclaimable = entries
+        const candidates = entries
           .filter(
             (e) =>
               !listed.has(e.docId) &&
@@ -661,8 +756,13 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
               a.lastUsedAt.localeCompare(b.lastUsedAt) ||
               a.ingestedAt.localeCompare(b.ingestedAt) ||
               a.docId.localeCompare(b.docId),
-          )
-          .slice(0, excess);
+          );
+        const reclaimable: RegistryEntry[] = [];
+        for (const entry of candidates) {
+          if (options.pinned && (await options.pinned(entry.docId))) continue;
+          reclaimable.push(entry);
+          if (reclaimable.length === excess) break;
+        }
         if (reclaimable.length < excess) throw new AppError('DOC_CAP_REACHED');
         for (const old of reclaimable) {
           await runtime.backend.deleteDocument(old.docId);
@@ -747,6 +847,7 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
               now: runtime.now,
               // Public servers never evict: a visitor must not push out someone else's document.
               maxDocs: publicMode ? limits.maxDocs : runtime.maxDocs,
+              pinned: options.pinned,
               ...(readers
                 ? {
                     evictionGuard: {
@@ -946,7 +1047,8 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     ),
   );
 
-  if (options.webRoot) app.use('*', staticAssets(options.webRoot));
+  if (options.webRoot)
+    app.use('*', staticAssets(options.webRoot, options.head));
 
   return app;
 }

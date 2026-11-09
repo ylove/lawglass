@@ -38,6 +38,7 @@ The open-source server gains generic hooks. With none passed, behaviour is uncha
    - an estimate from `src/core/cost`, computed before any model call.
 
    Background generation of a document (summary, breakdown, pictures, pre-drawn examples) is not admitted call by call. Each reader is admitted once, at ingest. The first ingest's budget becomes the document's generation budget.
+
 4. **Quotes.** `POST /api/quote {url}` fetches and parses only. It makes no model call and stores nothing. It returns size facts and an estimate per configured model. A hosted package turns that into a price; the open-source server never shows one. Ingest accepts an optional `quoteId` and passes it to `admission`.
 5. **Usage.** `onUsage(event)` receives every model call's usage. Each event names the feature, the model and the token split, including cache reads and writes, plus the job context. The job context is carried through `AsyncLocalStorage` from the route that started the work. Background work started by an admitted ingest keeps that ingest's context.
 6. **Budgets.** A job budget, in tokens or in dollars against the cost table, is enforced in `Limits.meter()`.

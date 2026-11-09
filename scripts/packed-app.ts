@@ -18,7 +18,12 @@ export const SAMPLE_LABEL = 'Synthetic amendment bill';
 /** Check actual archive entries, rather than trusting package.json's files allowlist. */
 export function assertPackageFiles(paths: readonly string[]): void {
   const files = paths.map((path) => path.replace(/^package\//, ''));
-  for (const required of ['dist/cli.js', 'dist/web/index.html']) {
+  for (const required of [
+    'dist/cli.js',
+    'dist/server.js',
+    'dist/server.d.ts',
+    'dist/web/index.html',
+  ]) {
     assert(files.includes(required), `Tarball is missing ${required}`);
   }
   // An allowlist, so widening package.json#files can't quietly ship scripts, e2e or src. Source

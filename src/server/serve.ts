@@ -54,10 +54,10 @@ export async function startServer(
   const host = validateBindHost(
     options.host,
     options.publicMode,
-    options.privateMode,
+    (options.privateMode ?? false) || options.auth !== undefined,
   );
   const sessionToken =
-    options.publicMode || options.privateMode
+    options.publicMode || options.privateMode || options.auth
       ? undefined
       : createSessionToken();
   let port = options.port ?? runtime.port;
@@ -65,7 +65,11 @@ export async function startServer(
     webRoot: defaultWebRoot(),
     ...options,
     localOnly:
-      !options.publicMode && !options.privateMode && isLoopbackAddress(host),
+      options.localOnly ??
+      (!options.publicMode &&
+        !options.privateMode &&
+        !options.auth &&
+        isLoopbackAddress(host)),
     sessionToken,
     sessionPort: () => port,
   });
