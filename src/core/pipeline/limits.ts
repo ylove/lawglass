@@ -18,6 +18,7 @@ import {
   type TextRequest,
 } from '../model/index.js';
 import { envVar } from '../brand.js';
+import { providerStatusOf } from '../llm/shared.js';
 import {
   NOOP_USAGE_SINK,
   type UsageFeature,
@@ -334,7 +335,12 @@ export class Limits {
             failed = true;
             if (!finished && error instanceof AppError && error.usage)
               await report(error.usage);
-            else if (!finished && req.signal?.aborted)
+            else if (!finished && partial) await report(partial);
+            else if (
+              !finished &&
+              (chars > 0 || req.signal?.aborted || maybeBilled(error))
+            )
+              // A timeout or an overload mid-answer: the provider billed what it produced.
               await report(guess(req, chars), feature, true);
             throw error;
           } finally {
@@ -356,7 +362,7 @@ export class Limits {
           // A reply that arrived but was unusable (cut off, invalid) was still billed.
           if (error instanceof AppError && error.usage)
             await report(error.usage, objectFeature(req.schemaName));
-          else if (req.signal?.aborted)
+          else if (req.signal?.aborted || maybeBilled(error))
             await report(
               { inputTokens: promptTokens(req), outputTokens: req.maxTokens },
               objectFeature(req.schemaName),
@@ -369,6 +375,18 @@ export class Limits {
       },
     };
   }
+}
+
+/**
+ * A provider failure with no HTTP status (a timeout, a dropped connection) may have been billed
+ * for work the provider did; an HTTP error (auth, bad request) was not.
+ */
+function maybeBilled(error: unknown): boolean {
+  return (
+    error instanceof AppError &&
+    error.code === 'PROVIDER_ERROR' &&
+    providerStatusOf(error) === undefined
+  );
 }
 
 /** About four characters to a token, rounded up: a bound, not a tokenizer. */

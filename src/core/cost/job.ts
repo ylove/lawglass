@@ -89,6 +89,30 @@ export function assertBudget(scope: JobScope | undefined = currentJob()): void {
   throw new AppError('BUDGET_EXHAUSTED');
 }
 
+/** False once the job's spend has reached its budget (a job without a budget always has room). */
+export function budgetRemaining(
+  scope: JobScope | undefined = currentJob(),
+): boolean {
+  const budget = scope?.budget;
+  if (!scope || !budget) return true;
+  const { spent } = scope;
+  return !(
+    (budget.dollars !== undefined && spent.dollars >= budget.dollars) ||
+    (budget.tokens !== undefined && spent.tokens >= budget.tokens)
+  );
+}
+
+/**
+ * A new admission pays for a (document, tier) whose scope is spent: its budget and job id replace
+ * the old ones, in place, so work already holding the scope sees them.
+ */
+export function topUp(live: JobScope, paid: JobScope): void {
+  live.budget = paid.budget;
+  live.context.jobId = paid.context.jobId;
+  live.context.readerId = paid.context.readerId;
+  Object.assign(live.spent, newSpend());
+}
+
 export function isBudgetExhausted(error: unknown): boolean {
   return error instanceof AppError && error.code === 'BUDGET_EXHAUSTED';
 }

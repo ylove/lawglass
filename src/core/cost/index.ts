@@ -26,6 +26,8 @@ export {
 } from './usage.js';
 export {
   assertBudget,
+  budgetRemaining,
+  topUp,
   chargeJob,
   currentJob,
   isBudgetExhausted,

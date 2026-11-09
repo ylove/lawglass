@@ -9,6 +9,7 @@
  * keeps the words, with no error to dismiss.
  */
 import { addLlmUsage } from '../core/cost/usage.js';
+import { budgetRemaining } from '../core/cost/job.js';
 import { AppError, type LlmUsage } from '../core/model/index.js';
 import { registryLlmUsage } from '../core/registry.js';
 import { join } from 'node:path';
@@ -52,6 +53,8 @@ export interface PictureService {
     source: PictureSource,
     request?: PictureRequestOptions,
   ): Promise<PicturesResponse>;
+  /** A document was just paid for: forget cool-downs and let a budget-stopped run go on. */
+  resume(docId: string): void;
 }
 
 /** Counts only, never text: what a run drew and what the checks refused. */
@@ -190,7 +193,12 @@ export function createPictureService(
             .catch((error: unknown) => onError?.(error, now() - started));
         }
         if (drawn.stoppedReason) {
-          stopped.set(name, { at: now(), entries: drawn.entries });
+          // Pictures already drawn are never replaced by fewer.
+          const kept = stopped.get(name)?.entries ?? [];
+          stopped.set(name, {
+            at: now(),
+            entries: drawn.entries.length >= kept.length ? drawn.entries : kept,
+          });
           // Throwing keeps getOrCompute from storing a partial set as the finished one.
           throw new AppError('BUDGET_EXHAUSTED');
         }
@@ -257,9 +265,8 @@ export function createPictureService(
       return done ? respond(done) : { status: 'pending' };
     }
     const halted = stopped.get(name);
-    if (halted && now() - halted.at < FAILED_RETRY_MS)
+    if (halted && !(budgetRemaining() && now() - halted.at >= FAILED_RETRY_MS))
       return respond(halted.entries);
-    stopped.delete(name);
     const failed = failedAt.get(name);
     if (failed !== undefined && now() - failed < FAILED_RETRY_MS)
       return { status: 'none' };
@@ -268,5 +275,12 @@ export function createPictureService(
     return { status: 'pending' };
   }
 
-  return { get };
+  function resume(docId: string): void {
+    for (const name of [...failedAt.keys()])
+      if (name.startsWith(`${docId}:`)) failedAt.delete(name);
+    for (const [name, halted] of stopped)
+      if (name.startsWith(`${docId}:`)) halted.at = Number.NEGATIVE_INFINITY;
+  }
+
+  return { get, resume };
 }

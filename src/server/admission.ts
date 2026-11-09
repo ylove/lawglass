@@ -22,6 +22,12 @@ export interface AdmissionJob {
     facts: QuoteFacts;
     estimates: Record<string, BillEstimate>;
   };
+  /**
+   * Ingest only: true when this document's summary and breakdown are already generated for the
+   * reader's tier, so no new generation will be started and the admission budget would go unused.
+   * The host may decide not to charge, or to charge only for the cached read.
+   */
+  docComplete?: boolean;
   /** The model tier the reader's work will run on, as `answer+extract` model names ('default' when `modelFor` chose none). */
   tier?: string;
   chipId?: string;

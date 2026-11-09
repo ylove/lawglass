@@ -39,6 +39,8 @@ import {
   type BillEstimate,
   type BillFacts,
   type FeatureEstimate,
+  budgetRemaining,
+  topUp,
   type JobKind,
   type JobScope,
   type ModelAssignment,
@@ -591,8 +593,16 @@ export function createApp(
   const installScope = (key: string, scope: JobScope): JobScope => {
     if (docScopes.size >= DOC_SCOPE_CAP) evictOldest(docScopes);
     docScopes.set(key, scope);
+    // Someone just paid for this document: failures that happened while it was unpaid are over.
+    resumeDoc(key.slice(0, key.indexOf('\n')));
     return scope;
   };
+  /** Forget failure cool-downs and let budget-stopped runs go on, for a document just paid for. */
+  function resumeDoc(docId: string): void {
+    summary.resume?.(docId);
+    breakdown.resume?.(docId);
+    pictures.resume(docId);
+  }
   /** Zero budget: every model call is refused, so only cached results are served. */
   const failClosed = (
     c: Context,
@@ -606,6 +616,7 @@ export function createApp(
     );
 
   const LOOKUP_TTL_MS = 60_000;
+  const UNKNOWN_TTL_MS = 5_000;
   const LOOKUP_CAP = 2000;
   const lookups = new Map<
     string,
@@ -626,6 +637,14 @@ export function createApp(
     const entry = { at: now(), value };
     if (lookups.size >= LOOKUP_CAP) evictOldest(lookups);
     lookups.set(key, entry);
+    // "Unknown" is remembered only briefly, so a host-side unlock takes effect within seconds.
+    void value.then(
+      (saved) => {
+        if (saved === undefined && lookups.get(key) === entry)
+          entry.at = now() - LOOKUP_TTL_MS + UNKNOWN_TTL_MS;
+      },
+      () => undefined,
+    );
     // A failed lookup is not remembered: the next paid request asks again.
     value.catch(() => {
       if (lookups.get(key) === entry) lookups.delete(key);
@@ -1084,7 +1103,13 @@ export function createApp(
     message: string,
   ): Promise<T> {
     const parsed = schema.safeParse(await c.req.json().catch(() => undefined));
-    if (!parsed.success) throw invalid(message);
+    if (!parsed.success) {
+      if (parsed.error.issues.some((i) => i.path[0] === 'quoteId'))
+        throw invalid(
+          'The quote id is not valid. Quote ids use only letters, digits, hyphens and underscores (up to 128).',
+        );
+      throw invalid(message);
+    }
     return parsed.data;
   }
 
@@ -1263,6 +1288,33 @@ export function createApp(
     });
   });
 
+  /** Whether the document already has its summary and a finished breakdown on this tier. */
+  async function generationComplete(
+    c: Context,
+    docId: string,
+    models: ModelChoice | undefined,
+  ): Promise<boolean> {
+    try {
+      return await runInJob(
+        makeScope(c, { kind: 'ingest', docId }, { models }),
+        async () => {
+          const look = { wait: false, start: false } as const;
+          const [s, b] = await Promise.all([
+            summary.get(docId, look),
+            breakdown.get(docId, look),
+          ]);
+          return (
+            s.status === 'cached' &&
+            b.status === 'cached' &&
+            b.stoppedReason === undefined
+          );
+        },
+      );
+    } catch {
+      return false;
+    }
+  }
+
   /**
    * Admission for an ingest, new or reused. Needs the bill's size, so it fetches and parses
    * first (or reuses the quote this server issued to the reader); no model has been called yet.
@@ -1309,7 +1361,12 @@ export function createApp(
     const models = options.modelFor
       ? checkedChoice(options.modelFor(fields, c))
       : undefined;
-    const { budget } = await consult(c, { ...fields, tier: tierName(models) });
+    const docComplete = await generationComplete(c, admitted.docId, models);
+    const { budget } = await consult(c, {
+      ...fields,
+      tier: tierName(models),
+      ...(docComplete ? { docComplete } : {}),
+    });
     return {
       scope: makeScope(
         c,
@@ -1412,7 +1469,15 @@ export function createApp(
                   scope.context.docId = done.doc.docId;
                   const tier = tierName(scope.models);
                   const key = scopeKey(done.doc.docId, tier);
-                  if (!docScopes.has(key)) {
+                  const live = docScopes.get(key);
+                  if (live) {
+                    // A new admission pays for the document again: if the old budget is spent,
+                    // the new one takes its place (and its job id), and stopped work goes on.
+                    if (!budgetRemaining(live)) {
+                      topUp(live, scope);
+                      resumeDoc(done.doc.docId);
+                    }
+                  } else {
                     // After a restart the host may already hold this tier's scope (and what is
                     // left of its budget); that wins over the scope of the ingest that came first.
                     const saved = await lookupSaved(
@@ -1603,7 +1668,7 @@ export function createApp(
       log.error(c, error, ms);
     },
   });
-  registerPictureRoutes(app, runtime, {
+  const pictures = registerPictureRoutes(app, runtime, {
     publicMode,
     now,
     summary,

@@ -15,6 +15,7 @@ import type { BreakdownLog } from '../core/breakdown/generate.js';
 import type { CliRuntime } from '../cli/runtime.js';
 import { envVar } from '../core/brand.js';
 import { documentContext } from '../core/answer/context.js';
+import { budgetRemaining } from '../core/cost/job.js';
 import { breakdownCacheHash } from '../core/breakdown/cache.js';
 import { NO_EXAMPLE_NOTE } from '../core/breakdown/notes.js';
 import { chooseBreakdownUnits } from '../core/breakdown/units.js';
@@ -65,6 +66,8 @@ export interface RequestOptions {
 
 export interface BreakdownService {
   get(docId: string, options?: RequestOptions): Promise<BreakdownResponse>;
+  /** A document was just paid for: forget its failure cool-downs and let a budget-stopped run go on. */
+  resume?(docId: string): void;
   example(
     docId: string,
     sectionId: string,
@@ -166,13 +169,25 @@ export function createBreakdownService(
         cache: breakdowns,
         log: options.log,
         onProgress: (briefs) => {
-          partial.set(name, briefs);
+          // Parts an earlier, budget-stopped run wrote are never shown as fewer.
+          const kept = stopped.get(name)?.briefs ?? [];
+          partial.set(name, briefs.length >= kept.length ? briefs : kept);
         },
       });
-      if (stored?.stoppedReason)
-        stopped.set(name, { at: now(), briefs: [...stored.briefs] });
-      else if (!stored) failedAt.set(name, now());
-      else startPregeneration(docId, stored.briefs, stored.context);
+      if (stored?.stoppedReason) {
+        // Written parts are never replaced by fewer, whatever the later run managed.
+        const kept = stopped.get(name)?.briefs ?? [];
+        stopped.set(name, {
+          at: now(),
+          briefs: [
+            ...(stored.briefs.length >= kept.length ? stored.briefs : kept),
+          ],
+        });
+      } else if (!stored) failedAt.set(name, now());
+      else {
+        stopped.delete(name);
+        startPregeneration(docId, stored.briefs, stored.context);
+      }
     })()
       .catch((error: unknown) => {
         failedAt.set(name, now());
@@ -228,17 +243,25 @@ export function createBreakdownService(
         : { status: 'pending' };
     }
     const halted = stopped.get(name);
-    if (halted && now() - halted.at < FAILED_RETRY_MS)
-      return halted.briefs.length > 0
-        ? {
-            status: 'cached',
-            briefs: [...halted.briefs],
-            // Parts the budget never reached are not "left out": nothing is claimed about them.
-            omitted: 0,
-            stoppedReason: 'budget',
-          }
-        : { status: 'disabled', stoppedReason: 'budget' };
-    stopped.delete(name);
+    if (halted) {
+      // What the budget let through stays until a run that finishes replaces it. A new run
+      // starts only when this scope has budget again and the last stop is not fresh.
+      const mayResume =
+        request.start !== false &&
+        budgetRemaining() &&
+        now() - halted.at >= FAILED_RETRY_MS;
+      if (!mayResume)
+        return halted.briefs.length > 0
+          ? {
+              status: 'cached',
+              briefs: [...halted.briefs],
+              // Parts the budget never reached are not "left out": nothing is claimed about them.
+              omitted: 0,
+              stoppedReason: 'budget',
+            }
+          : { status: 'disabled', stoppedReason: 'budget' };
+      partial.set(name, halted.briefs);
+    }
     if (request.start === false) return { status: 'disabled' };
     // A recent failure is an error the client can show with a retry, not "off": `disabled`
     // would hide the panel and the parts the reader was already reading.
@@ -402,5 +425,13 @@ export function createBreakdownService(
     });
   }
 
-  return { get, example };
+  /** Called when a document is paid for again: forget cool-downs and let stopped runs go on. */
+  function resume(docId: string): void {
+    for (const name of [...failedAt.keys()])
+      if (name.startsWith(`${docId}:`)) failedAt.delete(name);
+    for (const [name, halted] of stopped)
+      if (name.startsWith(`${docId}:`)) halted.at = Number.NEGATIVE_INFINITY;
+  }
+
+  return { get, example, resume };
 }

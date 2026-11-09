@@ -1178,3 +1178,174 @@ describe('review: a budget stop is not a final result', () => {
     expect(full.briefs?.length).toBeGreaterThan(10);
   });
 });
+
+describe('review round 2: an exhausted scope and the parts already written', () => {
+  const many = 'https://govinfo.gov/many.txt';
+  interface B {
+    status: string;
+    briefs?: unknown[];
+    omitted?: number;
+    stoppedReason?: string;
+  }
+  const breakdownOf = async (a: Hono, docId: string, reader = 'alice') =>
+    (await (
+      await call(a, `/api/docs/${docId}/breakdown`, { reader })
+    ).json()) as B;
+  async function withSummary(plain: Hono): Promise<string> {
+    env.serve(many, bigBill(25, 'many'), 'text/plain');
+    const docId = await ingestDoc(plain, 'alice', {}, many);
+    await call(plain, `/api/docs/${docId}/summary`);
+    await vi.waitFor(async () => {
+      expect((await summaryStatus(plain, docId)).status).toBe('cached');
+    });
+    return docId;
+  }
+
+  test('R6b: a stopped breakdown keeps its parts after the cool-down, and never turns into disabled', async () => {
+    const t = { now: Date.now() };
+    const docId = await withSummary(app());
+    const tight = app({
+      now: () => t.now,
+      admission: () => Promise.resolve(allow),
+      backgroundScope: () => Promise.resolve({ budget: { tokens: 1 } }),
+    });
+    await call(tight, `/api/docs/${docId}/breakdown`);
+    const first = await vi.waitFor(async () => {
+      const r = await breakdownOf(tight, docId);
+      expect(r.status).toBe('cached');
+      return r;
+    });
+    expect(first.briefs).toHaveLength(10);
+    t.now += 61_000;
+    const calls = provider.breakdownCalls;
+    for (let i = 0; i < 3; i++) {
+      const later = await breakdownOf(tight, docId);
+      expect(later.status).toBe('cached');
+      expect(later.briefs).toHaveLength(10);
+      expect(later.stoppedReason).toBe('budget');
+      await settle();
+    }
+    // The scope has no budget, so no run was started against it.
+    expect(provider.breakdownCalls).toBe(calls);
+  });
+
+  test('R6c: a new admission for the same document and tier replaces the spent budget, and the work goes on', async () => {
+    const t = { now: Date.now() };
+    const docId = await withSummary(app());
+    const events: UsageEvent[] = [];
+    const a = app({
+      now: () => t.now,
+      admission: (c) =>
+        Promise.resolve({
+          allow: true,
+          budget: { tokens: c.req.header('x-reader') === 'alice' ? 30 : 1e9 },
+        }),
+      onUsage: (e) => {
+        events.push(e);
+      },
+    });
+    await ingestDoc(a, 'alice', {}, many);
+    await call(a, `/api/docs/${docId}/breakdown`, { reader: 'alice' });
+    const stopped = await vi.waitFor(async () => {
+      const r = await breakdownOf(a, docId);
+      expect(r.status).toBe('cached');
+      return r;
+    });
+    expect(stopped.stoppedReason).toBe('budget');
+    await ingestDoc(a, 'bob', {}, many); // bob pays: same document, same tier
+    await call(a, `/api/docs/${docId}/breakdown`, { reader: 'bob' });
+    const done = await vi.waitFor(
+      async () => {
+        const r = await breakdownOf(a, docId, 'bob');
+        expect(r.stoppedReason).toBeUndefined();
+        expect(r.status).toBe('cached');
+        return r;
+      },
+      { timeout: 5000 },
+    );
+    expect(done.briefs?.length).toBeGreaterThan(10);
+    // The work after the top-up is attributed to the job bob paid for.
+    const bobJob = events.find((e) => e.job?.readerId === 'bob')?.job?.jobId;
+    const after = events.filter((e) => e.feature === 'breakdown').at(-1);
+    expect(after?.job?.jobId).toBe(bobJob);
+  });
+
+  test('admission is told when the document is already complete', async () => {
+    const seen: (boolean | undefined)[] = [];
+    const a = app({
+      admission: (_c, job) => {
+        seen.push(job.docComplete);
+        return Promise.resolve(allow);
+      },
+    });
+    const docId = await ingestDoc(a, 'alice');
+    await call(a, `/api/docs/${docId}/summary`);
+    await call(a, `/api/docs/${docId}/breakdown`);
+    await vi.waitFor(async () => {
+      expect((await summaryStatus(a, docId)).status).toBe('cached');
+      expect((await breakdownOf(a, docId)).status).toBe('cached');
+    });
+    await ingestDoc(a, 'bob');
+    expect(seen).toEqual([undefined, true]);
+  });
+});
+
+describe('review round 2: a paid unlock starts generation at once', () => {
+  test('R10a: a summary that failed closed starts as soon as a paid ingest lands', async () => {
+    const t = { now: Date.now() };
+    const docId = await ingestDoc(app());
+    const a = app({
+      now: () => t.now,
+      admission: (c) =>
+        Promise.resolve(
+          c.req.header('x-reader') === 'alice' ? allow : deny(403),
+        ),
+      backgroundScope: () => Promise.resolve(undefined),
+    });
+    await summaryStatus(a, docId, 'mallory');
+    await vi.waitFor(async () => {
+      expect((await summaryStatus(a, docId, 'mallory')).status).toBe(
+        'disabled',
+      );
+    });
+    await ingestDoc(a, 'alice');
+    t.now += 1_000; // far less than the 60 s cool-down
+    await summaryStatus(a, docId, 'alice');
+    await vi.waitFor(async () => {
+      expect((await summaryStatus(a, docId, 'alice')).status).toBe('cached');
+    });
+  });
+
+  test('R10b: a host-side unlock takes effect within seconds, not a minute', async () => {
+    const t = { now: Date.now() };
+    const docId = await ingestDoc(app());
+    let unlocked = false;
+    const a = app({
+      now: () => t.now,
+      admission: () => Promise.resolve(allow),
+      backgroundScope: () =>
+        Promise.resolve(unlocked ? { budget: { tokens: 1e9 } } : undefined),
+    });
+    await summaryStatus(a, docId);
+    await vi.waitFor(async () => {
+      expect((await summaryStatus(a, docId)).status).toBe('disabled');
+    });
+    unlocked = true;
+    t.now += 6_000;
+    await summaryStatus(a, docId);
+    await vi.waitFor(async () => {
+      expect((await summaryStatus(a, docId)).status).toBe('cached');
+    });
+  });
+});
+
+describe('review round 2: quote id format', () => {
+  test('the server names the quote id when it refuses a malformed one', async () => {
+    const res = await call(app(), '/api/ingest', {
+      body: { url, quoteId: 'q+abc/def==' },
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: { message: string } };
+    expect(body.error.message).toMatch(/quote id/i);
+  });
+});

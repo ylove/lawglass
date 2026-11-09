@@ -11,6 +11,7 @@ import {
   sec,
 } from '../breakdown/test-support.js';
 import { MockProvider } from '../llm/mock.js';
+import { providerFailure } from '../llm/shared.js';
 import { Limits } from '../pipeline/limits.js';
 import {
   AppError,
@@ -353,7 +354,7 @@ describe('failed and abandoned paid calls are charged', () => {
       generateObject() {
         p.calls++;
         return Promise.reject(
-          usage ? billedFailure(usage) : new AppError('PROVIDER_ERROR'),
+          usage ? billedFailure(usage) : providerFailure({ status: 500 }),
         );
       },
     };
@@ -507,5 +508,52 @@ describe('failed and abandoned paid calls are charged', () => {
         expect(e).toBeDefined();
     }).catch(() => undefined);
     expect(s.spent.calls).toBe(0);
+  });
+});
+
+describe('streams and calls that fail after being billed', () => {
+  const timeout = (): AppError => providerFailure(new Error('timed out'));
+  it('charges what the provider reported before a mid-stream failure', async () => {
+    const p: LlmProvider = {
+      id: 'anthropic',
+      model: 'claude-sonnet-5-5',
+      async *streamText(req) {
+        await Promise.resolve();
+        req.onPartialUsage?.({ inputTokens: 50_000, outputTokens: 300 });
+        yield { type: 'text' as const, text: 'partial' };
+        throw timeout();
+      },
+      generateObject: () => Promise.reject(new Error('unused')),
+    };
+    const s = scope({ budget: { tokens: 1e9 } });
+    await runInJob(s, async () => {
+      for await (const e of limits().meter(p).streamText(textReq))
+        expect(e).toBeDefined();
+    }).catch(() => undefined);
+    expect(s.spent.tokens).toBe(50_300);
+  });
+
+  it('charges a flagged estimate for a generateObject that times out, but not for an HTTP error', async () => {
+    const events: UsageEvent[] = [];
+    const failWith = (error: AppError): LlmProvider => ({
+      id: 'anthropic',
+      model: 'claude-sonnet-5-5',
+      // eslint-disable-next-line @typescript-eslint/require-await
+      async *streamText() {
+        throw new Error('unused');
+      },
+      generateObject: () => Promise.reject(error),
+    });
+    const s = scope({ onUsage: (e) => void events.push(e) });
+    await runInJob(s, () =>
+      limits().meter(failWith(timeout())).generateObject(objReq),
+    ).catch(() => undefined);
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ estimated: true });
+    const unauthorized = providerFailure({ status: 401 });
+    await runInJob(s, () =>
+      limits().meter(failWith(unauthorized)).generateObject(objReq),
+    ).catch(() => undefined);
+    expect(events).toHaveLength(1);
   });
 });

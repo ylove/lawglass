@@ -122,6 +122,28 @@ describe('withQuoteConfirmation', () => {
     ]);
   });
 
+  test('a host quote id the server would refuse is reported, not resubmitted', async () => {
+    let calls = 0;
+    const api = withQuoteConfirmation(
+      fake(async function* () {
+        await Promise.resolve();
+        calls++;
+        throw new ApiError('PAYMENT_REQUIRED', 'Confirm.', {
+          quoteId: 'q+abc/def==',
+          display: '$1',
+        });
+        yield { type: 'token' as const, text: '' };
+      }),
+      () => Promise.resolve(true),
+    );
+    await expect(
+      drain(api.ask('d', { chipId: 'summary' })),
+    ).rejects.toMatchObject({
+      code: 'INVALID_QUOTE',
+    });
+    expect(calls).toBe(1);
+  });
+
   test('cancelling stops with a plain message and never resubmits', async () => {
     let calls = 0;
     const api = withQuoteConfirmation(

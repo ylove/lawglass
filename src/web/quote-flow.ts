@@ -5,9 +5,14 @@ import { z } from 'zod';
 import type { ApiClient } from './api.js';
 import { ApiError } from './sse.js';
 
+/** The server accepts only these ids; hosts must use base64url (no '+', '/' or '='). */
+const QUOTE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+export const BAD_QUOTE_ID =
+  'This quote cannot be confirmed because its id is not in a supported format. Please contact support.';
+
 /** What the dialog reads from the host's quote object. Everything is optional and unknown keys are ignored. */
 const QuoteView = z.object({
-  quoteId: z.string().min(1).max(128).optional(),
+  quoteId: z.string().regex(QUOTE_ID).optional().catch(undefined),
   /** Price or terms text, written by the host. Shown as plain text. */
   display: z.string().max(500).optional(),
   facts: z
@@ -51,6 +56,16 @@ export function withQuoteFlow(
       return;
     } catch (e) {
       if (!(e instanceof ApiError) || e.code !== 'PAYMENT_REQUIRED') throw e;
+      const rawId =
+        typeof e.quote === 'object' && e.quote !== null && 'quoteId' in e.quote
+          ? e.quote.quoteId
+          : undefined;
+      // Sending an id the server would refuse as malformed only hides the real reason.
+      if (
+        rawId !== undefined &&
+        !(typeof rawId === 'string' && QUOTE_ID.test(rawId))
+      )
+        throw new ApiError('INVALID_QUOTE', BAD_QUOTE_ID);
       const quote = parseQuote(e.quote);
       events.shown();
       if (!(await confirm(quote))) throw new ApiError('CANCELLED', CANCELLED);
