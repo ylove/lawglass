@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
+import { PictureSet, picturePrompt } from '../picture/prompt.js';
+import { validatePictures } from '../picture/validate.js';
 import { MockProvider } from './mock.js';
 
 const provider = new MockProvider();
@@ -43,6 +45,33 @@ describe('mock structured replies', () => {
     )) as { pictures: { item: number }[] };
     expect(reply.pictures.map((p) => p.item)).toEqual([1]);
   });
+
+  it.each([
+    'The term garden group means a nonprofit that maintains a shared garden [S:sec-1].',
+    'This part covers Section 2, Grants. [S:sec-2]',
+    'Issuers may issue coins. [S:sec-3]',
+    'Issuers may not pay interest. [S:sec-4]',
+  ])(
+    'draws an unstamped mock panel that passes the real checks: %s',
+    async (text) => {
+      const items = [
+        { index: 0, text: 'In this Act:' },
+        { index: 1, text },
+      ];
+      const reply = PictureSet.parse(
+        await ask('pictures', picturePrompt(items)),
+      );
+      const checked = validatePictures(reply, items);
+      expect(checked.dropped).toEqual([]);
+      expect(checked.entries).toEqual([
+        {
+          item: 1,
+          text,
+          panels: [{ left: { glyphs: ['people'] }, link: 'none' }],
+        },
+      ]);
+    },
+  );
 
   it('quotes a sentence that is in a candidate, and reports one that is not', async () => {
     const prompt = (sentence: string) =>
