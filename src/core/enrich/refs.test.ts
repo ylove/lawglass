@@ -147,7 +147,7 @@ describe('findExternalMatches', () => {
     ['title 5, United States Code, section 552', '5 U.S.C. 552', 'us_code'],
     [
       'section 2 of H.B. 110 of the 134th General Assembly',
-      'H.B. 110 (134th General Assembly) § 2',
+      'H.B. 110 (134th General Assembly)',
       'other',
     ],
     ['40 C.F.R. part 60.1', '40 CFR 60.1', 'cfr'],

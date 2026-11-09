@@ -19,6 +19,7 @@ import {
   Link,
   NavContext,
   parseDocPath,
+  parseOpenUrl,
   withSearch,
 } from './nav.js';
 import { dataNote } from './provider-label.js';
@@ -65,6 +66,8 @@ export function App({ api: provided }: { api?: ApiClient }) {
   const [docs, setDocs] = useState<DocSummary[]>([]);
   // The address bar is the source of truth for what is open: `/` is home, `/doc/<id>` a document.
   const [path, setPath] = useState(() => window.location.pathname);
+  // The query string is only read for `?url=` (a bill address another page asked to open).
+  const [search, setSearch] = useState(() => window.location.search);
   const selected = parseDocPath(path);
   // Counts navigations so focus can follow each one (the clicked link may no longer exist).
   const [navigations, setNavigations] = useState(0);
@@ -82,6 +85,7 @@ export function App({ api: provided }: { api?: ApiClient }) {
   useEffect(() => {
     const onPop = () => {
       setPath(window.location.pathname);
+      setSearch(window.location.search);
       setNotice(null);
       setNavigations((n) => n + 1);
     };
@@ -95,7 +99,8 @@ export function App({ api: provided }: { api?: ApiClient }) {
     const target = withSearch(to);
     if (window.location.pathname + window.location.search !== target)
       window.history.pushState({}, '', target);
-    setPath(to);
+    setPath(to.split('?')[0] ?? to);
+    setSearch(window.location.search);
     setNotice(null);
     setNavigations((n) => n + 1);
   }, []);
@@ -262,6 +267,7 @@ export function App({ api: provided }: { api?: ApiClient }) {
                 api={api}
                 docs={docs}
                 examples={config.examples}
+                openUrl={parseOpenUrl(search)}
                 onIngested={onIngested}
               />
             )}

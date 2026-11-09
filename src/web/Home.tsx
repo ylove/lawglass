@@ -1,5 +1,5 @@
 // The homepage: add a bill, pick up where you left off, or try an example.
-import { useId, useState } from 'react';
+import { useContext, useId, useState } from 'react';
 import type {
   ClientConfig,
   DocSummary,
@@ -8,24 +8,29 @@ import type {
 import type { ApiClient } from './api.js';
 import { formatRelativeDate } from './format-date.js';
 import { Ingest } from './Ingest.js';
-import { docPath, Link } from './nav.js';
+import { docPath, HOME_PATH, Link, NavContext } from './nav.js';
 
 export function Home({
   api,
   docs,
   examples,
+  openUrl = null,
   onIngested,
 }: {
   api: ApiClient;
   docs: DocSummary[];
   examples: ClientConfig['examples'];
+  /** A bill address from a `/?url=` link. It is only offered; reading it needs a click. */
+  openUrl?: string | null;
   onIngested: (doc: DocSummary, stats: IngestStats) => void;
 }) {
   const docsTitleId = useId();
+  const openId = useId();
   // Each click remounts the form (new key), so choosing the same example twice runs it twice.
   const [example, setExample] = useState<{ url: string; n: number } | null>(
     null,
   );
+  const navigate = useContext(NavContext);
   const [now] = useState(() => Date.now());
   return (
     <>
@@ -33,8 +38,45 @@ export function Home({
         key={example?.n ?? 0}
         api={api}
         onIngested={onIngested}
-        {...(example ? { autoStart: example.url } : {})}
+        {...(example
+          ? { autoStart: example.url }
+          : openUrl
+            ? { prefill: openUrl }
+            : {})}
       />
+      {openUrl && !example && (
+        <section aria-labelledby={openId} className="card open-link">
+          <h2 id={openId}>Read this bill?</h2>
+          <p>A link asked to open this address:</p>
+          <p className="open-link-url">
+            <code>{openUrl}</code>
+          </p>
+          <p className="muted">
+            Reading a bill uses the AI provider you set up, which can cost
+            money. Nothing starts until you confirm.
+          </p>
+          <div className="row">
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => {
+                setExample((prev) => ({ url: openUrl, n: (prev?.n ?? 0) + 1 }));
+              }}
+            >
+              Read this bill
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                navigate(HOME_PATH);
+              }}
+            >
+              Not now
+            </button>
+          </div>
+        </section>
+      )}
       {examples && examples.length > 0 && (
         <p className="examples">
           <span>Try an example: </span>

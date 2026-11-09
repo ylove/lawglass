@@ -10,6 +10,7 @@ import { validateCitations } from './answer/citations.js';
 import { classifyChunk } from './chunk/classify.js';
 import { parseSponsor } from './enrich/metadata-guards.js';
 import { segmentDefinitions } from './enrich/definitions.js';
+import { findBillMentions } from './enrich/bill-refs.js';
 import { findExternalMatches } from './enrich/refs.js';
 import { normalizeSectionNum } from './enrich/section-index.js';
 import { parseJson } from './llm/shared.js';
@@ -130,5 +131,29 @@ describe('trimming and parsing helpers', () => {
         /* the point is the time taken */
       }
     });
+  });
+});
+
+describe('bill mentions', () => {
+  it('finds 16,000 mentions in about 586 KB in linear time', () => {
+    const text = 'The program in H.R. 5 is amended. '.repeat(16_000);
+    const found = fast(() =>
+      findBillMentions(text, {
+        jurisdiction: 'United States',
+        session: '119th Congress, 1st Session',
+      }),
+    );
+    expect(found).toHaveLength(16_000);
+    expect(text.length).toBeGreaterThan(500_000);
+  });
+
+  it('stays linear on a New Jersey document too', () => {
+    const text = 'Appropriation for S. 1000 is made. '.repeat(16_000);
+    fast(() =>
+      findBillMentions(text, {
+        jurisdiction: 'New Jersey',
+        session: '221st Legislature',
+      }),
+    );
   });
 });
