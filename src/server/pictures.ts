@@ -23,7 +23,7 @@ import {
   type PictureCacheKey,
   type PictureSource,
 } from '../core/picture/cache.js';
-import { drawPictures } from '../core/picture/generate.js';
+import { drawPictures, type DrawnPictures } from '../core/picture/generate.js';
 import {
   PICTURE_PROMPT_VERSION,
   type PictureItem,
@@ -56,6 +56,8 @@ export interface PictureLogEvent {
   event: 'pictures_made' | 'pictures_dropped';
   source: PictureSource;
   count: number;
+  retried?: number;
+  recovered?: number;
 }
 
 export interface PictureServiceOptions {
@@ -161,20 +163,40 @@ export function createPictureService(
     void cache
       .getOrCompute(key, async () => {
         // Nobody waits on this; it yields to readers' own questions (`Limits.paced`).
-        const drawn = await drawPictures({
-          provider: sharedLimits().paced(llm, { background: true }),
-          items,
-        });
+        const usage = { inputTokens: 0, outputTokens: 0 };
+        let drawn: DrawnPictures;
+        try {
+          drawn = await drawPictures({
+            provider: sharedLimits().paced(llm, { background: true }),
+            items,
+            onUsage: (spent) => {
+              usage.inputTokens += spent.inputTokens;
+              usage.outputTokens += spent.outputTokens;
+            },
+          });
+        } finally {
+          // A later batch or redraw can fail after earlier calls have already cost tokens.
+          // Registry errors are logged through the same callback as other background errors,
+          // but must not discard completed pictures or replace the original drawing error.
+          await registry
+            .touch(key.docId, {
+              llmInputTokens: usage.inputTokens,
+              llmOutputTokens: usage.outputTokens,
+            })
+            .catch((error: unknown) => onError?.(error, now() - started));
+        }
         options.log?.({
           event: 'pictures_made',
           source: key.source,
           count: drawn.entries.length,
+          recovered: drawn.recovered,
         });
-        if (drawn.dropped.length > 0)
+        if (drawn.dropped.length > 0 || drawn.retried > 0)
           options.log?.({
             event: 'pictures_dropped',
             source: key.source,
             count: drawn.dropped.length,
+            retried: drawn.retried,
           });
         return drawn.entries;
       })
