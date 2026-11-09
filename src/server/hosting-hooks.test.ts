@@ -95,6 +95,12 @@ describe('external auth', () => {
     },
   );
 
+  test('refuses a landing override with external auth instead of ignoring it', () => {
+    expect(() => app({ site: { landing: () => '<p>unused</p>' } })).toThrow(
+      'site.landing is unused with external auth',
+    );
+  });
+
   test('replaces shared-key auth on API and pages and enables hosted features without an access key', async () => {
     const a = app();
     for (const path of ['/', '/doc/a', '/api/config', '/api/docs']) {
@@ -355,6 +361,12 @@ describe('presentation options', () => {
     'https://*',
     'https://example.*',
     'https://example.com\n',
+    'https://*.com',
+    'https://*.a',
+    'https://localhost',
+    'https://127.0.0.1',
+    'https://[::1]',
+    'https://example.123',
   ])('refuses unsafe CSP source %j at app creation', (source) => {
     expect(() => app({ csp: { 'script-src': [source] } })).toThrow(
       'Invalid CSP extension',
@@ -380,12 +392,11 @@ describe('presentation options', () => {
       (c: Context) => `<html>Guide ${c.req.path}</html>`,
     );
     const landing = vi.fn(() => Promise.resolve('<html>Host landing</html>'));
-    const a = app({ site: { quickstart, landing } });
+    const a = app({ site: { quickstart } });
     expect(await (await a.request('/quickstart')).text()).toContain(
       'Guide /quickstart',
     );
     expect((await a.request('/')).status).toBe(401);
-    expect(landing).not.toHaveBeenCalled();
     const gate = createApp(env.runtime, {
       privateMode: true,
       accessKey: 'k'.repeat(40),

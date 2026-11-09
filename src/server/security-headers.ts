@@ -32,22 +32,33 @@ const EXTENSIBLE_DIRECTIVES = new Set([
   'form-action',
 ]);
 
-/** Sources are origins, never arbitrary CSP tokens or paths that could add directives. */
+/**
+ * Sources are public https origins, never arbitrary CSP tokens or paths that could add
+ * directives. A wildcard must sit under a registrable-looking domain (at least two labels after
+ * "*.", so "*.com" is refused), and IP literals and localhost are refused: a hosted page never
+ * needs them, and they are the usual sign of a mistyped or overly broad host config.
+ */
 function validSource(source: string): boolean {
   if (source === "'self'") return true;
-  if (/\s/.test(source)) return false;
-  if (
-    !/^https:\/\/(?:\*\.)?(?:[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?|\[[a-f0-9:]+\])(?::[0-9]{1,5})?$/i.test(
+  const match =
+    /^https:\/\/(\*\.)?([a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+)(?::[0-9]{1,5})?$/i.exec(
       source,
-    )
+    );
+  if (!match) return false;
+  const port = /:([0-9]+)$/.exec(source)?.[1];
+  if (port !== undefined && (Number(port) < 1 || Number(port) > 65535))
+    return false;
+  const host = (match[2] ?? '').toLowerCase();
+  const labels = host.split('.');
+  if (match[1] && labels.length < 2) return false;
+  if (
+    /^[0-9.]+$/.test(host) ||
+    host === 'localhost' ||
+    host.endsWith('.localhost')
   )
     return false;
-  try {
-    const url = new URL(source.replace('https://*.', 'https://'));
-    return url.protocol === 'https:' && url.hostname !== '';
-  } catch {
-    return false;
-  }
+  // The last label is a TLD: letters only, so "https://example.123" is not an origin.
+  return /^[a-z]{2,}$/.test(labels[labels.length - 1] ?? '');
 }
 
 export interface SecurityHeadersOptions {

@@ -178,6 +178,12 @@ export function createApp(runtime: CliRuntime, options: AppOptions = {}): Hono {
     if (hook !== undefined && typeof hook !== 'function')
       throw invalid(`${name} must be a function.`);
   }
+  // With external auth the host serves its own signed-out pages; a landing override would never
+  // be reached, so refuse it rather than ignore it silently.
+  if (auth && options.site?.landing)
+    throw invalid(
+      'site.landing is unused with external auth: serve the landing page from the host.',
+    );
   validateHead(options.head);
   if (
     options.accountUrl !== undefined &&

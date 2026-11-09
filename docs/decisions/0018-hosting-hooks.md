@@ -52,7 +52,7 @@ The open-source server gains generic hooks. With none passed, behaviour is uncha
    - The SPA dispatches `lawglass:event` `CustomEvent`s for key reader actions. Each event carries a name and a few non-identifying fields, never bill text or the reader's question. This repository never sends them anywhere.
    - The SPA shows a quote dialog on a 402, and an account link when `/api/config` names one.
 9. **Eviction.** `pinned(docId)` lets the host protect documents from eviction, for example documents a reader has paid for.
-10. **Packaging.** `package.json` gains `exports` for `./server` (side-effect free) and `./web`, plus emitted `.d.ts` files. `createRuntime`, the security headers and the site pages are exported.
+10. **Packaging.** `package.json` gains `exports` for `./server` (side-effect free), plus emitted `.d.ts` files. A `./web` export waits until a host needs to rebuild the SPA; for now a host serves the built `dist/web` and extends it through `head`. `createRuntime`, the security headers and the site pages are exported.
 
 ## Consequences
 
