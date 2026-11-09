@@ -294,7 +294,9 @@ describe('document flow', () => {
     // The grade is still measured and returned by the API, but a reader never sees it: a
     // "reading level" label reads as condescending.
     await screen.findByText('Answer ready');
-    expect(screen.queryByText(/reading level|grade \d/i)).toBeNull();
+    expect(
+      screen.queryByText(/reading level|grade \d|\d(st|nd|rd|th)-grade/i),
+    ).toBeNull();
   });
 
   test('a declined answer shows the decline sentence without sources', async () => {

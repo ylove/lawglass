@@ -161,7 +161,9 @@ describe('summary on arrival', () => {
       />,
     );
     await screen.findByRole('button', { name: 'Summary source 1' });
-    expect(screen.queryByText(/reading level|grade \d/i)).toBeNull();
+    expect(
+      screen.queryByText(/reading level|grade \d|\d(st|nd|rd|th)-grade/i),
+    ).toBeNull();
   });
 
   test('the whole page keeps a single role=status while the summary arrives', async () => {
