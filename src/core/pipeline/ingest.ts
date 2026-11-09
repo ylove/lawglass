@@ -108,6 +108,8 @@ export interface IngestDeps {
   maxDocs?: number | undefined;
   /** Who may be evicted when the cap is enforced; see `EvictionGuard`. */
   evictionGuard?: EvictionGuard | undefined;
+  /** Host-protected documents count toward the cap but are never evicted. */
+  pinned?: ((docId: string) => boolean | Promise<boolean>) | undefined;
   /**
    * Called once the document id is known and before any indexing, with whether the registry
    * already has it. A server uses it to protect the document while it is being ingested and
@@ -481,7 +483,10 @@ async function enforceCap(deps: IngestDeps, keep: string): Promise<void> {
     // to go, even though they are on no list yet.
     const protectedIds = new Set([keep, ...(guard?.inFlight() ?? [])]);
     const spared = new Set([...listed, ...protectedIds]);
-    for (const old of await registry.evictionCandidates(cap, spared)) {
+    const candidates = deps.pinned
+      ? await registry.evictionCandidates(cap, spared, deps.pinned)
+      : await registry.evictionCandidates(cap, spared);
+    for (const old of candidates) {
       if (protectedIds.has(old.docId) || old.backend !== backend.kind) continue;
       if (guard?.neverEvictListed && listed.has(old.docId)) continue;
       await deleteIndexedDocument(backend, old.docId);

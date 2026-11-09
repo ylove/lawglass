@@ -1,11 +1,18 @@
 import { stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { MiddlewareHandler } from 'hono';
+import type { Context, MiddlewareHandler } from 'hono';
 import { staticAssets } from './static.js';
 import { PUBLIC_ASSETS } from './site/assets.js';
 import { landingPage } from './site/landing.js';
 import { quickstartPage } from './site/quickstart.js';
 import type { PageContext } from './site/layout.js';
+
+export interface SiteOptions {
+  /** Replaces the shared-key gate page. External auth hosts serve their own landing pages. */
+  landing?: (ctx: Context) => string | Promise<string>;
+  /** Public in every mode, before authentication. Must contain no reader data. */
+  quickstart?: (ctx: Context) => string | Promise<string>;
+}
 
 /** Deployment metadata must never come from the request's untrusted Host header. */
 export function publicOrigin(value?: string): string | undefined {

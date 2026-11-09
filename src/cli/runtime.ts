@@ -49,6 +49,8 @@ export interface CliRuntime {
   /** Canonical, non-secret identity of the answer endpoint; part of the answer cache key. */
   readonly answerEndpoint: string;
   readonly extractProvider: LlmProvider;
+  /** Build a provider with the same credentials/endpoint and an optional explicit model id. */
+  providerFor(role: 'answer' | 'extract', model?: string): LlmProvider;
   chips?: ChipRunner | undefined;
   parsePdf?: PdfParser | undefined;
 }
@@ -165,6 +167,13 @@ export const createRuntimeFrom =
       },
       get extractProvider() {
         return createProvider(providerConfig(config, 'extract'));
+      },
+      providerFor(role, model) {
+        const settings = providerConfig(config, role);
+        return createProvider({
+          ...settings,
+          ...(model === undefined ? {} : { model }),
+        });
       },
     };
   };

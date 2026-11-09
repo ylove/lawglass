@@ -59,6 +59,11 @@ export const ClientConfig = z.object({
    * Absent from older servers, which behave as `local`.
    */
   library: z.enum(['local', 'reader']).optional(),
+  /** Optional host-owned account page. A network-path URL or backslash could leave this origin. */
+  accountUrl: z
+    .string()
+    .regex(/^\/(?!\/)[^\s\\\p{Cc}]*$/u)
+    .optional(),
   /** Example bills the homepage offers, chosen by whoever runs the server. */
   examples: z
     .array(z.object({ label: z.string().min(1).max(80), url: z.url() }))
