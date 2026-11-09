@@ -73,7 +73,9 @@ function service(opts: {
   publicMode?: boolean;
 }) {
   const events: PictureLogEvent[] = [];
+  const usage = vi.fn().mockResolvedValue(undefined);
   const runtime = {
+    registry: { touch: usage },
     get extractProvider() {
       const p = opts.provider ?? scriptedObjects([{ pictures: [] }]);
       return typeof p === 'function' ? p() : p;
@@ -101,7 +103,7 @@ function service(opts: {
     log: (e) => events.push(e),
     cache: new PictureCache({ dir, now: () => clock }),
   });
-  return { svc, events };
+  return { svc, events, usage };
 }
 
 describe('summary pictures', () => {
@@ -110,7 +112,7 @@ describe('summary pictures', () => {
       { pictures: [{ item: 0, panels: [issuePanel] }] },
     ]);
     let summary: SummaryResponse = { status: 'pending' };
-    const { svc, events } = service({
+    const { svc, events, usage } = service({
       provider,
       summary: () => Promise.resolve(summary),
     });
@@ -143,6 +145,12 @@ describe('summary pictures', () => {
     // A later look is a cache hit: no second call.
     expect((await svc.get(DOC, 'summary')).status).toBe('cached');
     expect(provider.calls).toHaveLength(1);
+    expect(usage).toHaveBeenCalledExactlyOnceWith(DOC, {
+      llmInputTokens: 10,
+      llmOutputTokens: 5,
+      llmCacheReadTokens: 0,
+      llmCacheWriteTokens: 0,
+    });
   });
 
   it('a summary without a list, or a disabled one, has nothing to draw', async () => {

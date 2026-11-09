@@ -482,13 +482,23 @@ test('metadata extraction usage is reported', async () => {
   const real = env.provider.generateObject.bind(env.provider);
   vi.spyOn(env.provider, 'generateObject').mockImplementation(async (req) => {
     const out = await real(req);
-    return { ...out, usage: { inputTokens: 7, outputTokens: 3 } };
+    return {
+      ...out,
+      usage: {
+        inputTokens: 7,
+        outputTokens: 3,
+        cacheReadTokens: 4,
+        cacheWriteTokens: 2,
+      },
+    };
   });
   const result = await ingest('https://example.gov/gardens.txt', deps());
   expect(result.usage).toMatchObject({ llmInputTokens: 7, llmOutputTokens: 3 });
   expect((await env.registry.list())[0]?.usage).toMatchObject({
     llmInputTokens: 7,
     llmOutputTokens: 3,
+    llmCacheReadTokens: 4,
+    llmCacheWriteTokens: 2,
   });
 });
 

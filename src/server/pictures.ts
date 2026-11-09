@@ -8,6 +8,7 @@
  * summary, the breakdown's briefs), never delay it, and any failure reads as `none`: the reader
  * keeps the words, with no error to dismiss.
  */
+import { registryLlmUsage } from '../core/registry.js';
 import { join } from 'node:path';
 import type { CliRuntime } from '../cli/runtime.js';
 import { listItems } from '../core/answer/list-items.js';
@@ -162,9 +163,13 @@ export function createPictureService(
       .getOrCompute(key, async () => {
         // Nobody waits on this; it yields to readers' own questions (`Limits.paced`).
         const drawn = await drawPictures({
-          provider: sharedLimits().paced(llm, { background: true }),
+          provider: sharedLimits().paced(llm, {
+            background: true,
+            feature: 'pictures',
+          }),
           items,
         });
+        await registry.touch(key.docId, registryLlmUsage(drawn.usage));
         options.log?.({
           event: 'pictures_made',
           source: key.source,

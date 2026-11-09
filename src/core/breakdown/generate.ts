@@ -17,6 +17,7 @@
  * removed, and a brief left with no valid citation is dropped. The model never chooses a
  * reading grade; we compute it.
  */
+import { addLlmUsage } from '../cost/usage.js';
 import { z } from 'zod';
 import { coveredSectionIds, validateCitations } from '../answer/citations.js';
 import { wholeBillEffort, type DocumentContext } from '../answer/context.js';
@@ -38,6 +39,7 @@ import {
   AppError,
   type AnswerWarning,
   type LlmProvider,
+  type LlmUsage,
   type NormalizedDoc,
   type RetrievalBackend,
   type SearchHit,
@@ -197,7 +199,7 @@ export async function generateBreakdown(
   const whole = input.context.mode === 'whole';
   const size = whole ? WHOLE_BATCH_SIZE : EXCERPT_BATCH_SIZE;
   const briefs: SectionBrief[] = [];
-  const usage = { inputTokens: 0, outputTokens: 0 };
+  const usage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
   let dropped = 0;
   const backendUsage = { embedTokens: 0, rerankUnits: 0 };
 
@@ -247,8 +249,7 @@ export async function generateBreakdown(
         ...(whole ? { effort: wholeBillEffort() } : {}),
         signal,
       });
-      usage.inputTokens += result.usage.inputTokens;
-      usage.outputTokens += result.usage.outputTokens;
+      Object.assign(usage, addLlmUsage(usage, result.usage));
       return validateObject(BriefBatch, result.object);
     };
 

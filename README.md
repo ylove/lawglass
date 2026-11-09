@@ -49,6 +49,8 @@ npx lawglass <url>                      # ingest, then serve and open the docume
 npx lawglass <url> --no-open            # same, without opening the browser
 npx lawglass ingest <url> --name hb62   # ingest only, with a label
 npx lawglass ingest ./bill.pdf          # a local file works too (CLI only)
+npx lawglass estimate <url>             # fetch + parse, then quote model costs; no API key needed
+npx lawglass estimate <url> --json      # size facts, feature token/call ranges and USD
 npx lawglass ask hb62 "When does this take effect?"
 npx lawglass ask hb62 --chip what-changes
 npx lawglass search hb62 "fees"          # cited passages as JSON, no model call

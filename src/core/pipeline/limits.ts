@@ -11,8 +11,13 @@
  * `_MAX_CONCURRENT_ASK`, `_MAX_CONCURRENT_CLAUDE_CLI` and `_MAX_CALLS_PER_MINUTE`
  * (not `ConfigSettings`, which is strict).
  */
-import { AppError, type LlmProvider } from '../model/index.js';
+import { AppError, type LlmProvider, type LlmUsage } from '../model/index.js';
 import { envVar } from '../brand.js';
+import {
+  NOOP_USAGE_SINK,
+  type UsageFeature,
+  type UsageSink,
+} from '../cost/usage.js';
 
 export const DEFAULT_MAX_CONCURRENT_INGEST = 2;
 export const DEFAULT_MAX_CONCURRENT_ASK = 4;
@@ -124,6 +129,7 @@ export class RateCeiling {
 export type WorkKind = 'ingest' | 'ask';
 
 export interface LimitsConfig {
+  usageSink?: UsageSink;
   maxConcurrentIngest: number;
   maxConcurrentAsk: number;
   maxCallsPerMinute: number;
@@ -146,8 +152,10 @@ export class Limits {
   private readonly ceiling: RateCeiling;
   private readonly backgroundWaitMs: number;
   private readonly backgroundPollMs: number;
+  private readonly configuredSink: UsageSink;
 
   constructor(config: LimitsConfig, now: () => number = Date.now) {
+    this.configuredSink = config.usageSink ?? NOOP_USAGE_SINK;
     this.pools = {
       ingest: new Semaphore(config.maxConcurrentIngest),
       ask: new Semaphore(config.maxConcurrentAsk),
@@ -174,9 +182,13 @@ export class Limits {
    */
   paced(
     provider: LlmProvider,
-    options: { background?: boolean; signal?: AbortSignal | undefined } = {},
+    options: {
+      background?: boolean;
+      signal?: AbortSignal | undefined;
+      feature?: UsageFeature;
+    } = {},
   ): LlmProvider {
-    const metered = this.meter(provider);
+    const metered = this.meter(provider, options.feature);
     const background = options.background === true;
     const share = Math.max(1, Math.floor(this.ceiling.max * BACKGROUND_SHARE));
     return {
@@ -244,7 +256,23 @@ export class Limits {
    * (summary batches, scenario generation and retries each count; calls that never reach a
    * model, such as a metadata-only chip, cost nothing). Past the ceiling the call fails fast.
    */
-  meter(provider: LlmProvider): LlmProvider {
+  meter(provider: LlmProvider, feature: UsageFeature = 'unknown'): LlmProvider {
+    const sink = this.configuredSink;
+    // Accounting failures must not discard a paid-for model answer or cause a retry.
+    const report = async (
+      usage: LlmUsage,
+      callFeature = feature,
+    ): Promise<void> => {
+      try {
+        await sink.record({
+          feature: callFeature,
+          model: provider.model,
+          usage: { ...usage },
+        });
+      } catch {
+        /* The sink owns delivery/retry policy. */
+      }
+    };
     return {
       // Lazy: some runtimes build the provider (and demand its API key) only on first use,
       // and a chip that makes no model call must not trigger that.
@@ -256,11 +284,24 @@ export class Limits {
       },
       streamText: (req) => {
         this.ceiling.admit();
-        return provider.streamText(req);
+        const stream = provider.streamText(req);
+        return (async function* () {
+          for await (const event of stream) {
+            if (event.type === 'done') await report(event.usage);
+            yield event;
+          }
+        })();
       },
       generateObject: async (req) => {
         this.ceiling.admit();
-        return provider.generateObject(req);
+        const result = await provider.generateObject(req);
+        await report(
+          result.usage,
+          req.schemaName === 'scenario' && feature !== 'examples'
+            ? 'scenario'
+            : feature,
+        );
+        return result;
       },
     };
   }

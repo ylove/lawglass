@@ -10,6 +10,7 @@ import {
   DocSummary,
   NormalizedDoc,
   type BackendKind,
+  type LlmUsage,
 } from './model/index.js';
 import {
   configFileSystem,
@@ -26,6 +27,9 @@ export const RegistryUsage = z
     rerankUnits: z.number().int().nonnegative(),
     llmInputTokens: z.number().int().nonnegative(),
     llmOutputTokens: z.number().int().nonnegative(),
+    // Defaults migrate existing registry entries without changing frozen model contracts.
+    llmCacheReadTokens: z.number().int().nonnegative().default(0),
+    llmCacheWriteTokens: z.number().int().nonnegative().default(0),
   })
   .strict();
 export type RegistryUsage = z.infer<typeof RegistryUsage>;
@@ -34,7 +38,19 @@ const EMPTY_USAGE: RegistryUsage = {
   rerankUnits: 0,
   llmInputTokens: 0,
   llmOutputTokens: 0,
+  llmCacheReadTokens: 0,
+  llmCacheWriteTokens: 0,
 };
+
+/** All input includes cache reads/writes; the extra fields preserve the billable split. */
+export function registryLlmUsage(usage: LlmUsage): Partial<RegistryUsage> {
+  return {
+    llmInputTokens: usage.inputTokens,
+    llmOutputTokens: usage.outputTokens,
+    llmCacheReadTokens: usage.cacheReadTokens ?? 0,
+    llmCacheWriteTokens: usage.cacheWriteTokens ?? 0,
+  };
+}
 
 export const RegistryEntry = DocSummary.extend({
   docId: NormalizedDoc.shape.docId,

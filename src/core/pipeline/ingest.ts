@@ -1,3 +1,4 @@
+import { addLlmUsage } from '../cost/usage.js';
 import { resolveNewYork, assertNewYorkFetch } from '../fetch/new-york.js';
 import {
   resolveNewJersey,
@@ -43,7 +44,11 @@ import {
   type ObjectRequest,
   type RetrievalBackend,
 } from '../model/index.js';
-import type { Registry, RegistryEntry } from '../registry.js';
+import {
+  registryLlmUsage,
+  type Registry,
+  type RegistryEntry,
+} from '../registry.js';
 import { assertHistoryUrl } from '../history/allowlist.js';
 import {
   assertNoCongressFetch,
@@ -302,8 +307,7 @@ function metered(provider: LlmProvider): {
     streamText: (req) => provider.streamText(req),
     async generateObject<T>(req: ObjectRequest<T>) {
       const result = await provider.generateObject(req);
-      usage.inputTokens += result.usage.inputTokens;
-      usage.outputTokens += result.usage.outputTokens;
+      Object.assign(usage, addLlmUsage(usage, result.usage));
       return result;
     },
   };
@@ -312,7 +316,7 @@ function metered(provider: LlmProvider): {
 
 async function parseFetched(
   fetched: SafeFetchResult,
-  deps: IngestDeps,
+  deps: ReadDocumentDeps,
   signal: AbortSignal | undefined,
 ): Promise<NormalizedDoc> {
   const limits = deps.parseLimits ?? readParseLimits();
@@ -502,7 +506,7 @@ export async function ingest(
   try {
     return await ingestWithinLimits(
       url,
-      { ...deps, provider: limits.meter(deps.provider) },
+      { ...deps, provider: limits.meter(deps.provider, 'metadata') },
       opts,
     );
   } finally {
@@ -510,14 +514,21 @@ export async function ingest(
   }
 }
 
-async function ingestWithinLimits(
+/** Fetch/parse dependencies deliberately exclude providers, registries and retrieval backends. */
+export type ReadDocumentDeps = Pick<
+  IngestDeps,
+  'fetcher' | 'now' | 'parsePdf' | 'parseLimits'
+>;
+
+/** The exact URL resolution and integrity checks used by ingest, without indexing or LLM work. */
+async function fetchIngestDocument(
   url: string,
-  deps: IngestDeps,
-  opts: IngestOptions,
-): Promise<IngestResult> {
-  const { signal } = opts;
-  deps = { ...deps, parseLimits: deps.parseLimits ?? readParseLimits() };
-  opts.onProgress?.({ stage: 'fetching', detail: url });
+  deps: ReadDocumentDeps,
+  signal?: AbortSignal,
+): Promise<{
+  fetched: SafeFetchResult;
+  attachment: HistoryAttachment | undefined;
+}> {
   // WRAPPER_PAGE (with candidate links in `details`) propagates untouched for callers to offer.
   const newYork = resolveNewYork(url);
   const newJersey = newYork ? undefined : resolveNewJersey(url);
@@ -596,6 +607,31 @@ async function ingestWithinLimits(
       'FETCH_FAILED',
       'Fetched document id does not match its bytes.',
     );
+  return { fetched, attachment };
+}
+
+export async function fetchAndParseDocument(
+  url: string,
+  deps: ReadDocumentDeps,
+  signal?: AbortSignal,
+): Promise<NormalizedDoc> {
+  const { fetched } = await fetchIngestDocument(url, deps, signal);
+  const doc = await parseFetched(fetched, deps, signal);
+  signal?.throwIfAborted();
+  await fetched.commitCache?.().catch(() => undefined);
+  return doc;
+}
+
+async function ingestWithinLimits(
+  url: string,
+  deps: IngestDeps,
+  opts: IngestOptions,
+): Promise<IngestResult> {
+  const { signal } = opts;
+  deps = { ...deps, parseLimits: deps.parseLimits ?? readParseLimits() };
+  opts.onProgress?.({ stage: 'fetching', detail: url });
+  const { fetched, attachment } = await fetchIngestDocument(url, deps, signal);
+  const docId = fetched.docId;
   return withDocLock(docId, () =>
     ingestLocked(docId, fetched, deps, opts, attachment),
   );
@@ -734,8 +770,7 @@ async function ingestLocked(
     await saveHistory(doc, deps, attachment);
     const spent = {
       embedTokens,
-      llmInputTokens: meter.usage.inputTokens,
-      llmOutputTokens: meter.usage.outputTokens,
+      ...registryLlmUsage(meter.usage),
     };
     if (known) {
       // Refresh recency (so the re-indexed doc is not next to be evicted) and count the spend.

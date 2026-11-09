@@ -5,7 +5,7 @@ import {
   type LocateResponse,
   type RetrievalBackend,
 } from '../model/index.js';
-import type { Registry } from '../registry.js';
+import { registryLlmUsage, type Registry } from '../registry.js';
 import { cleanQuestion } from '../pipeline/question.js';
 import { sharedLimits, type Limits } from '../pipeline/limits.js';
 import { retrieve } from '../retrieve/index.js';
@@ -60,22 +60,23 @@ export async function locate(
       includeDeleted: true,
       signal: deps.signal,
     });
-    const generated = await limits.meter(deps.provider).generateObject({
-      system: SELECTION_PROMPT,
-      prompt: selectionPrompt(text, retrieved.hits, definitions.definitions),
-      schema: Selection,
-      schemaName: 'locate',
-      maxTokens: 1800,
-      signal: deps.signal,
-    });
+    const generated = await limits
+      .meter(deps.provider, 'locate')
+      .generateObject({
+        system: SELECTION_PROMPT,
+        prompt: selectionPrompt(text, retrieved.hits, definitions.definitions),
+        schema: Selection,
+        schemaName: 'locate',
+        maxTokens: 1800,
+        signal: deps.signal,
+      });
     const parsed = Selection.safeParse(generated.object);
     if (!parsed.success) throw new AppError('PROVIDER_BAD_OUTPUT');
     const usage = addUsage(retrieved.usage, definitions.usage);
     await deps.registry.touch(docId, {
       embedTokens: usage.embedTokens,
       rerankUnits: usage.rerankUnits,
-      llmInputTokens: generated.usage.inputTokens,
-      llmOutputTokens: generated.usage.outputTokens,
+      ...registryLlmUsage(generated.usage),
     });
     return {
       ...verifySelection(parsed.data, doc, retrieved.hits),

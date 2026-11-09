@@ -26,6 +26,8 @@ import {
 import { Registry } from '../registry.js';
 import { ask } from './ask.js';
 import { runScenario } from './scenario.js';
+import { Limits } from './limits.js';
+import type { UsageEvent } from '../cost/usage.js';
 
 const DOC = 'b'.repeat(64);
 let dir: string;
@@ -129,6 +131,50 @@ it('skips an empty retriever and validates a deep definition while removing none
   expect(rerank).not.toHaveBeenCalled();
   expect(ready).not.toHaveBeenCalled();
   expect(requests()[0]).toMatchObject({ maxTokens: 16000, effort: 'medium' });
+});
+
+it('preserves whole-answer cache usage in both registry totals and per-call events', async () => {
+  const events: UsageEvent[] = [];
+  const usage = {
+    inputTokens: 100,
+    outputTokens: 10,
+    cacheReadTokens: 70,
+    cacheWriteTokens: 20,
+  };
+  const accounted: LlmProvider = {
+    id: provider.id,
+    model: provider.model,
+    generateObject: (req) => provider.generateObject(req),
+    async *streamText(req) {
+      for await (const event of provider.streamText(req)) {
+        yield event.type === 'done' ? { ...event, usage } : event;
+      }
+    },
+  };
+  const limits = new Limits({
+    maxConcurrentIngest: 1,
+    maxConcurrentAsk: 1,
+    maxCallsPerMinute: 10,
+    usageSink: {
+      record(event) {
+        events.push(event);
+      },
+    },
+  });
+  await ask(
+    DOC,
+    { question: 'What rule?' },
+    { backend, registry, provider: accounted, limits },
+  );
+  expect(events).toEqual([
+    { feature: 'question', model: provider.model, usage },
+  ]);
+  expect((await registry.list())[0]!.usage).toMatchObject({
+    llmInputTokens: 100,
+    llmOutputTokens: 10,
+    llmCacheReadTokens: 70,
+    llmCacheWriteTokens: 20,
+  });
 });
 
 it('records excerpts when disabled and preserves the old output budget', async () => {

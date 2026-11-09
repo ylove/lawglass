@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { BRAND, envVar } from './brand.js';
+import { PriceTable } from './cost/prices.js';
 import {
   AppError,
   type BackendKind,
@@ -53,6 +54,7 @@ export const ConfigSettings = z
       .optional(),
     answerModel: nonempty.optional(),
     extractModel: nonempty.optional(),
+    costPrices: PriceTable.optional(),
     rerankModel: nonempty.optional(),
     port: z.number().int().min(1).max(65535).optional(),
   })
@@ -149,7 +151,7 @@ const providerKeys = {
 function environmentSettings(
   env: NonNullable<ConfigOptions['env']>,
 ): ConfigSettings {
-  const mapping: Record<keyof ConfigSettings, string> = {
+  const mapping: Record<Exclude<keyof ConfigSettings, 'costPrices'>, string> = {
     ...keyNames,
     openaiBaseUrl: 'OPENAI_BASE_URL',
     llmProvider: envVar('LLM_PROVIDER'),

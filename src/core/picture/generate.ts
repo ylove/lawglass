@@ -3,6 +3,7 @@
  * small "extract" model, then the deterministic checks in `validate.ts`. Items run in batches
  * one after another, so a long breakdown never fans out into parallel calls.
  */
+import { addLlmUsage } from '../cost/usage.js';
 import {
   AppError,
   type LlmProvider,
@@ -35,7 +36,7 @@ export async function drawPictures(input: {
 }): Promise<DrawnPictures> {
   const entries: PictureEntry[] = [];
   const dropped: PictureValidation['dropped'] = [];
-  const usage = { inputTokens: 0, outputTokens: 0 };
+  const usage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
   for (let i = 0; i < input.items.length; i += ITEMS_PER_CALL) {
     input.signal?.throwIfAborted();
     const batch = input.items.slice(i, i + ITEMS_PER_CALL);
@@ -52,8 +53,7 @@ export async function drawPictures(input: {
           maxTokens: MAX_TOKENS,
           signal: input.signal,
         });
-        usage.inputTokens += result.usage.inputTokens;
-        usage.outputTokens += result.usage.outputTokens;
+        Object.assign(usage, addLlmUsage(usage, result.usage));
         reply = validateObject(PictureSet, result.object);
       } catch (error) {
         if (!(
