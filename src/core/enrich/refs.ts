@@ -1,4 +1,8 @@
-import { findBillMentions } from './bill-refs.js';
+import {
+  findBillMentions,
+  ohioBillCitation,
+  selfBillCitation,
+} from './bill-refs.js';
 import {
   sectionText,
   walkSections,
@@ -36,6 +40,8 @@ export interface ExternalOptions {
   jurisdiction?: string | null | undefined;
   /** `metadata.session`; lets a bare "S. 5" take the congress of the bill that mentions it. */
   session?: string | null | undefined;
+  /** `metadata.billNumber`, so a bill's mention of itself is not listed as a reference. */
+  billNumber?: string | null | undefined;
   /**
    * Normalized numbers of the charter sections this document restates. A charter citation links
    * inward only to one of these: an ordinance's own "Section 3" is not the charter's.
@@ -111,7 +117,7 @@ const PUBLIC_LAW =
   /\b(?:Public\s+Law|Pub\.\s*L\.|P\.\s*L\.)\s*(?:No\.\s*)?(\d{1,3})\s*[-–]\s*(\d{1,4})/gi;
 // "H.B. 110 of the 134th General Assembly": another enactment's section, never ours.
 const BILL_SECTION =
-  /\bsections?\s+(\d+[A-Za-z]?)(?:\([A-Za-z0-9]+\))*\s+of\s+(?:(?:Am\.|Sub\.|Substitute|Amended)\s+)*(H\.?\s?B\.?|S\.?\s?B\.?|House\s+Bill|Senate\s+Bill)\s*(?:No\.\s*)?(\d+)(?:\s+of\s+the\s+(\d+)(?:st|nd|rd|th)\s+General\s+Assembly)?/gi;
+  /\bsections?\s+(\d+[A-Za-z]?)(?:\([A-Za-z0-9]+\))*\s+of\s+(?:(?:Am\.|Sub\.|Substitute|Amended)\s+)*(H\.?\s?B\.?|S\.?\s?B\.?|House\s+Bill|Senate\s+Bill)\s*(?:No\.\s*)?(\d+)(?:\s+of\s+the\s+(\d+)(?:st|nd|rd|th)\s+General\s+Assembly|\s*\((\d+)(?:st|nd|rd|th)\s+General\s+Assembly\))?/gi;
 const CFR =
   /\b(\d{1,2})\s+C\.?\s?F\.?\s?R\.?\s*(?:(?:parts?|§§?|sections?)\s*)?(\d+(?:\.\d+)?(?:-\d+)?)/gi;
 
@@ -272,8 +278,12 @@ export function findExternalMatches(
       add(m, citation, 'us_code');
   for (const m of text.matchAll(BILL_SECTION)) {
     const bill = `${/^s/i.test(m[2] ?? '') ? 'S.B.' : 'H.B.'} ${m[3] ?? ''}`;
-    const assembly = m[4] ? ` (${m[4]}th General Assembly)` : '';
-    add(m, `${bill}${assembly} § ${m[1] ?? ''}`, 'other');
+    const stated = m[4] ?? m[5];
+    // One citation shape with plain mentions, so the reference can be opened; the section is
+    // dropped. Without a usable stated assembly there is no identity, only plain text.
+    const identity = ohioBillCitation(m[2] ?? '', m[3] ?? '', stated);
+    const assembly = stated ? ` (${stated}th General Assembly)` : '';
+    add(m, identity ?? `${bill}${assembly} § ${m[1] ?? ''}`, 'other');
   }
   for (const m of text.matchAll(IRC))
     add(m, `26 U.S.C. ${m[1] ?? ''}`, 'us_code');
@@ -383,12 +393,14 @@ export function collectExternalRefs(
     for (const id of ref.sectionIds)
       if (!current.sectionIds.includes(id)) current.sectionIds.push(id);
   };
-  existing.forEach(addRef);
+  const self = selfBillCitation(options);
+  existing.filter((ref) => ref.citation !== self).forEach(addRef);
   const hits: { match: ExternalMatch; sectionId: string }[] = [];
   for (const section of walkSections(sections)) {
     const text = sectionText(section, { includeDeleted: false });
     for (const match of findExternalMatches(text, options)) {
       if (isInternalMatch(match, index, options)) continue;
+      if (match.citation === self) continue;
       hits.push({ match, sectionId: section.id });
     }
   }

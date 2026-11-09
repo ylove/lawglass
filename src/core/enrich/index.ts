@@ -190,6 +190,7 @@ export function enrichDocument(
   const refOptions = {
     jurisdiction: doc.metadata.jurisdiction,
     session: doc.metadata.session,
+    billNumber: doc.metadata.billNumber,
     charterSections,
   };
   const externalRefs = collectExternalRefs(

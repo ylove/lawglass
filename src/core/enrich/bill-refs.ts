@@ -36,21 +36,26 @@ const MIN_YEAR = 1996;
 
 // "(?<![A-Za-z.])" keeps "S." out of "U.S. 113", "U.S.C." and "H.R." out of other initials.
 // A trailing ".5", ",5" or "%" means it was a figure, not a bill number.
+// Not preceded by a letter, period, section sign or dollar sign, nor by "U. " (spaced reporter
+// abbreviations: "347 U. S. 483", "98 S. Ct.") or a figure ("5 S. 12").
+const NOT_AFTER = String.raw`(?<![A-Za-z.§$]|[A-Za-z]\.\s|\d\s)`;
 const FEDERAL_DESIGNATOR = String.raw`(H\.\s?R\.|S\.|H\.\s?J\.\s?Res\.|S\.\s?J\.\s?Res\.|H\.\s?Con\.\s?Res\.|S\.\s?Con\.\s?Res\.|H\.\s?Res\.|S\.\s?Res\.)`;
 const FEDERAL_BILL = new RegExp(
-  String.raw`(?<![A-Za-z.§$])${FEDERAL_DESIGNATOR}\s?(\d{1,5})(?![\d]|[.,]\d|%)(?:\s*(?:\(|of\s+the\s+)${ORDINAL}\s+Congress\)?)?`,
+  String.raw`${NOT_AFTER}${FEDERAL_DESIGNATOR}\s?(\d{1,5})(?![\d]|[.,]\d|%)(?:\s*(?:\(|of\s+the\s+)${ORDINAL}\s+Congress\)?)?`,
   'g',
 );
 const FEDERAL_WORDS = new RegExp(
   String.raw`\b(House|Senate)\s+Bill\s+(?:No\.\s*)?(\d{1,5})(?![\d]|[.,]\d|%)(?:\s*(?:\(|of\s+the\s+)${ORDINAL}\s+Congress\)?)?`,
   'g',
 );
+/** "of the 135th General Assembly" or "(135th General Assembly)". */
+export const OHIO_SESSION = String.raw`(?:\s+of\s+the\s+${ORDINAL}\s+General\s+Assembly|\s*\(${ORDINAL}\s+General\s+Assembly\))?`;
 const OHIO_BILL_ABBR = new RegExp(
-  String.raw`(?<![A-Za-z.])(H\.\s?B\.|S\.\s?B\.)\s?(?:No\.\s*)?(\d{1,5})(?![\d]|[.,]\d|%)(?:\s+of\s+the\s+${ORDINAL}\s+General\s+Assembly)?`,
+  String.raw`${NOT_AFTER}(H\.\s?B\.|S\.\s?B\.)\s?(?:No\.\s*)?(\d{1,5})(?![\d]|[.,]\d|%)${OHIO_SESSION}`,
   'g',
 );
 const OHIO_BILL_WORDS = new RegExp(
-  String.raw`\b(House|Senate)\s+Bill\s+(?:No\.\s*)?(\d{1,5})(?![\d]|[.,]\d|%)(?:\s+of\s+the\s+${ORDINAL}\s+General\s+Assembly)?`,
+  String.raw`\b(House|Senate)\s+Bill\s+(?:No\.\s*)?(\d{1,5})(?![\d]|[.,]\d|%)${OHIO_SESSION}`,
   'g',
 );
 // "Senate Bill S1234", "Assembly Bill No. A567"; a bare "S1234" needs three or more digits.
@@ -58,7 +63,23 @@ const STATE_WORDS = new RegExp(
   String.raw`\b(Senate|Assembly)\s+Bill\s+(?:No\.\s*)?([SA])?0*(\d{1,5})(?![\d]|[.,]\d|%)`,
   'g',
 );
-const STATE_ATTACHED = /(?<![A-Za-z0-9.])([SA])0*(\d{3,5})(?![\d\w]|[.,]\d)/g;
+// "S. 1000", "A. 3000", "S1000", "A-3000": a letter alone is too common, so three or more digits
+// are required, and a trailing ":digit" or "-digit" means a statute chapter, not a bill.
+const STATE_LETTER = new RegExp(
+  String.raw`${NOT_AFTER}(?<!\d-)\b([SA])(?:\.\s?|-)?0*(\d{3,5})(?![\w]|[.,:;]\d|-\d|%)`,
+  'g',
+);
+
+/**
+ * An explicit session or year qualifier left over after a mention was parsed ("(134th General
+ * Assembly)" on a federal match, "(2021-2022 session)", "of the 2019 Legislature"). It names a
+ * session this extractor did not read, so the mention must stay plain text rather than inherit
+ * the current document's session.
+ */
+const LEFTOVER_QUALIFIER = new RegExp(
+  String.raw`^\s*(?:\((?=[^)]{0,60}(?:Congress|General\s+Assembly|Legislature|Session|\b(?:19|20)\d{2}\b))|(?:of|in|from)\s+the\s+(?:${ORDINAL}|(?:19|20)\d{2})\b)`,
+  'i',
+);
 
 export interface BillMention {
   start: number;
@@ -73,6 +94,8 @@ export interface BillContext {
   jurisdiction?: string | null | undefined;
   /** `metadata.session`, e.g. "118th Congress, 1st Session" or "2025-2026 Regular Sessions". */
   session?: string | null | undefined;
+  /** `metadata.billNumber`; a mention of the document's own bill is not a reference. */
+  billNumber?: string | null | undefined;
 }
 
 const ordinal = (n: number): string => {
@@ -139,6 +162,12 @@ export function findBillMentions(
   const push = (m: RegExpMatchArray, citation: string | undefined): void => {
     if (citation === undefined) return;
     const start = m.index ?? 0;
+    if (
+      LEFTOVER_QUALIFIER.test(
+        text.slice(start + m[0].length, start + m[0].length + 80),
+      )
+    )
+      return;
     out.push({ start, end: start + m[0].length, text: m[0], citation });
   };
 
@@ -160,7 +189,8 @@ export function findBillMentions(
       push(m, federalCitation(type, m[2] ?? '', congress));
   }
   const ohio = (m: RegExpMatchArray, chamber: string): void => {
-    const stated = m[3] ? Number(m[3]) : undefined;
+    const given = m[3] ?? m[4];
+    const stated = given ? Number(given) : undefined;
     const ga = stated ?? (here?.place === 'ohio' ? here.session : undefined);
     if (ga === undefined || ga < FIRST_OHIO_GA || Number(m[2]) < 1) return;
     const label = /^h/i.test(chamber) ? 'H.B.' : 'S.B.';
@@ -187,8 +217,7 @@ export function findBillMentions(
       if (m[2] && (m[1] === 'Senate') !== (letter === 'S')) continue;
       add(m, letter, m[3] ?? '');
     }
-    for (const m of text.matchAll(STATE_ATTACHED))
-      add(m, m[1] ?? '', m[2] ?? '');
+    for (const m of text.matchAll(STATE_LETTER)) add(m, m[1] ?? '', m[2] ?? '');
   }
 
   // A span claimed by an earlier, longer match is reported once ("Senate Bill S1234").
@@ -231,4 +260,29 @@ export function billIngestUrl(citation: string): string | undefined {
       ? `https://www.nysenate.gov/legislation/bills/${state[3] ?? ''}/${state[2] ?? ''}`
       : `https://www.njleg.state.nj.us/bill-search/${state[3] ?? ''}/${state[2] ?? ''}`;
   return undefined;
+}
+
+/**
+ * An Ohio bill named with its General Assembly stated beside it. Section-qualified mentions
+ * ("section 5 of H.B. 110 of the 134th General Assembly") use this so they share one citation
+ * shape with plain mentions; without a stated assembly there is no identity.
+ */
+export function ohioBillCitation(
+  chamber: string,
+  number: string,
+  assembly: string | undefined,
+): string | undefined {
+  const ga = Number(assembly);
+  if (!assembly || ga < FIRST_OHIO_GA || Number(number) < 1) return undefined;
+  const label = /^h/i.test(chamber) ? 'H.B.' : 'S.B.';
+  return `${label} ${String(Number(number))} (${ordinal(ga)} General Assembly)`;
+}
+
+/** The citation of the document's own bill, or undefined when its identity is not certain. */
+export function selfBillCitation(ctx: BillContext): string | undefined {
+  // Amendment letters ("S1234A") are versions of the same bill.
+  const number = (ctx.billNumber ?? '').trim().replace(/(\d)[A-Z]$/, '$1');
+  if (!number) return undefined;
+  return findBillMentions(number, { ...ctx, billNumber: undefined })[0]
+    ?.citation;
 }
