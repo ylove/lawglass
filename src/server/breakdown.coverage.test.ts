@@ -238,7 +238,7 @@ describe('progressive breakdown', () => {
     await breakdown(a, docId);
     const stopped = await vi.waitFor(async () => {
       const r = await breakdown(a, docId);
-      expect(r.progress?.stoppedReason).toBe('budget_exhausted');
+      expect(r.stoppedReason).toBe('budget');
       return r;
     });
     // Shown as final-so-far, flagged as stopped (hosting hooks, part B).
@@ -314,7 +314,7 @@ describe('stops that readers are told about', () => {
     await breakdown(a, docId);
     const r = await vi.waitFor(async () => {
       const x = await breakdown(a, docId);
-      expect(x.progress?.stoppedReason).toBe('budget_exhausted');
+      expect(x.stoppedReason).toBe('budget');
       return x;
     });
     expect(r.status).toBe('disabled');
