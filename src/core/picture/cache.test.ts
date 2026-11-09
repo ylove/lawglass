@@ -87,33 +87,37 @@ describe('PictureCache', () => {
     expect(await cache.get(key({ promptVersion: 'v2' }))).toBeUndefined();
   });
 
-  it('does not reuse pictures cached before stamp validation', async () => {
-    const cache = new PictureCache({ dir });
-    const oldVersion = promptVersion(
-      PICTURE_SYSTEM_PROMPT,
-      JSON.stringify(z.toJSONSchema(PictureSet)),
-      JSON.stringify([GlyphId.options, StampId.options, ITEMS_PER_CALL]),
-    );
-    const unchecked: PictureEntry = {
-      ...entry,
-      panels: [
-        {
-          left: { glyphs: ['bank'] },
-          link: 'none',
-          stamp: { glyph: 'warning' },
-        },
-      ],
-    };
-    await cache.getOrCompute(key({ promptVersion: oldVersion }), () =>
-      Promise.resolve([unchecked]),
-    );
-    expect(await cache.get(key({ promptVersion: oldVersion }))).toEqual([
-      unchecked,
-    ]);
-    expect(
-      await cache.get(key({ promptVersion: PICTURE_PROMPT_VERSION })),
-    ).toBeUndefined();
-  });
+  it.each([undefined, 1])(
+    'does not reuse pictures cached under older rules (%s)',
+    async (rules) => {
+      const cache = new PictureCache({ dir });
+      const oldVersion = promptVersion(
+        PICTURE_SYSTEM_PROMPT,
+        JSON.stringify(z.toJSONSchema(PictureSet)),
+        JSON.stringify([GlyphId.options, StampId.options, ITEMS_PER_CALL]),
+        ...(rules === undefined ? [] : [JSON.stringify({ rules })]),
+      );
+      const unchecked: PictureEntry = {
+        ...entry,
+        panels: [
+          {
+            left: { glyphs: ['bank'] },
+            link: 'none',
+            stamp: { glyph: 'warning' },
+          },
+        ],
+      };
+      await cache.getOrCompute(key({ promptVersion: oldVersion }), () =>
+        Promise.resolve([unchecked]),
+      );
+      expect(await cache.get(key({ promptVersion: oldVersion }))).toEqual([
+        unchecked,
+      ]);
+      expect(
+        await cache.get(key({ promptVersion: PICTURE_PROMPT_VERSION })),
+      ).toBeUndefined();
+    },
+  );
 
   it('does not write for a document removed while drawing, and refuses hostile ids', async () => {
     const cache = new PictureCache({ dir, isStillRegistered: () => false });

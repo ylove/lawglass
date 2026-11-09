@@ -86,6 +86,8 @@ export async function drawPictures(input: {
   provider: LlmProvider;
   items: readonly PictureItem[];
   signal?: AbortSignal | undefined;
+  /** Per-response usage, including malformed replies, so callers retain it if a later call fails. */
+  onUsage?: (usage: LlmUsage) => void;
 }): Promise<DrawnPictures> {
   const entries: PictureEntry[] = [];
   const dropped: PictureValidation['dropped'] = [];
@@ -110,6 +112,7 @@ export async function drawPictures(input: {
         });
         usage.inputTokens += result.usage.inputTokens;
         usage.outputTokens += result.usage.outputTokens;
+        input.onUsage?.(result.usage);
         return validateObject(PictureSet, result.object);
       } catch (error) {
         if (!(
@@ -128,7 +131,10 @@ export async function drawPictures(input: {
     if (!reply) continue;
     const checked = validatePictures(reply, batch);
     entries.push(...checked.entries);
-    const failures = new Map(checked.dropped.map((drop) => [drop.item, drop]));
+    const failures = new Map<number, PictureValidation['dropped'][number]>();
+    for (const drop of checked.dropped)
+      if (!failures.has(drop.item)) failures.set(drop.item, drop);
+    for (const entry of checked.entries) failures.delete(entry.item);
     // Unknown numbers cannot be redrawn, and a repeated picture may already have a valid entry.
     const retryItems = batch.filter(
       (item) =>
@@ -136,7 +142,7 @@ export async function drawPictures(input: {
         !checked.entries.some((entry) => entry.item === item.index),
     );
     if (retryItems.length > 0) {
-      const feedback = checked.dropped
+      const feedback = [...failures.values()]
         .filter((drop) => retryItems.some((item) => item.index === drop.item))
         .map((drop) => {
           const panels =
@@ -154,7 +160,15 @@ export async function drawPictures(input: {
         const rechecked = validatePictures(redrawn, retryItems);
         entries.push(...rechecked.entries);
         recovered += rechecked.entries.length;
-        for (const drop of rechecked.dropped) failures.set(drop.item, drop);
+        const retryFailures = new Set<number>();
+        for (const drop of rechecked.dropped) {
+          // Extra items are not redraw candidates. Keep the first actual rejection, rather
+          // than a later repeat, and never count a kept picture as dropped.
+          if (!retryItems.some((item) => item.index === drop.item)) continue;
+          if (retryFailures.has(drop.item)) continue;
+          retryFailures.add(drop.item);
+          if (drop.reason !== 'repeat') failures.set(drop.item, drop);
+        }
         for (const entry of rechecked.entries) failures.delete(entry.item);
       }
     }

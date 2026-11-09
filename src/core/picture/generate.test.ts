@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { scriptedObjects } from '../../../tests/support/picture-provider.js';
 import { AppError } from '../model/index.js';
 import { drawPictures } from './generate.js';
@@ -124,12 +124,38 @@ describe('drawPictures', () => {
           { item: 0, panels: [{ ...panel, stamp: { glyph: 'warning' } }] },
         ],
       },
-      { pictures: [{ item: 0, panels: [{ ...panel, note: '$99' }] }] },
+      {
+        pictures: [
+          { item: 0, panels: [{ ...panel, note: '$99' }] },
+          { item: 0, panels: [panel] },
+        ],
+      },
     ]);
     const drawn = await drawPictures({ provider, items: [item(0)] });
     expect(provider.calls).toHaveLength(2);
     expect(drawn.entries).toEqual([]);
     expect(drawn.dropped).toEqual([{ item: 0, reason: 'label-number' }]);
+    expect(drawn).toMatchObject({ retried: 1, recovered: 0 });
+  });
+
+  it('keeps the first real rejection in feedback and totals when the item is repeated', async () => {
+    const provider = scriptedObjects([
+      {
+        pictures: [
+          { item: 0, panels: [{ ...panel, stamp: { glyph: 'warning' } }] },
+          { item: 0, panels: [panel] },
+        ],
+      },
+      { pictures: [] },
+    ]);
+    const drawn = await drawPictures({ provider, items: [item(0)] });
+    expect(provider.calls[1]?.prompt).toContain(
+      "Item 0: The stamp 'warning' needs a penalty or risk",
+    );
+    expect(provider.calls[1]?.prompt).not.toContain(
+      'Return at most one picture',
+    );
+    expect(drawn.dropped).toEqual([{ item: 0, reason: 'stamp-unsupported' }]);
     expect(drawn).toMatchObject({ retried: 1, recovered: 0 });
   });
 
@@ -189,6 +215,7 @@ describe('drawPictures', () => {
     const drawn = await drawPictures({ provider, items: [item(0), item(1)] });
     expect(provider.calls).toHaveLength(1);
     expect(drawn.entries.map((entry) => entry.item)).toEqual([0]);
+    expect(drawn.dropped).toEqual([{ item: 9, reason: 'unknown-item' }]);
     expect(drawn).toMatchObject({ retried: 0, recovered: 0 });
   });
 
@@ -203,10 +230,12 @@ describe('drawPictures', () => {
       {
         pictures: [
           { item: 0, panels: [panel] },
+          { item: 0, panels: [panel] },
           {
             item: 1,
             panels: [{ left: { glyphs: ['document'] }, link: 'none' }],
           },
+          { item: 1, panels: [panel] },
           { item: 2, panels: [panel] },
         ],
       },
@@ -220,6 +249,7 @@ describe('drawPictures', () => {
       [1, [panel]],
     ]);
     expect(drawn).toMatchObject({ retried: 1, recovered: 1 });
+    expect(drawn.dropped).toEqual([]);
     expect(provider.calls).toHaveLength(2);
   });
 
@@ -232,10 +262,31 @@ describe('drawPictures', () => {
       },
       new AppError('PROVIDER_ERROR'),
     ]);
-    await expect(drawPictures({ provider, items: [item(0)] })).rejects.toThrow(
-      AppError,
-    );
+    const onUsage = vi.fn();
+    await expect(
+      drawPictures({ provider, items: [item(0)], onUsage }),
+    ).rejects.toThrow(AppError);
+    expect(onUsage).toHaveBeenCalledExactlyOnceWith({
+      inputTokens: 10,
+      outputTokens: 5,
+    });
     expect(provider.calls).toHaveLength(2);
+  });
+
+  it('reports spent tokens for a malformed response before a later call fails', async () => {
+    const error = new AppError('PROVIDER_ERROR');
+    const provider = scriptedObjects([
+      { pictures: [{ item: 0, panels: [] }] },
+      error,
+    ]);
+    const onUsage = vi.fn();
+    await expect(
+      drawPictures({ provider, items: [item(0)], onUsage }),
+    ).rejects.toBe(error);
+    expect(onUsage).toHaveBeenCalledExactlyOnceWith({
+      inputTokens: 10,
+      outputTokens: 5,
+    });
   });
 
   it('an outage stops the run', async () => {

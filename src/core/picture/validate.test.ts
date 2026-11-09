@@ -101,6 +101,9 @@ describe('validatePictures', () => {
       'warning',
       [
         'penalties',
+        'penalty',
+        'penalized',
+        'penalised',
         'fine',
         'fines',
         'fined',
@@ -114,10 +117,49 @@ describe('validatePictures', () => {
         'prison',
         'imprisonment',
         'civil action',
-        'enforcement',
         'forfeiture',
+        'break the rule',
+        'break a law',
+        'breaks the rules',
+        'breach of the law',
+        'breached a regulation',
+        'criminal',
+        'criminal charge',
+        'criminal charges',
+        'face a criminal charge',
+        'faces criminal charges',
+        'charged with a crime',
+        'charges for an offense',
+        'may be shut down',
+        'cease-and-desist order',
+        'cease and desist order',
+        'who break the rule pay up to $100,000',
+        'who break a condition pay up to $100,000',
+        'who violate a condition pay up to $100,000',
+        'who fail to report pay up to $100,000',
+        'who noncomply pay up to $100,000',
+        'who fail to report face up to $100,000',
+        'pay up to $100,000 if they fail to report',
       ],
-      ['finance', 'refined', 'privileged'],
+      [
+        'finance',
+        'refined',
+        'privileged',
+        'enforcement',
+        'The Treasury enforces the rule on states, and banks file reports',
+        'enforce the rules',
+        'enforced the rules',
+        'enforcing the rules',
+        'break ground',
+        'breach of confidence',
+        'charge fees',
+        'charges for services',
+        'face charges for services',
+        'charged with oversight',
+        'pay up to $100,000 for supplies',
+        'receive grants of up to $100,000',
+        'fail to report. Grants are up to $100,000',
+      ],
     ],
     [
       'seal',
@@ -128,12 +170,18 @@ describe('validatePictures', () => {
         'certified',
         'registered',
         'authorized',
+        'authorised',
+        'authorisation',
         'permitted',
         'regulated',
         'supervised',
         'accredited',
+        'oversee',
+        'oversees',
+        'overseen',
+        'oversight',
       ],
-      ['disapproval', 'unregistered', 'records'],
+      ['disapproval', 'unregistered', 'records', 'overseas', 'overlooked'],
     ],
     [
       'no',
@@ -169,19 +217,23 @@ describe('validatePictures', () => {
         'days',
         'monthly',
         'years',
-        'date',
         'deadline',
         'within',
-        'before',
-        'after',
         'annually',
         'quarterly',
-        'effective',
-        'period',
         'weeks',
         'hours',
       ],
-      ['someday', 'updated', 'thereafter'],
+      [
+        'someday',
+        'updated',
+        'thereafter',
+        'date',
+        'effective',
+        'period',
+        'before',
+        'after',
+      ],
     ],
     [
       'clock',
@@ -189,19 +241,30 @@ describe('validatePictures', () => {
         'days',
         'monthly',
         'years',
-        'date',
         'deadline',
         'within',
-        'before',
-        'after',
         'annually',
         'quarterly',
-        'effective',
-        'period',
         'weeks',
         'hours',
+        'promptly',
+        'immediately',
+        'without delay',
+        'as soon as practicable',
       ],
-      ['someday', 'updated', 'thereafter'],
+      [
+        'someday',
+        'updated',
+        'thereafter',
+        'date',
+        'effective',
+        'period',
+        'before',
+        'after',
+        'prompt reports',
+        'immediate supervisor',
+        'delays',
+      ],
     ],
     [
       'check',
@@ -209,13 +272,17 @@ describe('validatePictures', () => {
         'may',
         'must',
         'shall',
+        'can',
+        'able',
         'requires',
         'allowed',
         'permitted',
         'eligible',
         'entitled',
+        'authorized',
+        'authorised',
       ],
-      ['mayor', 'mustard', 'shallow'],
+      ['mayor', 'mustard', 'shallow', 'candy', 'disabled', 'unauthorised'],
     ],
   ];
 
@@ -268,6 +335,170 @@ describe('validatePictures', () => {
         }),
       ).toBe('shape');
     });
+
+  for (const glyph of ['calendar', 'clock'] as const) {
+    const timingCases: [string, boolean][] = [
+      ...[
+        'January',
+        'February',
+        'March',
+        'April',
+        'May',
+        'June',
+        'July',
+        'August',
+        'September',
+        'October',
+        'November',
+        'December',
+      ].map((month): [string, boolean] => [
+        `Banks report by ${month} 1.`,
+        true,
+      ]),
+      ['Banks report by 2027.', true],
+      ['Banks report by 1999.', true],
+      ['Banks report in 2000.', true],
+      ['Banks report by 12/31.', true],
+      ['Banks report no later than enactment.', true],
+      ['Banks report not later than enactment.', true],
+      ['Banks report before 30 days have passed.', true],
+      ['Banks report after the first 30 days.', true],
+      ['Banks report before the first 30.', true],
+      ['Banks report after the first 30.', true],
+      ['Banks report after consultation with the Fed.', false],
+      ['Banks report before consultation with the Fed.', false],
+      [
+        'Banks report before the first formal consultation about article 30.',
+        false,
+      ],
+      [
+        'Banks report after the first formal consultation about article 30.',
+        false,
+      ],
+      ['Banks date the reports.', false],
+      ['Banks have effective controls for a transition period.', false],
+      ['Banks report by mail.', false],
+      ['Banks may issue coins.', false],
+      ['Banks cite rule 20270.', false],
+      ['Banks cite rule 1899.', false],
+      ['Banks cite rule 2100.', false],
+    ];
+    it.each(timingCases)(
+      `checks timing context for ${glyph}: %s (%s)`,
+      (text, supported) => {
+        const result = validatePictures(
+          {
+            pictures: [
+              {
+                item: 0,
+                panels: [
+                  {
+                    left: { glyphs: ['bank'] },
+                    link: 'none',
+                    stamp: { glyph },
+                  },
+                ],
+              },
+            ],
+          },
+          [{ index: 0, text }],
+        );
+        expect(result.entries).toHaveLength(supported ? 1 : 0);
+        expect(result.dropped).toEqual(
+          supported ? [] : [{ item: 0, reason: 'stamp-unsupported' }],
+        );
+      },
+    );
+  }
+
+  it.each([
+    'Issuers may not issue coins.',
+    'Issuers shall not pay interest.',
+    'Issuers must not pay interest.',
+    'Issuers are prohibited from issuing coins but may file reports.',
+    'Issuers cannot issue coins but must file reports.',
+    'Issuers are forbidden to issue coins but can file reports.',
+    'Issuers are banned from issuing coins but are entitled to file reports.',
+    'Issuers are barred from issuing coins but are authorised to file reports.',
+    'Issuers are not allowed to issue coins.',
+  ])('refuses a check and accepts a no stamp on a prohibition: %s', (text) => {
+    for (const glyph of ['check', 'no'] as const) {
+      const result = validatePictures(
+        {
+          pictures: [
+            {
+              item: 0,
+              panels: [
+                {
+                  left: { glyphs: ['bank'] },
+                  link: 'none',
+                  stamp: { glyph },
+                },
+              ],
+            },
+          ],
+        },
+        [{ index: 0, text }],
+      );
+      expect(result.entries).toHaveLength(glyph === 'no' ? 1 : 0);
+      expect(result.dropped).toEqual(
+        glyph === 'no' ? [] : [{ item: 0, reason: 'stamp-unsupported' }],
+      );
+    }
+  });
+
+  it.each([
+    ['seal', 'Issuers are licen\u00adsed.', 'Licensed'],
+    ['warning', 'Issuers face penal\u00adties.', 'Penalties'],
+    ['seal', 'Issuers are licen\u200bsed.', 'Licen\u200bsed'],
+    ['seal', 'Issuers are auth\u200dorised.', 'Authorised'],
+    ['warning', 'Issuers face penal\u2060ties.', 'Penal\u2060ties'],
+    ['calendar', 'Issuers report each ｙｅａｒ.', 'Year'],
+  ] as const)(
+    'normalizes invisible format characters and NFKC: %s, %s',
+    (glyph, text, label) => {
+      const result = validatePictures(
+        {
+          pictures: [
+            {
+              item: 0,
+              panels: [
+                {
+                  left: { glyphs: ['bank'], label },
+                  link: 'none',
+                  stamp: { glyph },
+                },
+              ],
+            },
+          ],
+        },
+        [{ index: 0, text }],
+      );
+      expect(result.dropped).toEqual([]);
+      expect(result.entries).toHaveLength(1);
+    },
+  );
+
+  it('does not let format characters hide a prohibition from a check', () => {
+    const result = validatePictures(
+      {
+        pictures: [
+          {
+            item: 0,
+            panels: [
+              {
+                left: { glyphs: ['bank'] },
+                link: 'none',
+                stamp: { glyph: 'check' },
+              },
+            ],
+          },
+        ],
+      },
+      [{ index: 0, text: 'Issuers may n\u00adot pay interest.' }],
+    );
+    expect(result.dropped).toEqual([{ item: 0, reason: 'stamp-unsupported' }]);
+  });
 
   it('allows a different ending of the same word, but not a short shared stem', () => {
     const label = (text: string) =>
