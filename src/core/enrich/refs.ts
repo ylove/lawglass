@@ -2,6 +2,7 @@ import {
   findBillMentions,
   ohioBillCitation,
   selfBillCitation,
+  statedBills,
 } from './bill-refs.js';
 import {
   sectionText,
@@ -42,6 +43,8 @@ export interface ExternalOptions {
   session?: string | null | undefined;
   /** `metadata.billNumber`, so a bill's mention of itself is not listed as a reference. */
   billNumber?: string | null | undefined;
+  /** Bills the whole document states a session for; set by `collectExternalRefs`. */
+  statedBills?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
   /**
    * Normalized numbers of the charter sections this document restates. A charter citation links
    * inward only to one of these: an ordinance's own "Section 3" is not the charter's.
@@ -396,12 +399,24 @@ export function collectExternalRefs(
   const self = selfBillCitation(options);
   existing.filter((ref) => ref.citation !== self).forEach(addRef);
   const hits: { match: ExternalMatch; sectionId: string }[] = [];
-  for (const section of walkSections(sections)) {
-    const text = sectionText(section, { includeDeleted: false });
-    for (const match of findExternalMatches(text, options)) {
+  const texts = [...walkSections(sections)].map((section) => ({
+    id: section.id,
+    text: sectionText(section, { includeDeleted: false }),
+  }));
+  // Sections and subsections are separate texts, but a bill stated with its session in one is
+  // the same bill when a later subsection repeats it bare.
+  const documentOptions = {
+    ...options,
+    statedBills: statedBills(
+      texts.map((t) => t.text),
+      options,
+    ),
+  };
+  for (const { id, text } of texts) {
+    for (const match of findExternalMatches(text, documentOptions)) {
       if (isInternalMatch(match, index, options)) continue;
       if (match.citation === self) continue;
-      hits.push({ match, sectionId: section.id });
+      hits.push({ match, sectionId: id });
     }
   }
   // One document has one charter: a bare "the City Charter" is the same charter as a named

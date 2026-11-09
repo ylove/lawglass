@@ -239,6 +239,11 @@ export interface BillContext {
   session?: string | null | undefined;
   /** `metadata.billNumber`; a mention of the document's own bill is not a reference. */
   billNumber?: string | null | undefined;
+  /**
+   * Bills the whole document states a session for (see `statedBills`), keyed by bill without
+   * session. A bare repeat in another section then reuses that session.
+   */
+  statedBills?: ReadonlyMap<string, ReadonlySet<string>> | undefined;
 }
 
 const ordinal = (n: number): string => {
@@ -299,6 +304,7 @@ function federalCitation(
 export function findBillMentions(
   text: string,
   ctx: BillContext = {},
+  mode: 'all' | 'stated' = 'all',
 ): BillMention[] {
   const here = currentPlace(ctx);
   let bounds: ReturnType<typeof sentenceBoundaries> | undefined;
@@ -313,7 +319,10 @@ export function findBillMentions(
   // Pass 1 reads only mentions that state their own session; pass 2 may also inherit, and a
   // bare repeat of a bill the text states elsewhere takes that stated session.
   const stated = scan(undefined);
+  if (mode === 'stated') return stated;
   const known = new Map<string, Set<string>>();
+  for (const [key, citations] of ctx.statedBills ?? [])
+    known.set(key, new Set(citations));
   for (const mention of stated) {
     const key = mention.citation.replace(/ \(.*$/, '');
     known.set(key, (known.get(key) ?? new Set()).add(mention.citation));
@@ -500,4 +509,22 @@ export function selfBillCitation(ctx: BillContext): string | undefined {
   if (!number) return undefined;
   return findBillMentions(number, { ...ctx, billNumber: undefined })[0]
     ?.citation;
+}
+
+/** Which sessions the given texts state for each bill, keyed by the bill without its session. */
+export function statedBills(
+  texts: Iterable<string>,
+  ctx: BillContext,
+): Map<string, Set<string>> {
+  const map = new Map<string, Set<string>>();
+  for (const text of texts)
+    for (const mention of findBillMentions(
+      text,
+      { ...ctx, statedBills: undefined },
+      'stated',
+    )) {
+      const key = mention.citation.replace(/ \(.*$/, '');
+      map.set(key, (map.get(key) ?? new Set()).add(mention.citation));
+    }
+  return map;
 }
