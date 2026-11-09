@@ -205,6 +205,8 @@ These override the original text below, and the earlier amendments, where they c
     - `AmendsTarget.sectionIds` lists the measure's own sections that reprint amended charter text. A listed section number links only to one of those sections, never to a section of the measure that happens to share the number. Older cached documents lack the ids and keep the number match.
     - `RetrievalBackend.upsertChunks` takes an optional `AbortSignal`. A client that disconnects during embedding stops the spend between batches. A cancelled first write leaves no document visible, and a cancelled update never leaves a half-written generation that reads as complete.
 
+35. **The grade is measured, not shown (§5.7).** Issue #384. This amends amendment 25. Readers found a "Reading level: grade n" label condescending, so the reader UI and the public pages no longer show a grade or mention reading levels. Instead they describe how thoroughly a bill is broken down. The grade is still computed, returned in `AnswerResult.readingGrade`, used for the rewrite ceiling, and reported by eval and in the docs.
+
 ## 1. Purpose
 
 A local-first tool that takes the URL of any piece of legislation (federal, state, county, municipal), ingests it into Pinecone using structure-aware chunking and hybrid retrieval, and answers questions about it with citations to the exact section, page, and line.
