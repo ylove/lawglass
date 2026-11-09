@@ -7,7 +7,7 @@ import { BriefBatch } from '../breakdown/generate.js';
 import { ExtractedMetadata } from '../enrich/metadata.js';
 import { Selection } from '../locate/prompt.js';
 import { PictureSet } from '../picture/prompt.js';
-import { AppError, Scenario } from '../model/index.js';
+import { Scenario } from '../model/index.js';
 import { AnthropicProvider } from './anthropic.js';
 import {
   ANTHROPIC_SCHEMA_KEYWORDS,
@@ -175,7 +175,11 @@ describe('every structured-output schema the app sends (#341)', () => {
         notFound: false,
       }),
     );
-    expect(await result).toEqual(new AppError('PROVIDER_BAD_OUTPUT'));
+    // The call was billed, so the failure carries what the API reported.
+    expect(await result).toMatchObject({
+      code: 'PROVIDER_BAD_OUTPUT',
+      usage: { inputTokens: 10, outputTokens: 8 },
+    });
   });
 
   it('covers every schemaName in the source tree', () => {

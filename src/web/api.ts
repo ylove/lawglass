@@ -302,7 +302,10 @@ export function createHttpApi(options: HttpApiOptions = {}): ApiClient {
 }
 
 const ErrorBody = z.union([
-  z.object({ error: z.object({ code: z.string(), message: z.string() }) }),
+  z.object({
+    error: z.object({ code: z.string(), message: z.string() }),
+    quote: z.unknown().optional(),
+  }),
   z.object({ code: z.string(), message: z.string() }),
 ]);
 
@@ -311,7 +314,8 @@ async function errorFrom(res: Response): Promise<ApiError> {
   const parsed = ErrorBody.safeParse(await res.json().catch(() => null));
   if (parsed.success) {
     const e = 'error' in parsed.data ? parsed.data.error : parsed.data;
-    return new ApiError(e.code, e.message);
+    const quote = 'quote' in parsed.data ? parsed.data.quote : undefined;
+    return new ApiError(e.code, e.message, quote);
   }
   return new ApiError(
     'HTTP_ERROR',

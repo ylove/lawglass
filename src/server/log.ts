@@ -160,6 +160,20 @@ export function createLogger(
       }) + '\n',
     );
   }
+  /** A job reached its budget and was stopped (ADR 0018). A kind and a count, nothing else. */
+  function budgetExhausted(jobKind: string, calls: number): void {
+    write(
+      JSON.stringify({
+        t: new Date(now()).toISOString(),
+        level: 'warn',
+        event: 'budget_exhausted',
+        status: 200,
+        jobKind,
+        count: calls,
+        ms: 0,
+      }) + '\n',
+    );
+  }
   /** A U.S. Code reference that could not be read at ingest. Only a citation and a code. */
   function referenceSkipped(citation: string, code: string): void {
     write(
@@ -180,6 +194,7 @@ export function createLogger(
     backgroundAnswerEvent,
     backgroundBreakdownEvent,
     pictureEvent,
+    budgetExhausted,
     error,
     middleware,
     referenceSkipped,

@@ -6,6 +6,7 @@
  *   GET    /api/health                              -> Health
  *   GET    /api/config                              -> ClientConfig
  *   POST   /api/ingest            IngestRequest     -> SSE stream of IngestEvent
+ *   POST   /api/quote             {url}             -> {quoteId, facts, estimates} (hosting hooks)
  *   GET    /api/docs                                -> DocSummary[]
  *   GET    /api/docs/:docId                         -> DocDetail
  *   DELETE /api/docs/:docId                         -> 204
@@ -76,11 +77,16 @@ export const ClientConfig = z.object({
 });
 export type ClientConfig = z.infer<typeof ClientConfig>;
 
+/** Opaque to this server: the id of a quote the reader confirmed, minted by this server or a host. */
+const QuoteId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
+
 export const IngestRequest = z.object({
   url: z.url(),
   label: z.string().trim().min(1).max(80).optional(),
   /** Public-mode bot check token (Turnstile stub). */
   turnstileToken: z.string().optional(),
+  /** From `POST /api/quote` or a host's 402 quote; opaque to this server's own logic (ADR 0018). */
+  quoteId: QuoteId.optional(),
 });
 export type IngestRequest = z.infer<typeof IngestRequest>;
 
@@ -209,6 +215,8 @@ export const AskRequest = z
     /** Freeform question; rejected in public mode. */
     question: z.string().trim().min(1).max(500).optional(),
     turnstileToken: z.string().optional(),
+    /** Echoed from a host's 402 quote when the reader confirms (ADR 0018). */
+    quoteId: QuoteId.optional(),
   })
   .refine((r) => (r.chipId === undefined) !== (r.question === undefined), {
     message: 'Provide exactly one of chipId or question',
@@ -251,6 +259,8 @@ export const BreakdownResponse = z.object({
   briefs: z.array(SectionBrief).optional(),
   /** Substantive parts left out of a long bill's breakdown. */
   omitted: z.number().int().nonnegative().optional(),
+  /** The run stopped before finishing (its job budget ran out); a later run may continue. */
+  stoppedReason: z.literal('budget').optional(),
 });
 export type BreakdownResponse = z.infer<typeof BreakdownResponse>;
 

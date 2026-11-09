@@ -1,4 +1,5 @@
 import type { LlmUsage } from '../model/index.js';
+import type { JobContext } from './job.js';
 
 export type UsageFeature =
   | 'metadata'
@@ -15,9 +16,13 @@ export interface UsageEvent {
   feature: UsageFeature;
   model: string;
   usage: LlmUsage;
+  /** True when the call failed or was abandoned and the provider gave no usage, so this is a conservative guess. */
+  estimated?: boolean;
+  /** Who the call was for, when a hosted route admitted the work (ADR 0018). */
+  job?: JobContext;
 }
 /** Called once when a call reports usage. Failed calls without usage cannot be accounted for.
- * No prompts, credentials or job context cross this seam (#383 will add attribution).
+ * No prompts or credentials cross this seam; `job` names the reader and job, never text.
  */
 export interface UsageSink {
   record(event: UsageEvent): void | Promise<void>;

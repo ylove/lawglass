@@ -35,6 +35,7 @@ import {
 } from '../answer/regenerate.js';
 import { fleschKincaidGrade, stripCitations } from '../answer/readability.js';
 import { jsonSchema, validateObject } from '../llm/shared.js';
+import { isBudgetExhausted } from '../cost/job.js';
 import {
   AppError,
   type AnswerWarning,
@@ -128,6 +129,8 @@ export interface BreakdownOutput {
   dropped: number;
   usage: { inputTokens: number; outputTokens: number };
   backendUsage: { embedTokens: number; rerankUnits: number };
+  /** Set when the job's budget ended the run: the parts after the last brief were not tried. */
+  stoppedReason?: 'budget';
 }
 
 function label(section: Section): string {
@@ -201,6 +204,7 @@ export async function generateBreakdown(
   const briefs: SectionBrief[] = [];
   const usage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
   let dropped = 0;
+  let stoppedReason: 'budget' | undefined;
   const backendUsage = { embedTokens: 0, rerankUnits: 0 };
 
   for (let i = 0; i < input.units.length; i += size) {
@@ -257,15 +261,26 @@ export async function generateBreakdown(
     // are counted as dropped), not the whole breakdown. Anything else (a budget, an abort, a
     // provider outage) must stop the run.
     let reply: BriefBatch | undefined;
+    let budgetStop = false;
     for (let attempt = 0; attempt < 2 && !reply; attempt++) {
       try {
         reply = await call(built);
       } catch (error) {
+        // A spent job budget ends the run cleanly: the parts already written are kept.
+        if (isBudgetExhausted(error)) {
+          budgetStop = true;
+          break;
+        }
         if (!(
           error instanceof AppError && error.code === 'PROVIDER_BAD_OUTPUT'
         ))
           throw error;
       }
+    }
+    if (budgetStop) {
+      // Not a verdict on the skipped parts: they were never tried, so they are not `dropped`.
+      stoppedReason = 'budget';
+      break;
     }
     if (!reply) {
       dropped += batch.length;
@@ -341,5 +356,11 @@ export async function generateBreakdown(
     }
     input.onProgress?.([...briefs]);
   }
-  return { briefs, dropped, usage, backendUsage };
+  return {
+    briefs,
+    dropped,
+    usage,
+    backendUsage,
+    ...(stoppedReason ? { stoppedReason } : {}),
+  };
 }

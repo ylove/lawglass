@@ -14,6 +14,12 @@ import {
 } from '../core/model/index.js';
 import { PictureCache } from '../core/picture/cache.js';
 import { ITEMS_PER_CALL } from '../core/picture/prompt.js';
+import {
+  newSpend,
+  runInJob,
+  topUp,
+  type JobScope,
+} from '../core/cost/index.js';
 import { resetSharedLimits } from '../core/pipeline/limits.js';
 import type { BreakdownService } from './breakdown.js';
 import { createPictureService, type PictureLogEvent } from './pictures.js';
@@ -471,5 +477,68 @@ describe('breakdown pictures', () => {
         breakdown: () => Promise.reject(new AppError('PROVIDER_ERROR')),
       }).svc.get(DOC, 'breakdown'),
     ).toEqual({ status: 'none' });
+  });
+});
+
+describe('a budget that runs out mid-run', () => {
+  const items = Array.from(
+    { length: ITEMS_PER_CALL + 2 },
+    (_, i) =>
+      `- Banks must report item ${String(i)} monthly [S:sec-${String(i)}].`,
+  );
+  const text = ['Intro [S:sec-1].', '', ...items].join('\n');
+  const jobScope = (tokens: number, jobId: string): JobScope => ({
+    context: { readerId: 'alice', jobKind: 'ingest', jobId },
+    budget: { tokens },
+    spent: newSpend(),
+  });
+  const plainPanel = {
+    left: { glyphs: ['bank'] },
+    link: 'to',
+    carry: 'document',
+    note: 'Monthly',
+    right: { glyphs: ['government'] },
+  };
+  const entriesFor = (n: number) => ({
+    pictures: Array.from({ length: n }, (_, item) => ({
+      item,
+      panels: [plainPanel],
+    })),
+  });
+
+  it('keeps the pictures it drew, never caches them as final, and goes on once the scope is topped up', async () => {
+    // Real metering is on the shared limits: the first batch spends 15 tokens of a 5 token budget.
+    // (Only one picture is returned: identical panels would be dropped as repeats.)
+    const provider = scriptedObjects([entriesFor(1)]);
+    const { svc } = service({
+      provider,
+      summary: { status: 'cached', answer: answer(text) },
+    });
+    const live = jobScope(5, 'job-1');
+    const look = () => runInJob(live, () => svc.get(DOC, 'summary'));
+    await look();
+    const first = await vi.waitFor(async () => {
+      const r = await look();
+      expect(r.status).toBe('cached');
+      return r;
+    });
+    expect(first.entries?.length).toBe(1);
+    const calls = provider.calls.length;
+    // Long after the cool-down, with no budget, the drawn pictures are still served and nothing runs.
+    clock += FAILED_RETRY_MS * 2;
+    for (let i = 0; i < 3; i++) {
+      const later = await look();
+      expect(later.status).toBe('cached');
+      expect(later.entries?.length).toBe(1);
+    }
+    expect(provider.calls.length).toBe(calls);
+    // A new admission pays: the budget is replaced and the stopped run is resumed.
+    topUp(live, jobScope(1e9, 'job-2'));
+    svc.resume('b'.repeat(64));
+    await look();
+    await vi.waitFor(() => {
+      expect(provider.calls.length).toBeGreaterThan(calls);
+    });
+    expect(live.context.jobId).toBe('job-2');
   });
 });

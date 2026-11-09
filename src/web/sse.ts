@@ -16,10 +16,13 @@ export const CUT_OFF = 'The answer was cut off. Please try again.';
 
 export class ApiError extends Error {
   readonly code: string;
-  constructor(code: string, message: string) {
+  /** The host's quote object on a 402 (`PAYMENT_REQUIRED`); shape is the host's, so unvalidated. */
+  readonly quote: unknown;
+  constructor(code: string, message: string, quote?: unknown) {
     super(message);
     this.name = 'ApiError';
     this.code = code;
+    this.quote = quote;
   }
 }
 

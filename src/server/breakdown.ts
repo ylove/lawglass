@@ -15,6 +15,7 @@ import type { BreakdownLog } from '../core/breakdown/generate.js';
 import type { CliRuntime } from '../cli/runtime.js';
 import { envVar } from '../core/brand.js';
 import { documentContext } from '../core/answer/context.js';
+import { budgetRemaining } from '../core/cost/job.js';
 import { breakdownCacheHash } from '../core/breakdown/cache.js';
 import { NO_EXAMPLE_NOTE } from '../core/breakdown/notes.js';
 import { chooseBreakdownUnits } from '../core/breakdown/units.js';
@@ -59,10 +60,16 @@ export interface RequestOptions {
   start?: boolean;
   signal?: AbortSignal;
   onError?: (error: unknown, ms: number) => void;
+  /** Runs `begin` (which starts a paid generation) after the host admits it; throws to refuse. */
+  admit?: (begin: () => void) => Promise<void>;
 }
 
 export interface BreakdownService {
   get(docId: string, options?: RequestOptions): Promise<BreakdownResponse>;
+  /** A document was just paid for: forget its failure cool-downs and let a budget-stopped run go on. */
+  resume?(docId: string): void;
+  /** True when the pre-drawn examples for this tier are all stored (or none are drawn ahead). */
+  examplesComplete?(docId: string): Promise<boolean>;
   example(
     docId: string,
     sectionId: string,
@@ -101,6 +108,8 @@ export function createBreakdownService(
   const running = new Map<string, Set<() => void>>();
   const partial = new Map<string, readonly SectionBrief[]>();
   const failedAt = new Map<string, number>();
+  // Runs the job's budget cut short. Their briefs are shown for a while but never cached as final.
+  const stopped = new Map<string, { at: number; briefs: SectionBrief[] }>();
 
   /** Wake waiters when a run ends, whatever the outcome. */
   function settle(name: string): void {
@@ -162,11 +171,25 @@ export function createBreakdownService(
         cache: breakdowns,
         log: options.log,
         onProgress: (briefs) => {
-          partial.set(name, briefs);
+          // Parts an earlier, budget-stopped run wrote are never shown as fewer.
+          const kept = stopped.get(name)?.briefs ?? [];
+          partial.set(name, briefs.length >= kept.length ? briefs : kept);
         },
       });
-      if (!stored) failedAt.set(name, now());
-      else startPregeneration(docId, stored.briefs, stored.context);
+      if (stored?.stoppedReason) {
+        // Written parts are never replaced by fewer, whatever the later run managed.
+        const kept = stopped.get(name)?.briefs ?? [];
+        stopped.set(name, {
+          at: now(),
+          briefs: [
+            ...(stored.briefs.length >= kept.length ? stored.briefs : kept),
+          ],
+        });
+      } else if (!stored) failedAt.set(name, now());
+      else {
+        stopped.delete(name);
+        startPregeneration(docId, stored.briefs, stored.context);
+      }
     })()
       .catch((error: unknown) => {
         failedAt.set(name, now());
@@ -220,6 +243,26 @@ export function createBreakdownService(
       return so_far?.length
         ? { status: 'pending', briefs: [...so_far] }
         : { status: 'pending' };
+    }
+    const halted = stopped.get(name);
+    if (halted) {
+      // What the budget let through stays until a run that finishes replaces it. A new run
+      // starts only when this scope has budget again and the last stop is not fresh.
+      const mayResume =
+        request.start !== false &&
+        budgetRemaining() &&
+        now() - halted.at >= FAILED_RETRY_MS;
+      if (!mayResume)
+        return halted.briefs.length > 0
+          ? {
+              status: 'cached',
+              briefs: [...halted.briefs],
+              // Parts the budget never reached are not "left out": nothing is claimed about them.
+              omitted: 0,
+              stoppedReason: 'budget',
+            }
+          : { status: 'disabled', stoppedReason: 'budget' };
+      partial.set(name, halted.briefs);
     }
     if (request.start === false) return { status: 'disabled' };
     // A recent failure is an error the client can show with a retry, not "off": `disabled`
@@ -317,7 +360,13 @@ export function createBreakdownService(
       throw new AppError('PROVIDER_ERROR', 'Example is cooling down.', {
         userMessage: "Couldn't draw an example right now. Try again.",
       });
-    void startExample(docId, sectionId, name, context, request.onError);
+    const begin = (): void => {
+      // Another look may have started this run while admission was pending.
+      if (running.has(name)) return;
+      void startExample(docId, sectionId, name, context, request.onError);
+    };
+    if (request.admit) await request.admit(begin);
+    else begin();
     return { status: 'pending' };
   }
 
@@ -378,5 +427,38 @@ export function createBreakdownService(
     });
   }
 
-  return { get, example };
+  /** Called when a document is paid for again: forget cool-downs and let stopped runs go on. */
+  function resume(docId: string): void {
+    for (const name of [...failedAt.keys()])
+      if (name.startsWith(`${docId}:`)) failedAt.delete(name);
+    for (const [name, halted] of stopped)
+      if (name.startsWith(`${docId}:`)) halted.at = Number.NEGATIVE_INFINITY;
+  }
+
+  async function examplesComplete(docId: string): Promise<boolean> {
+    if (!pregenerationEnabled(options.pregenerate) || options.publicMode)
+      return true;
+    const llm = provider();
+    if (!llm) return true;
+    const doc = await registry.getDocument(docId);
+    const context = await documentContext(runtime.backend, docId, doc.sections);
+    if (context.mode !== 'whole') return true;
+    const hit = await breakdowns.get(
+      breakdownCacheKey(docId, llm, runtime.answerEndpoint, context.mode),
+    );
+    const available =
+      hit?.briefs.filter((b) => b.example === 'available') ?? [];
+    if (!hit || available.length > MAX_PREGENERATED_EXAMPLES)
+      return Boolean(hit);
+    for (const { sectionId } of available)
+      if (
+        !(await examples.has(
+          sectionExampleKey(docId, sectionId, llm, context.mode),
+        ))
+      )
+        return false;
+    return true;
+  }
+
+  return { get, example, resume, examplesComplete };
 }

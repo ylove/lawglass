@@ -6,6 +6,7 @@ import {
   LocateResponse,
   LocateVersionsResponse,
 } from '../core/model/index.js';
+import { runInJob, type JobScope } from '../core/cost/index.js';
 import { locate, cleanSentence } from '../core/locate/index.js';
 import { locateVersions } from '../core/locate/versions.js';
 import { readHistory } from '../core/history/history-store.js';
@@ -17,6 +18,10 @@ export function registerLocateRoute(
     publicMode: boolean;
     rateLimit: (c: Context) => boolean;
     validateUrl?: ((url: URL) => void) | undefined;
+    /** Hosting hook: admission before the model call; returns the job scope to run in. */
+    admit?:
+      | ((c: Context, docId: string) => Promise<JobScope | undefined>)
+      | undefined;
   },
 ): void {
   for (const versions of [false, true]) {
@@ -63,12 +68,15 @@ export function registerLocateRoute(
           );
           return c.json(LocateVersionsResponse.parse(result));
         }
-        const result = await locate(docId, text, {
-          backend: runtime.backend,
-          provider: runtime.answerProvider,
-          registry: runtime.registry,
-          signal: c.req.raw.signal,
-        });
+        const scope = await options.admit?.(c, docId);
+        const result = await runInJob(scope, () =>
+          locate(docId, text, {
+            backend: runtime.backend,
+            provider: runtime.answerProvider,
+            registry: runtime.registry,
+            signal: c.req.raw.signal,
+          }),
+        );
         return c.json(LocateResponse.parse(result));
       },
     );

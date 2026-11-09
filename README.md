@@ -296,8 +296,32 @@ With external auth, the host serves its own landing and account pages from its m
 return a response there or call `next()` to reach the app. The default `landingPage`,
 `gatePage` and `quickstartHtml` builders are exported. `runtime.providerFor(role, model?)`
 builds a provider with the configured credentials and endpoint, without changing the defaults.
-See [ADR 0018](docs/decisions/0018-hosting-hooks.md) for the hooks and the later admission,
-usage and budget work.
+Money-free hooks for paid hosting (see [ADR 0018](docs/decisions/0018-hosting-hooks.md)):
+
+- `POST /api/quote {url}` fetches and parses a bill (no model call, nothing stored) and returns
+  `{quoteId, facts, estimates}`, one estimate per `quote.tiers` entry. Quotes live 30 minutes and
+  are rate limited per address; public mode refuses them unless `quote.allowInPublicMode`.
+- `admission(c, job)` runs before any paid model work (ingest, questions and model-backed chips,
+  locate, scenario, and examples that would be generated) and returns
+  `{allow: true, budget?}`, `{allow: false, status: 402, quote}` or a 403/429 denial. A 402
+  becomes `{error: {code: 'PAYMENT_REQUIRED'}, quote}` and the SPA shows a quote dialog; Confirm
+  resubmits with `quote.quoteId`. Include `quoteId`, `display` (price text) and `facts` in your
+  quote. A host that allows everyone has opened your model budget to everyone.
+- `onUsage(event)` receives every model call's usage with `{readerId, jobKind, jobId, docId}`,
+  including background generation, which runs under the first admitted ingest of a document.
+- A job `budget` (`{tokens?, dollars?}`) stops the job with `BUDGET_EXHAUSTED`, overshooting by
+  at most one call per sequential job (concurrent calls within a job may each overshoot by
+  one). Breakdown and pictures keep what they wrote.
+- `backgroundScope(docId, tier, models)` is required with `admission`. Background generation runs
+  under one scope per (document, tier), where the tier is what `modelFor(job, c)` resolves for the
+  reader. After a restart the hook restores the persisted `{budget?, models?, jobId?}`; `budget` must
+  be the REMAINING budget (sum `onUsage` by `jobId`), because a restored scope counts from zero. If
+  it returns `undefined` or throws, no paid background work starts and cached results are served.
+  A failed or abandoned paid call is still charged: providers attach usage to unusable replies,
+  and an abandoned stream is charged what the provider reported or a flagged estimate.
+- `modelFor(job, c)` returns `{answer?, extract?}`; cache keys include the model. Admission jobs carry the host's own `quoteId` as sent (use base64url ids, `[A-Za-z0-9_-]` up to 128; the SPA refuses others), `serverQuote` when it is also a quote this server issued, and, on ingest, `docComplete: true` when the text, pictures and pre-drawn examples already exist for the reader's tier (so you can skip or reduce the charge, but never allow without a budget). **Security:** take the tier from the reader's server-side entitlement, never from request data; `modelFor` is also called on every generating GET with a stand-in ingest job that has no `quoteId`; and on Confirm, re-check that `job.docId` and the estimates still match what you quoted. A new admission for a (document, tier) whose budget is spent replaces that budget and restarts stopped work.
+- The SPA dispatches `lawglass:event` `CustomEvent`s on `window` (name plus a few non-identifying
+  fields, never text or addresses). Nothing is sent anywhere by this repository.
 
 ### Providers, keys and backends
 
