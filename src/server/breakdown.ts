@@ -22,14 +22,18 @@ import type { BreakdownLog } from '../core/breakdown/generate.js';
 import type { CliRuntime } from '../cli/runtime.js';
 import { documentContext } from '../core/answer/context.js';
 import {
-  budgetRemaining,
+  canSpend,
   currentJob,
   currentTier,
   isBudgetExhausted,
+  isSpendGateStop,
   runInJob,
+  spendGateOpen,
+  stopCause,
   tierName,
   type JobScope,
 } from '../core/cost/job.js';
+import type { JobSettlement } from './job-end.js';
 import { breakdownCacheHash } from '../core/breakdown/cache.js';
 import { NO_EXAMPLE_NOTE } from '../core/breakdown/notes.js';
 import {
@@ -90,15 +94,27 @@ export interface RequestOptions {
    * a run or reports its cool-down. For work that follows the breakdown (pictures).
    */
   start?: boolean;
+  /** Serve cached results only (like public mode, for this request): never start or resume a run. */
+  readOnly?: boolean;
   signal?: AbortSignal;
   onError?: (error: unknown, ms: number) => void;
   /** Runs `begin` (which starts a paid generation) after the host admits it; throws to refuse. */
-  admit?: (begin: () => void) => Promise<void>;
+  admit?: (begin: BeginExample) => Promise<void>;
 }
+
+/** Starts an admitted example; the settlement hears how it ended (`aborted` if it never started). */
+export type BeginExample = (settlement?: JobSettlement) => void;
+
+/** The reason shown to readers for a stop caused by `cause`. */
+const reasonOf = (cause: ReturnType<typeof stopCause>): StoppedReason =>
+  cause === 'spend_gate' ? 'spend_gate' : 'budget_exhausted';
 
 export interface BreakdownService {
   get(docId: string, options?: RequestOptions): Promise<BreakdownResponse>;
-  /** A document was just paid for: forget its failure cool-downs and let a budget-stopped run go on. */
+  /**
+   * A (document, tier) was just paid for: forget its failure cool-downs and let a budget-stopped
+   * run go on. Other tiers' marks stay.
+   */
   resume?(docId: string, live?: JobScope): void;
   /** True when the pre-drawn examples for this tier are all stored (or none are drawn ahead). */
   examplesComplete?(docId: string): Promise<boolean>;
@@ -114,7 +130,11 @@ export interface BreakdownService {
   readonly progressivePictures?: boolean;
   /** Told with the document id whenever a batch of briefs lands, and when the run is whole. */
   /** Pictures ended on a spent budget; readers are told in `progress.stoppedReason`. */
-  reportPicturesStopped?(docId: string, tier?: string): void;
+  reportPicturesStopped?(
+    docId: string,
+    tier?: string,
+    reason?: StoppedReason,
+  ): void;
   subscribe?(listener: (docId: string) => void): void;
 }
 
@@ -178,19 +198,35 @@ export function createBreakdownService(
     { briefs: readonly SectionBrief[]; done: number; total: number }
   >();
   const failedAt = new Map<string, number>();
+  /** The tier each failure or stop belongs to, so a top-up on one tier leaves the others alone. */
+  const nameTier = new Map<string, string>();
+  /** Failures caused by the host's spend gate: over as soon as it reopens. */
+  const gateFailed = new Set<string>();
   /** Documents whose example pass ended on a spent budget. */
   const examplesStopped = new Map<string, StoppedReason>();
   /** When the picture drawing of a document ended on a spent budget (reported by pictures). */
-  const picturesStoppedAt = new Map<string, number>();
+  const picturesStoppedAt = new Map<
+    string,
+    { at: number; reason: StoppedReason }
+  >();
   /** Why the examples or pictures of a document are missing, while that still holds. */
   function docStopReason(docId: string): StoppedReason | undefined {
-    const at = picturesStoppedAt.get(passKey(docId));
-    if (at !== undefined && now() - at < FAILED_RETRY_MS)
-      return 'budget_exhausted';
-    return examplesStopped.get(passKey(docId));
+    const mark = picturesStoppedAt.get(passKey(docId));
+    if (
+      mark &&
+      (mark.reason === 'spend_gate'
+        ? !spendGateOpen()
+        : now() - mark.at < FAILED_RETRY_MS)
+    )
+      return mark.reason;
+    const examples = examplesStopped.get(passKey(docId));
+    return examples === 'spend_gate' && spendGateOpen() ? undefined : examples;
   }
   // Runs the job's budget cut short. Their briefs are shown for a while but never cached as final.
-  const stopped = new Map<string, { at: number; briefs: SectionBrief[] }>();
+  const stopped = new Map<
+    string,
+    { at: number; briefs: SectionBrief[]; reason: StoppedReason }
+  >();
 
   /** Wake waiters when a run ends, whatever the outcome. */
   function settle(name: string): void {
@@ -204,8 +240,12 @@ export function createBreakdownService(
   function coolingDown(name: string): boolean {
     const failed = failedAt.get(name);
     if (failed === undefined) return false;
-    if (now() - failed < FAILED_RETRY_MS) return true;
+    if (
+      gateFailed.has(name) ? !spendGateOpen() : now() - failed < FAILED_RETRY_MS
+    )
+      return true;
     failedAt.delete(name);
+    gateFailed.delete(name);
     return false;
   }
 
@@ -239,6 +279,7 @@ export function createBreakdownService(
     onError: RequestOptions['onError'],
   ): void {
     const started = now();
+    nameTier.set(name, currentTier());
     running.set(name, new Set());
     void (async () => {
       // Never compete with the summary the reader is waiting for.
@@ -273,6 +314,7 @@ export function createBreakdownService(
           briefs: [
             ...(stored.briefs.length >= kept.length ? stored.briefs : kept),
           ],
+          reason: reasonOf(stopCause()),
         });
       } else if (!stored) failedAt.set(name, now());
       else {
@@ -282,12 +324,15 @@ export function createBreakdownService(
       }
     })()
       .catch((error: unknown) => {
-        failedAt.set(name, now());
-        if (isBudgetExhausted(error))
+        if (isBudgetExhausted(error)) {
+          // A spent budget is not a failure to cool down from; a closed gate resumes when it opens.
+          if (!isSpendGateStop(error)) failedAt.set(name, now());
           stopped.set(name, {
             at: now(),
             briefs: [...(progress.get(name)?.briefs ?? [])],
+            reason: reasonOf(stopCause()),
           });
+        } else failedAt.set(name, now());
         onError?.(error, now() - started);
       })
       .finally(() => {
@@ -315,9 +360,7 @@ export function createBreakdownService(
           done: Math.min(total, saved.briefs.length + saved.dropped),
         };
     }
-    const stoppedReason = stopped.has(name)
-      ? 'budget_exhausted'
-      : docStopReason(docId);
+    const stoppedReason = stopped.get(name)?.reason ?? docStopReason(docId);
     const counts = {
       done: seen?.done ?? 0,
       total,
@@ -359,7 +402,7 @@ export function createBreakdownService(
     const hit = await breakdowns.get(key);
     if (hit) {
       // A report-only look (pictures) must not start the examples' model calls either.
-      if (!options.publicMode && request.start !== false) {
+      if (!options.publicMode && !request.readOnly && request.start !== false) {
         startPregeneration(docId, hit.briefs, hit.context);
         notify(docId);
       }
@@ -380,7 +423,7 @@ export function createBreakdownService(
       };
     }
     // Public mode serves cache hits only: an anonymous visitor never spends the host's money.
-    if (options.publicMode) return { status: 'disabled' };
+    if (options.publicMode || request.readOnly) return { status: 'disabled' };
 
     if (await waitFor(name, request)) {
       if (!request.signal?.aborted) {
@@ -399,15 +442,17 @@ export function createBreakdownService(
       // What the budget let through stays until a run that finishes replaces it. A new run
       // starts only when this scope has budget again and the last stop is not fresh. That run
       // goes on from the checkpoints on disk, so the parts already written are not made again.
+      // A closed spend gate is not a verdict on the budget: the run goes on once it reopens.
       const mayResume =
         request.start !== false &&
-        budgetRemaining() &&
-        now() - halted.at >= FAILED_RETRY_MS;
+        canSpend() &&
+        (halted.reason === 'spend_gate' ||
+          now() - halted.at >= FAILED_RETRY_MS);
       if (!mayResume) {
         const counts = {
           done: halted.briefs.length,
           total,
-          stoppedReason: 'budget_exhausted' as const,
+          stoppedReason: halted.reason,
         };
         return halted.briefs.length > 0
           ? {
@@ -415,10 +460,16 @@ export function createBreakdownService(
               briefs: [...halted.briefs],
               // Parts the budget never reached are not "left out": nothing is claimed about them.
               omitted: 0,
-              stoppedReason: 'budget',
+              stoppedReason:
+                halted.reason === 'spend_gate' ? 'spend_gate' : 'budget',
               progress: counts,
             }
-          : { status: 'disabled', stoppedReason: 'budget', progress: counts };
+          : {
+              status: 'disabled',
+              stoppedReason:
+                halted.reason === 'spend_gate' ? 'spend_gate' : 'budget',
+              progress: counts,
+            };
       }
       progress.set(name, {
         briefs: halted.briefs,
@@ -454,8 +505,10 @@ export function createBreakdownService(
     context: Awaited<ReturnType<typeof documentContext>>,
     onError: RequestOptions['onError'],
     background = false,
+    settlement?: JobSettlement,
   ): Promise<void> {
     const started = now();
+    nameTier.set(name, currentTier());
     running.set(name, new Set());
     return runSectionExample(docId, sectionId, {
       background,
@@ -468,10 +521,13 @@ export function createBreakdownService(
       now,
     })
       .then(
-        () => undefined,
+        // Stored (a validated "no honest example" counts: it is a stored result).
+        () => settlement?.end('ok'),
         (error: unknown) => {
           failedAt.set(name, now());
+          if (isSpendGateStop(error)) gateFailed.add(name);
           onError?.(error, now() - started);
+          return settlement?.end('failed', error);
         },
       )
       .finally(() => {
@@ -524,7 +580,7 @@ export function createBreakdownService(
 
     const cached = await answered();
     if (cached) return cached;
-    if (options.publicMode) return { status: 'disabled' };
+    if (options.publicMode || request.readOnly) return { status: 'disabled' };
 
     if (await waitFor(name, request)) {
       if (!request.signal?.aborted) {
@@ -537,10 +593,22 @@ export function createBreakdownService(
       throw new AppError('PROVIDER_ERROR', 'Example is cooling down.', {
         userMessage: "Couldn't draw an example right now. Try again.",
       });
-    const begin = (): void => {
-      // Another look may have started this run while admission was pending.
-      if (running.has(name)) return;
-      void startExample(docId, sectionId, name, context, request.onError);
+    const begin: BeginExample = (settlement) => {
+      // Another look may have started this run while admission was pending; this admitted job
+      // then did nothing, so the host can release it.
+      if (running.has(name)) {
+        void settlement?.end('aborted');
+        return;
+      }
+      void startExample(
+        docId,
+        sectionId,
+        name,
+        context,
+        request.onError,
+        false,
+        settlement,
+      );
     };
     if (request.admit) await request.admit(begin);
     else begin();
@@ -645,8 +713,14 @@ export function createBreakdownService(
       examplePasses.set(k, pass);
     }
     if (pass.stoppedAt !== undefined) {
-      // Ended early (failures or a spent budget): try again only after the usual cool-down.
-      if (now() - pass.stoppedAt < FAILED_RETRY_MS) return;
+      // Ended early (failures or a spent budget): try again only after the usual cool-down. A
+      // closed spend gate is no verdict on the budget: go on as soon as it reopens.
+      const gateStop = examplesStopped.get(k) === 'spend_gate';
+      if (
+        !(gateStop && canSpend(pass.scope)) &&
+        now() - pass.stoppedAt < FAILED_RETRY_MS
+      )
+        return;
       pass.stoppedAt = undefined;
       pass.failures = 0;
       pass.queued.clear();
@@ -712,7 +786,7 @@ export function createBreakdownService(
             true,
           );
           if (isBudgetExhausted(error)) {
-            stop('budget_exhausted');
+            stop(reasonOf(stopCause()));
             return;
           }
           if (failedAt.has(name) && ++pass.failures >= MAX_EXAMPLE_FAILURES) {
@@ -723,7 +797,7 @@ export function createBreakdownService(
         sectionId = pass.queue.shift();
       }
     } catch (error) {
-      stop(isBudgetExhausted(error) ? 'budget_exhausted' : undefined);
+      stop(isBudgetExhausted(error) ? reasonOf(stopCause()) : undefined);
     } finally {
       pass.running = false;
     }
@@ -731,13 +805,21 @@ export function createBreakdownService(
 
   /** Called when a document is paid for again: forget cool-downs and let stopped runs go on. */
   function resume(docId: string, live?: JobScope): void {
+    const tier = live ? tierName(live.models) : undefined;
+    // Only this tier's marks: another tier's reader did not pay.
+    const mine = (name: string): boolean =>
+      name.startsWith(`${docId}:`) &&
+      (tier === undefined || nameTier.get(name) === tier);
     for (const name of [...failedAt.keys()])
-      if (name.startsWith(`${docId}:`)) failedAt.delete(name);
+      if (mine(name)) {
+        failedAt.delete(name);
+        gateFailed.delete(name);
+      }
     for (const [name, halted] of stopped)
-      if (name.startsWith(`${docId}:`)) halted.at = Number.NEGATIVE_INFINITY;
+      if (mine(name)) halted.at = Number.NEGATIVE_INFINITY;
     // The example pass and the pictures of this tier go on too, from where they stopped, in the
     // live scope of the (document, tier).
-    const k = passKey(docId, live ? tierName(live.models) : undefined);
+    const k = passKey(docId, tier);
     const pass = examplePasses.get(k);
     if (pass) {
       pass.stoppedAt = undefined;
@@ -796,8 +878,8 @@ export function createBreakdownService(
     progressivePictures: isFullCoverage(unitCap),
     resume,
     examplesComplete,
-    reportPicturesStopped: (docId, tier) => {
-      picturesStoppedAt.set(passKey(docId, tier), now());
+    reportPicturesStopped: (docId, tier, reason = 'budget_exhausted') => {
+      picturesStoppedAt.set(passKey(docId, tier), { at: now(), reason });
     },
     subscribe: (listener) => {
       listeners.push(listener);

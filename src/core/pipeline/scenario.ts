@@ -74,6 +74,12 @@ export interface RunScenarioDeps {
   limits?: Limits | undefined;
   signal?: AbortSignal | undefined;
   timeoutMs?: number | undefined;
+  /**
+   * Told when the model could not be asked or failed (a budget, a closed spend gate, an outage).
+   * The reader still gets `none` and the outcome is cached as before; a host that settles the
+   * job needs to know it was not a decision about the bill.
+   */
+  onAttemptFailed?: ((error: unknown) => void) | undefined;
 }
 
 export async function runScenario(
@@ -172,7 +178,9 @@ export async function runScenario(
         docId,
         signal: deps.signal,
         timeoutMs: deps.timeoutMs,
+        captureError: true,
       });
+      if (attached.error !== undefined) deps.onAttemptFailed?.(attached.error);
       await registry.touch(docId, {
         embedTokens: backendUsage.embedTokens,
         rerankUnits: backendUsage.rerankUnits,

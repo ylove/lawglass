@@ -144,6 +144,7 @@ describe('POST /api/quote', () => {
     };
     expect(body.quoteId).toMatch(/^[\w-]{20,}$/);
     expect(body.facts).toEqual({
+      contentHash: expect.stringMatching(/^[0-9a-f]{64}$/) as string,
       pages: null,
       sections: expect.any(Number) as number,
       tokens: expect.any(Number) as number,
@@ -163,6 +164,21 @@ describe('POST /api/quote', () => {
       quoteId: string;
     };
     expect(again.quoteId).not.toBe(body.quoteId);
+  });
+
+  test('the quote carries the content hash that ingest uses as the document id', async () => {
+    const a = app();
+    const quoted = (await (
+      await call(a, '/api/quote', { body: { url } })
+    ).json()) as { facts: { contentHash: string } };
+    const docId = await ingestDoc(a);
+    expect(quoted.facts.contentHash).toBe(docId);
+    // The same bytes again: same hash, same document.
+    const again = (await (
+      await call(a, '/api/quote', { body: { url } })
+    ).json()) as { facts: { contentHash: string } };
+    expect(again.facts.contentHash).toBe(docId);
+    expect(await ingestDoc(a, 'bob')).toBe(docId);
   });
 
   test('estimates each configured tier', async () => {

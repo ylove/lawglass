@@ -22,6 +22,11 @@ import { SUMMARY_PROMPT_VERSION } from '../core/chip-summary.js';
 import { SCENARIO_PROMPT_VERSION } from '../core/scenario/generate.js';
 import type { SummaryResponse } from '../core/model/index.js';
 import { ask } from '../core/pipeline/index.js';
+import {
+  currentTier,
+  isSpendGateStop,
+  spendGateOpen,
+} from '../core/cost/job.js';
 
 /**
  * The scenario rides inside the cached summary, so its prompt is part of the key: editing it
@@ -94,6 +99,8 @@ export interface SummaryRequestOptions {
    * starts one. For work that follows a summary (pictures) without being a reason to make it.
    */
   start?: boolean;
+  /** Serve a cached summary only (like public mode, for this request): never start a run. */
+  readOnly?: boolean;
   signal?: AbortSignal;
   onError?: (error: unknown, ms: number) => void;
 }
@@ -101,8 +108,11 @@ export interface SummaryRequestOptions {
 export interface SummaryService {
   /** Cache hit, a run in progress or just started, or `disabled`. Existing runs may be awaited. */
   get(docId: string, options?: SummaryRequestOptions): Promise<SummaryResponse>;
-  /** Forget a document's failure cool-down: someone just paid for it, so try again now. */
-  resume?(docId: string): void;
+  /**
+   * Forget a document's failure cool-down: someone just paid for it, so try again now. With a
+   * tier, only that tier's (another tier's failures were not paid for).
+   */
+  resume?(docId: string, tier?: string): void;
 }
 
 /** Polls subscribe to completion without attaching reactions to a possibly stuck generation. */
@@ -148,6 +158,9 @@ export function createSummaryService(
   const running = new Map<string, Set<() => void>>();
   const failedAt = new Map<string, number>();
   const failedDoc = new Map<string, string>();
+  const failedTier = new Map<string, string>();
+  /** Failures caused by the host's spend gate: over as soon as it reopens. */
+  const gateFailed = new Set<string>();
 
   // Accepted trade-offs:
   // - Background runs are not aborted when the server closes or the tab goes away. For a
@@ -163,6 +176,7 @@ export function createSummaryService(
     onError?: SummaryRequestOptions['onError'],
   ): void {
     const started = now();
+    const tier = currentTier();
     const provider = runtime.answerProvider;
     const waiters = new Set<() => void>();
     running.set(name, waiters);
@@ -194,11 +208,14 @@ export function createSummaryService(
           if (!(await cache.get(key))) {
             failedAt.set(name, now());
             failedDoc.set(name, docId);
+            failedTier.set(name, tier);
           }
         },
         (error: unknown) => {
           failedAt.set(name, now());
           failedDoc.set(name, docId);
+          failedTier.set(name, tier);
+          if (isSpendGateStop(error)) gateFailed.add(name);
           onError?.(error, now() - started);
         },
       )
@@ -210,11 +227,16 @@ export function createSummaryService(
   }
 
   return {
-    resume(docId) {
+    resume(docId, tier) {
       for (const [name, doc] of failedDoc)
-        if (doc === docId) {
+        if (
+          doc === docId &&
+          (tier === undefined || failedTier.get(name) === tier)
+        ) {
           failedAt.delete(name);
           failedDoc.delete(name);
+          failedTier.delete(name);
+          gateFailed.delete(name);
         }
     },
     async get(docId, request = {}) {
@@ -223,7 +245,8 @@ export function createSummaryService(
         provider = runtime.answerProvider;
       } catch (error) {
         // Public visitors never see a configuration problem; an owner should.
-        if (options.publicMode) return { status: 'disabled' };
+        if (options.publicMode || request.readOnly)
+          return { status: 'disabled' };
         throw error;
       }
       let key: AnswerCacheKey;
@@ -246,7 +269,7 @@ export function createSummaryService(
       const hit = await cache.get(key);
       if (hit) return { status: 'cached', answer: hit };
       // Public mode serves cache hits only: an anonymous visitor never spends the host's money.
-      if (options.publicMode) return { status: 'disabled' };
+      if (options.publicMode || request.readOnly) return { status: 'disabled' };
       const name = answerCacheKey(key);
       const inFlight = running.get(name);
       if (inFlight) {
@@ -266,8 +289,13 @@ export function createSummaryService(
       if (request.start === false) return { status: 'disabled' };
       const failed = failedAt.get(name);
       if (failed !== undefined) {
-        if (now() - failed < FAILED_RETRY_MS) return { status: 'disabled' };
+        // A closed spend gate is over the moment it reopens; other failures cool down.
+        const cooling = gateFailed.has(name)
+          ? !spendGateOpen()
+          : now() - failed < FAILED_RETRY_MS;
+        if (cooling) return { status: 'disabled' };
         failedAt.delete(name);
+        gateFailed.delete(name);
       }
       start(docId, key, name, request.onError);
       return { status: 'pending' };

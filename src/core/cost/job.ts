@@ -20,6 +20,8 @@ export interface JobContext {
   jobKind: JobKind;
   jobId: string;
   docId?: string;
+  /** The host's opaque admission reference (1 to 128 of A-Za-z0-9_-), carried into every usage event (ADR 0018, part C). */
+  ref?: string;
 }
 
 /** A ceiling in dollars (against the cost price table, from real usage), tokens, or both. */
@@ -44,6 +46,12 @@ export interface JobScope {
   onUsage?: ((event: UsageEvent) => void | Promise<void>) | undefined;
   /** Called once, the first time the budget refuses a call. Counts only. */
   onBudgetExhausted?: ((spent: JobSpend) => void) | undefined;
+  /**
+   * The host's kill switch (ADR 0018, part C), checked before every model call this job makes,
+   * background included. Synchronous: the host keeps its state in memory. A gate that returns
+   * anything but `true`, or throws, is closed.
+   */
+  spendGate?: (() => boolean) | undefined;
   /** Shared by every scope derived from the same admission, so one budget covers them all. */
   spent: JobSpend;
 }
@@ -53,10 +61,21 @@ export interface JobSpend {
   tokens: number;
   calls: number;
   exhausted: boolean;
+  /** Why the latest call was refused, so a run that ends early can say so. */
+  refusal: StopCause | undefined;
 }
 
+/** Why a job's model calls were refused. */
+export type StopCause = 'budget' | 'spend_gate';
+
 export function newSpend(): JobSpend {
-  return { dollars: 0, tokens: 0, calls: 0, exhausted: false };
+  return {
+    dollars: 0,
+    tokens: 0,
+    calls: 0,
+    exhausted: false,
+    refusal: undefined,
+  };
 }
 
 const storage = new AsyncLocalStorage<JobScope>();
@@ -79,8 +98,43 @@ export function currentTier(): string {
   return tierName(currentJob()?.models);
 }
 
-/** Throws BUDGET_EXHAUSTED when this job has already spent its budget. Overshoot is one call. */
+/** True while the host's spend gate is open (a job without a gate is always open). */
+export function spendGateOpen(
+  scope: JobScope | undefined = currentJob(),
+): boolean {
+  if (!scope?.spendGate) return true;
+  try {
+    const open: unknown = scope.spendGate();
+    return open === true;
+  } catch {
+    // A broken gate cannot be trusted to be open.
+    return false;
+  }
+}
+
+/** True when a model call may be made now: the gate is open and the budget has room. */
+export function canSpend(scope: JobScope | undefined = currentJob()): boolean {
+  return spendGateOpen(scope) && budgetRemaining(scope);
+}
+
+/** Why the job's latest refused call was refused; `budget` when none was. */
+export function stopCause(
+  scope: JobScope | undefined = currentJob(),
+): StopCause {
+  return scope?.spent.refusal ?? 'budget';
+}
+
+/**
+ * Throws BUDGET_EXHAUSTED when the host's spend gate is closed (`details.reason` is
+ * `spend_gate`) or this job has already spent its budget. Overshoot is one call.
+ */
 export function assertBudget(scope: JobScope | undefined = currentJob()): void {
+  if (scope && !spendGateOpen(scope)) {
+    scope.spent.refusal = 'spend_gate';
+    throw new AppError('BUDGET_EXHAUSTED', 'The spend gate is closed.', {
+      details: { reason: 'spend_gate' },
+    });
+  }
   const budget = scope?.budget;
   if (!scope || !budget) return;
   const { spent } = scope;
@@ -88,6 +142,7 @@ export function assertBudget(scope: JobScope | undefined = currentJob()): void {
     (budget.dollars !== undefined && spent.dollars >= budget.dollars) ||
     (budget.tokens !== undefined && spent.tokens >= budget.tokens);
   if (!over) return;
+  spent.refusal = 'budget';
   if (!spent.exhausted) {
     spent.exhausted = true;
     try {
@@ -120,11 +175,22 @@ export function topUp(live: JobScope, paid: JobScope): void {
   live.budget = paid.budget;
   live.context.jobId = paid.context.jobId;
   live.context.readerId = paid.context.readerId;
+  if (paid.context.ref === undefined) delete live.context.ref;
+  else live.context.ref = paid.context.ref;
   Object.assign(live.spent, newSpend());
 }
 
 export function isBudgetExhausted(error: unknown): boolean {
   return error instanceof AppError && error.code === 'BUDGET_EXHAUSTED';
+}
+
+/** True for the refusal a closed spend gate makes (a budget stop has no such reason). */
+export function isSpendGateStop(error: unknown): boolean {
+  return (
+    error instanceof AppError &&
+    error.code === 'BUDGET_EXHAUSTED' &&
+    error.details?.reason === 'spend_gate'
+  );
 }
 
 /** Add one reported call to the job's spend. An unpriced model fails closed for a dollar budget. */
