@@ -10,7 +10,7 @@ You can expect an acknowledgement within 3 days and a first assessment within 7.
 
 ## Supported versions
 
-Only the latest minor release (for example 1.2.x) gets security fixes. Please confirm the problem on the latest version first.
+Only the latest minor release (for example 2.0.x) gets security fixes. Please confirm the problem on the latest version first.
 
 ## Scope
 
