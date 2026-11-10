@@ -10,14 +10,20 @@
  */
 import { addLlmUsage } from '../core/cost/usage.js';
 import {
-  budgetRemaining,
+  canSpend,
   currentJob,
   currentTier,
+  grantEpoch,
+  runEpoch,
   isBudgetExhausted,
+  isSpendGateStop,
   runInJob,
+  spendGateOpen,
+  stopCause,
   tierName,
   type JobScope,
 } from '../core/cost/job.js';
+import type { StoppedReason } from '../core/breakdown/coverage.js';
 import { AppError, type LlmUsage } from '../core/model/index.js';
 import { registryLlmUsage } from '../core/registry.js';
 import { join } from 'node:path';
@@ -55,6 +61,8 @@ export interface PictureRequestOptions {
   wait?: boolean;
   /** False only reports: cached pictures, or `pending`; never starts a run. */
   start?: boolean;
+  /** Serve cached pictures only (like public mode, for this request): never start a draw. */
+  readOnly?: boolean;
   signal?: AbortSignal;
   onError?: (error: unknown, ms: number) => void;
 }
@@ -126,13 +134,43 @@ export function createPictureService(
     });
   const running = new Map<string, Set<() => void>>();
   const failedAt = new Map<string, number>();
+  /** The grant epoch each failure's draw started in: a refusal landing after a grant is stale. */
+  const failedEpoch = new Map<string, number>();
+  /** The tier each failure or stop belongs to: a top-up on one tier leaves the others' marks. */
+  const markTier = new Map<string, string>();
+  /** Failures caused by the host's spend gate: over as soon as it reopens. */
+  const gateFailed = new Set<string>();
   // Stop marks and drain state are per (document, tier): another tier's reader neither sees
   // nor restarts them.
   const tierKey = (docId: string, tier = currentTier()): string =>
     `${docId}\n${tier}`;
-  const budgetStoppedAt = new Map<string, number>();
+  const budgetStoppedAt = new Map<
+    string,
+    { at: number; reason: StoppedReason; epoch: number }
+  >();
   // Pictures drawn before the job's budget ran out: shown for a while, never cached as final.
-  const stopped = new Map<string, { at: number; entries: PictureEntry[] }>();
+  const stopped = new Map<
+    string,
+    {
+      at: number;
+      entries: PictureEntry[];
+      reason: StoppedReason;
+      tier: string;
+      epoch: number;
+    }
+  >();
+  const reasonOf = (): StoppedReason =>
+    stopCause() === 'spend_gate' ? 'spend_gate' : 'budget_exhausted';
+  /** Whether drawing for this (document, tier) is stopped now: a spent budget for a while, a closed gate until it opens. */
+  const stoppedNow = (docId: string): boolean => {
+    const mark = budgetStoppedAt.get(tierKey(docId));
+    if (!mark) return false;
+    // Someone paid after that draw began: its stop says nothing about the new grant.
+    if (mark.epoch < grantEpoch(docId, currentTier())) return false;
+    return mark.reason === 'spend_gate'
+      ? !spendGateOpen()
+      : now() - mark.at < FAILED_RETRY_MS;
+  };
 
   function provider(): LlmProvider | undefined {
     try {
@@ -202,6 +240,8 @@ export function createPictureService(
   ): Promise<void> {
     const started = now();
     const tier = currentTier();
+    markTier.set(name, tier);
+    const epoch = runEpoch(key.docId, tier);
     // Forget cool-downs that are over, so the map holds only recent failures.
     for (const [other, at] of failedAt)
       if (started - at >= FAILED_RETRY_MS) failedAt.delete(other);
@@ -257,6 +297,9 @@ export function createPictureService(
           stopped.set(name, {
             at: now(),
             entries: drawn.entries.length >= kept.length ? drawn.entries : kept,
+            reason: reasonOf(),
+            tier,
+            epoch,
           });
         }
         // Throwing keeps getOrCompute from storing a partial set as the finished one.
@@ -293,10 +336,22 @@ export function createPictureService(
       .then(() => undefined)
       .catch((error: unknown) => {
         failedAt.set(name, now());
+        failedEpoch.set(name, epoch);
+        if (isSpendGateStop(error)) gateFailed.add(name);
         // A spent job budget ends drawing for this document; nothing else is started for it.
         if (isBudgetExhausted(error)) {
-          budgetStoppedAt.set(tierKey(key.docId, tier), now());
-          options.breakdown.reportPicturesStopped?.(key.docId, tier);
+          const reason = reasonOf();
+          budgetStoppedAt.set(tierKey(key.docId, tier), {
+            at: now(),
+            reason,
+            epoch,
+          });
+          options.breakdown.reportPicturesStopped?.(
+            key.docId,
+            tier,
+            reason,
+            epoch,
+          );
         }
         onError?.(error, now() - started);
       })
@@ -390,7 +445,19 @@ export function createPictureService(
 
   const isCooling = (name: string): boolean => {
     const failed = failedAt.get(name);
-    return failed !== undefined && now() - failed < FAILED_RETRY_MS;
+    if (failed === undefined) return false;
+    // A failure from a draw that began before the latest grant is stale.
+    const born = failedEpoch.get(name);
+    const tier = markTier.get(name);
+    if (
+      born !== undefined &&
+      tier !== undefined &&
+      born < grantEpoch(name.slice(0, name.indexOf(':')), tier)
+    )
+      return false;
+    return gateFailed.has(name)
+      ? !spendGateOpen()
+      : now() - failed < FAILED_RETRY_MS;
   };
 
   /**
@@ -424,9 +491,7 @@ export function createPictureService(
         for (;;) {
           const found = await inScope(() => sourceItems(docId, 'breakdown'));
           if (found.status !== 'ready') break;
-          const stoppedAt = budgetStoppedAt.get(tierKey(docId));
-          if (stoppedAt !== undefined && now() - stoppedAt < FAILED_RETRY_MS)
-            return;
+          if (stoppedNow(docId)) return;
           const { batches } = await inScope(() =>
             briefState(docId, llm, found.items, found.complete),
           );
@@ -480,12 +545,10 @@ export function createPictureService(
           : { status: 'pending' };
       return respond(entries);
     };
-    if (options.publicMode)
+    if (options.publicMode || request.readOnly)
       return entries.length > 0 ? respond(entries) : { status: 'disabled' };
 
-    const stoppedAt = budgetStoppedAt.get(tierKey(docId));
-    const budgetStopped =
-      stoppedAt !== undefined && now() - stoppedAt < FAILED_RETRY_MS;
+    const budgetStopped = stoppedNow(docId);
     // Briefs still to come keep the reader polling; so does a batch being drawn or about to be.
     const todo = budgetStopped ? [] : batches.filter((b) => !isCooling(b.name));
     const more = !complete ? !budgetStopped : todo.length > 0;
@@ -532,7 +595,7 @@ export function createPictureService(
     const hit = await cache.get(key);
     if (hit) return respond(hit);
     // Public mode serves cache hits only: an anonymous visitor never spends the host's money.
-    if (options.publicMode) return { status: 'disabled' };
+    if (options.publicMode || request.readOnly) return { status: 'disabled' };
 
     const name = `${docId}:${pictureCacheHash(key)}`;
     const inFlight = running.get(name);
@@ -548,25 +611,41 @@ export function createPictureService(
     }
     if (request.start === false) return { status: 'pending' };
     const halted = stopped.get(name);
-    if (halted && !(budgetRemaining() && now() - halted.at >= FAILED_RETRY_MS))
+    if (
+      halted &&
+      !(
+        canSpend() &&
+        (halted.reason === 'spend_gate' ||
+          halted.tier !== currentTier() ||
+          halted.epoch < grantEpoch(docId, halted.tier) ||
+          now() - halted.at >= FAILED_RETRY_MS)
+      )
+    )
       return respond(halted.entries);
-    const failed = failedAt.get(name);
-    if (failed !== undefined && now() - failed < FAILED_RETRY_MS)
-      return { status: 'none' };
+    if (isCooling(name)) return { status: 'none' };
     failedAt.delete(name);
+    gateFailed.delete(name);
     void start(key, name, llm, found.items, request.onError);
     return { status: 'pending' };
   }
 
   function resume(docId: string, live?: JobScope): void {
+    // Only the paid-for tier's marks: another tier's reader did not pay.
+    const tier = live ? tierName(live.models) : undefined;
+    const mine = (name: string): boolean =>
+      name.startsWith(`${docId}:`) &&
+      (tier === undefined || markTier.get(name) === tier);
     for (const name of [...failedAt.keys()])
-      if (name.startsWith(`${docId}:`)) failedAt.delete(name);
+      if (mine(name)) {
+        failedAt.delete(name);
+        gateFailed.delete(name);
+      }
     for (const [name, halted] of stopped)
-      if (name.startsWith(`${docId}:`)) halted.at = Number.NEGATIVE_INFINITY;
+      if (mine(name)) halted.at = Number.NEGATIVE_INFINITY;
     // Full coverage: a paid-for (document, tier) draws what is left, starting now and in its own
     // live scope. Without a scope there is nothing to charge, so nothing is started here; the
     // next generating request in the right scope does it.
-    if (live && budgetStoppedAt.delete(tierKey(docId, tierName(live.models))))
+    if (live && budgetStoppedAt.delete(tierKey(docId, tier)))
       void runInJob(live, () => drainBackground(docId));
   }
 

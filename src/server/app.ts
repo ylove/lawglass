@@ -40,6 +40,9 @@ import {
   type BillEstimate,
   type BillFacts,
   type FeatureEstimate,
+  addBudget,
+  bumpGrantEpoch,
+  grantEpoch,
   budgetRemaining,
   topUp,
   type JobKind,
@@ -80,8 +83,14 @@ import {
   type BackgroundScopeHook,
   type SavedScope,
   type AdmissionJob,
+  type JobEnd,
   type ModelForHook,
 } from './admission.js';
+import {
+  createSettlement,
+  type Admitted,
+  type JobSettlement,
+} from './job-end.js';
 import { validBudget } from './admission.js';
 import { routedRuntime } from './model-routing.js';
 import {
@@ -145,6 +154,26 @@ export interface AppOptions {
   admission?: AdmissionHook;
   /** Every model call's usage with its job context, including background generation. */
   onUsage?: (event: UsageEvent) => void | Promise<void>;
+  /**
+   * Told exactly once how each admitted job ended: `ok`, `failed` or `aborted` (the reader
+   * disconnected), with the admission's `ref`. Capture on ok and release on the others. A process
+   * that dies mid-job ends it without a callback, so hosts must expire holds (ADR 0018, part C).
+   */
+  onJobEnd?: (end: JobEnd) => void | Promise<void>;
+  /**
+   * Synchronous kill switch, checked before EVERY model call, background work included. While it
+   * returns anything but `true` (or throws), calls are refused with `BUDGET_EXHAUSTED` and
+   * background work stops cleanly with `stoppedReason: 'spend_gate'`, keeping what it wrote. A
+   * later generating request resumes when it reopens.
+   */
+  spendGate?: () => boolean;
+  /**
+   * Per request: when it returns `true`, the server serves cached results only and never starts
+   * or resumes generation for any source, like public mode. Ingest, questions, quotes, locate
+   * and scenarios are refused or disabled. Anything but `false` counts as read-only, so a
+   * broken hook fails closed.
+   */
+  readOnly?: (c: Context) => boolean | Promise<boolean>;
   /** Chooses the answer and extract models for a job. Cache keys include the model. */
   modelFor?: ModelForHook;
   /**
@@ -260,6 +289,9 @@ export function createApp(
     backgroundScope: options.backgroundScope,
     onUsage: options.onUsage,
     modelFor: options.modelFor,
+    onJobEnd: options.onJobEnd,
+    spendGate: options.spendGate,
+    readOnly: options.readOnly,
     landing: options.site?.landing,
     quickstart: options.site?.quickstart,
   })) {
@@ -540,6 +572,31 @@ export function createApp(
     };
     app.use('/api/*', ensureReader);
   }
+  // --- read-only requests (ADR 0018, part C) --------------------------------------------------
+  const readOnlyRequests = new WeakSet<Request>();
+  const isReadOnly = (c: Context): boolean => readOnlyRequests.has(c.req.raw);
+  if (options.readOnly) {
+    const decide = options.readOnly;
+    app.use('/api/*', async (c, next) => {
+      if (c.req.path !== '/api/health') {
+        let readOnly = true;
+        try {
+          const answer: unknown = await decide(c as Context);
+          readOnly = answer !== false;
+        } catch {
+          /* A hook that cannot answer gets the safe answer. */
+        }
+        if (readOnly) readOnlyRequests.add(c.req.raw);
+      }
+      await next();
+    });
+  }
+  const refuseReadOnly = (c: Context): void => {
+    if (isReadOnly(c))
+      throw new AppError('PUBLIC_MODE_FORBIDDEN', 'Read-only request.', {
+        userMessage: 'This view is read-only.',
+      });
+  };
   const readerId = (c: Context): string => {
     const id = readerOf.get(c.req.raw);
     if (!id) throw new Error('Reader id missing.');
@@ -551,7 +608,8 @@ export function createApp(
     options.admission !== undefined ||
     options.onUsage !== undefined ||
     options.modelFor !== undefined ||
-    options.backgroundScope !== undefined;
+    options.backgroundScope !== undefined ||
+    options.spendGate !== undefined;
   const estimating =
     options.admission !== undefined || options.modelFor !== undefined;
   const quotes = new QuoteStore(now);
@@ -609,7 +667,11 @@ export function createApp(
   };
   /** Forget failure cool-downs and let budget-stopped runs go on, for a document just paid for. */
   function resumeDoc(docId: string, live: JobScope): void {
-    summary.resume?.(docId);
+    // Only this (document, tier) was paid for: another tier's failures and stops stay as they are.
+    // A grant: marks recorded by runs that started before it are stale from now on.
+    bumpGrantEpoch(docId, tierName(live.models));
+    live.epoch = grantEpoch(docId, tierName(live.models));
+    summary.resume?.(docId, tierName(live.models));
     // Work that goes on runs in the live scope of the (document, tier), never in the caller's.
     breakdown.resume?.(docId, live);
     pictures.resume(docId, live);
@@ -707,31 +769,52 @@ export function createApp(
    * results only). Without the hook (no `admission` either) the requester stands in, as before.
    */
   async function resolveDocScope(c: Context, docId: string): Promise<JobScope> {
+    // A scope is stamped with the grant epoch it is resolved in, before any wait on the host:
+    // a refusal by a scope that resolved before a grant is older than that grant, however late
+    // the refusal is recorded, and never cools the payer down.
+    const stamped = (scope: JobScope, epoch: number): JobScope => {
+      scope.epoch = epoch;
+      return scope;
+    };
     let models: ModelChoice | undefined;
     try {
       models = await readerModels(c, docId);
     } catch {
-      return options.admission
-        ? failClosed(c, docId, undefined)
-        : makeScope(c, { kind: 'ingest', docId }, {});
+      const epoch = grantEpoch(docId, tierName(undefined));
+      return stamped(
+        options.admission
+          ? failClosed(c, docId, undefined)
+          : makeScope(c, { kind: 'ingest', docId }, {}),
+        epoch,
+      );
     }
     const tier = tierName(models);
     const key = scopeKey(docId, tier);
     const live = docScopes.get(key);
     if (live) return live;
+    const epoch = grantEpoch(docId, tier);
     if (!options.backgroundScope)
-      return makeScope(c, { kind: 'ingest', docId }, { models });
+      return stamped(
+        makeScope(c, { kind: 'ingest', docId }, { models }),
+        epoch,
+      );
     let saved: SavedScope | undefined;
     try {
       saved = await lookupSaved(docId, tier, models);
     } catch {
       // A host outage stops paid work only; cached reads are still served.
-      return failClosed(c, docId, models);
+      return stamped(failClosed(c, docId, models), epoch);
     }
+    // An ingest may have installed the document's scope while the host was being asked.
+    const arrived = docScopes.get(key);
+    if (arrived) return arrived;
     if (!saved)
-      return options.admission
-        ? failClosed(c, docId, models)
-        : makeScope(c, { kind: 'ingest', docId }, { models });
+      return stamped(
+        options.admission
+          ? failClosed(c, docId, models)
+          : makeScope(c, { kind: 'ingest', docId }, { models }),
+        epoch,
+      );
     return (
       docScopes.get(key) ??
       installScope(key, scopeFromSaved(c, docId, saved, models))
@@ -753,16 +836,22 @@ export function createApp(
   const makeScope = (
     c: Context,
     job: { kind: JobKind; docId?: string | undefined },
-    extra: { budget?: JobScope['budget']; models?: ModelChoice | undefined },
+    extra: {
+      budget?: JobScope['budget'];
+      models?: ModelChoice | undefined;
+      ref?: string | undefined;
+    },
   ): JobScope => ({
     context: {
       readerId: readerFor(c),
       jobKind: job.kind,
       jobId: randomUUID(),
       ...(job.docId === undefined ? {} : { docId: job.docId }),
+      ...(extra.ref === undefined ? {} : { ref: extra.ref }),
     },
     budget: extra.budget,
     models: extra.models,
+    spendGate: options.spendGate,
     prices: options.quote?.prices,
     onUsage: options.onUsage,
     onBudgetExhausted: (spent) => {
@@ -786,12 +875,26 @@ export function createApp(
   const consult = async (
     c: Context,
     job: AdmissionJob,
-  ): Promise<{ budget: JobScope['budget'] }> => {
-    if (!options.admission) return { budget: undefined };
+  ): Promise<{ budget: JobScope['budget']; ref: string | undefined }> => {
+    if (!options.admission) return { budget: undefined, ref: undefined };
     const decision = interpretAdmission(await options.admission(c, job));
     if (!decision.allowed) throw new AdmissionRefused(decision.response);
-    return { budget: decision.budget };
+    return { budget: decision.budget, ref: decision.ref };
   };
+
+  /** Tells the host how an admitted job ended, if it asked to hear (`onJobEnd`). */
+  const settlementFor = (
+    c: Context,
+    scope: JobScope,
+  ): JobSettlement | undefined =>
+    options.onJobEnd
+      ? createSettlement({
+          context: scope.context,
+          onJobEnd: options.onJobEnd,
+          payload: toErrorPayload,
+          signal: c.req.raw.signal,
+        })
+      : undefined;
 
   /**
    * Admission for a question, chip, locate, scenario or example, before any model call. Returns
@@ -807,7 +910,7 @@ export function createApp(
       quoteId?: string | undefined;
     },
     opts: { exempt?: boolean } = {},
-  ): Promise<JobScope | undefined> {
+  ): Promise<Admitted | undefined> {
     if (!hooked) return undefined;
     // An example is drawn by the document's own tier so its cache key matches its brief's.
     const inherited =
@@ -815,7 +918,10 @@ export function createApp(
         ? (await resolveDocScope(c, job.docId)).models
         : undefined;
     if (opts.exempt || !estimating)
-      return makeScope(c, job, { models: inherited });
+      return {
+        scope: makeScope(c, job, { models: inherited }),
+        settlement: undefined,
+      };
     const facts = await factsFor(job.docId);
     const base = defaultAssignment();
     const estimateFor = (models: ModelChoice | undefined): FeatureEstimate =>
@@ -842,17 +948,18 @@ export function createApp(
             ),
           )
         : inherited;
-    const { budget } = await consult(c, {
+    const { budget, ref } = await consult(c, {
       ...fields,
       tier: tierName(models),
       estimate: estimateFor(models),
     });
-    return makeScope(c, job, { budget, models });
+    const scope = makeScope(c, job, { budget, models, ref });
+    return { scope, settlement: settlementFor(c, scope) };
   }
 
   // Background generation runs under the scope of its (document, tier); see `resolveDocScope`.
   // Only routes that can start generation resolve it, and only once per request.
-  if (hooked) {
+  if (hooked || options.readOnly) {
     const GENERATES =
       /^\/api\/docs\/[^/]+\/(?:summary|breakdown|(?:summary|breakdown)\/pictures|sections\/[^/]+\/example)$/;
     const resolved = new WeakSet<Request>();
@@ -866,6 +973,17 @@ export function createApp(
       )
         return next();
       resolved.add(c.req.raw);
+      if (isReadOnly(c)) {
+        // Cached results are keyed by the reader's tier, so find it; but in a scope that can
+        // spend nothing, so even a slip could not reach a model.
+        let models: ModelChoice | undefined;
+        try {
+          models = await readerModels(c, docId);
+        } catch {
+          /* the default tier's cache */
+        }
+        return runInJob(failClosed(c, docId, models), next);
+      }
       await runInJob(await resolveDocScope(c, docId), next);
     };
     app.use('/api/docs/:docId', inDocScope);
@@ -896,15 +1014,15 @@ export function createApp(
     const config: ClientConfig = {
       productName: BRAND.displayName,
       publicMode,
-      freeformEnabled: !publicMode,
+      freeformEnabled: !publicMode && !isReadOnly(c),
       backend: runtime.backend.kind,
       provider,
       model,
       chips: CHIP_LABELS,
-      scenariosEnabled: !publicMode,
+      scenariosEnabled: !publicMode && !isReadOnly(c),
       // Public servers never start a model call for a visitor, so there is nothing to show.
       breakdownEnabled: !publicMode,
-      locateEnabled: !publicMode,
+      locateEnabled: !publicMode && !isReadOnly(c),
       library: hosted ? 'reader' : 'local',
       ...(examples && examples.length > 0 ? { examples } : {}),
       ...(options.accountUrl !== undefined
@@ -982,6 +1100,7 @@ export function createApp(
     return c.json(
       await summary.get(entry.docId, {
         wait: c.req.method !== 'HEAD',
+        readOnly: isReadOnly(c),
         signal: c.req.raw.signal,
         onError: (error, ms) => {
           log.error(c, error, ms);
@@ -1028,6 +1147,7 @@ export function createApp(
     /** Called once the stream is over, whatever the outcome. */
     release: () => void = () => undefined,
     deadlineMs?: number,
+    settlement?: JobSettlement,
   ): Response {
     c.header('x-accel-buffering', 'no');
     return streamSSE(c, async (stream) => {
@@ -1090,13 +1210,20 @@ export function createApp(
               })
               .catch(() => undefined);
         });
+        // A run that already ended its job (ingest ends at registration, a question when its
+        // answer is delivered) wins; this covers the rest.
+        await settlement?.end('ok');
       } catch (error) {
+        const failure = deadline.signal.aborted ? deadlineError : error;
         // Nobody is listening after an abort, so there is nobody to tell.
         if (!controller.signal.aborted) {
-          const failure = deadline.signal.aborted ? deadlineError : error;
           log.error(c, failure, now() - started);
           emit(errorEvent(toErrorPayload(failure)));
         }
+        await settlement?.end(
+          controller.signal.aborted ? 'aborted' : 'failed',
+          controller.signal.aborted ? undefined : failure,
+        );
       } finally {
         accepting = false;
         clearInterval(heartbeat);
@@ -1267,6 +1394,8 @@ export function createApp(
   }
 
   app.post('/api/quote', async (c) => {
+    // A read-only guest has nothing to buy, and must not drive fetches.
+    refuseReadOnly(c);
     if (publicMode && !options.quote?.allowInPublicMode)
       throw new AppError('PUBLIC_MODE_FORBIDDEN');
     const body = await parseBody(
@@ -1345,7 +1474,16 @@ export function createApp(
     c: Context,
     body: { url: string; quoteId?: string | undefined },
   ): Promise<
-    | { scope: JobScope; admitted?: { docId: string; doc?: NormalizedDoc } }
+    | {
+        scope: JobScope;
+        admitted?: { docId: string; doc?: NormalizedDoc };
+        settlement?: JobSettlement | undefined;
+        /** Everything already exists for the reader's tier: the grant will have nothing to do. */
+        docComplete?: boolean;
+        /** The host's saved scope for the document and tier, resolved before the ingest starts. */
+        saved?: SavedScope | undefined;
+        savedResolved?: boolean;
+      }
     | undefined
   > {
     if (!hooked) return undefined;
@@ -1382,22 +1520,49 @@ export function createApp(
       ? checkedChoice(options.modelFor(fields, c))
       : undefined;
     const docComplete = await generationComplete(c, admitted.docId, models);
-    const { budget } = await consult(c, {
+    const { budget, ref } = await consult(c, {
       ...fields,
       tier: tierName(models),
       ...(docComplete ? { docComplete } : {}),
     });
+    const scope = makeScope(
+      c,
+      { kind: 'ingest', docId: admitted.docId },
+      { budget, models, ref },
+    );
+    // Only a job the host admitted has an end to report.
+    const settlement = options.admission ? settlementFor(c, scope) : undefined;
+    // Asked now, before the ingest starts and before this job can end: a host that credits its
+    // ledger when the job ends `ok` is never consulted after its own credit, so the grant the
+    // server adds to a restored scope is counted exactly once.
+    let saved: SavedScope | undefined;
+    if (options.backgroundScope) {
+      try {
+        saved = await lookupSaved(
+          admitted.docId,
+          tierName(models),
+          models,
+        ).catch(() => undefined);
+        if (saved?.budget !== undefined && !validBudget(saved.budget))
+          throw new Error('Invalid job budget.');
+      } catch (error) {
+        // A saved scope that cannot be used: no work has started, so the job fails here.
+        await settlement?.end('failed', error);
+        throw error;
+      }
+    }
     return {
-      scope: makeScope(
-        c,
-        { kind: 'ingest', docId: admitted.docId },
-        { budget, models },
-      ),
+      scope,
       admitted,
+      docComplete,
+      settlement,
+      saved,
+      savedResolved: options.backgroundScope !== undefined,
     };
   }
 
   app.post('/api/ingest', async (c) => {
+    refuseReadOnly(c);
     const body = await parseBody(
       c,
       IngestRequest,
@@ -1416,6 +1581,7 @@ export function createApp(
       throw new AppError('RATE_LIMITED');
     const admission = await admitIngest(c, body);
     const scope = admission?.scope;
+    const settlement = admission?.settlement;
 
     // Resource policy reaches both the default parser and runtime-injected parsers.
     const parsePdf = runtime.parsePdf ?? defaultParsePdf;
@@ -1430,6 +1596,47 @@ export function createApp(
       host: sourceHost,
       ms: 0,
     });
+    /**
+     * Makes this admission's scope (and grant) the document's. Synchronous on purpose: it runs in
+     * the same tick as the job's `ok`, so no reader, request or host lookup can come between
+     * "settled" and "installed". The host's saved scope was resolved at admission.
+     */
+    const installPaidScope = (
+      docId: string,
+      saved: SavedScope | undefined,
+    ): void => {
+      if (!scope) return;
+      // Everything already exists for this tier: the host may refund this grant, so it is
+      // not added to any scope.
+      if (admission.docComplete) return;
+      // The first admitted ingest of a document owns its background generation.
+      scope.context.docId = docId;
+      const tier = tierName(scope.models);
+      const key = scopeKey(docId, tier);
+      const live = docScopes.get(key);
+      if (live) {
+        // A new admission pays for the document again. If the old budget is spent, the new
+        // one takes its place; if not, it is added to what is left. Either way later calls are
+        // reported under the new job, and stopped work goes on. Whoever installed the live
+        // scope (another ingest, or a reader's generating request after a restart), the grant
+        // is added to it, never dropped.
+        if (!budgetRemaining(live)) topUp(live, scope);
+        else addBudget(live, scope);
+        resumeDoc(docId, live);
+        return;
+      }
+      // After a restart the host may already hold this tier's scope (and what is left of its
+      // budget, excluding this grant); that wins over the scope of the ingest that came first.
+      const restored = saved
+        ? scopeFromSaved(c, docId, saved, scope.models)
+        : scope;
+      installScope(key, restored);
+      if (restored !== scope) {
+        if (!budgetRemaining(restored)) topUp(restored, scope);
+        else addBudget(restored, scope);
+        resumeDoc(docId, restored);
+      }
+    };
     return sse<IngestEvent>(
       c,
       (emit, signal) =>
@@ -1467,6 +1674,31 @@ export function createApp(
               {
                 ...(body.label === undefined ? {} : { label: body.label }),
                 signal,
+                // Settle first, then install: the reader leaving after this instant cannot
+                // turn a registered document into an `aborted` job, and the grant is the
+                // document's whether or not they stay. `granted` is what admission saw.
+                onRegistered: async (docId) => {
+                  const ended = settlement?.tryEnd('ok', undefined, {
+                    docId,
+                    granted: admission?.docComplete ? 'unused' : 'used',
+                  });
+                  // The reader left (or the job failed) first: the host will release this
+                  // admission, so its grant must not be installed or spent.
+                  if (ended && !ended.won) return;
+                  // Only a server without `admission` reaches this lookup: nobody settles a
+                  // job there, and the document id was not known earlier.
+                  const saved = admission?.savedResolved
+                    ? admission.saved
+                    : scope && options.backgroundScope
+                      ? await lookupSaved(
+                          docId,
+                          tierName(scope.models),
+                          scope.models,
+                        ).catch(() => undefined)
+                      : undefined;
+                  installPaidScope(docId, saved);
+                  await ended?.done;
+                },
                 onProgress: (p) => {
                   emit({ type: 'progress', ...stripUndefined(p) });
                 },
@@ -1484,46 +1716,14 @@ export function createApp(
               },
             )
               .then(async (done) => {
-                if (scope) {
-                  // The first admitted ingest of a document owns its background generation.
-                  scope.context.docId = done.doc.docId;
-                  const tier = tierName(scope.models);
-                  const key = scopeKey(done.doc.docId, tier);
-                  const live = docScopes.get(key);
-                  if (live) {
-                    // A new admission pays for the document again: if the old budget is spent,
-                    // the new one takes its place (and its job id), and stopped work goes on.
-                    if (!budgetRemaining(live)) {
-                      topUp(live, scope);
-                      resumeDoc(done.doc.docId, live);
-                    }
-                  } else {
-                    // After a restart the host may already hold this tier's scope (and what is
-                    // left of its budget); that wins over the scope of the ingest that came first.
-                    const saved = await lookupSaved(
-                      done.doc.docId,
-                      tier,
-                      scope.models,
-                    ).catch(() => undefined);
-                    if (!docScopes.has(key)) {
-                      const restored = saved
-                        ? scopeFromSaved(c, done.doc.docId, saved, scope.models)
-                        : scope;
-                      installScope(key, restored);
-                      // The host's saved scope may be spent; this admission just paid.
-                      if (restored !== scope && !budgetRemaining(restored)) {
-                        topUp(restored, scope);
-                        resumeDoc(done.doc.docId, restored);
-                      }
-                    }
-                  }
-                }
                 if (!signal.aborted) await rememberForReader(c, done.doc.docId);
                 return done;
               })
               .finally(() => {
                 releaseDocuments(held);
               });
+            // Normally settled at registration; this covers an ingest that did not call back.
+            await settlement?.end('ok', undefined, { docId: result.doc.docId });
             signal.throwIfAborted();
             finished = true;
             log.event(c, {
@@ -1549,6 +1749,8 @@ export function createApp(
                 type: 'candidates',
                 links: links.success ? links.data : [],
               });
+              // Nothing was registered: the reader must pick a file and ingest again.
+              await settlement?.end('failed', error);
               return;
             }
             throw error;
@@ -1566,10 +1768,12 @@ export function createApp(
           });
       },
       hosted ? (options.ingestDeadlineMs ?? 15 * 60 * 1000) : undefined,
+      settlement,
     );
   });
 
   app.post('/api/docs/:docId/ask', async (c) => {
+    refuseReadOnly(c);
     const body = await parseBody(
       c,
       AskRequest,
@@ -1579,7 +1783,7 @@ export function createApp(
       throw new AppError('PUBLIC_MODE_FORBIDDEN');
     const entry = await entryFor(c.req.param('docId'));
     await guardPublic(c, questions, body.turnstileToken);
-    const scope = await admitJob(
+    const admitted = await admitJob(
       c,
       {
         kind: 'question',
@@ -1595,10 +1799,23 @@ export function createApp(
       },
     );
 
+    const scope = admitted?.scope;
+    const settlement = admitted?.settlement;
+
     return sse<AskEvent>(
       c,
-      (emit, signal) =>
+      (rawEmit, signal) =>
         runInJob(scope, async () => {
+          // Text or a frame that reaches the reader counts as delivered, even if the stream
+          // is later cut: a host decides what a half-delivered answer is worth.
+          const emit = (event: AskEvent): void => {
+            if (
+              !signal.aborted &&
+              (event.type === 'token' || event.type === 'scenario')
+            )
+              settlement?.markDelivered();
+            rawEmit(event);
+          };
           const result = await ask(
             entry.docId,
             body.chipId === undefined
@@ -1645,15 +1862,21 @@ export function createApp(
           // stream closes. `done.answer` carries no scenario. Clients must keep reading after
           // `done` (#131 renders the late event).
           emit({ type: 'done', answer: result.answer });
+          // A usable answer (a decline included) is delivered; the scenario is a bonus.
+          if (!signal.aborted) await settlement?.end('ok');
           const scenario = await result.scenario;
           if (scenario) emit({ type: 'scenario', scenario });
         }),
       (error) => ({ type: 'error', error }),
+      undefined,
+      undefined,
+      settlement,
     );
   });
 
   registerScenarioRoute(app, runtime, {
     publicMode,
+    readOnly: isReadOnly,
     now,
     admit: hooked
       ? (c, docId) => admitJob(c, { kind: 'scenario', docId })
@@ -1661,6 +1884,7 @@ export function createApp(
   });
   registerLocateRoute(app, runtime, {
     publicMode,
+    readOnly: isReadOnly,
     rateLimit: (c) => questions.take(clientIp(c)),
     admit: hooked
       ? (c, docId) => admitJob(c, { kind: 'locate', docId })
@@ -1673,6 +1897,7 @@ export function createApp(
   });
 
   const breakdown = registerBreakdownRoutes(app, runtime, {
+    readOnly: isReadOnly,
     log: (e) => {
       log.backgroundBreakdownEvent(e);
     },
@@ -1691,6 +1916,7 @@ export function createApp(
   });
   const pictures = registerPictureRoutes(app, runtime, {
     publicMode,
+    readOnly: isReadOnly,
     now,
     summary,
     breakdown,

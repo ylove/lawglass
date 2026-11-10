@@ -21,6 +21,8 @@ export const QuoteRequest = z.object({ url: z.url() });
 
 /** Pages, sections, tokens, mode and units; the facts a host turns into a price. */
 export interface QuoteFacts {
+  /** The document id: the SHA-256 of the fetched bytes, so a host can bind a quote to exact bytes. */
+  contentHash: string;
   pages: number | null;
   sections: number;
   tokens: number;
@@ -116,6 +118,7 @@ const DEFAULT_MODELS: ModelAssignment = {
 
 export function quoteFacts(doc: NormalizedDoc, facts: BillFacts): QuoteFacts {
   return {
+    contentHash: doc.docId,
     pages: doc.pageCount ?? null,
     sections: facts.sectionCount,
     tokens: facts.estimatedTokens,

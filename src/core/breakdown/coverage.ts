@@ -56,4 +56,4 @@ export function pregenerateExamplesFromEnv(
 }
 
 /** Why a background loop ended early; surfaced as `progress.stoppedReason`. */
-export type StoppedReason = 'budget_exhausted';
+export type StoppedReason = 'budget_exhausted' | 'spend_gate';
