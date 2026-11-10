@@ -517,11 +517,10 @@ describe('a budget that runs out mid-run', () => {
     const live = jobScope(5, 'job-1');
     const look = () => runInJob(live, () => svc.get(DOC, 'summary'));
     await look();
-    const first = await vi.waitFor(async () => {
-      const r = await look();
-      expect(r.status).toBe('cached');
-      return r;
-    });
+    // The first look started the run; wait for the run itself (it ends on the spent budget).
+    await svc.idle?.();
+    const first = await look();
+    expect(first.status).toBe('cached');
     expect(first.entries?.length).toBe(1);
     const calls = provider.calls.length;
     // Long after the cool-down, with no budget, the drawn pictures are still served and nothing runs.
@@ -536,9 +535,8 @@ describe('a budget that runs out mid-run', () => {
     topUp(live, jobScope(1e9, 'job-2'));
     svc.resume('b'.repeat(64));
     await look();
-    await vi.waitFor(() => {
-      expect(provider.calls.length).toBeGreaterThan(calls);
-    });
+    await svc.idle?.();
+    expect(provider.calls.length).toBeGreaterThan(calls);
     expect(live.context.jobId).toBe('job-2');
   });
 });

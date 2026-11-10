@@ -477,26 +477,26 @@ describe('pre-generation', () => {
     const done = await cachedBreakdown(a, docId);
     const available =
       done.briefs?.filter((b) => b.example === 'available').length ?? 0;
-    await new Promise((resolve) => setTimeout(resolve, 100));
     // A fresh process (as after a restart) has not drawn this document's examples yet.
-    vi.stubEnv(envVar('PREGENERATE_EXAMPLES'), '1');
-    const service = createBreakdownService(env.runtime, { publicMode: false });
+    // Asked for by option, not by env: the env is process-wide and read late, so the first app's
+    // own end-of-run work could otherwise see it turned on and draw the examples itself.
+    const service = createBreakdownService(env.runtime, {
+      publicMode: false,
+      pregenerateExamples: 'small',
+    });
     const before = state.started.length;
     expect(
       (await service.get(docId, { wait: false, start: false })).status,
     ).toBe('cached');
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    // A pass the look started would be in flight by now; wait for every one, then count.
+    await service.idle?.();
     expect(state.started).toHaveLength(before);
     // The same look without start:false does start them, so the check above can fail. Let
     // the pass finish, so no example is still writing when the test's directory is removed.
     await service.get(docId, { wait: false });
-    await vi.waitFor(
-      () => {
-        expect(state.started).toHaveLength(before + available);
-        expect(state.active).toBe(0);
-      },
-      { timeout: 10_000 },
-    );
+    await service.idle?.();
+    expect(state.started).toHaveLength(before + available);
+    expect(state.active).toBe(0);
     expect(available).toBeGreaterThan(0);
   });
 
