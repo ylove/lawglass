@@ -266,11 +266,11 @@ export const BreakdownResponse = z.object({
       done: z.number().int().nonnegative(),
       total: z.number().int().nonnegative(),
       /** Set when background work ended early on purpose; what is written is kept. */
-      stoppedReason: z.enum(['budget_exhausted']).optional(),
+      stoppedReason: z.enum(['budget_exhausted', 'spend_gate']).optional(),
     })
     .optional(),
   /** The run stopped before finishing (its job budget ran out); a later run may continue. */
-  stoppedReason: z.literal('budget').optional(),
+  stoppedReason: z.enum(['budget', 'spend_gate']).optional(),
 });
 export type BreakdownResponse = z.infer<typeof BreakdownResponse>;
 

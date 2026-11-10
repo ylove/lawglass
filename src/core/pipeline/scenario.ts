@@ -74,6 +74,19 @@ export interface RunScenarioDeps {
   limits?: Limits | undefined;
   signal?: AbortSignal | undefined;
   timeoutMs?: number | undefined;
+  /**
+   * Told when the model could not be asked or failed (a budget, a closed spend gate, an outage).
+   * The reader still gets `none` and the outcome is cached as before; a host that settles the
+   * job needs to know it was not a decision about the bill.
+   */
+  onAttemptFailed?: ((error: unknown) => void) | undefined;
+}
+
+/** Carries a failed model attempt out of the cache's compute step without storing anything. */
+class AttemptFailed extends Error {
+  constructor(override readonly cause: unknown) {
+    super('Scenario attempt failed.');
+  }
 }
 
 export async function runScenario(
@@ -126,63 +139,75 @@ export async function runScenario(
   }
   const key = keyFor(context.mode);
 
-  const result = await cache.getOrCompute(key, async () => {
-    // Cache hits (including cool-down none results) consume neither a permit nor model budget.
-    const limits = deps.limits ?? sharedLimits();
-    const release = await limits.acquire('ask', deps.signal);
-    try {
-      if (!(await backend.hasDocument(docId)))
-        throw new AppError('DOC_NOT_FOUND', 'The document has no index.', {
-          userMessage:
-            "This document's search index is missing. Run ingest again for its URL.",
-        });
-      let hits = context.hits;
-      let backendUsage: BackendUsage = ZERO_USAGE;
-      if (context.mode === 'excerpts') {
-        await backend.ensureReady(deps.signal);
-        const retrieved = await retrieve(backend, {
-          docId,
-          query: subject,
-          mode: deps.retrievalMode ?? 'hybrid_rerank',
-          includeDeleted: false,
-          signal: deps.signal,
-        });
-        backendUsage = retrieved.usage;
-        const subjectHits = retrieved.hits
-          .filter((hit) => hit.chunk.amendmentStatus !== 'deleted')
-          .slice(0, SUBJECT_HITS);
-        const have = new Set(subjectHits.map((hit) => hit.chunk.id));
-        const summaryIds = ((await deps.summaryChunkIds?.()) ?? []).filter(
-          (id) => !have.has(id),
-        );
-        const summaryHits: SearchHit[] = (
-          summaryIds.length ? await backend.getChunks(docId, summaryIds) : []
-        )
-          .slice(0, SUMMARY_HITS)
-          .map((chunk) => ({ chunk, score: 0 }));
-        // The subject's own passages come first: they are what the example is about.
-        hits = [...subjectHits, ...summaryHits];
-      }
+  const result = await cache
+    .getOrCompute(key, async () => {
+      // Cache hits (including cool-down none results) consume neither a permit nor model budget.
+      const limits = deps.limits ?? sharedLimits();
+      const release = await limits.acquire('ask', deps.signal);
+      try {
+        if (!(await backend.hasDocument(docId)))
+          throw new AppError('DOC_NOT_FOUND', 'The document has no index.', {
+            userMessage:
+              "This document's search index is missing. Run ingest again for its URL.",
+          });
+        let hits = context.hits;
+        let backendUsage: BackendUsage = ZERO_USAGE;
+        if (context.mode === 'excerpts') {
+          await backend.ensureReady(deps.signal);
+          const retrieved = await retrieve(backend, {
+            docId,
+            query: subject,
+            mode: deps.retrievalMode ?? 'hybrid_rerank',
+            includeDeleted: false,
+            signal: deps.signal,
+          });
+          backendUsage = retrieved.usage;
+          const subjectHits = retrieved.hits
+            .filter((hit) => hit.chunk.amendmentStatus !== 'deleted')
+            .slice(0, SUBJECT_HITS);
+          const have = new Set(subjectHits.map((hit) => hit.chunk.id));
+          const summaryIds = ((await deps.summaryChunkIds?.()) ?? []).filter(
+            (id) => !have.has(id),
+          );
+          const summaryHits: SearchHit[] = (
+            summaryIds.length ? await backend.getChunks(docId, summaryIds) : []
+          )
+            .slice(0, SUMMARY_HITS)
+            .map((chunk) => ({ chunk, score: 0 }));
+          // The subject's own passages come first: they are what the example is about.
+          hits = [...subjectHits, ...summaryHits];
+        }
 
-      const attached = await attachScenario({
-        provider: limits.meter(deps.provider, 'scenario'),
-        hits,
-        whole: context.mode === 'whole',
-        subject,
-        docId,
-        signal: deps.signal,
-        timeoutMs: deps.timeoutMs,
-      });
-      await registry.touch(docId, {
-        embedTokens: backendUsage.embedTokens,
-        rerankUnits: backendUsage.rerankUnits,
-        ...registryLlmUsage(attached.usage),
-      });
-      return scenarioOutcome(attached.scenario);
-    } finally {
-      release();
-    }
-  });
+        const attached = await attachScenario({
+          provider: limits.meter(deps.provider, 'scenario'),
+          hits,
+          whole: context.mode === 'whole',
+          subject,
+          docId,
+          signal: deps.signal,
+          timeoutMs: deps.timeoutMs,
+          captureError: true,
+        });
+        await registry.touch(docId, {
+          embedTokens: backendUsage.embedTokens,
+          rerankUnits: backendUsage.rerankUnits,
+          ...registryLlmUsage(attached.usage),
+        });
+        // A failed attempt is not an answer: it must not be cached as "no scenario", or every
+        // later request would be served that `none` (and a host would settle it as delivered).
+        if (attached.error !== undefined)
+          throw new AttemptFailed(attached.error);
+        return scenarioOutcome(attached.scenario);
+      } finally {
+        release();
+      }
+    })
+    .catch((error: unknown) => {
+      // Every caller sharing the attempt hears of the failure, not just the one that made it.
+      if (!(error instanceof AttemptFailed)) throw error;
+      deps.onAttemptFailed?.(error.cause);
+      return { status: 'none' as const };
+    });
   return result.status === 'ok'
     ? { status: 'ok', scenario: result.scenario }
     : { status: 'none' };

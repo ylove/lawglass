@@ -151,6 +151,11 @@ export interface IngestOptions {
   onDiagnostic?:
     | ((diagnostic: { event: 'metadata_failed'; code: string }) => void)
     | undefined;
+  /**
+   * Called the moment the document is registered (new, or already held), before anything else
+   * can fail or be abandoned. A host settling the job needs this instant, not the end.
+   */
+  onRegistered?: ((docId: string) => void | Promise<void>) | undefined;
   signal?: AbortSignal | undefined;
 }
 
@@ -700,6 +705,9 @@ async function ingestLocked(
     }
     const { chunks } = chunkAndEnrich(cached, deps, signal);
     progress({ stage: 'done', detail: 'reused' });
+    // Last, so a disk error above fails the job (no grant), and whenever the job settles ok the
+    // reader's result is already in hand.
+    await opts.onRegistered?.(docId);
     return {
       doc: summarize(touched),
       stats: buildStats(cached, chunks, 0, true),
@@ -827,6 +835,7 @@ async function ingestLocked(
     throw new AppError('BACKEND_UNAVAILABLE', undefined, { cause: error });
   }
 
+  await opts.onRegistered?.(docId);
   await enforceCap(deps, docId);
   progress({ stage: 'done' });
   return {

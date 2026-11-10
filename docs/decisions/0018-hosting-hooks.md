@@ -1,6 +1,6 @@
 # 0018: Hosting hooks for a separate paid product
 
-**Status:** accepted (2026-11-09), issue #383. Part A (auth, read access, presentation seams, pinning, packaging) and part B (quotes, admission, usage, budgets, model routing, SPA seams) are implemented.
+**Status:** accepted (2026-11-09), issue #383. Part A (auth, read access, presentation seams, pinning, packaging), part B (quotes, admission, usage, budgets, model routing, SPA seams) and part C (settlement, spend gate, read-only requests) are implemented.
 
 ## Context
 
@@ -75,6 +75,60 @@ A host also must return the REMAINING budget from `backgroundScope`, and should 
 `docComplete` on an ingest admission means the text, the pictures and the pre-drawn examples exist for the reader's tier. A host may then charge nothing, or only for the cached read, but must never allow without a budget.
 
 `topUp` changes the job id and reader of a live scope in place, so calls already in flight when a new admission lands are reported under the new job. A scope restored from `backgroundScope` that is already spent takes the new admission's budget the same way. Only timeouts and aborts are charged an estimate when a provider gives no usage; a refused connection or an HTTP error never reached the provider.
+
+## Part C: settlement, spend gate, read-only requests
+
+A host that holds funds at admission cannot tie a charge to an outcome with parts A and B alone, and cannot stop spending in the middle of a run or serve guests safely. Part C adds three optional hooks. With none passed, nothing changes.
+
+**Settlement.** `Admission`'s allow result may carry an opaque `ref` (1 to 128 characters of `A-Za-z0-9_-`). An invalid `ref` fails the request with a 500 before any work, and the job is not admitted. The `ref` is carried in the job context, so it is on every `UsageEvent.job`, and it comes back in `AppOptions.onJobEnd({job, ref, outcome, error?})`.
+
+`onJobEnd` is called exactly once for each job the host admitted, whichever way it ends. A guard shared by every route that can end a job enforces this: the first end wins, so a late finish after a disconnect, or a failure after a delivered answer, is never reported twice.
+
+| Job              | `ok`                                                                                            | `failed`                                                                                                   | `aborted`                                                                            |
+| ---------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| ingest           | the document is registered                                                                      | any error, a changed source, a wrapper page (nothing registered), a closed spend gate, the ingest deadline | the reader disconnected first                                                        |
+| question, chip   | the answer is delivered, a decline included (the optional scenario that follows does not count) | any error                                                                                                  | the reader disconnected first                                                        |
+| locate, scenario | a result is produced                                                                            | any error; for a scenario also an attempt that could not be made or failed (it still answers `none`)       | the reader disconnected                                                              |
+| example          | the example is stored (a validated "no honest example" is stored too)                           | any error, including a budget stop or a closed gate                                                        | the example was already running when the admitted job began, so this job did nothing |
+
+`JobEnd.delivered` says what the reader actually received: `full` with `ok`, `partial` when any answer text or frames were streamed before an abort or failure, `none` otherwise. A reader can stream most of an answer and close the connection just before its end, so "capture on ok, release on the rest" would give those answers away. **Recommended policy:** capture (the fixed price, or the actual usage summed from `onUsage` by `ref`) when `outcome` is `ok` or `delivered` is not `none`; release only when `delivered` is `none`.
+
+For an ingest that ends `ok`, `granted` is `used` when the admission's budget was put to work and `unused` when no generation remained to do for the reader's tier (everything was already cached), so a host can refund an unused grant.
+
+**Settling an ingest and installing its grant is one synchronous step.** The host's saved scope (`backgroundScope`) is asked while the admitted ingest is handled, before the ingest starts and before the job can end; a saved scope that is invalid fails the ingest there (`failed`, `delivered: 'none'`, no work). When the document is registered the server calls `onJobEnd` with `ok` and, in the same tick with no `await` between them, installs the grant: it is added to the live (document, tier) scope if there is one, otherwise the pre-resolved saved scope plus the grant (or a new scope) is installed. If the exactly-once guard was already lost (the reader left, or the job failed, before registration finished) the job ended `aborted` or `failed`, nothing is installed, and the host releases an admission whose grant is never spent. A reader who leaves after registration cannot turn the job into `aborted`. On the reused-document path the job settles only after the document has been read and its history saved, so a disk error there fails it with no grant. A grant reported `granted: 'unused'` (everything already exists) is not added to any scope, so the host may refund it. `granted` is taken from the `docComplete` the admission already computed.
+
+A new admission for a (document, tier) whose live scope still has budget **adds** its budget to the live one (a spent scope is replaced, as before). Later calls are reported under the new job and `ref`, and stopped work goes on. A call already in flight when the top-up lands is reported under the `ref` that was current when it started. A grant is never silently dropped.
+
+**`backgroundScope` must return the remaining budget EXCLUDING the admission being handled.** After a restart the server adds the new admission's grant to the restored scope itself. Because the lookup happens before the job ends, a host that credits its ledger on `onJobEnd(ok)` is never consulted after its own credit; a host must NOT credit the grant at admission time (it would be counted twice). A generating request that is waiting on the same lookup cannot take the grant: whichever installs first, the ingest's grant is added to the scope that is live.
+
+**Grant epochs.** A scope is stamped with the epoch it was resolved in, before any wait on the host. Every grant (a new scope, an added budget, a top-up) bumps a per-(document, tier) epoch. A stop mark or cool-down remembers the epoch its run started in; one from an older epoch is ignored, so a refusal that lands just after someone paid (another reader's request that found no budget) never makes the payer wait out a cool-down.
+
+**Units.** Budgets in the same unit are summed. When a grant is in another unit than the live scope's (tokens against dollars), both are converted to dollars at the scope's model prices (the dearer of the input and output rate), so a dollars grant is never capped by an old token limit; with no price for the model the grant replaces the old ceiling.
+
+A call already in flight when a grant lands is reported under the `ref` it started with, but its spend is charged to the scope when it finishes, so after a top-up (which resets the spend) one overshoot call of the previous payer counts against the new budget.
+
+A subject scenario whose model attempt failed (an outage, a closed gate, a spent budget) answers `none` but is not cached, so the next request retries and settles by its own outcome. Only a genuine "no scenario" from the model is cached.
+
+A host can then hold at admission, capture on `ok` or any delivery, and release on `failed` or `aborted` with `delivered: 'none'`. Usage is charged separately, call by call, through `onUsage`, so a failed job that spent tokens still shows them. Exempt work (a metadata chip), refused admissions and servers without an `admission` hook produce no `onJobEnd`. Background generation is never a job of its own: it runs under the ingest's scope and its `ref`.
+
+A process that dies mid-job ends it without a callback. **Hosts must expire holds.** A graceful shutdown closes connections, which ends streamed jobs as `aborted`; an example drawing in the background is not tied to a connection and is not reported if the process exits first.
+
+**Spend gate.** `AppOptions.spendGate?: () => boolean` is synchronous, so the host keeps its state in memory and updates it from `onUsage`. `Limits.meter()` checks it before every provider call, background included (and `paced` before it queues). Anything but `true`, or a throw, is closed. A closed gate refuses the call with `BUDGET_EXHAUSTED`, with `details.reason: 'spend_gate'`, and costs nothing. Background work stops as for a budget stop: it keeps what it wrote and reports `stoppedReason: 'spend_gate'` (`progress.stoppedReason` on the breakdown, and `stoppedReason` when the run is shown as stopped). Unlike a spent budget, a gate stop has no cool-down. The next request that would generate (a breakdown look, a summary look, an example, the pictures) goes on as soon as the gate reopens, from the parts already written. The gate does not check the budget, and the budget does not check the gate: a top-up never reopens a closed gate.
+
+**Read-only requests.** `AppOptions.readOnly?: (c) => boolean | Promise<boolean>` is asked once per `/api/*` request. When it returns `true` the server serves cached results only and never starts or resumes generation for any source (summary, breakdown, pictures, examples). Per route:
+
+- ingest, ask (every kind of chip as well) and quote are refused with 403;
+- scenario, locate and locate/versions answer `disabled`, as in public mode;
+- the summary, breakdown, pictures and example GETs return a cached result or `disabled`, and do not wait for runs in progress;
+- `/api/config` turns off free-form questions, scenarios and locate.
+
+A read-only request runs in a scope with a zero budget on the reader's own tier (so cached results are found under the right model), which is defence in depth: even a bug that reached for a model would be refused. The hook never has a chance to fail open: a hook that throws, or returns anything but `false`, makes the request read-only. Hosts use it for signed-out guests on featured bills.
+
+**Shared stop marks.** A tier with budget does not wait out another tier's budget stop on a breakdown or pictures run the tiers share; only a stop on its own tier cools down.
+
+**Quotes name exact bytes.** `QuoteFacts` gains `contentHash`, the SHA-256 that ingest uses as the document id, so a host can bind a quote to the bytes it measured.
+
+**Top-ups are per tier.** A new admission for one (document, tier) clears failure cool-downs and stop marks only for that tier's summary, breakdown, example and picture runs. Another tier's marks stay.
 
 ## Consequences
 

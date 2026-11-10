@@ -177,14 +177,20 @@ describe('runScenario budgets', () => {
   });
 
   it('serves cached ok and none results without acquiring or metering', async () => {
-    vi.stubEnv(envVar('MAX_CALLS_PER_MINUTE'), '1');
-    resetSharedLimits();
     const limits = sharedLimits();
     const first = await runScenario(docId, 'a renter', deps({ limits }));
     expect(first.status).toBe('ok');
+    // The model answering "no honest scenario" is a result worth caching.
+    provider.behavior = () =>
+      Promise.resolve({
+        object: { frames: [] },
+        usage: { inputTokens: 1, outputTokens: 1 },
+      }) as never;
     expect(await runScenario(docId, 'a grantee', deps({ limits }))).toEqual({
       status: 'none',
     });
+    delete provider.behavior;
+    const callsBefore = provider.scenarioCalls;
     const acquire = vi.spyOn(limits, 'acquire');
     const meter = vi.spyOn(limits, 'meter');
     expect(await runScenario(docId, 'a renter', deps({ limits }))).toEqual(
@@ -195,7 +201,20 @@ describe('runScenario budgets', () => {
     });
     expect(acquire).not.toHaveBeenCalled();
     expect(meter).not.toHaveBeenCalled();
-    expect(provider.scenarioCalls).toBe(1);
+    expect(provider.scenarioCalls).toBe(callsBefore);
+  });
+
+  it('does not cache a failed attempt as "no scenario"', async () => {
+    const onAttemptFailed = vi.fn();
+    provider.behavior = () =>
+      Promise.reject(new AppError('PROVIDER_ERROR', 'down'));
+    expect(
+      await runScenario(docId, 'a renter', deps({ onAttemptFailed })),
+    ).toEqual({ status: 'none' });
+    expect(onAttemptFailed).toHaveBeenCalledTimes(1);
+    delete provider.behavior;
+    expect((await runScenario(docId, 'a renter', deps())).status).toBe('ok');
+    expect(provider.scenarioCalls).toBe(2);
   });
 
   it('releases the permit on a retrieval failure', async () => {

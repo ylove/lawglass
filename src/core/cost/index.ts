@@ -25,7 +25,14 @@ export {
   type UsageFeature,
 } from './usage.js';
 export {
+  addBudget,
+  bumpGrantEpoch,
+  grantEpoch,
+  runEpoch,
   assertBudget,
+  canSpend,
+  spendGateOpen,
+  stopCause,
   budgetRemaining,
   topUp,
   chargeJob,
@@ -33,6 +40,7 @@ export {
   currentTier,
   tierName,
   isBudgetExhausted,
+  isSpendGateStop,
   newSpend,
   runInJob,
   type JobBudget,
@@ -41,4 +49,5 @@ export {
   type JobScope,
   type JobSpend,
   type ModelChoice,
+  type StopCause,
 } from './job.js';

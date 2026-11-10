@@ -5,8 +5,13 @@
  */
 import type { Context } from 'hono';
 import type { QuoteFacts } from './quotes.js';
-import type { BillEstimate, FeatureEstimate } from '../core/cost/index.js';
-import type { JobBudget, JobKind } from '../core/cost/index.js';
+import type {
+  BillEstimate,
+  FeatureEstimate,
+  JobBudget,
+  JobContext,
+  JobKind,
+} from '../core/cost/index.js';
 import { AppError, type ErrorPayload } from '../core/model/index.js';
 
 export type { JobBudget, JobKind };
@@ -38,7 +43,12 @@ export interface AdmissionJob {
 }
 
 export type Admission =
-  | { allow: true; budget?: JobBudget }
+  /**
+   * `ref` is the host's opaque reference for this admission (1 to 128 of `A-Za-z0-9_-`, for
+   * example the id of a hold). It comes back in every `UsageEvent.job.ref` and in `onJobEnd`.
+   * An invalid `ref` fails the request with a 500 before any work starts.
+   */
+  | { allow: true; budget?: JobBudget; ref?: string }
   /** HTTP 402 with the host's opaque quote object, which the SPA shows and resubmits. */
   | { allow: false; status: 402; quote: unknown }
   | { allow: false; status: 403 | 429; error: ErrorPayload };
@@ -47,6 +57,33 @@ export type AdmissionHook = (
   c: Context,
   job: AdmissionJob,
 ) => Promise<Admission>;
+
+export type JobOutcome = 'ok' | 'failed' | 'aborted';
+
+/**
+ * What `onJobEnd` receives, once per admitted job (ADR 0018, part C). `job` is the context the
+ * job was admitted with; `error` is the plain-language payload of a failure.
+ */
+export interface JobEnd {
+  job: JobContext;
+  ref: string | undefined;
+  outcome: JobOutcome;
+  /**
+   * What the reader actually received: `full` for `ok`; `partial` when answer text or frames
+   * were streamed before the job was aborted or failed; `none` otherwise. A reader can leave a
+   * stream just before its end, so a host should keep what it held unless this is `none`.
+   */
+  delivered: 'none' | 'partial' | 'full';
+  /**
+   * Ingest only, with `ok`: whether this admission's budget was put to use (`used`) or no
+   * generation remained to do for the reader's tier (`unused`), so the host can refund a grant.
+   */
+  granted?: 'used' | 'unused';
+  error?: ErrorPayload;
+}
+
+/** The shape of a valid `ref`. */
+export const REF_PATTERN = /^[A-Za-z0-9_-]{1,128}$/;
 
 /** Models for a job. Applied through `runtime.providerFor`. */
 export type ModelForHook = (
@@ -97,7 +134,7 @@ const REFUSAL_MESSAGES: Record<403 | 429, string> = {
 export function interpretAdmission(
   decision: unknown,
 ):
-  | { allowed: true; budget: JobBudget | undefined }
+  | { allowed: true; budget: JobBudget | undefined; ref: string | undefined }
   | { allowed: false; response: Response } {
   const d = decision as Partial<Admission> | null | undefined;
   const json = (body: unknown, status: number): Response =>
@@ -107,10 +144,18 @@ export function interpretAdmission(
     });
   if (d && typeof d === 'object' && d.allow === true) {
     const budget = (d as { budget?: unknown }).budget;
-    if (budget === undefined) return { allowed: true, budget: undefined };
+    const ref = (d as { ref?: unknown }).ref;
+    // A malformed reference is a host bug; fail the request before any work rather than let
+    // the host's settlement drift from what ran.
+    if (
+      ref !== undefined &&
+      (typeof ref !== 'string' || !REF_PATTERN.test(ref))
+    )
+      throw new Error('Invalid admission ref.');
+    if (budget === undefined) return { allowed: true, budget: undefined, ref };
     // A malformed budget is a host bug; fail the request rather than run unbounded.
     if (!validBudget(budget)) throw new Error('Invalid job budget.');
-    return { allowed: true, budget };
+    return { allowed: true, budget, ref };
   }
   if (d && typeof d === 'object' && d.allow === false) {
     if (d.status === 402)

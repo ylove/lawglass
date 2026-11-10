@@ -16,11 +16,14 @@ import {
   type PriceTable,
 } from '../core/cost/index.js';
 import type { NormalizedDoc } from '../core/model/index.js';
+import type { PregenerateExamples } from '../core/breakdown/coverage.js';
 
 export const QuoteRequest = z.object({ url: z.url() });
 
 /** Pages, sections, tokens, mode and units; the facts a host turns into a price. */
 export interface QuoteFacts {
+  /** The document id: the SHA-256 of the fetched bytes, so a host can bind a quote to exact bytes. */
+  contentHash: string;
   pages: number | null;
   sections: number;
   tokens: number;
@@ -116,6 +119,7 @@ const DEFAULT_MODELS: ModelAssignment = {
 
 export function quoteFacts(doc: NormalizedDoc, facts: BillFacts): QuoteFacts {
   return {
+    contentHash: doc.docId,
     pages: doc.pageCount ?? null,
     sections: facts.sectionCount,
     tokens: facts.estimatedTokens,
@@ -138,11 +142,23 @@ export function estimatesFor(
   facts: BillFacts,
   tiers: Record<string, ModelAssignment>,
   options: QuoteOptions | undefined,
+  /** What the server will actually generate; the host's own `quote.plan` still wins. */
+  coverage: { pregenerateExamples?: PregenerateExamples } = {},
 ): Record<string, BillEstimate> {
   return Object.fromEntries(
     Object.entries(tiers).map(([name, models]) => [
       name,
-      estimateBill(facts, { ...options?.plan, ...models }, options?.prices),
+      estimateBill(
+        facts,
+        {
+          ...(coverage.pregenerateExamples
+            ? { pregenerateExamples: coverage.pregenerateExamples }
+            : {}),
+          ...options?.plan,
+          ...models,
+        },
+        options?.prices,
+      ),
     ]),
   );
 }
