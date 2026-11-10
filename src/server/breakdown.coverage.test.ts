@@ -476,13 +476,18 @@ describe("pregenerateExamples: 'all'", () => {
     );
     await breakdown(a, docId);
     await until(a, docId, 'cached');
-    const reported = await vi.waitFor(async () => {
-      const r = await breakdown(a, docId);
-      expect(r.progress?.stoppedReason).toBe('budget_exhausted');
-      return r;
-    });
+    // The pass reports its stop in the same synchronous step that empties its queue, so once
+    // the stop is visible nothing more can be attempted: no settling time is needed after it.
+    // The wait is for that event only; a loaded machine may need more than vitest's 1 s.
+    const reported = await vi.waitFor(
+      async () => {
+        const r = await breakdown(a, docId);
+        expect(r.progress?.stoppedReason).toBe('budget_exhausted');
+        return r;
+      },
+      { timeout: 10_000 },
+    );
     expect(reported.status).toBe('cached');
-    await new Promise((resolve) => setTimeout(resolve, 100));
     // sec-1 and sec-2 were drawn, sec-3 hit the budget, nothing after it was tried.
     expect(attempted).toEqual(['sec-1', 'sec-2', 'sec-3']);
     expect(await exampleFor(a, docId, 'sec-1')).toBe('ok');

@@ -120,6 +120,8 @@ export interface BreakdownService {
   resume?(docId: string, live?: JobScope): void;
   /** True when the pre-drawn examples for this tier are all stored (or none are drawn ahead). */
   examplesComplete?(docId: string): Promise<boolean>;
+  /** Test seam: resolves once every background example pass started so far has finished. */
+  idle?(): Promise<void>;
   example(
     docId: string,
     sectionId: string,
@@ -655,6 +657,17 @@ export function createBreakdownService(
 
   // --- pre-generation ---------------------------------------------------------------------
 
+  // Test seam: the background passes in flight, so a test awaits them instead of sleeping.
+  const passesInFlight = new Set<Promise<unknown>>();
+  const trackPass = (pass: Promise<unknown>): void => {
+    passesInFlight.add(pass);
+    void pass.finally(() => passesInFlight.delete(pass));
+  };
+  const idle = async (): Promise<void> => {
+    while (passesInFlight.size > 0)
+      await Promise.allSettled([...passesInFlight]);
+  };
+
   /**
    * Which examples are drawn ahead, by `pregenerateExamples`:
    *  - `small` (default): once the breakdown is cached, a whole-bill-mode bill with at most
@@ -695,7 +708,7 @@ export function createBreakdownService(
     if (available.length === 0 || available.length > MAX_PREGENERATED_EXAMPLES)
       return;
     pregenerated.add(passKey(docId));
-    void (async () => {
+    const pass = (async () => {
       const llm = provider();
       if (!llm) return;
       const doc = await registry.getDocument(docId);
@@ -730,6 +743,7 @@ export function createBreakdownService(
     })().catch(() => {
       pregenerated.delete(passKey(docId));
     });
+    trackPass(pass);
   }
 
   /** Adds the briefs' available examples to the document's pass and starts it if it is idle. */
@@ -778,7 +792,7 @@ export function createBreakdownService(
     pass.running = true;
     pass.epoch = runEpoch(docId, currentTier());
     // The caller's scope may belong to another request; the pass keeps the one it was made in.
-    void runInJob(pass.scope, () => drainExamples(docId, pass));
+    trackPass(runInJob(pass.scope, () => drainExamples(docId, pass)));
   }
 
   /**
@@ -921,6 +935,7 @@ export function createBreakdownService(
     progressivePictures: isFullCoverage(unitCap),
     resume,
     examplesComplete,
+    idle,
     reportPicturesStopped: (
       docId,
       tier,

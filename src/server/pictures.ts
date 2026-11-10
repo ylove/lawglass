@@ -70,6 +70,8 @@ export interface PictureRequestOptions {
 export interface PictureService {
   /** Test seam: per-brief records remembered in memory. */
   knownRecords?(): number;
+  /** Test seam: resolves once every background drain started so far has finished. */
+  idle?(): Promise<void>;
   get(
     docId: string,
     source: PictureSource,
@@ -181,6 +183,15 @@ export function createPictureService(
     }
   }
 
+  // Test seam: the draws and drains in flight, so a test awaits the work instead of sleeping.
+  const drains = new Set<Promise<void>>();
+  const trackDrain = (drain: Promise<void>): void => {
+    drains.add(drain);
+    void drain.finally(() => drains.delete(drain));
+  };
+  const idle = async (): Promise<void> => {
+    while (drains.size > 0) await Promise.allSettled([...drains]);
+  };
   /** The items a picture can be drawn for, once their text is cached. Never starts a wait. */
   async function sourceItems(
     docId: string,
@@ -332,7 +343,7 @@ export function createPictureService(
       return drawn.entries;
     };
     // Per-brief records are the cache then; a batch-level hit could skip writing them.
-    return (perBrief ? compute() : cache.getOrCompute(key, compute))
+    const run = (perBrief ? compute() : cache.getOrCompute(key, compute))
       .then(() => undefined)
       .catch((error: unknown) => {
         failedAt.set(name, now());
@@ -360,6 +371,8 @@ export function createPictureService(
         running.delete(name);
         for (const finish of waiters ?? []) finish();
       });
+    trackDrain(run);
+    return run;
   }
 
   /**
@@ -521,7 +534,7 @@ export function createPictureService(
     }
   }
   options.breakdown.subscribe?.((docId) => {
-    void drainBackground(docId);
+    trackDrain(drainBackground(docId));
   });
 
   /**
@@ -646,8 +659,8 @@ export function createPictureService(
     // live scope. Without a scope there is nothing to charge, so nothing is started here; the
     // next generating request in the right scope does it.
     if (live && budgetStoppedAt.delete(tierKey(docId, tier)))
-      void runInJob(live, () => drainBackground(docId));
+      trackDrain(runInJob(live, () => drainBackground(docId)));
   }
 
-  return { get, resume, knownRecords: () => known.size };
+  return { get, resume, knownRecords: () => known.size, idle };
 }

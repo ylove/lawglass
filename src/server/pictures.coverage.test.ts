@@ -294,7 +294,7 @@ describe('breakdown pictures under full coverage', () => {
       return error;
     });
     const listeners: ((docId: string) => void)[] = [];
-    service(
+    const svc = service(
       provider,
       () => ({
         status: 'cached',
@@ -308,14 +308,14 @@ describe('breakdown pictures under full coverage', () => {
     listeners.forEach((l) => {
       l(DOC);
     });
-    await new Promise((r) => setTimeout(r, 100));
+    await svc.idle?.();
     expect(provider.calls).toHaveLength(0);
     expect(reported).toEqual([DOC]);
     spent = false;
     listeners.forEach((l) => {
       l(DOC);
     });
-    await new Promise((r) => setTimeout(r, 100));
+    await svc.idle?.();
     expect(provider.calls).toHaveLength(0);
   });
 
@@ -326,15 +326,16 @@ describe('breakdown pictures under full coverage', () => {
       return new AppError('PROVIDER_ERROR');
     });
     const listeners: ((docId: string) => void)[] = [];
-    service(
+    const svc = service(
       provider,
       () => ({ status: 'cached', briefs: briefs(ITEMS_PER_CALL), omitted: 0 }),
       true,
       listeners,
     );
+    // The notice starts a drain; wait for that drain itself, not for a stretch of time.
     const notify = async () => {
       for (const l of listeners) l(DOC);
-      await new Promise((r) => setTimeout(r, 40));
+      await svc.idle?.();
     };
     await notify();
     expect(attempts).toBe(1);
@@ -364,7 +365,7 @@ describe('breakdown pictures under full coverage', () => {
     );
     const notify = async () => {
       for (const l of listeners) l(DOC);
-      await new Promise((r) => setTimeout(r, 60));
+      await svc.idle?.();
     };
     await notify();
     await waitFor(() => {
@@ -470,7 +471,7 @@ describe('breakdown pictures under full coverage', () => {
       const r = await svc.get(DOC, 'breakdown', { wait: false, start: false });
       expect(r.status).toBe('pending');
     }
-    await new Promise((r) => setTimeout(r, 100));
+    await svc.idle?.();
     expect(provider.calls).toHaveLength(0);
   });
 });
