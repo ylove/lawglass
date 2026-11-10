@@ -19,6 +19,8 @@ export function registerPictureRoutes(
   runtime: CliRuntime,
   options: {
     publicMode: boolean;
+    /** Per request: serve cached results only, never start or resume drawing. */
+    readOnly?: ((c: Context) => boolean) | undefined;
     now?: (() => number) | undefined;
     summary: SummaryService;
     breakdown: BreakdownService;
@@ -56,6 +58,7 @@ export function registerPictureRoutes(
       return c.json(
         await service.get(docId, source, {
           wait: c.req.method !== 'HEAD',
+          readOnly: options.readOnly?.(c) === true,
           signal: c.req.raw.signal,
           onError: (error, ms) => options.onError?.(c, error, ms),
         }),

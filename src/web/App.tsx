@@ -19,14 +19,17 @@ import {
   Link,
   NavContext,
   parseDocPath,
+  parseOpenUrl,
   withSearch,
 } from './nav.js';
 import { dataNote } from './provider-label.js';
 import { Sidebar } from './Sidebar.js';
 import { ApiError } from './sse.js';
+import { withEvents } from './events.js';
+import { QuoteDialog, withQuoteConfirmation, type QuoteView } from './quote.js';
 
 export function App({ api: provided }: { api?: ApiClient }) {
-  const api = useMemo(
+  const baseApi = useMemo(
     () =>
       provided ??
       selectApi(
@@ -35,10 +38,36 @@ export function App({ api: provided }: { api?: ApiClient }) {
       ),
     [provided],
   );
+  // A host's 402 asks the reader to confirm; the dialog's promise resolves with their choice.
+  const [pendingQuote, setPendingQuote] = useState<{
+    quote: QuoteView;
+    settle: (confirmed: boolean) => void;
+  } | null>(null);
+  const api = useMemo(
+    () =>
+      withEvents(
+        withQuoteConfirmation(
+          baseApi,
+          (quote) =>
+            new Promise<boolean>((resolve) => {
+              setPendingQuote({
+                quote,
+                settle: (confirmed) => {
+                  setPendingQuote(null);
+                  resolve(confirmed);
+                },
+              });
+            }),
+        ),
+      ),
+    [baseApi],
+  );
   const [config, setConfig] = useState<ClientConfig | null>(null);
   const [docs, setDocs] = useState<DocSummary[]>([]);
   // The address bar is the source of truth for what is open: `/` is home, `/doc/<id>` a document.
   const [path, setPath] = useState(() => window.location.pathname);
+  // The query string is only read for `?url=` (a bill address another page asked to open).
+  const [search, setSearch] = useState(() => window.location.search);
   const selected = parseDocPath(path);
   // Counts navigations so focus can follow each one (the clicked link may no longer exist).
   const [navigations, setNavigations] = useState(0);
@@ -56,6 +85,7 @@ export function App({ api: provided }: { api?: ApiClient }) {
   useEffect(() => {
     const onPop = () => {
       setPath(window.location.pathname);
+      setSearch(window.location.search);
       setNotice(null);
       setNavigations((n) => n + 1);
     };
@@ -69,7 +99,8 @@ export function App({ api: provided }: { api?: ApiClient }) {
     const target = withSearch(to);
     if (window.location.pathname + window.location.search !== target)
       window.history.pushState({}, '', target);
-    setPath(to);
+    setPath(to.split('?')[0] ?? to);
+    setSearch(window.location.search);
     setNotice(null);
     setNavigations((n) => n + 1);
   }, []);
@@ -161,6 +192,11 @@ export function App({ api: provided }: { api?: ApiClient }) {
               <LogoMark />
               <h1>{productName}</h1>
             </Link>
+            {config?.accountUrl && (
+              <a className="account-link" href={config.accountUrl}>
+                Account
+              </a>
+            )}
           </div>
           {selected === null && (
             <div className="hero">
@@ -231,6 +267,7 @@ export function App({ api: provided }: { api?: ApiClient }) {
                 api={api}
                 docs={docs}
                 examples={config.examples}
+                openUrl={parseOpenUrl(search)}
                 onIngested={onIngested}
               />
             )}
@@ -260,6 +297,17 @@ export function App({ api: provided }: { api?: ApiClient }) {
           </p>
         </footer>
       </div>
+      {pendingQuote && (
+        <QuoteDialog
+          quote={pendingQuote.quote}
+          onConfirm={() => {
+            pendingQuote.settle(true);
+          }}
+          onCancel={() => {
+            pendingQuote.settle(false);
+          }}
+        />
+      )}
     </NavContext.Provider>
   );
 }

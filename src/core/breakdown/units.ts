@@ -139,7 +139,10 @@ function leaves(sections: readonly Section[]): Section[] {
   return sections.flatMap((s) => (isContainer(s) ? leaves(s.children) : [s]));
 }
 
-export function chooseBreakdownUnits(sections: readonly Section[]): {
+export function chooseBreakdownUnits(
+  sections: readonly Section[],
+  unitCap = MAX_BREAKDOWN_UNITS,
+): {
   units: Section[];
   /**
    * Parts the reader is not shown: substantive parts beyond the cap, parts the summary's unit
@@ -148,7 +151,19 @@ export function chooseBreakdownUnits(sections: readonly Section[]): {
    */
   omitted: number;
 } {
-  const mapUnits = chooseMapUnits(sections);
+  if (!(
+    unitCap === Infinity ||
+    (Number.isSafeInteger(unitCap) && unitCap >= 0)
+  ))
+    throw new RangeError(
+      'The breakdown unit cap must be a nonnegative integer or Infinity.',
+    );
+  // The summary's unit choice keeps at most `MAX_MAP_UNITS` parts of a flat bill. Beyond the
+  // default cap (full coverage) every part of the bill is a candidate, so that cut does not apply.
+  const mapUnits =
+    unitCap > MAX_BREAKDOWN_UNITS
+      ? { units: [...sections], omitted: 0 }
+      : chooseMapUnits(sections);
   let contentSkips = 0;
   const substantive = leaves(mapUnits.units).filter((s) => {
     if (subtreeText(s) === '') return false;
@@ -157,9 +172,9 @@ export function chooseBreakdownUnits(sections: readonly Section[]): {
     return reason === undefined;
   });
   return {
-    units: substantive.slice(0, MAX_BREAKDOWN_UNITS),
+    units: substantive.slice(0, unitCap),
     omitted:
-      Math.max(0, substantive.length - MAX_BREAKDOWN_UNITS) +
+      Math.max(0, substantive.length - unitCap) +
       mapUnits.omitted +
       contentSkips,
   };

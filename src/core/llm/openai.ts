@@ -205,17 +205,23 @@ export class OpenAIProvider implements LlmProvider {
             },
             { signal },
           );
-          signal.throwIfAborted();
-          const choice = result.choices[0];
-          if (choice?.message.refusal || choice?.finish_reason === 'length')
-            throw new AppError('PROVIDER_BAD_OUTPUT');
-          return {
-            object: validateObject(
-              req.schema,
-              parseJson(choice?.message.content ?? ''),
-            ),
-            usage: openaiUsage(result.usage),
-          };
+          const usage = openaiUsage(result.usage);
+          try {
+            signal.throwIfAborted();
+            const choice = result.choices[0];
+            if (choice?.message.refusal || choice?.finish_reason === 'length')
+              throw new AppError('PROVIDER_BAD_OUTPUT');
+            return {
+              object: validateObject(
+                req.schema,
+                parseJson(choice?.message.content ?? ''),
+              ),
+              usage,
+            };
+          } catch (error) {
+            // Billed even though the reply was unusable.
+            throw providerFailure(error, usage);
+          }
         } catch (error) {
           if (index === formats.length - 1 || !rejectsFormat(error))
             throw error;

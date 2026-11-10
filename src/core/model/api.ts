@@ -6,6 +6,7 @@
  *   GET    /api/health                              -> Health
  *   GET    /api/config                              -> ClientConfig
  *   POST   /api/ingest            IngestRequest     -> SSE stream of IngestEvent
+ *   POST   /api/quote             {url}             -> {quoteId, facts, estimates} (hosting hooks)
  *   GET    /api/docs                                -> DocSummary[]
  *   GET    /api/docs/:docId                         -> DocDetail
  *   DELETE /api/docs/:docId                         -> 204
@@ -59,6 +60,11 @@ export const ClientConfig = z.object({
    * Absent from older servers, which behave as `local`.
    */
   library: z.enum(['local', 'reader']).optional(),
+  /** Optional host-owned account page. A network-path URL or backslash could leave this origin. */
+  accountUrl: z
+    .string()
+    .regex(/^\/(?!\/)[^\s\\\p{Cc}]*$/u)
+    .optional(),
   /** Example bills the homepage offers, chosen by whoever runs the server. */
   examples: z
     .array(z.object({ label: z.string().min(1).max(80), url: z.url() }))
@@ -71,11 +77,16 @@ export const ClientConfig = z.object({
 });
 export type ClientConfig = z.infer<typeof ClientConfig>;
 
+/** Opaque to this server: the id of a quote the reader confirmed, minted by this server or a host. */
+const QuoteId = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
+
 export const IngestRequest = z.object({
   url: z.url(),
   label: z.string().trim().min(1).max(80).optional(),
   /** Public-mode bot check token (Turnstile stub). */
   turnstileToken: z.string().optional(),
+  /** From `POST /api/quote` or a host's 402 quote; opaque to this server's own logic (ADR 0018). */
+  quoteId: QuoteId.optional(),
 });
 export type IngestRequest = z.infer<typeof IngestRequest>;
 
@@ -204,6 +215,8 @@ export const AskRequest = z
     /** Freeform question; rejected in public mode. */
     question: z.string().trim().min(1).max(500).optional(),
     turnstileToken: z.string().optional(),
+    /** Echoed from a host's 402 quote when the reader confirms (ADR 0018). */
+    quoteId: QuoteId.optional(),
   })
   .refine((r) => (r.chipId === undefined) !== (r.question === undefined), {
     message: 'Provide exactly one of chipId or question',
@@ -242,10 +255,22 @@ export type SectionBrief = z.infer<typeof SectionBrief>;
 
 /** Response for `GET /api/docs/:docId/breakdown`. */
 export const BreakdownResponse = z.object({
-  status: z.enum(['cached', 'pending', 'disabled']),
+  /** `partial` (#382): some briefs are finished and more are being made; see `progress`. */
+  status: z.enum(['cached', 'pending', 'partial', 'disabled']),
   briefs: z.array(SectionBrief).optional(),
   /** Substantive parts left out of a long bill's breakdown. */
   omitted: z.number().int().nonnegative().optional(),
+  /** Parts handled so far out of all of them, while a run is going (#382). */
+  progress: z
+    .object({
+      done: z.number().int().nonnegative(),
+      total: z.number().int().nonnegative(),
+      /** Set when background work ended early on purpose; what is written is kept. */
+      stoppedReason: z.enum(['budget_exhausted', 'spend_gate']).optional(),
+    })
+    .optional(),
+  /** The run stopped before finishing (its job budget ran out); a later run may continue. */
+  stoppedReason: z.enum(['budget', 'spend_gate']).optional(),
 });
 export type BreakdownResponse = z.infer<typeof BreakdownResponse>;
 

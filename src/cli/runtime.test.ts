@@ -59,6 +59,24 @@ test('builds the local backend and the configured providers', async () => {
   expect(runtime.extractProvider.id).toBe('mock');
 });
 
+test('providerFor selects an explicit model without changing either role default', async () => {
+  const runtime = await createRuntimeFrom(
+    sources({
+      ...mockEnv,
+      [envVar('ANSWER_MODEL')]: 'answer-default',
+      [envVar('EXTRACT_MODEL')]: 'extract-default',
+    }),
+  )({ needsLlm: true });
+  for (const role of ['answer', 'extract'] as const) {
+    const provider = runtime.providerFor(role, 'host-selected');
+    expect(provider.id).toBe('mock');
+    expect(provider.model).toBe('host-selected');
+    expect(runtime.providerFor(role).model).toBe(`${role}-default`);
+  }
+  expect(runtime.answerProvider.model).toBe('answer-default');
+  expect(runtime.extractProvider.model).toBe('extract-default');
+});
+
 test.each([false, true])(
   'forwards all ingest fetch options to safeFetch (publicMode=%s)',
   async (publicMode) => {

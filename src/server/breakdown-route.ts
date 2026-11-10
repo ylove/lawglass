@@ -4,10 +4,20 @@
  */
 import type { Context, Hono } from 'hono';
 import type { BreakdownLog } from '../core/breakdown/generate.js';
+import type {
+  BreakdownMaxUnits,
+  PregenerateExamples,
+} from '../core/breakdown/coverage.js';
 import type { CliRuntime } from '../cli/runtime.js';
+import { runInJob } from '../core/cost/index.js';
+import type { Admitted } from './job-end.js';
 import { AppError, isAppError } from '../core/model/index.js';
 import type { SummaryService } from './summary.js';
-import { createBreakdownService, type BreakdownService } from './breakdown.js';
+import {
+  createBreakdownService,
+  type BeginExample,
+  type BreakdownService,
+} from './breakdown.js';
 
 /** How long a breakdown waits for the document's summary before starting anyway. */
 const SUMMARY_SETTLE_MS = 3 * 60_000;
@@ -35,11 +45,19 @@ export function registerBreakdownRoutes(
   runtime: CliRuntime,
   options: {
     publicMode: boolean;
+    /** Per request: serve cached results only, never start or resume generation. */
+    readOnly?: ((c: Context) => boolean) | undefined;
     log?: BreakdownLog | undefined;
     now?: (() => number) | undefined;
     summary: SummaryService;
     waitMs?: number | undefined;
+    breakdownMaxUnits?: BreakdownMaxUnits | undefined;
+    pregenerateExamples?: PregenerateExamples | undefined;
     onError?: (c: Context, error: unknown, ms: number) => void;
+    /** Hosting hook: called only when an example would be generated (not on a cache hit). */
+    admitExample?:
+      | ((c: Context, docId: string) => Promise<Admitted | undefined>)
+      | undefined;
     service?: BreakdownService;
   },
 ): BreakdownService {
@@ -52,6 +70,8 @@ export function registerBreakdownRoutes(
       now,
       waitMs: options.waitMs,
       afterSummary: settledSummary(options.summary),
+      breakdownMaxUnits: options.breakdownMaxUnits,
+      pregenerateExamples: options.pregenerateExamples,
     });
 
   const known = async (docId: string): Promise<string> => {
@@ -67,6 +87,7 @@ export function registerBreakdownRoutes(
     return c.json(
       await service.get(docId, {
         wait: c.req.method !== 'HEAD',
+        readOnly: options.readOnly?.(c) === true,
         signal: c.req.raw.signal,
         onError: (error, ms) => options.onError?.(c, error, ms),
       }),
@@ -79,8 +100,24 @@ export function registerBreakdownRoutes(
       return c.json(
         await service.example(docId, c.req.param('sectionId'), {
           wait: c.req.method !== 'HEAD',
+          readOnly: options.readOnly?.(c) === true,
           signal: c.req.raw.signal,
           onError: (error, ms) => options.onError?.(c, error, ms),
+          ...(options.admitExample
+            ? {
+                admit: async (begin: BeginExample) => {
+                  const admitted = await options.admitExample?.(c, docId);
+                  try {
+                    runInJob(admitted?.scope, () => {
+                      begin(admitted?.settlement);
+                    });
+                  } catch (error) {
+                    await admitted?.settlement?.fail(error);
+                    throw error;
+                  }
+                },
+              }
+            : {}),
         }),
       );
     } catch (error) {

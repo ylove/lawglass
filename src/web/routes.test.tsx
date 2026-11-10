@@ -7,14 +7,20 @@ import {
   waitFor,
   within,
 } from '@testing-library/react';
-import { afterEach, describe, expect, test } from 'vitest';
+import { afterEach, describe, expect, test, vi } from 'vitest';
 import { SAMPLE_PATH, visit } from '../../tests/support/web-routes.js';
 import { BRAND } from '../core/brand.js';
 import { App } from './App.js';
 import type { ApiClient } from './api.js';
 import { createMockApi } from './mock-api.js';
 import { formatRelativeDate } from './format-date.js';
-import { docPath, parseDocPath } from './nav.js';
+import {
+  docPath,
+  openUrlPath,
+  parseDocPath,
+  parseOpenUrl,
+  withSearch,
+} from './nav.js';
 
 afterEach(cleanup);
 
@@ -37,6 +43,108 @@ describe('path helpers', () => {
     expect(parseDocPath('/doc/abc/')).toBe('abc');
     for (const path of ['/', '/doc', '/doc/', '/doc/a/b', '/x/abc', '/doc/%E0'])
       expect(parseDocPath(path)).toBeNull();
+  });
+});
+
+describe('open-address links', () => {
+  const BILL = 'https://www.congress.gov/bill/118th-congress/house-bill/1234';
+
+  test('parseOpenUrl accepts only plain http(s) addresses of sane length', () => {
+    expect(parseOpenUrl(openUrlPath(BILL))).toBeNull(); // a path, not a query
+    expect(parseOpenUrl(`?url=${encodeURIComponent(BILL)}`)).toBe(BILL);
+    expect(parseOpenUrl('?url=http://example.gov/a')).toBe(
+      'http://example.gov/a',
+    );
+    for (const bad of [
+      '?url=javascript:alert(1)',
+      '?url=file:///etc/passwd',
+      '?url=not a url',
+      '?url=',
+      '',
+      '?other=https://example.gov',
+      `?url=https://example.gov/${'a'.repeat(2000)}`,
+    ])
+      expect(parseOpenUrl(bad)).toBeNull();
+  });
+
+  test('withSearch merges the destination query and never carries url', () => {
+    window.history.replaceState({}, '', '/?mock=1&url=https%3A%2F%2Fx.gov');
+    expect(withSearch('/doc/a')).toBe('/doc/a?mock=1');
+    expect(withSearch(openUrlPath(BILL))).toBe(
+      `/?mock=1&url=${encodeURIComponent(BILL)}`,
+    );
+  });
+
+  test('the link pre-fills the form and starts nothing until confirmed', async () => {
+    window.history.replaceState({}, '', openUrlPath(BILL));
+    const api = mock();
+    const ingest = vi.spyOn(api, 'ingest');
+    render(<App api={api} />);
+    const field = await screen.findByLabelText<HTMLInputElement>(
+      'Web address of the bill',
+    );
+    expect(field.value).toBe(BILL);
+    screen.getByRole('heading', { name: 'Read this bill?' });
+    expect(ingest).not.toHaveBeenCalled();
+    // "Not now" returns to a clean homepage and still starts nothing.
+    fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
+    await waitFor(() => {
+      expect(
+        screen.queryByRole('heading', { name: 'Read this bill?' }),
+      ).toBeNull();
+    });
+    expect(window.location.search).toBe('');
+    expect(ingest).not.toHaveBeenCalled();
+  });
+
+  test('confirming reads the address exactly as pasting it does', async () => {
+    // Paste path.
+    const pasted = mock();
+    const pastedIngest = vi.spyOn(pasted, 'ingest');
+    render(<App api={pasted} />);
+    fireEvent.change(await screen.findByLabelText('Web address of the bill'), {
+      target: { value: BILL },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Read this bill' }));
+    const pastedHeading = await screen.findByRole('heading', {
+      name: /Clean Water/,
+    });
+    const pastedPath = window.location.pathname;
+    cleanup();
+
+    // Deep-link path.
+    window.history.replaceState({}, '', openUrlPath(BILL));
+    const linked = mock();
+    const linkedIngest = vi.spyOn(linked, 'ingest');
+    render(<App api={linked} />);
+    await screen.findByRole('heading', { name: 'Read this bill?' });
+    const confirm = screen
+      .getAllByRole('button', { name: 'Read this bill' })
+      .find((b) => b.className.includes('primary') && b.closest('.open-link'));
+    fireEvent.click(confirm!);
+    const linkedHeading = await screen.findByRole('heading', {
+      name: /Clean Water/,
+    });
+
+    expect(linkedIngest.mock.calls[0]?.[0]).toEqual(
+      pastedIngest.mock.calls[0]?.[0],
+    );
+    expect(linkedHeading.textContent).toBe(pastedHeading.textContent);
+    expect(window.location.pathname).toBe(pastedPath);
+    // The one-time address does not follow the reader into the document.
+    expect(window.location.search).toBe('');
+  });
+
+  test('an invalid url parameter is ignored', async () => {
+    window.history.replaceState({}, '', '/?url=javascript%3Aalert(1)');
+    render(<App api={mock()} />);
+    const field = await screen.findByLabelText<HTMLInputElement>(
+      'Web address of the bill',
+    );
+    expect(field.value).toBe('');
+    expect(
+      screen.queryByRole('heading', { name: 'Read this bill?' }),
+    ).toBeNull();
   });
 });
 

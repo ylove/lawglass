@@ -74,3 +74,8 @@
 .home-doc:hover .home-doc-name {
   text-decoration: underline;
 }
+
+/* A bill address from a /?url= link: long, so let it wrap anywhere instead of overflowing. */
+.open-link-url {
+  overflow-wrap: anywhere;
+}

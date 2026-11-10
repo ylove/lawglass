@@ -15,7 +15,7 @@ _The demo shows a real federal bill, S. 202 of the 119th Congress, answered by C
 - **A summary the moment you open a bill.** You never start with a blank page. You see the official title first, then a plain-language summary of what the bill does, with citations.
 - **It reads the whole bill.** Most bills fit in one prompt, so Lawglass gives the model the entire text, not a handful of excerpts. Very large bills, such as a defense authorization act, use search over the text, plus the sections the matching passages refer to.
 - **Pictures.** Each main part of the summary, and each section brief, can come with a simple picture: who acts, what moves, what is required or not allowed. The bill's own words sit underneath. A small model arranges icons from a fixed set and sees only the sentence it illustrates, and every label is checked against that sentence's words. How the icons are arranged is still the model's work, so the words underneath are what counts.
-- **Section by section.** Each part of the bill gets one to three plain sentences with citations, and a "Show an example" button.
+- **Section by section.** Each part of the bill gets one to three plain sentences with citations, and a "Show an example" button. By default a long bill gets its first 30 parts. Full coverage is opt-in (set `LAWGLASS_BREAKDOWN_MAX_UNITS=all` and `LAWGLASS_PREGENERATE_EXAMPLES=all`, or pass `breakdownMaxUnits` and `pregenerateExamples` to the app): every substantive part gets a brief, a picture and an example, drawn in the background as you watch ("142 of 1,512 sections ready"), grouped by title or division with a search box. It costs more model calls; `lawglass estimate` prices it with the same cap. `scripts/coverage-pass.ts` measures how much of a bill ends up covered.
 - **"What it could mean for one person."** Short illustrated stories show how a bill, or one section of it, might land on one made-up person. Numbers about that person, such as an income, are invented, and each one is labeled as an example. Every claim about what the bill does is cited to its text, and any rate or amount comes from the bill itself.
 - **What the bill changes.** Many bills work by editing existing law. Lawglass tells struck-out (removed) text from newly added text, shows a before and after, and never reads removed words as current law.
 - **Who it affects, and when.** Ask who is covered, what the penalties are, when it takes effect, how much money is involved, and what its terms mean.
@@ -49,6 +49,8 @@ npx lawglass <url>                      # ingest, then serve and open the docume
 npx lawglass <url> --no-open            # same, without opening the browser
 npx lawglass ingest <url> --name hb62   # ingest only, with a label
 npx lawglass ingest ./bill.pdf          # a local file works too (CLI only)
+npx lawglass estimate <url>             # fetch + parse, then quote model costs; no API key needed
+npx lawglass estimate <url> --json      # size facts, feature token/call ranges and USD
 npx lawglass ask hb62 "When does this take effect?"
 npx lawglass ask hb62 --chip what-changes
 npx lawglass search hb62 "fees"          # cited passages as JSON, no model call
@@ -261,6 +263,69 @@ Each visitor gets a random reader cookie, and "Your documents" shows only the bi
 added or opened. The documents themselves are shared, so a bill is ingested once for everyone,
 and documents nobody lists are evicted first ([decision 0016](docs/decisions/0016-per-reader-library.md)).
 `LAWGLASS_EXAMPLES` sets the example links on the homepage.
+
+### Hosting it behind your own sign-in
+
+Import `createApp` and `createRuntime` from `lawglass/server` to embed the server. Pass
+`auth: { middleware, readerId }`: Hono middleware handles sign-in on API and page requests,
+and `readerId(c)` returns a stable, nonempty account id for that reader's document list.
+This enables all features, HTTPS security headers and hosted ingest restrictions without
+a shared access key or reader cookie. It cannot be combined with `privateMode` or `publicMode`.
+`/api/health` bypasses external auth and sets no cookies so hosting probes need no credentials;
+`/quickstart` is also public and must contain no reader data.
+
+Use `canRead(c, docId)` to authorize every document route; refusal returns the same 404 as a
+missing document. `pinned(docId)` protects documents from automatic eviction. These hooks are
+security boundaries: the host must authenticate requests and decide access itself. Reader ids
+are hashed on disk and never logged. An account's list is a convenience, not an access check.
+
+Presentation options include `accountUrl` (a same-origin path shown as an Account link),
+`csp` (additional HTTPS origins or `'self'`), and `head` (same-origin module scripts or
+stylesheet/preload/modulepreload links). Invalid configuration throws during `createApp`.
+Head tags use double quotes and the exact attribute order shown here:
+
+```ts
+head: [
+  '<script type="module" src="/host.js"></script>',
+  '<link rel="stylesheet" href="/host.css">',
+];
+```
+
+`site.quickstart(c)` replaces the public guide; `site.landing(c)` replaces the shared-key gate.
+With external auth, the host serves its own landing and account pages from its middleware;
+return a response there or call `next()` to reach the app. The default `landingPage`,
+`gatePage` and `quickstartHtml` builders are exported. `runtime.providerFor(role, model?)`
+builds a provider with the configured credentials and endpoint, without changing the defaults.
+Money-free hooks for paid hosting (see [ADR 0018](docs/decisions/0018-hosting-hooks.md)):
+
+- `POST /api/quote {url}` fetches and parses a bill (no model call, nothing stored) and returns
+  `{quoteId, facts, estimates}`, one estimate per `quote.tiers` entry. Quotes live 30 minutes and
+  are rate limited per address; public mode refuses them unless `quote.allowInPublicMode`.
+- `admission(c, job)` runs before any paid model work (ingest, questions and model-backed chips,
+  locate, scenario, and examples that would be generated) and returns
+  `{allow: true, budget?}`, `{allow: false, status: 402, quote}` or a 403/429 denial. A 402
+  becomes `{error: {code: 'PAYMENT_REQUIRED'}, quote}` and the SPA shows a quote dialog; Confirm
+  resubmits with `quote.quoteId`. Include `quoteId`, `display` (price text) and `facts` in your
+  quote. A host that allows everyone has opened your model budget to everyone.
+- `onUsage(event)` receives every model call's usage with `{readerId, jobKind, jobId, docId}`,
+  including background generation, which runs under the first admitted ingest of a document.
+- A job `budget` (`{tokens?, dollars?}`) stops the job with `BUDGET_EXHAUSTED`, overshooting by
+  at most one call per sequential job (concurrent calls within a job may each overshoot by
+  one). Breakdown and pictures keep what they wrote.
+- `backgroundScope(docId, tier, models)` is required with `admission`. Background generation runs
+  under one scope per (document, tier), where the tier is what `modelFor(job, c)` resolves for the
+  reader. After a restart the hook restores the persisted `{budget?, models?, jobId?}`; `budget` must
+  be the REMAINING budget (sum `onUsage` by `jobId`), because a restored scope counts from zero. If
+  it returns `undefined` or throws, no paid background work starts and cached results are served.
+  A failed or abandoned paid call is still charged: providers attach usage to unusable replies,
+  and an abandoned stream is charged what the provider reported or a flagged estimate.
+- `modelFor(job, c)` returns `{answer?, extract?}`; cache keys include the model. Admission jobs carry the host's own `quoteId` as sent (use base64url ids, `[A-Za-z0-9_-]` up to 128; the SPA refuses others), `serverQuote` when it is also a quote this server issued, and, on ingest, `docComplete: true` when the text, pictures and pre-drawn examples already exist for the reader's tier (so you can skip or reduce the charge, but never allow without a budget). **Security:** take the tier from the reader's server-side entitlement, never from request data; `modelFor` is also called on every generating GET with a stand-in ingest job that has no `quoteId`; and on Confirm, re-check that `job.docId` and the estimates still match what you quoted. A new admission for a (document, tier) whose budget is spent replaces that budget and restarts stopped work.
+- Settlement (part C). `admission` may return `{allow: true, ref}`, where `ref` is your opaque reference (1 to 128 of `A-Za-z0-9_-`; anything else is a 500 before any work). It appears in every `UsageEvent.job.ref`, and `onJobEnd({job, ref, outcome, error?})` is called exactly once per admitted job with `ok`, `failed` or `aborted` (the reader disconnected): ingest is `ok` when the document is registered; a question, chip, locate or scenario when a usable answer is delivered (a decline counts); an example when it is stored. `delivered` is `full` with `ok`, `partial` when answer text or frames were streamed before an abort or failure, else `none`; capture (the fixed price, or actual usage summed by `ref`) on `ok` or any delivery and release only when `delivered` is `none`, since a reader can leave a stream just before its end. An ingest's `ok` carries `granted: 'used' | 'unused'` so you can refund a grant when nothing was left to generate. An ingest settles `ok` the moment its document is registered, and the server installs its grant in the same tick; if the reader left first the job ended `aborted` and nothing is installed, so release it. A new admission for a document whose live budget has not run out adds its budget to it, and calls already in flight keep the `ref` they started with. `backgroundScope` is asked before the ingest starts and must return the remaining budget excluding that admission (the server adds the grant itself): credit your ledger on `onJobEnd(ok)`, never at admission. A grant in another unit than the live budget (tokens against dollars) is converted to dollars at the model prices. A process that dies mid-job ends it without a callback, so **expire your holds**.
+- `spendGate(): boolean` is a synchronous kill switch checked before every model call, background work included. Keep its state in memory, updated from `onUsage`. While it is not `true`, calls are refused with `BUDGET_EXHAUSTED` (`details.reason: 'spend_gate'`) and background work stops cleanly, keeping what it wrote, with `stoppedReason: 'spend_gate'`; the next generating request resumes once it reopens.
+- `readOnly(c)` is asked per request. When `true` the server serves cached results only and never starts or resumes generation: ingest, ask and quote are 403, scenario and locate answer `disabled`, and the summary, breakdown, pictures and example routes return what is cached. Use it for signed-out guests on featured bills. A hook that throws, or returns anything but `false`, is read-only.
+- `POST /api/quote` facts include `contentHash`, the id ingest gives the same bytes, so you can bind a quote to exactly what was measured.
+- The SPA dispatches `lawglass:event` `CustomEvent`s on `window` (name plus a few non-identifying
+  fields, never text or addresses). Nothing is sent anywhere by this repository.
 
 ### Providers, keys and backends
 

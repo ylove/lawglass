@@ -11,8 +11,25 @@
  * `_MAX_CONCURRENT_ASK`, `_MAX_CONCURRENT_CLAUDE_CLI` and `_MAX_CALLS_PER_MINUTE`
  * (not `ConfigSettings`, which is strict).
  */
-import { AppError, type LlmProvider } from '../model/index.js';
+import {
+  AppError,
+  type LlmProvider,
+  type LlmUsage,
+  type TextRequest,
+} from '../model/index.js';
 import { envVar } from '../brand.js';
+import { providerTimedOut } from '../llm/shared.js';
+import {
+  NOOP_USAGE_SINK,
+  type UsageFeature,
+  type UsageSink,
+} from '../cost/usage.js';
+import {
+  assertBudget,
+  chargeJob,
+  currentJob,
+  type JobContext,
+} from '../cost/job.js';
 
 export const DEFAULT_MAX_CONCURRENT_INGEST = 2;
 export const DEFAULT_MAX_CONCURRENT_ASK = 4;
@@ -124,6 +141,7 @@ export class RateCeiling {
 export type WorkKind = 'ingest' | 'ask';
 
 export interface LimitsConfig {
+  usageSink?: UsageSink;
   maxConcurrentIngest: number;
   maxConcurrentAsk: number;
   maxCallsPerMinute: number;
@@ -146,8 +164,10 @@ export class Limits {
   private readonly ceiling: RateCeiling;
   private readonly backgroundWaitMs: number;
   private readonly backgroundPollMs: number;
+  private readonly configuredSink: UsageSink;
 
   constructor(config: LimitsConfig, now: () => number = Date.now) {
+    this.configuredSink = config.usageSink ?? NOOP_USAGE_SINK;
     this.pools = {
       ingest: new Semaphore(config.maxConcurrentIngest),
       ask: new Semaphore(config.maxConcurrentAsk),
@@ -174,9 +194,13 @@ export class Limits {
    */
   paced(
     provider: LlmProvider,
-    options: { background?: boolean; signal?: AbortSignal | undefined } = {},
+    options: {
+      background?: boolean;
+      signal?: AbortSignal | undefined;
+      feature?: UsageFeature;
+    } = {},
   ): LlmProvider {
-    const metered = this.meter(provider);
+    const metered = this.meter(provider, options.feature);
     const background = options.background === true;
     const share = Math.max(1, Math.floor(this.ceiling.max * BACKGROUND_SHARE));
     return {
@@ -194,6 +218,8 @@ export class Limits {
         );
         const signal =
           signals.length > 0 ? AbortSignal.any(signals) : undefined;
+        // Refuse before queueing: a spent job must not hold a slot a reader could use.
+        assertBudget();
         const releaseBackground = background
           ? await this.background.acquire(signal)
           : undefined;
@@ -244,7 +270,46 @@ export class Limits {
    * (summary batches, scenario generation and retries each count; calls that never reach a
    * model, such as a metadata-only chip, cost nothing). Past the ceiling the call fails fast.
    */
-  meter(provider: LlmProvider): LlmProvider {
+  meter(provider: LlmProvider, feature: UsageFeature = 'unknown'): LlmProvider {
+    const sink = this.configuredSink;
+    const objectFeature = (schemaName: string): UsageFeature =>
+      schemaName === 'scenario' && feature !== 'examples'
+        ? 'scenario'
+        : feature;
+    const startContext = (): JobContext | undefined => {
+      const job = currentJob();
+      return job ? { ...job.context } : undefined;
+    };
+    // Accounting failures must not discard a paid-for model answer or cause a retry.
+    const report = async (
+      usage: LlmUsage,
+      callFeature = feature,
+      estimated = false,
+      /** Who the call was for when it STARTED: a top-up may switch the scope's payer meanwhile. */
+      started?: JobContext,
+    ): Promise<void> => {
+      // The scope is read when the call finishes, inside the async chain that made it (ADR 0018,
+      // section 5); the context it is reported under was fixed when the call began.
+      const job = currentJob();
+      if (job) chargeJob(job, provider.model, usage);
+      const event = {
+        feature: callFeature,
+        model: provider.model,
+        usage: { ...usage },
+        ...(estimated ? { estimated: true } : {}),
+        ...(job ? { job: { ...(started ?? job.context) } } : {}),
+      };
+      try {
+        await sink.record(event);
+      } catch {
+        /* The sink owns delivery/retry policy. */
+      }
+      try {
+        await job?.onUsage?.(event);
+      } catch {
+        /* The host's accounting failing must not discard a paid-for answer. */
+      }
+    };
     return {
       // Lazy: some runtimes build the provider (and demand its API key) only on first use,
       // and a chip that makes no model call must not trigger that.
@@ -255,15 +320,114 @@ export class Limits {
         return provider.model;
       },
       streamText: (req) => {
+        assertBudget();
         this.ceiling.admit();
-        return provider.streamText(req);
+        const started = startContext();
+        let partial: LlmUsage | undefined;
+        const stream = provider.streamText({
+          ...req,
+          onPartialUsage: (usage) => {
+            partial = usage;
+            req.onPartialUsage?.(usage);
+          },
+        });
+        return (async function* () {
+          let finished = false;
+          let failed = false;
+          let chars = 0;
+          try {
+            for await (const event of stream) {
+              if (event.type === 'text') chars += event.text.length;
+              if (event.type === 'done') {
+                finished = true;
+                await report(event.usage, feature, false, started);
+              }
+              yield event;
+            }
+          } catch (error) {
+            failed = true;
+            if (!finished && error instanceof AppError && error.usage)
+              await report(error.usage, feature, false, started);
+            else if (!finished && partial)
+              await report(partial, feature, false, started);
+            else if (
+              !finished &&
+              (chars > 0 || req.signal?.aborted || maybeBilled(error))
+            )
+              // A timeout or an overload mid-answer: the provider billed what it produced.
+              await report(guess(req, chars), feature, true, started);
+            throw error;
+          } finally {
+            // The reader left mid-answer: the provider billed what it had produced so far.
+            if (!finished && !failed)
+              await (partial
+                ? report(partial, feature, false, started)
+                : report(guess(req, chars), feature, true, started));
+          }
+        })();
       },
       generateObject: async (req) => {
+        assertBudget();
         this.ceiling.admit();
-        return provider.generateObject(req);
+        const started = startContext();
+        let result;
+        try {
+          result = await provider.generateObject(req);
+        } catch (error) {
+          // A reply that arrived but was unusable (cut off, invalid) was still billed.
+          if (error instanceof AppError && error.usage)
+            await report(
+              error.usage,
+              objectFeature(req.schemaName),
+              false,
+              started,
+            );
+          else if (req.signal?.aborted || maybeBilled(error))
+            await report(
+              { inputTokens: promptTokens(req), outputTokens: req.maxTokens },
+              objectFeature(req.schemaName),
+              true,
+              started,
+            );
+          throw error;
+        }
+        await report(
+          result.usage,
+          objectFeature(req.schemaName),
+          false,
+          started,
+        );
+        return result;
       },
     };
   }
+}
+
+/**
+ * Only a timeout or an abort is charged an estimate: the provider had the request and may have
+ * billed work it did. A refused connection, a DNS failure or an HTTP error never got that far.
+ */
+function maybeBilled(error: unknown): boolean {
+  return providerTimedOut(error);
+}
+
+/** About four characters to a token, rounded up: a bound, not a tokenizer. */
+function promptTokens(req: {
+  system: string;
+  messages?: unknown;
+  prompt?: unknown;
+}): number {
+  return Math.ceil(
+    (req.system.length + JSON.stringify(req.messages ?? req.prompt).length) / 4,
+  );
+}
+
+/** What an abandoned stream is charged when the provider could not say: the prompt plus what was read. */
+function guess(req: TextRequest, chars: number): LlmUsage {
+  return {
+    inputTokens: promptTokens(req),
+    outputTokens: Math.min(req.maxTokens, Math.ceil(chars / 4)),
+  };
 }
 
 /** A positive integer from the environment; anything else (unset, 0, "abc") keeps the default. */

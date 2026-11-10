@@ -20,7 +20,7 @@ import { AnswerCache, type AnswerCacheKey } from './answer-cache.js';
 import { BRAND } from './brand.js';
 import type { ConfigFileSystem } from './config-files.js';
 import { writeCache } from './fetch/cache.js';
-import { Registry } from './registry.js';
+import { Registry, registryLlmUsage } from './registry.js';
 import {
   EMPTY_METADATA,
   type AnswerResult,
@@ -63,6 +63,49 @@ function clock(): { now: () => Date; set: (iso: string) => void } {
 }
 
 describe('Registry', () => {
+  it('migrates old usage and accumulates cache reads/writes without changing total input', async () => {
+    const r = new Registry(dir);
+    const entry = await r.add(doc(id('a')), { label: 'one', backend: 'local' });
+    const legacy = {
+      embedTokens: 0,
+      rerankUnits: 0,
+      llmInputTokens: 0,
+      llmOutputTokens: 0,
+    };
+    await writeFile(
+      join(dir, 'registry.json'),
+      JSON.stringify([{ ...entry, usage: legacy }]),
+      { mode: 0o600 },
+    );
+    expect((await r.list())[0]!.usage).toMatchObject({
+      llmCacheReadTokens: 0,
+      llmCacheWriteTokens: 0,
+    });
+    await r.touch(
+      entry.docId,
+      registryLlmUsage({
+        inputTokens: 100,
+        outputTokens: 10,
+        cacheReadTokens: 70,
+        cacheWriteTokens: 20,
+      }),
+    );
+    const updated = await r.touch(
+      entry.docId,
+      registryLlmUsage({
+        inputTokens: 50,
+        outputTokens: 5,
+        cacheReadTokens: 30,
+      }),
+    );
+    expect(updated.usage).toMatchObject({
+      llmInputTokens: 150,
+      llmOutputTokens: 15,
+      llmCacheReadTokens: 100,
+      llmCacheWriteTokens: 20,
+    });
+    expect((await r.list())[0]!.usage).toEqual(updated.usage);
+  });
   it('updates cached metadata and warnings while preserving label, recency, and usage', async () => {
     const r = new Registry(dir);
     const original = doc(id('a'));
@@ -103,6 +146,8 @@ describe('Registry', () => {
       rerankUnits: 0,
       llmInputTokens: 0,
       llmOutputTokens: 0,
+      llmCacheReadTokens: 0,
+      llmCacheWriteTokens: 0,
     });
     expect((await stat(join(dir, 'registry.json'))).mode & 0o777).toBe(0o600);
     expect(
@@ -400,6 +445,26 @@ describe('Registry', () => {
     expect((await r.evictionCandidates(2, all)).map((e) => e.label)).toEqual([
       'a',
     ]);
+  });
+
+  it('never selects pinned documents, counts them toward capacity, and awaits host lookups', async () => {
+    const r = new Registry(dir);
+    for (const label of ['a', 'b', 'c'])
+      await r.add(doc(id(label)), { label, backend: 'local' });
+    const pinned = vi.fn((docId: string) => Promise.resolve(docId === id('a')));
+    expect(
+      (await r.evictionCandidates(2, new Set(), pinned)).map((e) => e.label),
+    ).toEqual(['b']);
+    expect(pinned).toHaveBeenCalledTimes(3);
+    expect(
+      (await r.evictionCandidates(0, new Set(), pinned)).map((e) => e.label),
+    ).toEqual(['b', 'c']);
+    expect(await r.evictionCandidates(0, new Set(), () => true)).toEqual([]);
+    await expect(
+      r.evictionCandidates(0, new Set(), () => {
+        throw new Error('Pin lookup failed');
+      }),
+    ).rejects.toThrow('Pin lookup failed');
   });
 
   it('serializes concurrent adds without losing entries', async () => {

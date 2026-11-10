@@ -64,3 +64,30 @@ ins {
   padding: 0 2px;
   border-radius: 2px;
 }
+
+/* Quote dialog (hosting hooks): centred over the same backdrop the drawer uses. */
+.quote-backdrop {
+  justify-content: center;
+  align-items: center;
+  padding: 1rem;
+}
+.quote-dialog {
+  background: var(--surface);
+  color: var(--ink);
+  width: min(26rem, 100%);
+  padding: 1.25rem 1.5rem;
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+}
+.quote-dialog h2 {
+  margin-top: 0;
+  font-size: var(--text-h2);
+}
+.quote-display {
+  font-weight: 600;
+}
+.quote-actions {
+  display: flex;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}

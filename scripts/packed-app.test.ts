@@ -13,14 +13,18 @@ import {
   stopChild,
 } from './packed-app.js';
 
-const required = ['package/dist/cli.js', 'package/dist/web/index.html'];
+const required = [
+  'package/dist/cli.js',
+  'package/dist/server.js',
+  'package/dist/server.d.ts',
+  'package/dist/web/index.html',
+];
 
 describe('packed archive guard', () => {
   it('accepts runtime files', () => {
     expect(() => {
       assertPackageFiles([
         ...required,
-        'package/dist/server.js',
         'package/package.json',
         'package/README.md',
         'package/LICENSE',

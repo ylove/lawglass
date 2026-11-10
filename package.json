@@ -10,9 +10,16 @@
   "bin": {
     "lawglass": "dist/cli.js"
   },
+  "exports": {
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js"
+    }
+  },
   "files": [
     "dist",
     "!dist/**/*.map",
+    "!dist/calibrate.js",
     "README.md",
     "LICENSE"
   ],

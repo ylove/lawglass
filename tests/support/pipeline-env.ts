@@ -78,6 +78,7 @@ export async function makePipelineEnv(
     answerProvider: provider,
     answerEndpoint: 'mock:local',
     extractProvider: provider,
+    providerFor: (_role, model) => new MockProvider(model),
     parsePdf: options.parsePdf,
   };
   return {

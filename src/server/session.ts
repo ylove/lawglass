@@ -3,7 +3,7 @@ import { getCookie, setCookie } from 'hono/cookie';
 import type { MiddlewareHandler } from 'hono';
 import { BRAND, envVar } from '../core/brand.js';
 import { AppError } from '../core/model/index.js';
-import { gatePage, gateAssets } from './gate.js';
+import { gatePage, gateAssets, type SiteOptions } from './gate.js';
 
 /**
  * Cookies are scoped by host, not port, so two local servers on one machine would overwrite
@@ -55,6 +55,7 @@ export interface SessionOptions {
   privateMode?: boolean;
   webRoot?: string;
   publicOrigin?: string;
+  landing?: SiteOptions['landing'];
 }
 
 export function localSession(
@@ -106,7 +107,11 @@ export function localSession(
         const asset = await assets(c, () => Promise.resolve());
         if (asset) return asset;
         if (c.req.method === 'GET' || c.req.method === 'HEAD')
-          return c.html(await gatePage(options.publicOrigin, options.webRoot));
+          return c.html(
+            await (options.landing
+              ? options.landing(c)
+              : gatePage(options.publicOrigin, options.webRoot)),
+          );
         return c.body(null, 401);
       }
       return c.html(

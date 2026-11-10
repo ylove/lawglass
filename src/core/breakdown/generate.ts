@@ -17,6 +17,7 @@
  * removed, and a brief left with no valid citation is dropped. The model never chooses a
  * reading grade; we compute it.
  */
+import { addLlmUsage } from '../cost/usage.js';
 import { z } from 'zod';
 import { coveredSectionIds, validateCitations } from '../answer/citations.js';
 import { wholeBillEffort, type DocumentContext } from '../answer/context.js';
@@ -34,10 +35,12 @@ import {
 } from '../answer/regenerate.js';
 import { fleschKincaidGrade, stripCitations } from '../answer/readability.js';
 import { jsonSchema, validateObject } from '../llm/shared.js';
+import { isBudgetExhausted } from '../cost/job.js';
 import {
   AppError,
   type AnswerWarning,
   type LlmProvider,
+  type LlmUsage,
   type NormalizedDoc,
   type RetrievalBackend,
   type SearchHit,
@@ -116,8 +119,16 @@ export interface BreakdownInput {
   context: DocumentContext;
   units: readonly Section[];
   signal?: AbortSignal | undefined;
-  /** Called after each batch with every brief finished so far (for a partial view). */
-  onProgress?: ((briefs: readonly SectionBrief[]) => void) | undefined;
+  /**
+   * Called after each batch with every brief finished so far and the count of parts dropped so
+   * far (for a partial view). Awaited, so a caller can persist the batch before the next one.
+   */
+  onProgress?:
+    | ((
+        briefs: readonly SectionBrief[],
+        dropped: number,
+      ) => void | Promise<void>)
+    | undefined;
 }
 
 export interface BreakdownOutput {
@@ -126,6 +137,8 @@ export interface BreakdownOutput {
   dropped: number;
   usage: { inputTokens: number; outputTokens: number };
   backendUsage: { embedTokens: number; rerankUnits: number };
+  /** Set when the job's budget ended the run: the parts after the last brief were not tried. */
+  stoppedReason?: 'budget';
 }
 
 function label(section: Section): string {
@@ -197,8 +210,9 @@ export async function generateBreakdown(
   const whole = input.context.mode === 'whole';
   const size = whole ? WHOLE_BATCH_SIZE : EXCERPT_BATCH_SIZE;
   const briefs: SectionBrief[] = [];
-  const usage = { inputTokens: 0, outputTokens: 0 };
+  const usage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
   let dropped = 0;
+  let stoppedReason: 'budget' | undefined;
   const backendUsage = { embedTokens: 0, rerankUnits: 0 };
 
   for (let i = 0; i < input.units.length; i += size) {
@@ -247,8 +261,7 @@ export async function generateBreakdown(
         ...(whole ? { effort: wholeBillEffort() } : {}),
         signal,
       });
-      usage.inputTokens += result.usage.inputTokens;
-      usage.outputTokens += result.usage.outputTokens;
+      Object.assign(usage, addLlmUsage(usage, result.usage));
       return validateObject(BriefBatch, result.object);
     };
 
@@ -256,18 +269,30 @@ export async function generateBreakdown(
     // are counted as dropped), not the whole breakdown. Anything else (a budget, an abort, a
     // provider outage) must stop the run.
     let reply: BriefBatch | undefined;
+    let budgetStop = false;
     for (let attempt = 0; attempt < 2 && !reply; attempt++) {
       try {
         reply = await call(built);
       } catch (error) {
+        // A spent job budget ends the run cleanly: the parts already written are kept.
+        if (isBudgetExhausted(error)) {
+          budgetStop = true;
+          break;
+        }
         if (!(
           error instanceof AppError && error.code === 'PROVIDER_BAD_OUTPUT'
         ))
           throw error;
       }
     }
+    if (budgetStop) {
+      // Not a verdict on the skipped parts: they were never tried, so they are not `dropped`.
+      stoppedReason = 'budget';
+      break;
+    }
     if (!reply) {
       dropped += batch.length;
+      await input.onProgress?.([...briefs], dropped);
       continue;
     }
 
@@ -285,6 +310,9 @@ export async function generateBreakdown(
       const grade = finished.get(unit.id)?.brief.readingGrade;
       return ceiling > 0 && grade != null && grade > ceiling;
     });
+    // A spent budget during the optional rewrite keeps the validated first drafts, then ends the
+    // run once this batch is recorded, so no further batch starts.
+    let rewriteStopped = false;
     if (difficult.length > 0) {
       let rewritten = 0;
       const timeout = AbortSignal.timeout(REGENERATION_TIMEOUT_MS);
@@ -324,6 +352,7 @@ export async function generateBreakdown(
         }
       } catch (error) {
         if (input.signal?.aborted) throw error;
+        if (isBudgetExhausted(error)) rewriteStopped = true;
         // A failed optional rewrite must not discard validated briefs. A call that never
         // returned usage may still have been billed; its cost is unknown to us.
       }
@@ -338,7 +367,17 @@ export async function generateBreakdown(
       if (brief) briefs.push(brief.brief);
       else dropped++;
     }
-    input.onProgress?.([...briefs]);
+    await input.onProgress?.([...briefs], dropped);
+    if (rewriteStopped) {
+      stoppedReason = 'budget';
+      break;
+    }
   }
-  return { briefs, dropped, usage, backendUsage };
+  return {
+    briefs,
+    dropped,
+    usage,
+    backendUsage,
+    ...(stoppedReason ? { stoppedReason } : {}),
+  };
 }

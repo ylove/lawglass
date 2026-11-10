@@ -55,6 +55,34 @@ async function authenticate(running: RunningServer): Promise<string> {
 }
 
 describe('a real server on loopback', () => {
+  test('external auth permits a hosted bind without generating a shared-key launch token', async () => {
+    server = await startServer(env.runtime, {
+      host: '0.0.0.0',
+      port: 0,
+      webRoot,
+      auth: {
+        middleware: async (c, next) =>
+          c.req.header('x-reader') ? next() : c.text('Sign in', 401),
+        readerId: (c) => c.req.header('x-reader')!,
+      },
+    });
+    expect(new URL(server.url).search).toBe('');
+    const origin = `http://127.0.0.1:${String(server.port)}`;
+    const health = await fetch(`${origin}/api/health`);
+    expect(health.status).toBe(200);
+    expect(health.headers.get('set-cookie')).toBeNull();
+    await health.arrayBuffer();
+    const config = await fetch(`${origin}/api/config`, {
+      headers: { host: 'preview.example', 'x-reader': 'account:alice' },
+    });
+    expect(config.status).toBe(200);
+    expect(config.headers.get('set-cookie')).toBeNull();
+    expect(await config.json()).toMatchObject({
+      library: 'reader',
+      freeformEnabled: true,
+    });
+  });
+
   test('the launch link opens the document and the key exchange keeps the path but drops the key', async () => {
     const docId = 'b'.repeat(64);
     server = await startServer(env.runtime, {

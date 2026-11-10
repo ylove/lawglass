@@ -152,9 +152,25 @@ export function createLogger(
         event: e.event,
         status: 200,
         count: e.count,
+        ...(e.retried === undefined ? {} : { retried: e.retried }),
+        ...(e.recovered === undefined ? {} : { recovered: e.recovered }),
         ms: 0,
         route: `/api/docs/:docId/${e.source}/pictures`,
         method: 'GET',
+      }) + '\n',
+    );
+  }
+  /** A job reached its budget and was stopped (ADR 0018). A kind and a count, nothing else. */
+  function budgetExhausted(jobKind: string, calls: number): void {
+    write(
+      JSON.stringify({
+        t: new Date(now()).toISOString(),
+        level: 'warn',
+        event: 'budget_exhausted',
+        status: 200,
+        jobKind,
+        count: calls,
+        ms: 0,
       }) + '\n',
     );
   }
@@ -178,6 +194,7 @@ export function createLogger(
     backgroundAnswerEvent,
     backgroundBreakdownEvent,
     pictureEvent,
+    budgetExhausted,
     error,
     middleware,
     referenceSkipped,

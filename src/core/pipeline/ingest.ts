@@ -1,3 +1,4 @@
+import { addLlmUsage } from '../cost/usage.js';
 import { resolveNewYork, assertNewYorkFetch } from '../fetch/new-york.js';
 import {
   resolveNewJersey,
@@ -43,7 +44,11 @@ import {
   type ObjectRequest,
   type RetrievalBackend,
 } from '../model/index.js';
-import type { Registry, RegistryEntry } from '../registry.js';
+import {
+  registryLlmUsage,
+  type Registry,
+  type RegistryEntry,
+} from '../registry.js';
 import { assertHistoryUrl } from '../history/allowlist.js';
 import {
   assertNoCongressFetch,
@@ -108,6 +113,8 @@ export interface IngestDeps {
   maxDocs?: number | undefined;
   /** Who may be evicted when the cap is enforced; see `EvictionGuard`. */
   evictionGuard?: EvictionGuard | undefined;
+  /** Host-protected documents count toward the cap but are never evicted. */
+  pinned?: ((docId: string) => boolean | Promise<boolean>) | undefined;
   /**
    * Called once the document id is known and before any indexing, with whether the registry
    * already has it. A server uses it to protect the document while it is being ingested and
@@ -117,6 +124,12 @@ export interface IngestDeps {
    */
   admit?: ((docId: string, known: boolean) => Promise<boolean>) | undefined;
   parsePdf?: PdfParser | undefined;
+  /**
+   * A document a host already fetched and parsed to size and admit this ingest (ADR 0018). The
+   * ingest reuses its parse instead of parsing again, and refuses with PAYMENT_REQUIRED if the
+   * bytes it fetches now are a different document, so the reader is quoted again.
+   */
+  admitted?: { docId: string; doc?: NormalizedDoc | undefined } | undefined;
   /** Told when a U.S. Code reference could not be read: the citation and an error code only. */
   onReferenceSkip?: ((citation: string, code: string) => void) | undefined;
 }
@@ -138,6 +151,11 @@ export interface IngestOptions {
   onDiagnostic?:
     | ((diagnostic: { event: 'metadata_failed'; code: string }) => void)
     | undefined;
+  /**
+   * Called the moment the document is registered (new, or already held), before anything else
+   * can fail or be abandoned. A host settling the job needs this instant, not the end.
+   */
+  onRegistered?: ((docId: string) => void | Promise<void>) | undefined;
   signal?: AbortSignal | undefined;
 }
 
@@ -302,8 +320,7 @@ function metered(provider: LlmProvider): {
     streamText: (req) => provider.streamText(req),
     async generateObject<T>(req: ObjectRequest<T>) {
       const result = await provider.generateObject(req);
-      usage.inputTokens += result.usage.inputTokens;
-      usage.outputTokens += result.usage.outputTokens;
+      Object.assign(usage, addLlmUsage(usage, result.usage));
       return result;
     },
   };
@@ -312,7 +329,7 @@ function metered(provider: LlmProvider): {
 
 async function parseFetched(
   fetched: SafeFetchResult,
-  deps: IngestDeps,
+  deps: ReadDocumentDeps,
   signal: AbortSignal | undefined,
 ): Promise<NormalizedDoc> {
   const limits = deps.parseLimits ?? readParseLimits();
@@ -481,7 +498,10 @@ async function enforceCap(deps: IngestDeps, keep: string): Promise<void> {
     // to go, even though they are on no list yet.
     const protectedIds = new Set([keep, ...(guard?.inFlight() ?? [])]);
     const spared = new Set([...listed, ...protectedIds]);
-    for (const old of await registry.evictionCandidates(cap, spared)) {
+    const candidates = deps.pinned
+      ? await registry.evictionCandidates(cap, spared, deps.pinned)
+      : await registry.evictionCandidates(cap, spared);
+    for (const old of candidates) {
       if (protectedIds.has(old.docId) || old.backend !== backend.kind) continue;
       if (guard?.neverEvictListed && listed.has(old.docId)) continue;
       await deleteIndexedDocument(backend, old.docId);
@@ -502,7 +522,7 @@ export async function ingest(
   try {
     return await ingestWithinLimits(
       url,
-      { ...deps, provider: limits.meter(deps.provider) },
+      { ...deps, provider: limits.meter(deps.provider, 'metadata') },
       opts,
     );
   } finally {
@@ -510,14 +530,21 @@ export async function ingest(
   }
 }
 
-async function ingestWithinLimits(
+/** Fetch/parse dependencies deliberately exclude providers, registries and retrieval backends. */
+export type ReadDocumentDeps = Pick<
+  IngestDeps,
+  'fetcher' | 'now' | 'parsePdf' | 'parseLimits'
+>;
+
+/** The exact URL resolution and integrity checks used by ingest, without indexing or LLM work. */
+async function fetchIngestDocument(
   url: string,
-  deps: IngestDeps,
-  opts: IngestOptions,
-): Promise<IngestResult> {
-  const { signal } = opts;
-  deps = { ...deps, parseLimits: deps.parseLimits ?? readParseLimits() };
-  opts.onProgress?.({ stage: 'fetching', detail: url });
+  deps: ReadDocumentDeps,
+  signal?: AbortSignal,
+): Promise<{
+  fetched: SafeFetchResult;
+  attachment: HistoryAttachment | undefined;
+}> {
   // WRAPPER_PAGE (with candidate links in `details`) propagates untouched for callers to offer.
   const newYork = resolveNewYork(url);
   const newJersey = newYork ? undefined : resolveNewJersey(url);
@@ -596,6 +623,43 @@ async function ingestWithinLimits(
       'FETCH_FAILED',
       'Fetched document id does not match its bytes.',
     );
+  return { fetched, attachment };
+}
+
+export async function fetchAndParseDocument(
+  url: string,
+  deps: ReadDocumentDeps,
+  signal?: AbortSignal,
+  /** False for a quote or an admission check: nothing is written to the fetch cache. */
+  options: { commitCache?: boolean } = {},
+): Promise<NormalizedDoc> {
+  const { fetched } = await fetchIngestDocument(url, deps, signal);
+  const doc = await parseFetched(fetched, deps, signal);
+  signal?.throwIfAborted();
+  if (options.commitCache !== false)
+    await fetched.commitCache?.().catch(() => undefined);
+  return doc;
+}
+
+async function ingestWithinLimits(
+  url: string,
+  deps: IngestDeps,
+  opts: IngestOptions,
+): Promise<IngestResult> {
+  const { signal } = opts;
+  deps = { ...deps, parseLimits: deps.parseLimits ?? readParseLimits() };
+  opts.onProgress?.({ stage: 'fetching', detail: url });
+  const { fetched, attachment } = await fetchIngestDocument(url, deps, signal);
+  const docId = fetched.docId;
+  if (deps.admitted && deps.admitted.docId !== docId)
+    throw new AppError(
+      'PAYMENT_REQUIRED',
+      'The bill changed after admission.',
+      {
+        userMessage:
+          'This bill changed after it was quoted. Please start again to get a new quote.',
+      },
+    );
   return withDocLock(docId, () =>
     ingestLocked(docId, fetched, deps, opts, attachment),
   );
@@ -641,6 +705,9 @@ async function ingestLocked(
     }
     const { chunks } = chunkAndEnrich(cached, deps, signal);
     progress({ stage: 'done', detail: 'reused' });
+    // Last, so a disk error above fails the job (no grant), and whenever the job settles ok the
+    // reader's result is already in hand.
+    await opts.onRegistered?.(docId);
     return {
       doc: summarize(touched),
       stats: buildStats(cached, chunks, 0, true),
@@ -666,7 +733,10 @@ async function ingestLocked(
     ({ doc, chunks } = chunkAndEnrich(cachedDoc, deps, signal));
   } else {
     progress({ stage: 'parsing' });
-    const parsed = await parseFetched(fetched, deps, signal);
+    const parsed =
+      deps.admitted?.docId === docId && deps.admitted.doc
+        ? deps.admitted.doc
+        : await parseFetched(fetched, deps, signal);
     signal?.throwIfAborted();
     // Raw bytes reach the disk cache only once they have parsed, so a page that fails to parse
     // (or is not a bill at all) never lands there. The cache is an optimization: a write failure
@@ -734,8 +804,7 @@ async function ingestLocked(
     await saveHistory(doc, deps, attachment);
     const spent = {
       embedTokens,
-      llmInputTokens: meter.usage.inputTokens,
-      llmOutputTokens: meter.usage.outputTokens,
+      ...registryLlmUsage(meter.usage),
     };
     if (known) {
       // Refresh recency (so the re-indexed doc is not next to be evicted) and count the spend.
@@ -766,6 +835,7 @@ async function ingestLocked(
     throw new AppError('BACKEND_UNAVAILABLE', undefined, { cause: error });
   }
 
+  await opts.onRegistered?.(docId);
   await enforceCap(deps, docId);
   progress({ stage: 'done' });
   return {

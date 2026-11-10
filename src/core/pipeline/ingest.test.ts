@@ -295,6 +295,25 @@ test('an unusable label leaves no half-indexed namespace behind', async () => {
   expect(env.fetches).toContain('https://other.gov/b.txt');
 });
 
+test('pin lookup failure during cap enforcement preserves all registered documents and indexes', async () => {
+  const pinned = vi.fn(() => {
+    throw new Error('Pin lookup failed');
+  });
+  const ids: string[] = [];
+  for (const label of ['one', 'two']) {
+    const url = `https://example.gov/${label}.txt`;
+    env.serve(
+      url,
+      { bytes: new TextEncoder().encode(`Section 1. ${label}\nA bill.`) },
+      'text/plain',
+    );
+    ids.push((await ingest(url, deps({ maxDocs: 1, pinned }))).doc.docId);
+  }
+  expect(pinned).toHaveBeenCalled();
+  expect(await env.registry.list()).toHaveLength(2);
+  for (const id of ids) expect(await env.backend.hasDocument(id)).toBe(true);
+});
+
 test('evicts the least recently used documents beyond the cap, from index, registry and answers', async () => {
   const cache = new AnswerCache({
     dir: join(env.registry.configDir, 'cache', 'answers'),
@@ -482,13 +501,23 @@ test('metadata extraction usage is reported', async () => {
   const real = env.provider.generateObject.bind(env.provider);
   vi.spyOn(env.provider, 'generateObject').mockImplementation(async (req) => {
     const out = await real(req);
-    return { ...out, usage: { inputTokens: 7, outputTokens: 3 } };
+    return {
+      ...out,
+      usage: {
+        inputTokens: 7,
+        outputTokens: 3,
+        cacheReadTokens: 4,
+        cacheWriteTokens: 2,
+      },
+    };
   });
   const result = await ingest('https://example.gov/gardens.txt', deps());
   expect(result.usage).toMatchObject({ llmInputTokens: 7, llmOutputTokens: 3 });
   expect((await env.registry.list())[0]?.usage).toMatchObject({
     llmInputTokens: 7,
     llmOutputTokens: 3,
+    llmCacheReadTokens: 4,
+    llmCacheWriteTokens: 2,
   });
 });
 
