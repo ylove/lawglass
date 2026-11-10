@@ -17,6 +17,15 @@ export interface JobSettlement {
     error?: unknown,
     extra?: { docId?: string; granted?: 'used' | 'unused' },
   ): Promise<void>;
+  /**
+   * Like `end`, but tells the caller SYNCHRONOUSLY whether this call won the exactly-once race
+   * (`won`), so work that must follow only a winning end can run in the same tick.
+   */
+  tryEnd(
+    outcome: JobOutcome,
+    error?: unknown,
+    extra?: { docId?: string; granted?: 'used' | 'unused' },
+  ): { won: boolean; done: Promise<void> };
   /** `failed` with the error, or `aborted` when the request's reader had already gone. */
   fail(error: unknown, extra?: { docId?: string }): Promise<void>;
   /** Some of the answer reached the reader (a streamed token or frame). */
@@ -42,9 +51,18 @@ export function createSettlement(input: {
   const job: JobContext = { ...input.context };
   let ended = false;
   let partial = false;
-  const end: JobSettlement['end'] = async (outcome, error, extra) => {
-    if (ended) return;
+  const tryEnd: JobSettlement['tryEnd'] = (outcome, error, extra) => {
+    if (ended) return { won: false, done: Promise.resolve() };
     ended = true;
+    return { won: true, done: deliver(outcome, error, extra) };
+  };
+  const end: JobSettlement['end'] = (outcome, error, extra) =>
+    tryEnd(outcome, error, extra).done;
+  const deliver = async (
+    outcome: JobOutcome,
+    error: unknown,
+    extra: { docId?: string; granted?: 'used' | 'unused' } | undefined,
+  ): Promise<void> => {
     const event: JobEnd = {
       job: {
         ...job,
@@ -69,6 +87,7 @@ export function createSettlement(input: {
       partial = true;
     },
     end,
+    tryEnd,
     fail: (error, extra) =>
       input.signal?.aborted
         ? end('aborted', undefined, extra)

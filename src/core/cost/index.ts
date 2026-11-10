@@ -26,6 +26,8 @@ export {
 } from './usage.js';
 export {
   addBudget,
+  bumpGrantEpoch,
+  grantEpoch,
   assertBudget,
   canSpend,
   spendGateOpen,

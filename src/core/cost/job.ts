@@ -63,6 +63,8 @@ export interface JobSpend {
   exhausted: boolean;
   /** Why the latest call was refused, so a run that ends early can say so. */
   refusal: StopCause | undefined;
+  /** The model of the latest charged call, to price a budget in another unit. */
+  lastModel: string | undefined;
 }
 
 /** Why a job's model calls were refused. */
@@ -75,6 +77,7 @@ export function newSpend(): JobSpend {
     calls: 0,
     exhausted: false,
     refusal: undefined,
+    lastModel: undefined,
   };
 }
 
@@ -180,30 +183,94 @@ export function topUp(live: JobScope, paid: JobScope): void {
   Object.assign(live.spent, newSpend());
 }
 
+/** Dollars per token at the dearest of the model's rates, so a conversion never allows more than the old ceiling did. */
+function dollarsPerToken(scope: JobScope): number | undefined {
+  const model =
+    scope.spent.lastModel ?? scope.models?.answer ?? scope.models?.extract;
+  if (!model) return undefined;
+  try {
+    const price = modelPrice(model, scope.prices);
+    return Math.max(price.input, price.output) / 1_000_000;
+  } catch {
+    return undefined;
+  }
+}
+
+const unitsOf = (b: JobBudget): string =>
+  `${b.tokens === undefined ? '' : 't'}${b.dollars === undefined ? '' : 'd'}`;
+
 /**
  * A new admission pays for a (document, tier) whose scope still has budget: its budget is added
  * to the live one, and later calls are reported under the new job and reference. Nothing a
- * reader paid for is dropped. An unbounded scope is left as it is.
+ * reader paid for is dropped. An unbounded scope is left as it is. Budgets in the same unit are
+ * summed; in different units both become dollars at the scope's model prices (or, for a model
+ * with no price, the grant replaces the old ceiling), so a grant is never capped by the old unit.
  */
 export function addBudget(live: JobScope, paid: JobScope): void {
   // An unbounded scope needs no grant: it keeps its first admission and its attribution.
   if (live.budget === undefined) return;
   const sum = (a: number | undefined, b: number | undefined) =>
     a === undefined ? b : b === undefined ? a : a + b;
-  const tokens = sum(live.budget.tokens, paid.budget?.tokens);
-  const dollars = sum(live.budget.dollars, paid.budget?.dollars);
-  // An unbounded grant makes the scope unbounded.
-  live.budget =
-    paid.budget === undefined
-      ? undefined
-      : {
-          ...(tokens === undefined ? {} : { tokens }),
-          ...(dollars === undefined ? {} : { dollars }),
-        };
+  if (paid.budget === undefined) {
+    // An unbounded grant makes the scope unbounded.
+    live.budget = undefined;
+  } else if (unitsOf(live.budget) === unitsOf(paid.budget)) {
+    const tokens = sum(live.budget.tokens, paid.budget.tokens);
+    const dollars = sum(live.budget.dollars, paid.budget.dollars);
+    live.budget = {
+      ...(tokens === undefined ? {} : { tokens }),
+      ...(dollars === undefined ? {} : { dollars }),
+    };
+  } else {
+    const rate = dollarsPerToken(live);
+    const lastModel = live.spent.lastModel;
+    if (rate === undefined) {
+      live.budget = paid.budget;
+    } else {
+      const inDollars = (b: JobBudget, spent: JobSpend): number => {
+        const left = [
+          b.dollars === undefined ? undefined : b.dollars - spent.dollars,
+          b.tokens === undefined ? undefined : (b.tokens - spent.tokens) * rate,
+        ].filter((n): n is number => n !== undefined);
+        return Math.max(0, Math.min(...left));
+      };
+      live.budget = {
+        dollars:
+          inDollars(live.budget, live.spent) +
+          inDollars(paid.budget, newSpend()),
+      };
+    }
+    // Dollars were not being counted under the old unit: start the new ceiling from zero spent.
+    Object.assign(live.spent, newSpend(), { lastModel });
+  }
   live.context.jobId = paid.context.jobId;
   live.context.readerId = paid.context.readerId;
   if (paid.context.ref === undefined) delete live.context.ref;
   else live.context.ref = paid.context.ref;
+}
+
+// --- grant epochs ----------------------------------------------------------------------------
+
+const epochs = new Map<string, number>();
+const EPOCH_CAP = 10_000;
+
+/**
+ * Counts the grants a (document, tier) has received. A stop mark or cool-down remembers the
+ * epoch its run STARTED in; one from an older epoch is ignored, so a refusal that lands just
+ * after someone paid never makes the payer wait.
+ */
+export function grantEpoch(docId: string, tier: string): number {
+  return epochs.get(`${docId}\n${tier}`) ?? 0;
+}
+
+export function bumpGrantEpoch(docId: string, tier: string): void {
+  const key = `${docId}\n${tier}`;
+  if (epochs.size >= EPOCH_CAP && !epochs.has(key))
+    for (const oldest of epochs.keys()) {
+      epochs.delete(oldest);
+      break;
+    }
+  epochs.set(key, (epochs.get(key) ?? 0) + 1);
 }
 
 export function isBudgetExhausted(error: unknown): boolean {
@@ -227,6 +294,7 @@ export function chargeJob(
 ): void {
   const { spent } = scope;
   spent.calls += 1;
+  spent.lastModel = model;
   spent.tokens += usage.inputTokens + usage.outputTokens;
   if (scope.budget?.dollars === undefined) return;
   try {

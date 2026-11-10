@@ -41,6 +41,7 @@ import {
   type BillFacts,
   type FeatureEstimate,
   addBudget,
+  bumpGrantEpoch,
   budgetRemaining,
   topUp,
   type JobKind,
@@ -666,6 +667,8 @@ export function createApp(
   /** Forget failure cool-downs and let budget-stopped runs go on, for a document just paid for. */
   function resumeDoc(docId: string, live: JobScope): void {
     // Only this (document, tier) was paid for: another tier's failures and stops stay as they are.
+    // A grant: marks recorded by runs that started before it are stale from now on.
+    bumpGrantEpoch(docId, tierName(live.models));
     summary.resume?.(docId, tierName(live.models));
     // Work that goes on runs in the live scope of the (document, tier), never in the caller's.
     breakdown.resume?.(docId, live);
@@ -1454,6 +1457,9 @@ export function createApp(
         settlement?: JobSettlement | undefined;
         /** Everything already exists for the reader's tier: the grant will have nothing to do. */
         docComplete?: boolean;
+        /** The host's saved scope for the document and tier, resolved before the ingest starts. */
+        saved?: SavedScope | undefined;
+        savedResolved?: boolean;
       }
     | undefined
   > {
@@ -1501,12 +1507,34 @@ export function createApp(
       { kind: 'ingest', docId: admitted.docId },
       { budget, models, ref },
     );
+    // Only a job the host admitted has an end to report.
+    const settlement = options.admission ? settlementFor(c, scope) : undefined;
+    // Asked now, before the ingest starts and before this job can end: a host that credits its
+    // ledger when the job ends `ok` is never consulted after its own credit, so the grant the
+    // server adds to a restored scope is counted exactly once.
+    let saved: SavedScope | undefined;
+    if (options.backgroundScope) {
+      try {
+        saved = await lookupSaved(
+          admitted.docId,
+          tierName(models),
+          models,
+        ).catch(() => undefined);
+        if (saved?.budget !== undefined && !validBudget(saved.budget))
+          throw new Error('Invalid job budget.');
+      } catch (error) {
+        // A saved scope that cannot be used: no work has started, so the job fails here.
+        await settlement?.end('failed', error);
+        throw error;
+      }
+    }
     return {
       scope,
       admitted,
       docComplete,
-      // Only a job the host admitted has an end to report.
-      settlement: options.admission ? settlementFor(c, scope) : undefined,
+      settlement,
+      saved,
+      savedResolved: options.backgroundScope !== undefined,
     };
   }
 
@@ -1545,40 +1573,42 @@ export function createApp(
       host: sourceHost,
       ms: 0,
     });
-    /** Makes this admission's scope (and grant) the document's, as soon as it is registered. */
-    const installPaidScope = async (docId: string): Promise<void> => {
-      if (scope) {
-        // The first admitted ingest of a document owns its background generation.
-        scope.context.docId = docId;
-        const tier = tierName(scope.models);
-        const key = scopeKey(docId, tier);
-        const live = docScopes.get(key);
-        if (live) {
-          // A new admission pays for the document again. If the old budget is spent,
-          // the new one takes its place; if not, it is added to what is left. Either
-          // way later calls are reported under the new job, and stopped work goes on.
-          if (!budgetRemaining(live)) topUp(live, scope);
-          else addBudget(live, scope);
-          resumeDoc(docId, live);
-        } else {
-          // After a restart the host may already hold this tier's scope (and what is
-          // left of its budget); that wins over the scope of the ingest that came first.
-          const saved = await lookupSaved(docId, tier, scope.models).catch(
-            () => undefined,
-          );
-          if (!docScopes.has(key)) {
-            const restored = saved
-              ? scopeFromSaved(c, docId, saved, scope.models)
-              : scope;
-            installScope(key, restored);
-            // The host's saved scope may be spent; this admission just paid.
-            if (restored !== scope) {
-              if (!budgetRemaining(restored)) topUp(restored, scope);
-              else addBudget(restored, scope);
-              resumeDoc(docId, restored);
-            }
-          }
-        }
+    /**
+     * Makes this admission's scope (and grant) the document's. Synchronous on purpose: it runs in
+     * the same tick as the job's `ok`, so no reader, request or host lookup can come between
+     * "settled" and "installed". The host's saved scope was resolved at admission.
+     */
+    const installPaidScope = (
+      docId: string,
+      saved: SavedScope | undefined,
+    ): void => {
+      if (!scope) return;
+      // The first admitted ingest of a document owns its background generation.
+      scope.context.docId = docId;
+      const tier = tierName(scope.models);
+      const key = scopeKey(docId, tier);
+      const live = docScopes.get(key);
+      if (live) {
+        // A new admission pays for the document again. If the old budget is spent, the new
+        // one takes its place; if not, it is added to what is left. Either way later calls are
+        // reported under the new job, and stopped work goes on. Whoever installed the live
+        // scope (another ingest, or a reader's generating request after a restart), the grant
+        // is added to it, never dropped.
+        if (!budgetRemaining(live)) topUp(live, scope);
+        else addBudget(live, scope);
+        resumeDoc(docId, live);
+        return;
+      }
+      // After a restart the host may already hold this tier's scope (and what is left of its
+      // budget, excluding this grant); that wins over the scope of the ingest that came first.
+      const restored = saved
+        ? scopeFromSaved(c, docId, saved, scope.models)
+        : scope;
+      installScope(key, restored);
+      if (restored !== scope) {
+        if (!budgetRemaining(restored)) topUp(restored, scope);
+        else addBudget(restored, scope);
+        resumeDoc(docId, restored);
       }
     };
     return sse<IngestEvent>(
@@ -1622,12 +1652,26 @@ export function createApp(
                 // turn a registered document into an `aborted` job, and the grant is the
                 // document's whether or not they stay. `granted` is what admission saw.
                 onRegistered: async (docId) => {
-                  const ended = settlement?.end('ok', undefined, {
+                  const ended = settlement?.tryEnd('ok', undefined, {
                     docId,
                     granted: admission?.docComplete ? 'unused' : 'used',
                   });
-                  await installPaidScope(docId);
-                  await ended;
+                  // The reader left (or the job failed) first: the host will release this
+                  // admission, so its grant must not be installed or spent.
+                  if (ended && !ended.won) return;
+                  // Only a server without `admission` reaches this lookup: nobody settles a
+                  // job there, and the document id was not known earlier.
+                  const saved = admission?.savedResolved
+                    ? admission.saved
+                    : scope && options.backgroundScope
+                      ? await lookupSaved(
+                          docId,
+                          tierName(scope.models),
+                          scope.models,
+                        ).catch(() => undefined)
+                      : undefined;
+                  installPaidScope(docId, saved);
+                  await ended?.done;
                 },
                 onProgress: (p) => {
                   emit({ type: 'progress', ...stripUndefined(p) });

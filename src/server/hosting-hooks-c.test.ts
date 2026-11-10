@@ -16,6 +16,7 @@ import {
 import { makeSectionedText } from '../../tests/synth/index.js';
 import { envVar } from '../core/brand.js';
 import {
+  addBudget,
   currentJob,
   newSpend,
   runInJob,
@@ -1224,7 +1225,11 @@ describe('a tier with budget does not wait behind another tier on a shared break
 });
 
 describe('settling an ingest the moment it is registered', () => {
-  test('a reader who leaves while the grant is being installed still settles ok/full, and the grant is installed', async () => {
+  /** Runs an ingest, holds `hold` open, aborts the request, then releases. */
+  async function abortWhileHeld(options: {
+    install: (hold: () => Promise<void>) => void;
+    admission?: AppOptions['admission'];
+  }) {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -1232,14 +1237,12 @@ describe('settling an ingest the moment it is registered', () => {
     let held = false;
     const ends: JobEnd[] = [];
     const usage: UsageEvent[] = [];
+    options.install(async () => {
+      held = true;
+      await gate;
+    });
     const a = app({
-      admission: allowWithRef,
-      // The window after registration: the host is asked what it saved for this document.
-      backgroundScope: async () => {
-        held = true;
-        await gate;
-        return undefined;
-      },
+      admission: options.admission ?? allowWithRef,
       onUsage: (e) => void usage.push(e),
       onJobEnd: (e) => void ends.push(e),
     });
@@ -1255,27 +1258,102 @@ describe('settling an ingest the moment it is registered', () => {
     controller.abort();
     await reader?.cancel().catch(() => undefined);
     await sleep(200);
-    expect(ends).toHaveLength(1);
-    expect(ends[0]).toMatchObject({
+    release();
+    await sleep(400);
+    const docs = await env.registry.list();
+    const mark = usage.length;
+    if (docs[0]) {
+      await call(a, `/api/docs/${docs[0].docId}/summary`);
+      await sleep(600);
+    }
+    return { ends, docs, laterCalls: usage.slice(mark) };
+  }
+
+  test('a reader who leaves while the document is being written is aborted, and the grant is never installed', async () => {
+    const out = await abortWhileHeld({
+      install: (hold) => {
+        const add = env.registry.add.bind(env.registry);
+        vi.spyOn(env.registry, 'add').mockImplementation(async (...args) => {
+          await hold();
+          return add(...args);
+        });
+      },
+    });
+    expect(out.ends).toHaveLength(1);
+    expect(out.ends[0]).toMatchObject({
+      outcome: 'aborted',
+      delivered: 'none',
+    });
+    // The host releases this admission, so nothing may be spent under its ref.
+    expect(out.laterCalls).toEqual([]);
+  });
+
+  test('the same on the reused-document path', async () => {
+    await ingestDoc(app()); // already registered and indexed
+    const out = await abortWhileHeld({
+      install: (hold) => {
+        const touch = env.registry.touch.bind(env.registry);
+        vi.spyOn(env.registry, 'touch').mockImplementation(async (...args) => {
+          await hold();
+          return touch(...args);
+        });
+      },
+    });
+    expect(out.ends).toHaveLength(1);
+    expect(out.ends[0]?.outcome).toBe('aborted');
+    expect(out.laterCalls).toEqual([]);
+  });
+
+  test('a reader who leaves after the document is registered still settles ok/full, and the grant is installed', async () => {
+    let registered = false;
+    const out = await abortWhileHeld({
+      install: (hold) => {
+        const add = env.registry.add.bind(env.registry);
+        vi.spyOn(env.registry, 'add').mockImplementation(async (...args) => {
+          const entry = await add(...args);
+          registered = true;
+          return entry;
+        });
+        // The cap check right after registration is held.
+        const candidates = env.registry.evictionCandidates.bind(env.registry);
+        vi.spyOn(env.registry, 'evictionCandidates').mockImplementation(
+          async (...args) => {
+            if (registered) await hold();
+            return candidates(...args);
+          },
+        );
+      },
+    });
+    expect(out.ends).toHaveLength(1);
+    expect(out.ends[0]).toMatchObject({
       outcome: 'ok',
       delivered: 'full',
       granted: 'used',
       ref: 'ref-ingest',
     });
-    release();
-    await sleep(300);
-    expect(ends).toHaveLength(1);
-    const docs = await env.registry.list();
-    expect(docs).toHaveLength(1);
-    // The grant was installed after the reader left: the document's generation runs under it.
-    const mark = usage.length;
-    await call(a, `/api/docs/${docs[0]?.docId ?? ''}/summary`);
-    await vi.waitFor(() => {
-      expect(usage.length).toBeGreaterThan(mark);
-    });
-    expect(new Set(usage.slice(mark).map((e) => e.job?.ref))).toEqual(
+    expect(out.docs).toHaveLength(1);
+    expect(out.laterCalls.length).toBeGreaterThan(0);
+    expect(new Set(out.laterCalls.map((e) => e.job?.ref))).toEqual(
       new Set(['ref-ingest']),
     );
+  });
+
+  test('a saved scope that is invalid fails the ingest before any work, never ok with no grant', async () => {
+    const calls = modelCalls();
+    const ends: JobEnd[] = [];
+    const a = app({
+      admission: allowWithRef,
+      backgroundScope: () =>
+        Promise.resolve({ budget: { tokens: -5 } } as never),
+      onJobEnd: (e) => void ends.push(e),
+    });
+    const res = await call(a, '/api/ingest', { body: { url } });
+    expect(res.status).toBe(500);
+    await sleep(100);
+    expect(calls()).toBe(0);
+    expect(await env.registry.list()).toEqual([]);
+    expect(ends).toHaveLength(1);
+    expect(ends[0]).toMatchObject({ outcome: 'failed', delivered: 'none' });
   });
 });
 
@@ -1359,4 +1437,188 @@ describe('attribution when a top-up lands during a call', () => {
     expect(refs.slice(0, 2)).toEqual(['ref-alice', 'ref-alice']);
     expect(new Set(refs.slice(2))).toEqual(new Set(['ref-bob']));
   }, 40_000);
+});
+
+describe('a restored scope counts a grant once, whoever credits what and when', () => {
+  test('a host that credits its ledger when the ingest ends ok is not consulted after its own credit', async () => {
+    const docId = await ingestDoc(app()); // an earlier process
+    const budgets: (number | undefined)[] = [];
+    const original = provider.generateObject.bind(provider);
+    vi.spyOn(provider, 'generateObject').mockImplementation((req) => {
+      if (req.schemaName === 'section_briefs')
+        budgets.push(currentJob()?.budget?.tokens);
+      return original(req);
+    });
+    const ledger = { remaining: 30 };
+    const order: string[] = [];
+    const a = app({
+      admission: (_c, job) =>
+        Promise.resolve({
+          allow: true,
+          ref: 'ref-bob',
+          ...(job.kind === 'ingest' ? { budget: { tokens: 30 } } : {}),
+        }),
+      backgroundScope: () => {
+        order.push(`lookup ${String(ledger.remaining)}`);
+        return Promise.resolve({ budget: { tokens: ledger.remaining } });
+      },
+      onJobEnd: async (end) => {
+        order.push(`end ${end.outcome}`);
+        await sleep(1);
+        // The natural bookkeeping: the grant joins the ledger when the job ends ok.
+        if (end.outcome === 'ok') ledger.remaining += 30;
+      },
+    });
+    await ingestDoc(a, 'bob');
+    await call(a, `/api/docs/${docId}/breakdown`);
+    await vi.waitFor(() => {
+      expect(budgets.length).toBeGreaterThan(0);
+    });
+    expect(order).toEqual(['lookup 30', 'end ok']);
+    expect(budgets[0]).toBe(60);
+  });
+
+  test("a reader's generating request waiting on the host does not take the payer's grant", async () => {
+    env.serve(url, manyParts(40), 'text/plain');
+    const docId = await ingestDoc(app()); // an earlier process
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let asked = 0;
+    const budgets: (number | undefined)[] = [];
+    const original = provider.generateObject.bind(provider);
+    vi.spyOn(provider, 'generateObject').mockImplementation((req) => {
+      if (req.schemaName === 'section_briefs')
+        budgets.push(currentJob()?.budget?.tokens);
+      return original(req);
+    });
+    const a = app({
+      breakdownMaxUnits: 'all',
+      pregenerateExamples: 'off',
+      admission: (c, job) =>
+        Promise.resolve({
+          allow: true,
+          ref: `ref-${c.req.header('x-reader') ?? ''}`,
+          ...(job.kind === 'ingest' ? { budget: { tokens: 1e6 } } : {}),
+        }),
+      backgroundScope: async () => {
+        asked++;
+        await gate;
+        return { budget: { tokens: 30 } };
+      },
+    });
+    // Carol's generating request starts waiting on the host first; then bob pays.
+    const carol = call(a, `/api/docs/${docId}/breakdown`, { reader: 'carol' });
+    await vi.waitFor(() => {
+      expect(asked).toBe(1);
+    });
+    const bob = ingestDoc(a, 'bob');
+    await sleep(100);
+    release();
+    await Promise.all([carol, bob]);
+    await vi.waitFor(
+      async () => {
+        const r = (await (
+          await call(a, `/api/docs/${docId}/breakdown`, { reader: 'bob' })
+        ).json()) as { status: string; briefs?: unknown[] };
+        expect(r.status).toBe('cached');
+        expect(r.briefs).toHaveLength(40);
+      },
+      { timeout: 20_000 },
+    );
+    expect(Math.max(...budgets.map((b) => b ?? 0))).toBeGreaterThanOrEqual(
+      1_000_000,
+    );
+  }, 40_000);
+});
+
+describe('a payer never waits behind a refusal that landed after they paid', () => {
+  test("carol's zero-budget generating requests in the install window do not cool down bob's tier", async () => {
+    env.serve(url, manyParts(40), 'text/plain');
+    const docId = await ingestDoc(app()); // an earlier process
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let asked = 0;
+    const a = app({
+      breakdownMaxUnits: 'all',
+      pregenerateExamples: 'off',
+      admission: (c, job) =>
+        Promise.resolve({
+          allow: true,
+          ref: `ref-${c.req.header('x-reader') ?? ''}`,
+          ...(job.kind === 'ingest' ? { budget: { tokens: 1e9 } } : {}),
+        }),
+      // The host knows nothing about this document yet.
+      backgroundScope: async () => {
+        asked++;
+        await gate;
+        return undefined;
+      },
+    });
+    const carol = Promise.all([
+      call(a, `/api/docs/${docId}/summary`, { reader: 'carol' }),
+      call(a, `/api/docs/${docId}/breakdown`, { reader: 'carol' }),
+    ]);
+    await vi.waitFor(() => {
+      expect(asked).toBe(1);
+    });
+    const bob = ingestDoc(a, 'bob');
+    await sleep(100);
+    release();
+    await Promise.all([carol, bob]);
+    // No clock moves: the payer is served now, not after a cool-down meant for a refusal.
+    for (const path of ['summary', 'breakdown'])
+      await vi.waitFor(
+        async () => {
+          const r = (await (
+            await call(a, `/api/docs/${docId}/${path}`, { reader: 'bob' })
+          ).json()) as { status: string };
+          expect(r.status).toBe('cached');
+        },
+        { timeout: 20_000 },
+      );
+  }, 60_000);
+});
+
+describe('a grant in another unit', () => {
+  const scope = (
+    budget: JobScope['budget'],
+    extra: Partial<JobScope> = {},
+  ): JobScope => ({
+    context: { readerId: 'r', jobKind: 'ingest', jobId: 'j', ref: 'r1' },
+    budget,
+    models: { answer: 'tier-a' },
+    prices: PRICES,
+    spent: newSpend(),
+    ...extra,
+  });
+
+  test('units that match are summed', () => {
+    const live = scope({ tokens: 30 });
+    addBudget(live, scope({ tokens: 20 }));
+    expect(live.budget).toEqual({ tokens: 50 });
+  });
+
+  test('a dollars grant is never capped by the old token ceiling', () => {
+    const live = scope({ tokens: 1_000_000 });
+    live.spent.tokens = 400_000;
+    live.spent.lastModel = 'tier-a';
+    const paid = scope({ dollars: 5 });
+    paid.context.ref = 'bob';
+    addBudget(live, paid);
+    // 600,000 tokens left at $1/MTok is $0.60, plus the $5 grant; spending starts again from zero.
+    expect(live.budget?.tokens).toBeUndefined();
+    expect(live.budget?.dollars).toBeCloseTo(5.6, 6);
+    expect(live.spent.tokens).toBe(0);
+    expect(live.context.ref).toBe('bob');
+  });
+
+  test('with no price for the model the grant replaces the old ceiling', () => {
+    const live = scope({ tokens: 30 }, { models: { answer: 'unpriced' } });
+    addBudget(live, scope({ dollars: 5 }));
+    expect(live.budget).toEqual({ dollars: 5 });
+  });
 });

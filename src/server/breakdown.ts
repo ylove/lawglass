@@ -25,6 +25,7 @@ import {
   canSpend,
   currentJob,
   currentTier,
+  grantEpoch,
   isBudgetExhausted,
   isSpendGateStop,
   runInJob,
@@ -134,6 +135,8 @@ export interface BreakdownService {
     docId: string,
     tier?: string,
     reason?: StoppedReason,
+    /** The grant epoch the stopped run began in. */
+    epoch?: number,
   ): void;
   subscribe?(listener: (docId: string) => void): void;
 }
@@ -167,6 +170,8 @@ interface ExamplePass {
   running: boolean;
   failures: number;
   stoppedAt: number | undefined;
+  /** The grant epoch the pass last started in; a stop from an older one is stale. */
+  epoch: number;
   /** The job the pass belongs to; every call it makes runs in it. */
   scope: JobScope | undefined;
 }
@@ -198,6 +203,12 @@ export function createBreakdownService(
     { briefs: readonly SectionBrief[]; done: number; total: number }
   >();
   const failedAt = new Map<string, number>();
+  /** The grant epoch each failure's run started in: a refusal landing after a grant is stale. */
+  const failedEpoch = new Map<string, number>();
+  const docOf = (name: string): string => name.slice(0, name.indexOf(':'));
+  const staleMark = (name: string, epoch: number | undefined): boolean =>
+    epoch !== undefined &&
+    epoch < grantEpoch(docOf(name), nameTier.get(name) ?? currentTier());
   /** The tier each failure or stop belongs to, so a top-up on one tier leaves the others alone. */
   const nameTier = new Map<string, string>();
   /** Failures caused by the host's spend gate: over as soon as it reopens. */
@@ -207,25 +218,34 @@ export function createBreakdownService(
   /** When the picture drawing of a document ended on a spent budget (reported by pictures). */
   const picturesStoppedAt = new Map<
     string,
-    { at: number; reason: StoppedReason }
+    { at: number; reason: StoppedReason; epoch: number }
   >();
   /** Why the examples or pictures of a document are missing, while that still holds. */
   function docStopReason(docId: string): StoppedReason | undefined {
     const mark = picturesStoppedAt.get(passKey(docId));
     if (
       mark &&
+      mark.epoch >= grantEpoch(docId, currentTier()) &&
       (mark.reason === 'spend_gate'
         ? !spendGateOpen()
         : now() - mark.at < FAILED_RETRY_MS)
     )
       return mark.reason;
     const examples = examplesStopped.get(passKey(docId));
+    const pass = examplePasses.get(passKey(docId));
+    if (pass && pass.epoch < grantEpoch(docId, currentTier())) return undefined;
     return examples === 'spend_gate' && spendGateOpen() ? undefined : examples;
   }
   // Runs the job's budget cut short. Their briefs are shown for a while but never cached as final.
   const stopped = new Map<
     string,
-    { at: number; briefs: SectionBrief[]; reason: StoppedReason; tier: string }
+    {
+      at: number;
+      briefs: SectionBrief[];
+      reason: StoppedReason;
+      tier: string;
+      epoch: number;
+    }
   >();
 
   /** Wake waiters when a run ends, whatever the outcome. */
@@ -236,15 +256,22 @@ export function createBreakdownService(
     for (const finish of waiters ?? []) finish();
   }
 
+  /** Records a failure of the run that started in `epoch`. */
+  function markFailed(name: string, epoch: number): void {
+    failedAt.set(name, now());
+    failedEpoch.set(name, epoch);
+  }
+
   /** True while the name is cooling down after a failure; clears the mark once it is over. */
   function coolingDown(name: string): boolean {
     const failed = failedAt.get(name);
     if (failed === undefined) return false;
-    if (
-      gateFailed.has(name) ? !spendGateOpen() : now() - failed < FAILED_RETRY_MS
-    )
-      return true;
+    const cooling = gateFailed.has(name)
+      ? !spendGateOpen()
+      : now() - failed < FAILED_RETRY_MS;
+    if (cooling && !staleMark(name, failedEpoch.get(name))) return true;
     failedAt.delete(name);
+    failedEpoch.delete(name);
     gateFailed.delete(name);
     return false;
   }
@@ -280,6 +307,7 @@ export function createBreakdownService(
   ): void {
     const started = now();
     nameTier.set(name, currentTier());
+    const epoch = grantEpoch(docId, currentTier());
     running.set(name, new Set());
     void (async () => {
       // Never compete with the summary the reader is waiting for.
@@ -316,8 +344,9 @@ export function createBreakdownService(
           ],
           reason: reasonOf(stopCause()),
           tier: currentTier(),
+          epoch,
         });
-      } else if (!stored) failedAt.set(name, now());
+      } else if (!stored) markFailed(name, epoch);
       else {
         stopped.delete(name);
         startPregeneration(docId, stored.briefs, stored.context);
@@ -327,14 +356,15 @@ export function createBreakdownService(
       .catch((error: unknown) => {
         if (isBudgetExhausted(error)) {
           // A spent budget is not a failure to cool down from; a closed gate resumes when it opens.
-          if (!isSpendGateStop(error)) failedAt.set(name, now());
+          if (!isSpendGateStop(error)) markFailed(name, epoch);
           stopped.set(name, {
             at: now(),
             briefs: [...(progress.get(name)?.briefs ?? [])],
             reason: reasonOf(stopCause()),
             tier: currentTier(),
+            epoch,
           });
-        } else failedAt.set(name, now());
+        } else markFailed(name, epoch);
         onError?.(error, now() - started);
       })
       .finally(() => {
@@ -451,6 +481,8 @@ export function createBreakdownService(
         (halted.reason === 'spend_gate' ||
           // Another tier's stop is no reason for this tier, which has budget, to wait.
           halted.tier !== currentTier() ||
+          // Someone paid after this run began: its stop says nothing about the new grant.
+          halted.epoch < grantEpoch(docId, halted.tier) ||
           now() - halted.at >= FAILED_RETRY_MS);
       if (!mayResume) {
         const counts = {
@@ -513,6 +545,7 @@ export function createBreakdownService(
   ): Promise<void> {
     const started = now();
     nameTier.set(name, currentTier());
+    const epoch = grantEpoch(docId, currentTier());
     running.set(name, new Set());
     return runSectionExample(docId, sectionId, {
       background,
@@ -528,7 +561,7 @@ export function createBreakdownService(
         // Stored (a validated "no honest example" counts: it is a stored result).
         () => settlement?.end('ok'),
         (error: unknown) => {
-          failedAt.set(name, now());
+          markFailed(name, epoch);
           if (isSpendGateStop(error)) gateFailed.add(name);
           onError?.(error, now() - started);
           return settlement?.end('failed', error);
@@ -712,6 +745,7 @@ export function createBreakdownService(
         running: false,
         failures: 0,
         stoppedAt: undefined,
+        epoch: grantEpoch(docId, currentTier()),
         scope: currentJob(),
       };
       examplePasses.set(k, pass);
@@ -720,7 +754,10 @@ export function createBreakdownService(
       // Ended early (failures or a spent budget): try again only after the usual cool-down. A
       // closed spend gate is no verdict on the budget: go on as soon as it reopens.
       const gateStop = examplesStopped.get(k) === 'spend_gate';
+      // A grant since the pass began says its stop no longer holds.
+      const stale = pass.epoch < grantEpoch(docId, currentTier());
       if (
+        !stale &&
         !(gateStop && canSpend(pass.scope)) &&
         now() - pass.stoppedAt < FAILED_RETRY_MS
       )
@@ -738,6 +775,7 @@ export function createBreakdownService(
     }
     if (pass.running || pass.queue.length === 0) return;
     pass.running = true;
+    pass.epoch = grantEpoch(docId, currentTier());
     // The caller's scope may belong to another request; the pass keeps the one it was made in.
     void runInJob(pass.scope, () => drainExamples(docId, pass));
   }
@@ -882,8 +920,17 @@ export function createBreakdownService(
     progressivePictures: isFullCoverage(unitCap),
     resume,
     examplesComplete,
-    reportPicturesStopped: (docId, tier, reason = 'budget_exhausted') => {
-      picturesStoppedAt.set(passKey(docId, tier), { at: now(), reason });
+    reportPicturesStopped: (
+      docId,
+      tier,
+      reason = 'budget_exhausted',
+      epoch = grantEpoch(docId, tier ?? currentTier()),
+    ) => {
+      picturesStoppedAt.set(passKey(docId, tier), {
+        at: now(),
+        reason,
+        epoch,
+      });
     },
     subscribe: (listener) => {
       listeners.push(listener);

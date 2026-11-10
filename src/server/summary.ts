@@ -24,6 +24,7 @@ import type { SummaryResponse } from '../core/model/index.js';
 import { ask } from '../core/pipeline/index.js';
 import {
   currentTier,
+  grantEpoch,
   isSpendGateStop,
   spendGateOpen,
 } from '../core/cost/job.js';
@@ -159,6 +160,8 @@ export function createSummaryService(
   const failedAt = new Map<string, number>();
   const failedDoc = new Map<string, string>();
   const failedTier = new Map<string, string>();
+  /** The grant epoch each failed run started in: a refusal landing after a grant is stale. */
+  const failedEpoch = new Map<string, number>();
   /** Failures caused by the host's spend gate: over as soon as it reopens. */
   const gateFailed = new Set<string>();
 
@@ -177,6 +180,7 @@ export function createSummaryService(
   ): void {
     const started = now();
     const tier = currentTier();
+    const epoch = grantEpoch(docId, tier);
     const provider = runtime.answerProvider;
     const waiters = new Set<() => void>();
     running.set(name, waiters);
@@ -209,12 +213,14 @@ export function createSummaryService(
             failedAt.set(name, now());
             failedDoc.set(name, docId);
             failedTier.set(name, tier);
+            failedEpoch.set(name, epoch);
           }
         },
         (error: unknown) => {
           failedAt.set(name, now());
           failedDoc.set(name, docId);
           failedTier.set(name, tier);
+          failedEpoch.set(name, epoch);
           if (isSpendGateStop(error)) gateFailed.add(name);
           onError?.(error, now() - started);
         },
@@ -290,9 +296,15 @@ export function createSummaryService(
       const failed = failedAt.get(name);
       if (failed !== undefined) {
         // A closed spend gate is over the moment it reopens; other failures cool down.
-        const cooling = gateFailed.has(name)
-          ? !spendGateOpen()
-          : now() - failed < FAILED_RETRY_MS;
+        const born = failedEpoch.get(name);
+        const stale =
+          born !== undefined &&
+          born < grantEpoch(docId, failedTier.get(name) ?? currentTier());
+        const cooling =
+          !stale &&
+          (gateFailed.has(name)
+            ? !spendGateOpen()
+            : now() - failed < FAILED_RETRY_MS);
         if (cooling) return { status: 'disabled' };
         failedAt.delete(name);
         gateFailed.delete(name);

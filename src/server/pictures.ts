@@ -13,6 +13,7 @@ import {
   canSpend,
   currentJob,
   currentTier,
+  grantEpoch,
   isBudgetExhausted,
   isSpendGateStop,
   runInJob,
@@ -132,6 +133,8 @@ export function createPictureService(
     });
   const running = new Map<string, Set<() => void>>();
   const failedAt = new Map<string, number>();
+  /** The grant epoch each failure's draw started in: a refusal landing after a grant is stale. */
+  const failedEpoch = new Map<string, number>();
   /** The tier each failure or stop belongs to: a top-up on one tier leaves the others' marks. */
   const markTier = new Map<string, string>();
   /** Failures caused by the host's spend gate: over as soon as it reopens. */
@@ -142,7 +145,7 @@ export function createPictureService(
     `${docId}\n${tier}`;
   const budgetStoppedAt = new Map<
     string,
-    { at: number; reason: StoppedReason }
+    { at: number; reason: StoppedReason; epoch: number }
   >();
   // Pictures drawn before the job's budget ran out: shown for a while, never cached as final.
   const stopped = new Map<
@@ -152,6 +155,7 @@ export function createPictureService(
       entries: PictureEntry[];
       reason: StoppedReason;
       tier: string;
+      epoch: number;
     }
   >();
   const reasonOf = (): StoppedReason =>
@@ -160,6 +164,8 @@ export function createPictureService(
   const stoppedNow = (docId: string): boolean => {
     const mark = budgetStoppedAt.get(tierKey(docId));
     if (!mark) return false;
+    // Someone paid after that draw began: its stop says nothing about the new grant.
+    if (mark.epoch < grantEpoch(docId, currentTier())) return false;
     return mark.reason === 'spend_gate'
       ? !spendGateOpen()
       : now() - mark.at < FAILED_RETRY_MS;
@@ -234,6 +240,7 @@ export function createPictureService(
     const started = now();
     const tier = currentTier();
     markTier.set(name, tier);
+    const epoch = grantEpoch(key.docId, tier);
     // Forget cool-downs that are over, so the map holds only recent failures.
     for (const [other, at] of failedAt)
       if (started - at >= FAILED_RETRY_MS) failedAt.delete(other);
@@ -291,6 +298,7 @@ export function createPictureService(
             entries: drawn.entries.length >= kept.length ? drawn.entries : kept,
             reason: reasonOf(),
             tier,
+            epoch,
           });
         }
         // Throwing keeps getOrCompute from storing a partial set as the finished one.
@@ -327,6 +335,7 @@ export function createPictureService(
       .then(() => undefined)
       .catch((error: unknown) => {
         failedAt.set(name, now());
+        failedEpoch.set(name, epoch);
         if (isSpendGateStop(error)) gateFailed.add(name);
         // A spent job budget ends drawing for this document; nothing else is started for it.
         if (isBudgetExhausted(error)) {
@@ -334,8 +343,14 @@ export function createPictureService(
           budgetStoppedAt.set(tierKey(key.docId, tier), {
             at: now(),
             reason,
+            epoch,
           });
-          options.breakdown.reportPicturesStopped?.(key.docId, tier, reason);
+          options.breakdown.reportPicturesStopped?.(
+            key.docId,
+            tier,
+            reason,
+            epoch,
+          );
         }
         onError?.(error, now() - started);
       })
@@ -430,6 +445,15 @@ export function createPictureService(
   const isCooling = (name: string): boolean => {
     const failed = failedAt.get(name);
     if (failed === undefined) return false;
+    // A failure from a draw that began before the latest grant is stale.
+    const born = failedEpoch.get(name);
+    const tier = markTier.get(name);
+    if (
+      born !== undefined &&
+      tier !== undefined &&
+      born < grantEpoch(name.slice(0, name.indexOf(':')), tier)
+    )
+      return false;
     return gateFailed.has(name)
       ? !spendGateOpen()
       : now() - failed < FAILED_RETRY_MS;
@@ -592,6 +616,7 @@ export function createPictureService(
         canSpend() &&
         (halted.reason === 'spend_gate' ||
           halted.tier !== currentTier() ||
+          halted.epoch < grantEpoch(docId, halted.tier) ||
           now() - halted.at >= FAILED_RETRY_MS)
       )
     )
