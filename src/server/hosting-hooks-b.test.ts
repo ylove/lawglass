@@ -130,6 +130,35 @@ const deny = (status: 402 | 403 | 429): Admission =>
       };
 
 describe('POST /api/quote', () => {
+  test('prices the coverage the server will generate, not the default 30 parts', async () => {
+    // 46 substantive parts: with full coverage every one is briefed, so every one is priced.
+    const longUrl = 'https://govinfo.gov/long.txt';
+    env.serve(longUrl, bigBill(46, 'long'), 'text/plain');
+    interface QuoteBody {
+      facts: { units: number };
+      estimates: Record<
+        string,
+        { features: { breakdown: { high: { calls: number } } } }
+      >;
+    }
+    const quote = async (a: Hono): Promise<QuoteBody> => {
+      const res = await call(a, '/api/quote', { body: { url: longUrl } });
+      expect(res.status).toBe(200);
+      return (await res.json()) as QuoteBody;
+    };
+    const capped = await quote(app());
+    const full = await quote(
+      app({ breakdownMaxUnits: 'all', pregenerateExamples: 'all' }),
+    );
+    expect(capped.facts.units).toBe(30);
+    expect(full.facts.units).toBe(46);
+    expect(
+      full.estimates.default?.features.breakdown.high.calls,
+    ).toBeGreaterThan(
+      capped.estimates.default?.features.breakdown.high.calls ?? Infinity,
+    );
+  });
+
   test('fetches and parses only: no model, no embedding, nothing stored', async () => {
     const calls = modelCalls();
     const embed = vi.spyOn(env.embedder, 'embed');
