@@ -25,6 +25,7 @@ import { ask } from '../core/pipeline/index.js';
 import {
   currentTier,
   grantEpoch,
+  runEpoch,
   isSpendGateStop,
   spendGateOpen,
 } from '../core/cost/job.js';
@@ -180,7 +181,7 @@ export function createSummaryService(
   ): void {
     const started = now();
     const tier = currentTier();
-    const epoch = grantEpoch(docId, tier);
+    const epoch = runEpoch(docId, tier);
     const provider = runtime.answerProvider;
     const waiters = new Set<() => void>();
     running.set(name, waiters);

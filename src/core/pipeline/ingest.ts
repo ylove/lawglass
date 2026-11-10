@@ -693,7 +693,6 @@ async function ingestLocked(
   // Zero-token path: nothing to fetch-parse-embed.
   if (known && alreadyIndexed) {
     let touched = await registry.touch(docId);
-    await opts.onRegistered?.(docId);
     const attached = attachHistory(
       await registry.getDocument(docId),
       attachment,
@@ -706,6 +705,9 @@ async function ingestLocked(
     }
     const { chunks } = chunkAndEnrich(cached, deps, signal);
     progress({ stage: 'done', detail: 'reused' });
+    // Last, so a disk error above fails the job (no grant), and whenever the job settles ok the
+    // reader's result is already in hand.
+    await opts.onRegistered?.(docId);
     return {
       doc: summarize(touched),
       stats: buildStats(cached, chunks, 0, true),

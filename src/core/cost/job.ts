@@ -52,6 +52,8 @@ export interface JobScope {
    * anything but `true`, or throws, is closed.
    */
   spendGate?: (() => boolean) | undefined;
+  /** The grant epoch of the (document, tier) when this scope was resolved or handed out. */
+  epoch?: number | undefined;
   /** Shared by every scope derived from the same admission, so one budget covers them all. */
   spent: JobSpend;
 }
@@ -252,6 +254,13 @@ export function addBudget(live: JobScope, paid: JobScope): void {
 // --- grant epochs ----------------------------------------------------------------------------
 
 const epochs = new Map<string, number>();
+/**
+ * At most this many (document, tier) epochs are kept; past it the OLDEST-inserted key is
+ * forgotten. A forgotten key reads as epoch 0, which is never newer than a mark's epoch, so
+ * forgetting can only make a stale mark look current (a payer may then wait out a cool-down,
+ * time only); it never discards a mark that should hold. Epochs are per process: a restart
+ * also starts from 0, when every in-memory mark is gone too.
+ */
 const EPOCH_CAP = 10_000;
 
 /**
@@ -261,6 +270,15 @@ const EPOCH_CAP = 10_000;
  */
 export function grantEpoch(docId: string, tier: string): number {
   return epochs.get(`${docId}\n${tier}`) ?? 0;
+}
+
+/**
+ * The epoch a run belongs to: the one stamped on the scope it runs in when that scope was
+ * resolved or handed out, else the current one. A refusal by a scope that resolved before a
+ * grant is thereby older than the grant, however late it is recorded.
+ */
+export function runEpoch(docId: string, tier: string): number {
+  return currentJob()?.epoch ?? grantEpoch(docId, tier);
 }
 
 export function bumpGrantEpoch(docId: string, tier: string): void {

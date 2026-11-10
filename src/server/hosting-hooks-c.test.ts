@@ -1,4 +1,6 @@
 /** Hosting hooks part C (ADR 0018): settlement, the spend gate, read-only requests. */
+import { rm } from 'node:fs/promises';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import type { Context, Hono } from 'hono';
 import {
@@ -17,7 +19,9 @@ import { makeSectionedText } from '../../tests/synth/index.js';
 import { envVar } from '../core/brand.js';
 import {
   addBudget,
+  bumpGrantEpoch,
   currentJob,
+  grantEpoch,
   newSpend,
   runInJob,
   tierName,
@@ -1620,5 +1624,150 @@ describe('a grant in another unit', () => {
     const live = scope({ tokens: 30 }, { models: { answer: 'unpriced' } });
     addBudget(live, scope({ dollars: 5 }));
     expect(live.budget).toEqual({ dollars: 5 });
+  });
+});
+
+describe('review: reuse path, unused grants, scope epoch stamps', () => {
+  test('A5: a disk error after touch on the reused-document path fails the job with no grant', async () => {
+    await ingestDoc(app()); // already registered and indexed
+    let touched = false;
+    const touch = env.registry.touch.bind(env.registry);
+    vi.spyOn(env.registry, 'touch').mockImplementation(async (...args) => {
+      const entry = await touch(...args);
+      touched = true;
+      return entry;
+    });
+    const getDocument = env.registry.getDocument.bind(env.registry);
+    let failing = true;
+    vi.spyOn(env.registry, 'getDocument').mockImplementation((...args) =>
+      touched && failing
+        ? Promise.reject(new Error('disk error'))
+        : getDocument(...args),
+    );
+    const ends: JobEnd[] = [];
+    const usage: UsageEvent[] = [];
+    const a = app({
+      admission: allowWithRef,
+      onUsage: (e) => void usage.push(e),
+      onJobEnd: (e) => void ends.push(e),
+    });
+    const text = await (await call(a, '/api/ingest', { body: { url } })).text();
+    expect(text).toContain('"type":"error"');
+    expect(text).not.toContain('"type":"done"');
+    await sleep(100);
+    expect(ends).toHaveLength(1);
+    expect(ends[0]).toMatchObject({ outcome: 'failed', delivered: 'none' });
+    failing = false;
+    const docId = (await env.registry.list())[0]?.docId ?? '';
+    await call(a, `/api/docs/${docId}/summary`);
+    await sleep(600);
+    // No grant was installed: nothing runs under the failed admission's ref.
+    expect(usage).toEqual([]);
+  });
+
+  test('an unused grant is not added to the live scope', async () => {
+    const budgets: (number | undefined)[] = [];
+    const refs: (string | undefined)[] = [];
+    const ends: JobEnd[] = [];
+    const a = app({
+      pregenerateExamples: 'off',
+      admission: (c, job) =>
+        Promise.resolve({
+          allow: true,
+          ref: `ref-${c.req.header('x-reader') ?? ''}`,
+          ...(job.kind === 'ingest'
+            ? {
+                budget: {
+                  tokens:
+                    c.req.header('x-reader') === 'alice' ? 5_000_000 : 1e9,
+                },
+              }
+            : {}),
+        }),
+      backgroundScope: () => Promise.resolve(undefined),
+      onJobEnd: (e) => void ends.push(e),
+    });
+    const docId = await ingestDoc(a, 'alice');
+    const get = async (path: string) =>
+      (await (await call(a, `/api/docs/${docId}/${path}`)).json()) as {
+        status: string;
+      };
+    await vi.waitFor(async () => {
+      expect((await get('summary')).status).toBe('cached');
+    });
+    await vi.waitFor(async () => {
+      expect((await get('breakdown')).status).toBe('cached');
+    });
+    for (const p of ['summary/pictures', 'breakdown/pictures'])
+      await vi.waitFor(async () => {
+        expect((await get(p)).status).toMatch(/cached|none/);
+      });
+    await ingestDoc(a, 'bob');
+    expect(ends.find((e) => e.ref === 'ref-bob')).toMatchObject({
+      outcome: 'ok',
+      granted: 'unused',
+    });
+    // Make the summary generate again, and see which budget it runs under.
+    await rm(join(env.registry.configDir, 'cache'), {
+      recursive: true,
+      force: true,
+    });
+    const original = provider.generateObject.bind(provider);
+    vi.spyOn(provider, 'generateObject').mockImplementation((req) => {
+      budgets.push(currentJob()?.budget?.tokens);
+      refs.push(currentJob()?.context.ref);
+      return original(req);
+    });
+    const originalStream = provider.streamText.bind(provider);
+    vi.spyOn(provider, 'streamText').mockImplementation((req) => {
+      budgets.push(currentJob()?.budget?.tokens);
+      refs.push(currentJob()?.context.ref);
+      return originalStream(req);
+    });
+    await get('summary');
+    await vi.waitFor(() => {
+      expect(budgets.length).toBeGreaterThan(0);
+    });
+    expect(new Set(budgets)).toEqual(new Set([5_000_000]));
+    expect(new Set(refs)).toEqual(new Set(['ref-alice']));
+  }, 40_000);
+
+  test('a refusal by a scope that resolved before the grant does not cool the payer down, however late it lands', async () => {
+    const a = app();
+    const docId = await ingestDoc(a);
+    env.runtime.providerFor = (_role, model) => {
+      const p = breakdownProvider(scenarioProvider(new MockProvider(model)));
+      p.behavior = () => {
+        throw new AppError('PROVIDER_ERROR', 'down');
+      };
+      return p;
+    };
+    const service = createBreakdownService(routedRuntime(env.runtime), {
+      publicMode: false,
+      waitMs: 20,
+      pregenerateExamples: 'off',
+    });
+    const models = { answer: 'stamp-a', extract: 'stamp-a' };
+    const tier = tierName(models);
+    // The scope was handed out at epoch k; then someone paid (k + 1); then the run begins.
+    const before = grantEpoch(docId, tier);
+    bumpGrantEpoch(docId, tier);
+    const refused: JobScope = {
+      context: { readerId: 'carol', jobKind: 'ingest', jobId: 'c', docId },
+      models,
+      epoch: before,
+      spent: newSpend(),
+    };
+    await runInJob(refused, () => service.get(docId, { wait: false }));
+    // Its failure is recorded after the grant but belongs to the epoch before it.
+    await sleep(300);
+    const payer: JobScope = {
+      context: { readerId: 'bob', jobKind: 'ingest', jobId: 'b', docId },
+      models,
+      spent: newSpend(),
+    };
+    await expect(
+      runInJob(payer, () => service.get(docId, { wait: false })),
+    ).resolves.toMatchObject({ status: 'pending' });
   });
 });

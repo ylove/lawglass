@@ -42,6 +42,7 @@ import {
   type FeatureEstimate,
   addBudget,
   bumpGrantEpoch,
+  grantEpoch,
   budgetRemaining,
   topUp,
   type JobKind,
@@ -669,6 +670,7 @@ export function createApp(
     // Only this (document, tier) was paid for: another tier's failures and stops stay as they are.
     // A grant: marks recorded by runs that started before it are stale from now on.
     bumpGrantEpoch(docId, tierName(live.models));
+    live.epoch = grantEpoch(docId, tierName(live.models));
     summary.resume?.(docId, tierName(live.models));
     // Work that goes on runs in the live scope of the (document, tier), never in the caller's.
     breakdown.resume?.(docId, live);
@@ -767,31 +769,52 @@ export function createApp(
    * results only). Without the hook (no `admission` either) the requester stands in, as before.
    */
   async function resolveDocScope(c: Context, docId: string): Promise<JobScope> {
+    // A scope is stamped with the grant epoch it is resolved in, before any wait on the host:
+    // a refusal by a scope that resolved before a grant is older than that grant, however late
+    // the refusal is recorded, and never cools the payer down.
+    const stamped = (scope: JobScope, epoch: number): JobScope => {
+      scope.epoch = epoch;
+      return scope;
+    };
     let models: ModelChoice | undefined;
     try {
       models = await readerModels(c, docId);
     } catch {
-      return options.admission
-        ? failClosed(c, docId, undefined)
-        : makeScope(c, { kind: 'ingest', docId }, {});
+      const epoch = grantEpoch(docId, tierName(undefined));
+      return stamped(
+        options.admission
+          ? failClosed(c, docId, undefined)
+          : makeScope(c, { kind: 'ingest', docId }, {}),
+        epoch,
+      );
     }
     const tier = tierName(models);
     const key = scopeKey(docId, tier);
     const live = docScopes.get(key);
     if (live) return live;
+    const epoch = grantEpoch(docId, tier);
     if (!options.backgroundScope)
-      return makeScope(c, { kind: 'ingest', docId }, { models });
+      return stamped(
+        makeScope(c, { kind: 'ingest', docId }, { models }),
+        epoch,
+      );
     let saved: SavedScope | undefined;
     try {
       saved = await lookupSaved(docId, tier, models);
     } catch {
       // A host outage stops paid work only; cached reads are still served.
-      return failClosed(c, docId, models);
+      return stamped(failClosed(c, docId, models), epoch);
     }
+    // An ingest may have installed the document's scope while the host was being asked.
+    const arrived = docScopes.get(key);
+    if (arrived) return arrived;
     if (!saved)
-      return options.admission
-        ? failClosed(c, docId, models)
-        : makeScope(c, { kind: 'ingest', docId }, { models });
+      return stamped(
+        options.admission
+          ? failClosed(c, docId, models)
+          : makeScope(c, { kind: 'ingest', docId }, { models }),
+        epoch,
+      );
     return (
       docScopes.get(key) ??
       installScope(key, scopeFromSaved(c, docId, saved, models))
@@ -1583,6 +1606,9 @@ export function createApp(
       saved: SavedScope | undefined,
     ): void => {
       if (!scope) return;
+      // Everything already exists for this tier: the host may refund this grant, so it is
+      // not added to any scope.
+      if (admission.docComplete) return;
       // The first admitted ingest of a document owns its background generation.
       scope.context.docId = docId;
       const tier = tierName(scope.models);

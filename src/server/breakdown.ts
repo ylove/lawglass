@@ -26,6 +26,7 @@ import {
   currentJob,
   currentTier,
   grantEpoch,
+  runEpoch,
   isBudgetExhausted,
   isSpendGateStop,
   runInJob,
@@ -307,7 +308,7 @@ export function createBreakdownService(
   ): void {
     const started = now();
     nameTier.set(name, currentTier());
-    const epoch = grantEpoch(docId, currentTier());
+    const epoch = runEpoch(docId, currentTier());
     running.set(name, new Set());
     void (async () => {
       // Never compete with the summary the reader is waiting for.
@@ -545,7 +546,7 @@ export function createBreakdownService(
   ): Promise<void> {
     const started = now();
     nameTier.set(name, currentTier());
-    const epoch = grantEpoch(docId, currentTier());
+    const epoch = runEpoch(docId, currentTier());
     running.set(name, new Set());
     return runSectionExample(docId, sectionId, {
       background,
@@ -745,7 +746,7 @@ export function createBreakdownService(
         running: false,
         failures: 0,
         stoppedAt: undefined,
-        epoch: grantEpoch(docId, currentTier()),
+        epoch: runEpoch(docId, currentTier()),
         scope: currentJob(),
       };
       examplePasses.set(k, pass);
@@ -775,7 +776,7 @@ export function createBreakdownService(
     }
     if (pass.running || pass.queue.length === 0) return;
     pass.running = true;
-    pass.epoch = grantEpoch(docId, currentTier());
+    pass.epoch = runEpoch(docId, currentTier());
     // The caller's scope may belong to another request; the pass keeps the one it was made in.
     void runInJob(pass.scope, () => drainExamples(docId, pass));
   }

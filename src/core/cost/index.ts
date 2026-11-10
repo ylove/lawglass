@@ -28,6 +28,7 @@ export {
   addBudget,
   bumpGrantEpoch,
   grantEpoch,
+  runEpoch,
   assertBudget,
   canSpend,
   spendGateOpen,

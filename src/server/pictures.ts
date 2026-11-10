@@ -14,6 +14,7 @@ import {
   currentJob,
   currentTier,
   grantEpoch,
+  runEpoch,
   isBudgetExhausted,
   isSpendGateStop,
   runInJob,
@@ -240,7 +241,7 @@ export function createPictureService(
     const started = now();
     const tier = currentTier();
     markTier.set(name, tier);
-    const epoch = grantEpoch(key.docId, tier);
+    const epoch = runEpoch(key.docId, tier);
     // Forget cool-downs that are over, so the map holds only recent failures.
     for (const [other, at] of failedAt)
       if (started - at >= FAILED_RETRY_MS) failedAt.delete(other);
