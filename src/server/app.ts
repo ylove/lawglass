@@ -58,9 +58,11 @@ import { getChip } from '../core/chips.js';
 import { lazyProvider } from '../core/llm/lazy-provider.js';
 import { SlidingWindowLimiter } from './rate-limit.js';
 import { registerLocateRoute } from './locate-route.js';
-import type {
-  BreakdownMaxUnits,
-  PregenerateExamples,
+import {
+  breakdownMaxUnitsFromEnv,
+  pregenerateExamplesFromEnv,
+  type BreakdownMaxUnits,
+  type PregenerateExamples,
 } from '../core/breakdown/coverage.js';
 import { registerBreakdownRoutes } from './breakdown-route.js';
 import { registerPictureRoutes } from './pictures-route.js';
@@ -652,6 +654,13 @@ export function createApp(
     }
     return configured;
   };
+  // Quotes and admission estimates must price the same coverage the breakdown will generate: with
+  // full coverage on, a 46-part bill is briefed in full, so it must not be priced as 30 parts.
+  const coverage = {
+    breakdownUnitCap: options.breakdownMaxUnits ?? breakdownMaxUnitsFromEnv(),
+    pregenerateExamples:
+      options.pregenerateExamples ?? pregenerateExamplesFromEnv(),
+  };
   const tiers = (): Record<string, ModelAssignment> =>
     quoteTiers(options.quote, configuredModels);
   const defaultAssignment = (): ModelAssignment => firstOf(tiers());
@@ -754,6 +763,7 @@ export function createApp(
       await factsFor(docId),
       tiers(),
       options.quote,
+      coverage,
     );
     return checkedChoice(
       options.modelFor(
@@ -865,7 +875,9 @@ export function createApp(
     const hit = factsCache.get(docId);
     if (hit) return hit;
     const doc = await runtime.registry.getDocument(docId);
-    const facts = billFacts(doc.sections);
+    const facts = billFacts(doc.sections, {
+      breakdownUnitCap: coverage.breakdownUnitCap,
+    });
     if (factsCache.size >= FACTS_CACHE_CAP) evictOldest(factsCache);
     factsCache.set(docId, facts);
     return facts;
@@ -1385,11 +1397,13 @@ export function createApp(
     } finally {
       release();
     }
-    const facts = billFacts(doc.sections);
+    const facts = billFacts(doc.sections, {
+      breakdownUnitCap: coverage.breakdownUnitCap,
+    });
     return {
       doc,
       publicFacts: quoteFacts(doc, facts),
-      estimates: estimatesFor(facts, tiers(), options.quote),
+      estimates: estimatesFor(facts, tiers(), options.quote, coverage),
     };
   }
 

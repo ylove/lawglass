@@ -16,6 +16,7 @@ import {
   type PriceTable,
 } from '../core/cost/index.js';
 import type { NormalizedDoc } from '../core/model/index.js';
+import type { PregenerateExamples } from '../core/breakdown/coverage.js';
 
 export const QuoteRequest = z.object({ url: z.url() });
 
@@ -141,11 +142,23 @@ export function estimatesFor(
   facts: BillFacts,
   tiers: Record<string, ModelAssignment>,
   options: QuoteOptions | undefined,
+  /** What the server will actually generate; the host's own `quote.plan` still wins. */
+  coverage: { pregenerateExamples?: PregenerateExamples } = {},
 ): Record<string, BillEstimate> {
   return Object.fromEntries(
     Object.entries(tiers).map(([name, models]) => [
       name,
-      estimateBill(facts, { ...options?.plan, ...models }, options?.prices),
+      estimateBill(
+        facts,
+        {
+          ...(coverage.pregenerateExamples
+            ? { pregenerateExamples: coverage.pregenerateExamples }
+            : {}),
+          ...options?.plan,
+          ...models,
+        },
+        options?.prices,
+      ),
     ]),
   );
 }
