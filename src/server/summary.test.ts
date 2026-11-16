@@ -28,6 +28,7 @@ import {
   waitForSummary,
 } from './summary.js';
 import { EXCERPT_FILTER_VERSION } from '../core/answer/excerpt-filter.js';
+import { BACKGROUND_SCENARIO_TIMEOUT_MS } from '../core/scenario/attach.js';
 import { REGENERATION_VERSION } from '../core/answer/regenerate.js';
 import { forgetDocument } from '../core/answer/context.js';
 import { AnswerCache } from '../core/answer-cache.js';
@@ -243,6 +244,22 @@ describe('GET /api/docs/:docId/summary', () => {
     // And the cached copy keeps it, with no second scenario call.
     expect((await summary(a, docId)).answer?.scenario).toBeDefined();
     expect(provider.scenarioCalls).toBe(1);
+  });
+
+  test("the summary's story gets the background time budget (#408)", async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    try {
+      const provider = scenarioProvider(env.provider);
+      Object.assign(env.runtime, { answerProvider: provider });
+      const a = app();
+      const docId = await ingestDoc(a);
+      await summary(a, docId);
+      await settled(a, docId);
+      expect(provider.scenarioCalls).toBe(1);
+      expect(timeout).toHaveBeenCalledWith(BACKGROUND_SCENARIO_TIMEOUT_MS);
+    } finally {
+      timeout.mockRestore();
+    }
   });
 
   test('the cache key covers the scenario prompt: a changed version is a miss', async () => {
