@@ -35,7 +35,7 @@ docker buildx build --platform linux/amd64 --provenance=false --tag "$IMAGE" --p
 docker logout "https://$REGION-docker.pkg.dev"
 ```
 
-**Do not push this image under `lawglass/lawglass`.** The repository's cleanup policy keeps the two most recent versions _per package_ and deletes the rest after a day. A third image in the service's package would delete the image the live service runs. A separate package (`lawglass-calibration`) has its own two slots.
+**Do not push this image under `lawglass/lawglass`.** The repository's cleanup policy keeps the two most recent versions _per package_. Any other version becomes eligible for deletion once it is more than a day old, and the periodic cleanup removes it. Two newer images in the service's package would push the live service's image out of the protected two. Cloud Run keeps serving its current revision from its own copy, but redeploying that image or rolling back to it would then fail. A separate package (`lawglass-calibration`) has its own two slots.
 
 ## Create the service account
 

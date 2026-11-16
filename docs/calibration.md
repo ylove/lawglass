@@ -130,14 +130,15 @@ Every feature stayed within its high bound on every run that did not fail.
 Hand-written after the generated report above. Run `lawglass-calibration-6v4qk` on 2026-11-16, image built from `5fd1f83` (#406, Anthropic SDK 1.6.0, API version 2026-10-21). The cap was lowered from the approved $10 to $4 because the workspace's spending headroom was tight.
 
 - **Three of the five smaller bills were measured, not five.**
-  - S. 5687 (118th) failed its quote: GovInfo listed no usable latest version, and `FETCH_FAILED` reaches the reader as HTTP 500 (#407).
+  - S. 5687 (118th) failed its quote with HTTP 500. Quoting the same URL locally fails in `chooseVersion` ("could not identify the latest text version", `FETCH_FAILED`), and `FETCH_FAILED` has no entry in the server's status map (#407).
   - NY A. 5000 failed its admitted ingest because New York's bytes change on every download (#407).
   - Neither made a model call. Pick replacement bills once #407 is fixed.
-- **No multiplier is applied.**
-  - Every feature stayed under its high bound on every completed run. `total` reached at most 0.40x, so prices (3 times the high estimate) cover what was measured with wide room.
-  - The one recommendation above the margin rule is `summaryScenario` at 1.20, from a worst ratio of 0.95x on Ohio S.B. 113 (sonnet+haiku). That ratio includes a call that timed out without usage (#408), charged at the meter's guess: the prompt at four characters a token plus the full 2,000 output tokens.
-  - The high bound already prices the worst path the code can take for this feature: two calls (one generation plus the one retry `createScenario` allows), each at its full output budget. The 0.95x is that guess approaching the bound, not a measured overrun.
-  - Re-measure after #408. If successful calls alone come near the bound, apply the factor then.
+- **No multiplier is applied: a deliberate waiver, not a proof.**
+  - In dollars, every feature stayed under its high bound on every completed run, and `total` reached at most 0.40x. That meets #385's criterion for these seven runs.
+  - The margin rule's one recommendation above 1.00 is `summaryScenario` at 1.20, from a worst ratio of 0.95x on Ohio S.B. 113 (sonnet+haiku). That ratio includes a call that timed out without usage (#408), charged at the meter's guess: the prompt at four characters a token plus the full 2,000 output tokens.
+  - The waiver rests on what was observed, not on a bound. `createScenario` makes at most two calls per invocation, which the high bound counts, but a summary attempt that is not cached can run again after the cool-down. Those repeated attempts fall outside that allowance.
+  - Input is the weak side. Whole-bill prompts measured up to 1.87x the high bound's input per call: 76,133 tokens against 40,610 for S. 1582's summary, and 1.24x for Ohio's. The dollar bounds held because the high bound prices every prefix as a cache write and every call at full output, and real calls read from the cache and wrote short replies. A `summaryScenario` that runs twice on a whole-mode bill would exceed its bound, because scenario prompts are uncached: about $0.34 against $0.20 for S. 1582 on Sonnet.
+  - A flat 1.20 would not cover that case. #410 fixes the input forecast itself; re-measure after it and #408.
 - **Quality:**
   - Answer and brief citations were 100% valid on every run, on both models.
   - The one decline was Sonnet on NJ S. 1000, a three-section bill. The run does not record which answer declined.
