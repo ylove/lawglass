@@ -1505,6 +1505,7 @@ export function createApp(
         quotedDownloads.put(readerFor(c), body.url, measured);
         return { quoteId, measured };
       },
+      c.req.raw.signal,
     );
     return c.json({
       quoteId,
@@ -1632,10 +1633,13 @@ export function createApp(
       estimate: firstOf(estimates),
       estimates,
     };
+    // A reader who left while this waited or measured is not worth asking the host about.
+    c.req.raw.signal.throwIfAborted();
     const models = options.modelFor
       ? checkedChoice(options.modelFor(fields, c))
       : undefined;
     const docComplete = await generationComplete(c, admitted.docId, models);
+    c.req.raw.signal.throwIfAborted();
     const { budget, ref } = await consult(c, {
       ...fields,
       tier: tierName(models),
@@ -1688,8 +1692,10 @@ export function createApp(
     body: { url: string; quoteId?: string | undefined },
   ): ReturnType<typeof admitIngestUnlocked> {
     if (!hooked || !estimating) return admitIngestUnlocked(c, body);
-    return downloadLock.run(lockKey(readerFor(c), body.url), () =>
-      admitIngestUnlocked(c, body),
+    return downloadLock.run(
+      lockKey(readerFor(c), body.url),
+      () => admitIngestUnlocked(c, body),
+      c.req.raw.signal,
     );
   }
 

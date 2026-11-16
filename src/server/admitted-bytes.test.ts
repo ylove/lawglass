@@ -412,6 +412,93 @@ describe('requests of one reader for one address are ordered', () => {
   });
 });
 
+describe('a reader who leaves', () => {
+  const go = (a: Hono, signal: AbortSignal, quoteId = 'host-q') =>
+    Promise.resolve(
+      a.request('/api/ingest', {
+        method: 'POST',
+        headers: { 'x-reader': 'alice', 'content-type': 'application/json' },
+        body: JSON.stringify({ url, quoteId }),
+        signal,
+      }),
+    );
+
+  test('a request queued behind a stuck admission leaves the queue and never reaches the host', async () => {
+    const hold = deferred();
+    const entered = deferred();
+    let asked = 0;
+    const a = hosted({
+      admission: async () => {
+        asked++;
+        entered.resolve();
+        await hold.promise;
+        return {
+          allow: false as const,
+          status: 402 as const,
+          quote: { quoteId: 'host-q', display: '$' },
+        };
+      },
+    });
+    const first = post(a, '/api/ingest', { url, quoteId: 'host-q' });
+    await entered.promise;
+    const gone = new AbortController();
+    const second = go(a, gone.signal).catch(() => undefined);
+    await flush();
+    gone.abort();
+    await second;
+    hold.resolve();
+    expect((await first).status).toBe(402);
+    await flush();
+    // Only the first request ever asked the host.
+    expect(asked).toBe(1);
+  });
+
+  test('a request that leaves before the host is asked never asks it', async () => {
+    const gone = new AbortController();
+    let asked = 0;
+    const a = hosted({
+      // Called just before the host's admission: the reader leaves right here.
+      modelFor: () => {
+        gone.abort();
+        return {};
+      },
+      admission: () => {
+        asked++;
+        return Promise.resolve({ allow: true as const, ref: 'r' });
+      },
+    });
+    await go(a, gone.signal).catch(() => undefined);
+    await flush();
+    expect(asked).toBe(0);
+  });
+
+  test('an admission that comes back after the reader left is reported as ended, once', async () => {
+    const hold = deferred();
+    const entered = deferred();
+    const ends: string[] = [];
+    const gone = new AbortController();
+    const a = hosted({
+      admission: async () => {
+        entered.resolve();
+        await hold.promise;
+        return { allow: true as const, ref: 'r' };
+      },
+      onJobEnd: (end) => {
+        ends.push(end.outcome);
+      },
+    });
+    const response = go(a, gone.signal).catch(() => undefined);
+    await entered.promise;
+    gone.abort();
+    hold.resolve();
+    await response;
+    await flush();
+    expect(ends).toHaveLength(1);
+    expect(ends[0]).not.toBe('ok');
+    expect(await env.registry.list()).toEqual([]);
+  });
+});
+
 test('a source with no usable text version is a 502, not a 500', async () => {
   const res = await post(hosted(), '/api/quote', {
     url: 'https://govinfo.gov/missing.txt',
