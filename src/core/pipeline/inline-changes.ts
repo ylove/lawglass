@@ -167,10 +167,12 @@ export function withInlineChanges(
   doc: Pick<NormalizedDoc, 'sections'>,
   docId: string,
   fullText = false,
+  checkpoint?: () => void,
 ): SearchHit[] {
   const out: SearchHit[] = [];
   const done = new Set<string>();
   for (const hit of hits) {
+    checkpoint?.();
     const ids = coveredSectionIds(hit.chunk);
     const rebuilt: SearchHit[] = [];
     let complete = true;

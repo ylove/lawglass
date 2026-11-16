@@ -101,15 +101,30 @@ export async function documentHits(
         probe: LATER_ROUND_IDS,
       }));
   }
+  return hitsInDocumentOrder(docId, ordered, found);
+}
+
+/**
+ * The chunks as the whole-bill prompt reads them: grouped by section in document order, each
+ * section's chunks by ordinal, then trimmed of overlap. Shared with the cost estimator, so both
+ * order (and so de-duplicate) the chunks the same way.
+ */
+export function hitsInDocumentOrder(
+  docId: string,
+  ordered: readonly Section[],
+  found: ReadonlyMap<string, SearchHit>,
+  checkpoint?: () => void,
+): SearchHit[] {
   const hits: SearchHit[] = [];
   for (const section of ordered) {
+    checkpoint?.();
     for (let n = 0; ; n++) {
       const hit = found.get(makeChunkId(docId, section.id, n));
       if (!hit) break;
       hits.push(hit);
     }
   }
-  return dropOverlap(hits);
+  return dropOverlap(hits, checkpoint);
 }
 
 /** The chunker's overlap window (`OVERLAP` in chunk/index.ts): the most tokens it repeats. */
@@ -141,8 +156,12 @@ function overlapWindow(text: string): string {
  * Every chunk, and so every section id, stays present and citable. Token counts shrink in
  * proportion, so the budget decision counts the de-duplicated size.
  */
-export function dropOverlap(hits: readonly SearchHit[]): SearchHit[] {
+export function dropOverlap(
+  hits: readonly SearchHit[],
+  checkpoint?: () => void,
+): SearchHit[] {
   return hits.map((hit, i) => {
+    checkpoint?.();
     const prev = hits[i - 1]?.chunk;
     const chunk = hit.chunk;
     if (!prev) return hit;

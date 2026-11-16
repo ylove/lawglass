@@ -8,6 +8,7 @@ import {
   type BillShape,
 } from '../../../tests/synth/bill-shape.js';
 import { billFacts } from './facts.js';
+import type { WholePromptSizes } from './prompt-size.js';
 import {
   estimateBill,
   estimateQuestion,
@@ -266,16 +267,28 @@ const NJ_SHAPE_UNITS: BillShape = {
   headingChars: 30,
 };
 
+/** The four character counts plus the high-bound and fallback fields, equal to them. */
+const full = (w: {
+  summary: number;
+  breakdown: number;
+  scenario: number;
+  question: number;
+}): WholePromptSizes => ({
+  ...w,
+  summaryHigh: w.summary,
+  questionHigh: w.question,
+  changeExcerpts: 0,
+});
 const CALIBRATED = [
   {
     name: 'S. 1582 (684 sections, 6 references)',
     shape: S1582_SHAPE,
-    wholePrompt: {
+    wholePrompt: full({
       summary: 209_210,
       breakdown: 198_263,
       scenario: 200_437,
       question: 209_210,
-    },
+    }),
     measured: {
       summary: 76_133,
       breakdown: 73_513,
@@ -288,12 +301,12 @@ const CALIBRATED = [
     shape: OHIO_SHAPE,
     // Its question figure is the worst case, a question about changes; the two questions
     // measured were ordinary ones, which send the summary-sized prompt.
-    wholePrompt: {
+    wholePrompt: full({
       summary: 31_160,
       breakdown: 31_160,
       scenario: 31_432,
       question: 39_933,
-    },
+    }),
     measured: {
       summary: 13_785,
       breakdown: 14_452,
@@ -304,12 +317,12 @@ const CALIBRATED = [
   {
     name: 'NJ S. 1000 (3 sections)',
     shape: NJ_SHAPE_UNITS,
-    wholePrompt: {
+    wholePrompt: full({
       summary: 2582,
       breakdown: 2582,
       scenario: 2306,
       question: 2840,
-    },
+    }),
     measured: {
       summary: 2917,
       breakdown: 3504,
@@ -369,12 +382,12 @@ it('prices each feature from its own prompt size', () => {
     ...base,
     mode: 'whole' as const,
     singleSubject: true,
-    wholePrompt: {
+    wholePrompt: full({
       summary: 240_000,
       breakdown: 120_000,
       scenario: 60_000,
       question: 700_000,
-    },
+    }),
   };
   const { features } = estimateBill(facts, plan);
   const high = (f: { high: { inputTokens: number; calls: number } }): number =>
@@ -405,12 +418,12 @@ describe('question high bound', () => {
     // Ohio-like: the change prompt is 1.3x the ordinary one, which two ordinary calls beat.
     const facts = {
       ...base,
-      wholePrompt: {
+      wholePrompt: full({
         summary: 31_160,
         breakdown: 31_160,
         scenario: 31_432,
         question: 39_933,
-      },
+      }),
     };
     const high = estimateQuestion(facts).high;
     expect(high.calls).toBe(2);
@@ -423,17 +436,58 @@ describe('question high bound', () => {
   it('prices one call on the change prompt when that costs more than two ordinary calls', () => {
     const facts = {
       ...base,
-      wholePrompt: {
+      wholePrompt: full({
         summary: 20_000,
         breakdown: 20_000,
         scenario: 20_000,
         question: 90_000,
-      },
+      }),
     };
     const high = estimateQuestion(facts).high;
     // Input is the one change call, not two; calls and output keep the two-call case.
     expect(high.inputTokens).toBeGreaterThan(90_000 / 2.2);
     expect(high.inputTokens).toBeLessThan(2 * (90_000 / 2.2));
     expect(high.calls).toBe(2);
+  });
+});
+
+describe('quote-time placeholders and the change-question fallback', () => {
+  const base = {
+    ...billFacts(shapedBill(S1582_SHAPE)),
+    mode: 'whole' as const,
+    singleSubject: true,
+  };
+  const sizes = {
+    ...full({
+      summary: 50_000,
+      breakdown: 50_000,
+      scenario: 50_000,
+      question: 50_000,
+    }),
+  };
+  it('counts placeholder references toward the high bound only', () => {
+    const quoted = estimateBill(
+      {
+        ...base,
+        wholePrompt: { ...sizes, summaryHigh: 130_000, questionHigh: 130_000 },
+      },
+      plan,
+    );
+    const read = estimateBill({ ...base, wholePrompt: sizes }, plan);
+    expect(quoted.features.summary.low.inputTokens).toBe(
+      read.features.summary.low.inputTokens,
+    );
+    expect(quoted.features.summary.high.inputTokens).toBeGreaterThan(
+      read.features.summary.high.inputTokens,
+    );
+  });
+  it('prices a change question that falls back to excerpts', () => {
+    const plain = estimateQuestion({ ...base, wholePrompt: sizes }).high;
+    const fallback = estimateQuestion({
+      ...base,
+      wholePrompt: { ...sizes, changeExcerpts: 400_000 },
+    }).high;
+    expect(fallback.inputTokens).toBeGreaterThan(plain.inputTokens);
+    expect(fallback.inputTokens).toBeGreaterThanOrEqual(400_000 / 2.2);
   });
 });

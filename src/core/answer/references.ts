@@ -16,7 +16,7 @@ export function referenceTokens(
 }
 
 /** In excerpt mode only references the retrieved text actually uses are shown, this many at most. */
-const MAX_EXCERPT_REFERENCES = 4;
+export const MAX_EXCERPT_REFERENCES = 4;
 /** Terms named in a heading; the rest are in the text anyway. */
 const MAX_HEADING_TERMS = 6;
 

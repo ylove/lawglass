@@ -117,10 +117,10 @@ const PROMPT_MARKUP = { low: 1.1, high: 1.25 };
 const WHOLE_PROMPT_CHARS_PER_TOKEN = { low: 2.9, high: 2.2 };
 
 /** A whole-bill prompt's bill-sized block, in tokens. Not scaled by PROMPT_MARKUP. */
-function wholeContext(characters: number): Bounds {
+function wholeContext(characters: number, highCharacters = characters): Bounds {
   return {
     low: Math.ceil(characters / WHOLE_PROMPT_CHARS_PER_TOKEN.low),
-    high: Math.ceil(characters / WHOLE_PROMPT_CHARS_PER_TOKEN.high),
+    high: Math.ceil(highCharacters / WHOLE_PROMPT_CHARS_PER_TOKEN.high),
   };
 }
 
@@ -252,7 +252,10 @@ export function estimateBill(
   if (plan.summary !== false && facts.characters > 0) {
     if (whole)
       summary.push({
-        context: wholeContext(facts.wholePrompt.summary),
+        context: wholeContext(
+          facts.wholePrompt.summary,
+          facts.wholePrompt.summaryHigh,
+        ),
         promptSized: true,
         visibleOutput: 1000,
         maxTokens: 16_000,
@@ -421,8 +424,9 @@ export function estimateQuestion(
       assignment,
       prices,
     );
-  const ordinary = wholeContext(facts.wholePrompt.summary);
-  const changes = wholeContext(facts.wholePrompt.question);
+  const sizes = facts.wholePrompt;
+  const ordinary = wholeContext(sizes.summary, sizes.summaryHigh);
+  const changes = wholeContext(sizes.question, sizes.questionHigh);
   // An ordinary question may be rewritten for reading level: two calls. A question about
   // changes needs the bill's exact wording, so it is never rewritten: one call, on the larger
   // prompt. The high bound is whichever of the two reachable cases costs more.
@@ -438,24 +442,39 @@ export function estimateQuestion(
     assignment,
     prices,
   );
-  // Each field takes the larger of the two cases, so the bound covers whichever happens: the
-  // input is max(1 change call, 2 ordinary calls) and the output and dollars are the larger too.
-  const envelope = (a: number, b: number): number => Math.max(a, b);
+  // A change question that struck text takes over the whole-bill budget is answered from
+  // retrieved excerpts instead: one uncached call on that (smaller) prompt, 8,192 output.
+  const fallback =
+    sizes.changeExcerpts > 0
+      ? feature(
+          assignment.answerModel,
+          [
+            {
+              context: wholeContext(sizes.changeExcerpts),
+              promptSized: true,
+              visibleOutput: 800,
+              maxTokens: 8192,
+              highCalls: 1,
+            },
+          ],
+          assignment,
+          prices,
+        )
+      : undefined;
+  // Each field takes the larger of the reachable cases, so the bound covers whichever happens:
+  // the input is max(1 change call, 2 ordinary calls) and output and dollars are the larger too.
+  const cases = [usual.high, asked.high, ...(fallback ? [fallback.high] : [])];
+  const envelope = (pick: (t: TokenEstimate) => number): number =>
+    Math.max(...cases.map(pick));
   return {
     ...usual,
     high: {
-      calls: envelope(usual.high.calls, asked.high.calls),
-      inputTokens: envelope(usual.high.inputTokens, asked.high.inputTokens),
-      cachedInputTokens: envelope(
-        usual.high.cachedInputTokens,
-        asked.high.cachedInputTokens,
-      ),
-      cacheWriteTokens: envelope(
-        usual.high.cacheWriteTokens,
-        asked.high.cacheWriteTokens,
-      ),
-      outputTokens: envelope(usual.high.outputTokens, asked.high.outputTokens),
-      dollars: envelope(usual.high.dollars, asked.high.dollars),
+      calls: envelope((t) => t.calls),
+      inputTokens: envelope((t) => t.inputTokens),
+      cachedInputTokens: envelope((t) => t.cachedInputTokens),
+      cacheWriteTokens: envelope((t) => t.cacheWriteTokens),
+      outputTokens: envelope((t) => t.outputTokens),
+      dollars: envelope((t) => t.dollars),
     },
   };
 }

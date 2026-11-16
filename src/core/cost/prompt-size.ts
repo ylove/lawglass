@@ -16,14 +16,16 @@
  *     `scenarioExcerptBlock` for the scenario.
  * A change to a prompt format or to the selection rules moves the forecast with it.
  *
- * Ingest's limits (maximum chunks, parse time) are deliberately not applied: sizing an
- * already-indexed document must not fail because a host lowered a limit afterwards.
+ * A quote passes the ingest's limits (maximum chunks, parse time) and so refuses what the ingest
+ * would refuse, whatever mode it forecasts. Sizing an already-indexed document passes none, and
+ * gets generous fixed caps instead, so a host that lowers a limit afterwards cannot make an
+ * answerable document unsizable. One deadline and the caller's signal cover every stage.
  */
 import {
   billBudget,
   contextMode,
-  dropOverlap,
   exceedsScanGuard,
+  hitsInDocumentOrder,
   hitTokens,
   type ContextMode,
 } from '../answer/context.js';
@@ -36,12 +38,17 @@ import {
   type ReferenceText,
   type NormalizedDoc,
   type SearchHit,
+  walkSections,
   type Section,
 } from '../model/index.js';
 import { withInlineChanges } from '../pipeline/inline-changes.js';
 import { scenarioExcerptBlock } from '../scenario/generate.js';
 import { referenceTokens } from '../answer/references.js';
-import { assertChunkLimit } from '../parse/limits.js';
+import { assertChunkLimit, ParseBudget } from '../parse/limits.js';
+import { DEFAULT_TOP_K } from '../retrieve/retrieve.js';
+import { MAX_INJECTED_DEFINITIONS } from '../retrieve/definitions.js';
+import { MAX_EXCERPT_REFERENCES } from '../answer/references.js';
+import { formatExcerpt } from '../answer/prompt.js';
 import {
   findDefinitionTargets,
   MAX_TARGETS,
@@ -61,8 +68,24 @@ export interface WholePromptSizes {
    * part including struck text with each changed section rendered with its inline markers.
    */
   question: number;
+  /**
+   * The same blocks with a full-length placeholder for every U.S. Code reference the ingest
+   * has yet to read (quote time only; otherwise equal to `summary` and `question`). They feed
+   * the high bound alone: a failed read leaves the bill without them.
+   */
+  summaryHigh: number;
+  questionHigh: number;
+  /**
+   * A question about changes that cannot read the whole bill (struck text takes it over budget)
+   * is answered from retrieved excerpts: the largest such prompt, struck text and inline markers
+   * included. Zero when that question is whole too, or nothing is amended.
+   */
+  changeExcerpts: number;
 }
 export const NO_PROMPT: WholePromptSizes = {
+  summaryHigh: 0,
+  questionHigh: 0,
+  changeExcerpts: 0,
   summary: 0,
   breakdown: 0,
   scenario: 0,
@@ -163,80 +186,161 @@ function hasAmendments(sections: readonly Section[]): boolean {
   );
 }
 
+/** The excerpt-mode prompt for a change question: the largest retrieval could assemble. */
+function changeExcerptBlock(
+  metadata: NormalizedDoc['metadata'],
+  all: readonly SearchHit[],
+  sections: readonly Section[],
+  docId: string,
+  references: readonly ReferenceText[] | undefined,
+  checkpoint: () => void,
+): number {
+  const inline = withInlineChanges(
+    all,
+    { sections: [...sections] },
+    docId,
+    false,
+    checkpoint,
+  );
+  const size = (hit: SearchHit): number => formatExcerpt(hit).length;
+  const largest = (hits: readonly SearchHit[], count: number): SearchHit[] =>
+    [...hits].sort((a, b) => size(b) - size(a)).slice(0, count);
+  const definitions = largest(
+    all.filter((hit) => hit.chunk.chunkType === 'definition'),
+    MAX_INJECTED_DEFINITIONS,
+  );
+  const bigRefs = [...(references ?? [])]
+    .sort((a, b) => b.text.length - a.text.length)
+    .slice(0, MAX_EXCERPT_REFERENCES);
+  const built = buildPrompt({
+    mode: 'excerpts',
+    question: '',
+    hits: largest(
+      inline.filter((hit) => !definitions.includes(hit)),
+      DEFAULT_TOP_K,
+    ),
+    definitions,
+    references: bigRefs,
+    metadata,
+  });
+  return typeof built.user === 'string' ? built.user.length : 0;
+}
+
 export function sizeWholePrompts(input: WholePromptInput): WholePromptSizing {
+  const timeoutMs = input.limits?.timeoutMs ?? SIZING_TIMEOUT_MS;
+  // One deadline, and the caller's signal, over every stage and every long loop.
+  const budget = new ParseBudget({ timeoutMs, signal: input.limits?.signal });
+  const checkpoint = (): void => {
+    budget.check();
+  };
+  const maxChunks = input.limits?.maxChunks ?? SIZING_MAX_CHUNKS;
+  const doc = sizingDocument(input);
+  const chunkOptions = { maxChunks, timeoutMs, signal: input.limits?.signal };
+
   // Breakdown asks `documentContext` without reserving reference tokens, so its decision can
   // differ from the summary's when references crowd the budget. The looser budget is checked
   // first: when even that is not whole, nothing is.
   const looseBudget = billBudget(input.configuredBudget, 0);
   const none: WholePromptSizing = { mode: 'excerpts', sizes: NO_PROMPT };
-  if (looseBudget <= 0 || exceedsScanGuard(input.sections, false, looseBudget))
+  const tooBig =
+    looseBudget <= 0 || exceedsScanGuard(input.sections, false, looseBudget);
+  if (tooBig) {
+    // A quote still checks the ingest's chunk limit: it would refuse this document whatever
+    // mode the forecast picks. An indexed document passes no limits and is not re-checked.
+    if (input.limits !== undefined) chunkDocument(doc, chunkOptions);
     return none;
+  }
 
-  const doc = sizingDocument(input);
-  const maxChunks = input.limits?.maxChunks ?? SIZING_MAX_CHUNKS;
-  const chunked = chunkDocument(doc, {
-    maxChunks,
-    timeoutMs: input.limits?.timeoutMs ?? SIZING_TIMEOUT_MS,
-    signal: input.limits?.signal,
-  });
-  const enriched = enrichDocument(doc, chunked);
+  const chunked = chunkDocument(doc, chunkOptions);
+  checkpoint();
+  const enriched = enrichDocument(doc, chunked, checkpoint);
   // Ingest also counts the records enrichment adds.
   assertChunkLimit(enriched.chunks.length, maxChunks);
-  const chunks = enriched.chunks;
+  checkpoint();
   // The mode is chosen with the smallest reservation the runtime could make: the references
   // the document holds, or none. Whole mode costs more than excerpts, so near the threshold
   // that is the safe side, and it is what `documentContext` does for a document without them.
   const held = input.document?.references;
-  const budget = billBudget(input.configuredBudget, referenceTokens(held));
-  // Before ingest (a quote) the targets are known but not their text: the blocks that carry
-  // references are sized with each at its longest. The enriched definitions can name more
-  // targets than the parser's, so look them up there.
-  const references =
-    held ??
-    (input.preIngest === true
+  const budgetAfterRefs = billBudget(
+    input.configuredBudget,
+    referenceTokens(held),
+  );
+  // Before ingest (a quote) the targets are known but not their text: the high bound sizes
+  // the blocks that carry references with each at its longest. The enriched definitions can
+  // name more targets than the parser's, so look them up there.
+  const placeholders =
+    held === undefined && input.preIngest === true
       ? placeholderReferences(input.sections, enriched.doc.definitions)
-      : undefined);
-  const all = dropOverlap(chunks.map((chunk) => ({ chunk, score: 1 })));
+      : undefined;
+  // The runtime's own ordering and overlap trimming (`documentHits`).
+  const found = new Map<string, SearchHit>(
+    enriched.chunks.map((chunk) => [chunk.id, { chunk, score: 1 }]),
+  );
+  const all = hitsInDocumentOrder(
+    doc.docId,
+    [...walkSections(input.sections)],
+    found,
+    checkpoint,
+  );
   const live = all.filter((hit) => hit.chunk.amendmentStatus !== 'deleted');
   if (contextMode(hitTokens(live), looseBudget) !== 'whole') return none;
   const breakdown = billBlock(doc.metadata, live, undefined);
+  checkpoint();
 
   if (
-    budget <= 0 ||
-    exceedsScanGuard(input.sections, false, budget) ||
-    contextMode(hitTokens(live), budget) !== 'whole'
+    budgetAfterRefs <= 0 ||
+    exceedsScanGuard(input.sections, false, budgetAfterRefs) ||
+    contextMode(hitTokens(live), budgetAfterRefs) !== 'whole'
   )
     return { mode: 'excerpts', sizes: { ...NO_PROMPT, breakdown } };
 
-  const summary = billBlock(doc.metadata, live, references);
+  const summary = billBlock(doc.metadata, live, held);
+  const summaryHigh = billBlock(doc.metadata, live, placeholders ?? held);
   let question = summary;
-  // A question about changes reads struck text too, and may rule whole mode out on that
-  // alone; when it does not, each changed section is rebuilt with inline markers.
-  if (
-    hasAmendments(input.sections) &&
-    !exceedsScanGuard(input.sections, true, budget) &&
-    contextMode(hitTokens(all), budget) === 'whole'
-  )
-    question = Math.max(
-      question,
-      billBlock(
+  let questionHigh = summaryHigh;
+  let changeExcerpts = 0;
+  // A question about changes reads struck text too. When that keeps the bill whole, each
+  // changed section is rebuilt with inline markers; when it does not, the runtime retrieves
+  // excerpts (struck text included) instead.
+  if (hasAmendments(input.sections)) {
+    if (
+      !exceedsScanGuard(input.sections, true, budgetAfterRefs) &&
+      contextMode(hitTokens(all), budgetAfterRefs) === 'whole'
+    ) {
+      const inline = withInlineChanges(
+        all,
+        { sections: [...input.sections] },
+        doc.docId,
+        true,
+        checkpoint,
+      );
+      question = Math.max(question, billBlock(doc.metadata, inline, held));
+      questionHigh = Math.max(
+        questionHigh,
+        billBlock(doc.metadata, inline, placeholders ?? held),
+      );
+    } else {
+      changeExcerpts = changeExcerptBlock(
         doc.metadata,
-        withInlineChanges(
-          all,
-          { sections: [...input.sections] },
-          doc.docId,
-          true,
-        ),
-        references,
-      ),
-    );
+        all,
+        input.sections,
+        doc.docId,
+        placeholders ?? held,
+        checkpoint,
+      );
+    }
+  }
+  checkpoint();
   return {
     mode: 'whole',
     sizes: {
       summary,
+      summaryHigh,
       breakdown,
       scenario: scenarioExcerptBlock(live).length,
       question,
+      questionHigh,
+      changeExcerpts,
     },
   };
 }

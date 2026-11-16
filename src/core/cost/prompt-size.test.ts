@@ -16,7 +16,7 @@ import { ScriptedProvider } from '../../../tests/contracts/scripted-provider.js'
 import { scenarioProvider } from '../../../tests/support/scenario-provider.js';
 import { shapedBill } from '../../../tests/synth/bill-shape.js';
 import { envVar } from '../brand.js';
-import { documentContext } from '../answer/context.js';
+import { documentContext, hitTokens } from '../answer/context.js';
 import { referenceTokens } from '../answer/references.js';
 import { chunkDocument } from '../chunk/index.js';
 import { enrichDocument } from '../enrich/index.js';
@@ -34,7 +34,7 @@ import { runBreakdown } from '../pipeline/breakdown.js';
 import { runScenario } from '../pipeline/scenario.js';
 import { Registry } from '../registry.js';
 import { billFacts } from './facts.js';
-import { placeholderReferences } from './prompt-size.js';
+import { NO_PROMPT, placeholderReferences } from './prompt-size.js';
 import { MAX_TEXT_CHARS } from '../enrich/references.js';
 
 const DOC = 'c'.repeat(64);
@@ -371,12 +371,7 @@ describe('sizing an indexed document', () => {
   it('sizes nothing for a bill the runtime reads in excerpts', () => {
     const facts = billFacts(bill().sections, { wholeBillMaxTokens: 0 });
     expect(facts.mode).toBe('excerpts');
-    expect(facts.wholePrompt).toEqual({
-      summary: 0,
-      breakdown: 0,
-      scenario: 0,
-      question: 0,
-    });
+    expect(facts.wholePrompt).toEqual(NO_PROMPT);
   });
   it('sizes the breakdown on its own when references crowd the summary out of whole mode', async () => {
     const indexed = await index(bill());
@@ -429,17 +424,24 @@ describe('sizing at quote time, before ingest has read the references', () => {
     const read = billFacts(indexed.sections, {
       document: { ...indexed, references: fullSize(2) },
     });
-    for (const key of ['summary', 'breakdown', 'scenario', 'question'] as const)
-      expect(quoted.wholePrompt[key]).toBeGreaterThanOrEqual(
-        read.wholePrompt[key],
-      );
-    // Without them the forecast would leave the references out entirely.
+    // The high-bound blocks cover the longest the ingest can read.
+    expect(quoted.wholePrompt.summaryHigh).toBeGreaterThanOrEqual(
+      read.wholePrompt.summary,
+    );
+    expect(quoted.wholePrompt.questionHigh).toBeGreaterThanOrEqual(
+      read.wholePrompt.question,
+    );
+    // The low bound counts no placeholder: a failed read leaves the bill alone.
     const bare = billFacts(indexed.sections, {
       document: { ...indexed, references: [] },
     });
-    expect(quoted.wholePrompt.summary).toBeGreaterThan(
+    expect(quoted.wholePrompt.summary).toBe(bare.wholePrompt.summary);
+    expect(quoted.wholePrompt.question).toBe(bare.wholePrompt.question);
+    expect(quoted.wholePrompt.summaryHigh).toBeGreaterThan(
       bare.wholePrompt.summary + 2 * MAX_TEXT_CHARS,
     );
+    for (const key of ['breakdown', 'scenario'] as const)
+      expect(quoted.wholePrompt[key]).toBe(read.wholePrompt[key]);
   });
 
   it('chooses the mode as the runtime does with no references, not with the placeholders', async () => {
@@ -467,7 +469,7 @@ describe('sizing at quote time, before ingest has read the references', () => {
       document: noRefs,
       wholeBillMaxTokens: budget,
     });
-    expect(quoted.wholePrompt.summary).toBeGreaterThan(
+    expect(quoted.wholePrompt.summaryHigh).toBeGreaterThan(
       indexedSizing.wholePrompt.summary,
     );
   });
@@ -491,5 +493,120 @@ describe('sizing at quote time, before ingest has read the references', () => {
         limits: { maxChunks: 3 },
       }),
     ).toThrow(/chunk limit/);
+  });
+});
+
+describe('the same order and overlap trimming as the runtime', () => {
+  /** Long parent text with small children and a large child between them. */
+  function nested(): NormalizedDoc {
+    const word = 'the grantee shall report each award to the secretary. ';
+    const leaf = (id: string, chars: number): Section => ({
+      id,
+      num: id.slice(-2),
+      heading: 'Rule',
+      level: 3,
+      spans: [
+        {
+          text: word.repeat(Math.ceil(chars / word.length)),
+          status: 'unchanged',
+        },
+      ],
+      children: [],
+    });
+    const parent: Section = {
+      id: 'sec-p',
+      num: '1',
+      heading: 'Parent',
+      level: 1,
+      spans: [{ text: word.repeat(120), status: 'unchanged' }],
+      children: [
+        leaf('sec-p/a1', 90),
+        leaf('sec-p/a2', 90),
+        leaf('sec-p/big', 6000),
+        leaf('sec-p/b1', 90),
+        leaf('sec-p/b2', 90),
+      ],
+    };
+    return { ...bill(), sections: [parent], references: undefined };
+  }
+
+  it('flips between whole and excerpts at the same budget as documentContext', async () => {
+    const source = nested();
+    const indexed = await index(source);
+    const scan = await documentContext(backend, DOC, indexed.sections, {
+      budget: 100_000,
+    });
+    const tokens = hitTokens(scan.hits);
+    for (const budget of [tokens - 1, tokens, tokens + 1]) {
+      const facts = billFacts(indexed.sections, {
+        document: indexed,
+        wholeBillMaxTokens: budget,
+      });
+      const runtime = await documentContext(backend, DOC, indexed.sections, {
+        budget,
+      });
+      expect(facts.mode).toBe(runtime.mode);
+    }
+  });
+});
+
+describe('a change question that cannot read the whole bill', () => {
+  it('is sized from the excerpts the runtime retrieves, struck text included', async () => {
+    const source = bill({ struckChars: 24_000 });
+    const indexed = await index(source);
+    const scan = await documentContext(backend, DOC, indexed.sections, {
+      budget: 100_000,
+    });
+    // Room for the live bill, not for its struck text as well.
+    const budget = hitTokens(scan.hits) + 1500;
+    const facts = billFacts(indexed.sections, {
+      document: indexed,
+      wholeBillMaxTokens: budget,
+    });
+    expect(facts.mode).toBe('whole');
+    expect(facts.wholePrompt.changeExcerpts).toBeGreaterThan(0);
+    const result = await ask(
+      DOC,
+      { question: 'What was removed: the old wording of the rule?' },
+      { backend, registry, provider, wholeBillMaxTokens: budget },
+    );
+    expect(result.answer.context).toBe('excerpts');
+    const content = textRequests()[0]?.messages[0]?.content;
+    const sent = typeof content === 'string' ? content : '';
+    expect(sent).toContain('[struck]');
+    // The question and its tags add a little to what the forecast counts.
+    expect(sent.length - 200).toBeLessThanOrEqual(
+      facts.wholePrompt.changeExcerpts,
+    );
+  });
+});
+
+describe('limits and deadlines', () => {
+  it('checks the ingest chunk limit even when the forecast is excerpts', async () => {
+    const indexed = await index(bill());
+    expect(() =>
+      billFacts(indexed.sections, {
+        document: indexed,
+        wholeBillMaxTokens: 0,
+        limits: { maxChunks: 3 },
+      }),
+    ).toThrow(/chunk limit/);
+  });
+  it('stops at its deadline and on an aborted signal, across every stage', async () => {
+    const indexed = await index(bill());
+    expect(() =>
+      billFacts(indexed.sections, {
+        document: indexed,
+        limits: { timeoutMs: 1 },
+      }),
+    ).toThrow(/time budget/);
+    const controller = new AbortController();
+    controller.abort();
+    expect(() =>
+      billFacts(indexed.sections, {
+        document: indexed,
+        limits: { signal: controller.signal },
+      }),
+    ).toThrow(/aborted/);
   });
 });

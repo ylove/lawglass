@@ -49,7 +49,11 @@ target, so those two blocks are an upper bound on what the ingest will read. The
 whole-versus-excerpts mode is not: it is chosen as the runtime chooses it with no references
 reserved, the smallest reservation it could make, because whole mode costs more near the
 threshold. An indexed document is sized with the references it holds, or none (documents
-indexed before references existed, or whose read failed, get no placeholders). A document that
+indexed before references existed, or whose read failed, get no placeholders). The placeholders count toward the high bound only (`summaryHigh`, `questionHigh`): a failed
+reference read leaves the bill alone, so the low bound counts none. A change question whose
+struck text takes the bill over the whole-bill budget is answered from retrieved excerpts, sized
+separately (`changeExcerpts`, the largest eight excerpts with struck text and inline markers,
+injected definitions and references) and included in the question's high bound. A document that
 already carries `references` uses them. Quotes run under the ingest's own chunk
 and time limits (`limits`), inside its concurrency permit. Indexed documents are sized under fixed, generous caps (50,000 chunks, 120 s) instead, so a host that lowers a limit later cannot make an answerable document unsizable. The estimator divides the
 characters by a characters-per-token figure measured in the calibration run: 2.9 for the low

@@ -3,6 +3,7 @@ import { makeSectionedText } from '../../../tests/synth/text.js';
 import { EMPTY_METADATA, type Section } from '../model/index.js';
 import { envVar } from '../brand.js';
 import { billFacts } from './facts.js';
+import { NO_PROMPT } from './prompt-size.js';
 
 function sections(count: number, chars = 100): Section[] {
   return Array.from({ length: count }, (_, i) => ({
@@ -24,12 +25,7 @@ describe('billFacts', () => {
     expect(whole.wholePrompt.breakdown).toBeGreaterThan(whole.characters);
     const forced = billFacts(sections(5, 400), { wholeBillMaxTokens: 0 });
     expect(forced.mode).toBe('excerpts');
-    expect(forced.wholePrompt).toEqual({
-      summary: 0,
-      breakdown: 0,
-      scenario: 0,
-      question: 0,
-    });
+    expect(forced.wholePrompt).toEqual(NO_PROMPT);
   });
   it('adds reference texts to the summary prompt, not to breakdown or the scenario', () => {
     const without = billFacts(sections(2, 400));
