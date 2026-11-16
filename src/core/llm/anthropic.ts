@@ -47,9 +47,14 @@ export class AnthropicProvider implements LlmProvider {
     deps: { fetch?: typeof fetch } = {},
   ) {
     this.model = config.model;
+    const apiKey = requireKey(config.apiKey);
     this.client = new Anthropic({
-      apiKey: requireKey(config.apiKey),
+      apiKey,
       authToken: null,
+      // The SDK also reads ANTHROPIC_CUSTOM_HEADERS from the environment (often set for a Claude
+      // Code gateway) and applies it after authentication, so an `Authorization` line there would
+      // replace this key. Headers given here win over the environment's: pin the one credential.
+      defaultHeaders: { Authorization: `Bearer ${apiKey}`, 'X-Api-Key': null },
       baseURL: 'https://api.anthropic.com',
       timeout: config.timeoutMs,
       maxRetries: 0,
