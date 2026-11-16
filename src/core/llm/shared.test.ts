@@ -67,7 +67,7 @@ describe('provider boundary helpers', () => {
   it('keeps only the HTTP status of a provider failure (#341)', () => {
     const sdkError = Object.assign(new Error('secret body'), {
       status: 400,
-      headers: { 'x-api-key': 'secret' },
+      headers: { 'x-api-key': 'secret', authorization: 'Bearer secret' },
     });
     const safe = providerFailure(sdkError);
     expect(providerStatusOf(safe)).toBe(400);

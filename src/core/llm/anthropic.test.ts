@@ -1,7 +1,10 @@
 import { z } from 'zod';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { asset, drain, httpReplay, KEY } from '../../../tests/llm/http.js';
-import { describeHttpProvider } from '../../../tests/llm/provider-tests.js';
+import {
+  describeHttpProvider,
+  objectRequest,
+} from '../../../tests/llm/provider-tests.js';
 import { AnthropicProvider } from './anthropic.js';
 
 describeHttpProvider(
@@ -92,6 +95,60 @@ it('sends a plain string message unchanged and no effort by default', async () =
   };
   expect(sent.messages[0]!.content).toBe('hello');
   expect(sent.output_config).toBeUndefined();
+});
+
+it('sends API version 2026-10-21 with a bearer key and never a sampling parameter', async () => {
+  const replay = httpReplay([
+    { body: asset('anthropic-stream.sse'), stream: true },
+  ]);
+  const provider = new AnthropicProvider(
+    { provider: 'anthropic', model: 'claude-sonnet-5-5', apiKey: KEY },
+    { fetch: replay.fetch },
+  );
+  await drain(provider, {
+    system: 'rules',
+    messages: [{ role: 'user', content: 'hello' }],
+    maxTokens: 100,
+    temperature: 0.2,
+  });
+  const request = replay.requests[0]!;
+  // A new SDK major that moves the API version again should fail here and get its own audit.
+  expect(request.headers.get('anthropic-version')).toBe('2026-10-21');
+  expect(request.headers.get('authorization')).toBe(`Bearer ${KEY}`);
+  expect(request.headers.get('x-api-key')).toBeNull();
+  const sent = (await request.json()) as Record<string, unknown>;
+  for (const field of ['temperature', 'top_p', 'top_k'])
+    expect(sent).not.toHaveProperty(field);
+});
+
+it('keeps its own key when ANTHROPIC_CUSTOM_HEADERS carries other credentials', async () => {
+  // The environment's lines are parsed as written, so each name can appear in several cases.
+  for (const env of [
+    'Authorization: Bearer stale-token\nX-Api-Key: other-key',
+    'authorization: Bearer stale-token\nx-api-key: other-key',
+    'Authorization: Bearer stale-1\nauthorization: Bearer stale-2\nAUTHORIZATION: Bearer stale-3\nX-Api-Key: other-1\nx-api-key: other-2',
+  ]) {
+    vi.stubEnv('ANTHROPIC_CUSTOM_HEADERS', env);
+    try {
+      const replay = httpReplay([
+        { body: asset('anthropic-stream.sse'), stream: true },
+        { body: asset('anthropic-object.json') },
+      ]);
+      const provider = new AnthropicProvider(
+        { provider: 'anthropic', model: 'claude-sonnet-5-5', apiKey: KEY },
+        { fetch: replay.fetch },
+      );
+      await drain(provider);
+      await provider.generateObject(objectRequest);
+      expect(replay.requests).toHaveLength(2);
+      for (const request of replay.requests) {
+        expect(request.headers.get('authorization')).toBe(`Bearer ${KEY}`);
+        expect(request.headers.get('x-api-key')).toBeNull();
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  }
 });
 
 it('carries a cached prompt part and effort into structured output', async () => {
