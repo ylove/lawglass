@@ -1,7 +1,9 @@
 # Bill cost estimates
 
-`billFacts(sections, options)` uses only parsed sections. It counts live text with the same
-characters/4 heuristic as the whole-bill policy, and reuses `chooseMapUnits`,
+`billFacts(sections, options)` needs only parsed sections (plus the parsed document, for its
+metadata and definitions). It counts live text with characters/4 for the summary and map-unit
+sizes, chunks and enriches the sections as ingest does to size whole-bill prompts (below), and
+reuses `chooseMapUnits`,
 `chooseBreakdownUnits`, and `classifyBill`. `breakdownUnitCap` is the server's
 `breakdownMaxUnits` value (a count, `'all'` or `Infinity`) and defaults to 30. A cap above 30
 is full coverage (#382): every substantive part is a candidate, so the map selector's 60-part
@@ -39,10 +41,15 @@ by building it with the same code the feature runs. Summary and model chips send
 every reference; breakdown sends live parts only; the summary scenario sends live parts as
 excerpts; a question's high bound is the worst case, a question about changes with struck text
 and inline markers. Struck text prices only that last case. Pass the parsed document as
-`document` so metadata, definitions and references shape the count. Ingest's chunk and time
-limits are not applied, so an indexed document can always be sized. The estimator divides the
+`document` so metadata, definitions and references shape the count. A quote or admission check
+runs before ingest has read the U.S. Code references. Their targets come from the sections
+alone, with no network, and each is counted as a placeholder text of the longest a read
+reference can be (9,000 characters plus its heading), both in the reserved budget and in the
+summary and question blocks, so quote-time sizing is an upper bound on the indexed sizing. A
+document that already carries `references` uses them. Quotes run under the ingest's own chunk
+and time limits (`limits`), inside its concurrency permit. Indexed documents are sized under fixed, generous caps (50,000 chunks, 120 s) instead, so a host that lowers a limit later cannot make an answerable document unsizable. The estimator divides the
 characters by a characters-per-token figure measured in the calibration run: 2.9 for the low
-bound and 2.4 for the high bound (derivation in `estimate.ts`; the old chars/4 times 1.25 ran
+bound and 2.2 for the high bound, about 12% under the lowest fitted value (derivation in `estimate.ts`; the old chars/4 times 1.25 ran
 up to 1.87x low on bills with many short sections, #410). Long-context
 pricing tiers apply when the real prompt crosses them. Use `cold` to charge a write on every call, or `none`
 for providers without prompt caching. Summary scenarios and examples currently send their
@@ -53,7 +60,7 @@ parse-only estimator cannot know which generated items will pass the picture eli
 These are planning ranges, not guaranteed provider billing limits: tokenization, prompt/schema
 framing (1,000–3,000 tokens per call), metadata already present in markup, generation lengths,
 optional scenarios, reference/definition context, and cache eligibility can change actual usage.
-Near the whole-bill threshold the runtime scans indexed chunks and may select a different mode.
+Whole versus excerpts is forecast from the document chunked and enriched as ingest does, with the runtime's own budget helpers; near the threshold the runtime's scan of the indexed chunks can still choose differently (for example when a reference text read at ingest is longer than expected, or an index is incomplete).
 Costs grow with added substantive units within a fixed strategy; crossing into omnibus
 classification disables the summary scenario, and switching context strategies can reduce cost.
 Embeddings, reranking, infrastructure, taxes and provider discounts are excluded.

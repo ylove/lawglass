@@ -10,12 +10,18 @@ import {
   type Section,
 } from '../model/index.js';
 import { classifyBill } from '../scenario/detect.js';
-import { sizeWholePrompts, type WholePromptSizes } from './prompt-size.js';
+import {
+  sizeWholePrompts,
+  type WholePromptInput,
+  type WholePromptSizes,
+} from './prompt-size.js';
 
 export interface BillFactsOptions {
   /** The same value as the server's `breakdownMaxUnits`: a count, or `'all'`. Default 30. */
   breakdownUnitCap?: BreakdownMaxUnits;
   wholeBillMaxTokens?: number;
+  /** Chunk and time limits for sizing; see `WholePromptInput.limits`. */
+  limits?: WholePromptInput['limits'];
   /**
    * The parsed document, when there is one: its metadata, definitions and reference texts
    * shape the chunks and what whole mode sends beside the bill. Without it the sizing uses
@@ -76,6 +82,7 @@ export function billFacts(
     sections,
     document: opts.document,
     configuredBudget: budget,
+    limits: opts.limits,
   });
   const map = chooseMapUnits(sections);
   const breakdown = chooseBreakdownUnits(

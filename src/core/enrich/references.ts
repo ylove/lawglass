@@ -63,7 +63,7 @@ const MAX_PAGE_BYTES = 3 * 1024 * 1024;
 const STAGE_TIMEOUT_MS = 30_000;
 const CONCURRENCY = 4;
 /** All terms read from one section together. */
-const MAX_TEXT_CHARS = 9000;
+export const MAX_TEXT_CHARS = 9000;
 
 export function referenceIdFor(title: number, section: string): string {
   return `${REFERENCE_ID_PREFIX}usc/${String(title)}/${section}`;

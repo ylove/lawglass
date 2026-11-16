@@ -363,6 +363,7 @@ describe.each(CALIBRATED)('whole-bill input forecast: $name', (bill) => {
 });
 
 it('prices each feature from its own prompt size', () => {
+  // Summary, then breakdown, scenario and question each from their own character count.
   const base = billFacts(shapedBill(S1582_SHAPE));
   const facts = {
     ...base,
@@ -372,7 +373,7 @@ it('prices each feature from its own prompt size', () => {
       summary: 240_000,
       breakdown: 120_000,
       scenario: 60_000,
-      question: 300_000,
+      question: 700_000,
     },
   };
   const { features } = estimateBill(facts, plan);
@@ -393,4 +394,46 @@ it('does not hold the high bound to the calibration shapes alone: markup-heavy b
   expect(dense.mode).toBe('whole');
   expect(dense.characters).toBeGreaterThan(sparse.characters * 0.99);
   expect(high(dense)).toBeGreaterThan(high(sparse) * 1.3);
+});
+
+describe('question high bound', () => {
+  const base = {
+    ...billFacts(shapedBill(S1582_SHAPE)),
+    mode: 'whole' as const,
+  };
+  it('a change question is never rewritten, so it is not priced as two calls', () => {
+    // Ohio-like: the change prompt is 1.3x the ordinary one, which two ordinary calls beat.
+    const facts = {
+      ...base,
+      wholePrompt: {
+        summary: 31_160,
+        breakdown: 31_160,
+        scenario: 31_432,
+        question: 39_933,
+      },
+    };
+    const high = estimateQuestion(facts).high;
+    expect(high.calls).toBe(2);
+    const plain = estimateQuestion({
+      ...facts,
+      wholePrompt: { ...facts.wholePrompt, question: 31_160 },
+    }).high;
+    expect(high.inputTokens).toBe(plain.inputTokens);
+  });
+  it('prices one call on the change prompt when that costs more than two ordinary calls', () => {
+    const facts = {
+      ...base,
+      wholePrompt: {
+        summary: 20_000,
+        breakdown: 20_000,
+        scenario: 20_000,
+        question: 90_000,
+      },
+    };
+    const high = estimateQuestion(facts).high;
+    // Input is the one change call, not two; calls and output keep the two-call case.
+    expect(high.inputTokens).toBeGreaterThan(90_000 / 2.2);
+    expect(high.inputTokens).toBeLessThan(2 * (90_000 / 2.2));
+    expect(high.calls).toBe(2);
+  });
 });

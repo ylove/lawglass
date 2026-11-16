@@ -108,12 +108,13 @@ const PROMPT_MARKUP = { low: 1.1, high: 1.25 };
  *                           question (ordinary) 2.66
  *   NJ S. 1000 (3):         summary 2,582: 2.82; question (ordinary) 2.99
  * Low (2.9) is above every figure, so the low bound cannot exceed what was measured. High
- * (2.4) is below the lowest (2.50), about 4% of margin on the text, and FRAMING.high carries
- * about 1,000 tokens above the fitted framing besides (breakdown framing runs higher than the
+ * (2.2) is about 12% under the lowest (2.50), a margin for denser text such as numeric tables
+ * or citations, which tokenize worse than these bills; FRAMING.high carries about 1,000 tokens
+ * above the fitted framing besides (breakdown framing runs higher than the
  * summary's: NJ's breakdown measured 3,504 tokens on 2,582 characters). Three bills are a thin
  * sample: the next calibration run should check this figure.
  */
-const WHOLE_PROMPT_CHARS_PER_TOKEN = { low: 2.9, high: 2.4 };
+const WHOLE_PROMPT_CHARS_PER_TOKEN = { low: 2.9, high: 2.2 };
 
 /** A whole-bill prompt's bill-sized block, in tokens. Not scaled by PROMPT_MARKUP. */
 function wholeContext(characters: number): Bounds {
@@ -376,7 +377,7 @@ export function estimateBill(
     },
     question: estimateQuestion(facts, prices, plan),
     assumptions: [
-      'Approximate tokens = live characters / 4 to pick the mode; indexed context can change it near the threshold. Whole-bill prompts are sized from the built <part> blocks at 2.4–2.9 characters per token.',
+      'Whole versus excerpts mode is forecast from the document chunked and enriched as ingest does; the runtime scan can still differ near the threshold. Whole-bill prompts are sized from the built <part> blocks at 2.2–2.9 characters per token. Before ingest has read its U.S. Code references, they are counted at their longest.',
       'Low: first pass and short output. High: full output budgets, all retries and reading-level rewrites.',
       `Cache policy: ${plan.cache ?? 'reuse'}; reuse assumes the same prefix stays cached for five minutes within each feature.`,
       `Thinking tokens per answer call: ${String(plan.thinkingTokensPerCall?.low ?? 0)}–${String(plan.thinkingTokensPerCall?.high ?? 0)}; included within output limits, high reserves the full limit.`,
@@ -401,25 +402,60 @@ export function estimateQuestion(
   };
   validatePlan(assignment);
   const whole = facts.mode === 'whole';
-  return feature(
+  const spec = (
+    context: Bounds,
+    highCalls: number,
+    sized: boolean,
+  ): CallSpec => ({
+    context,
+    promptSized: sized,
+    visibleOutput: 800,
+    maxTokens: whole ? 16_000 : 8192,
+    highCalls,
+    cachedPrefix: whole,
+  });
+  if (!whole)
+    return feature(
+      assignment.answerModel,
+      [spec(boundedContext(3500), 2, false)],
+      assignment,
+      prices,
+    );
+  const ordinary = wholeContext(facts.wholePrompt.summary);
+  const changes = wholeContext(facts.wholePrompt.question);
+  // An ordinary question may be rewritten for reading level: two calls. A question about
+  // changes needs the bill's exact wording, so it is never rewritten: one call, on the larger
+  // prompt. The high bound is whichever of the two reachable cases costs more.
+  const usual = feature(
     assignment.answerModel,
-    [
-      {
-        // Low is the ordinary question; high is the worst case, a question about changes.
-        context: whole
-          ? {
-              low: wholeContext(facts.wholePrompt.summary).low,
-              high: wholeContext(facts.wholePrompt.question).high,
-            }
-          : boundedContext(3500),
-        promptSized: whole,
-        visibleOutput: 800,
-        maxTokens: whole ? 16_000 : 8192,
-        highCalls: 2,
-        cachedPrefix: whole,
-      },
-    ],
+    [spec(ordinary, 2, true)],
     assignment,
     prices,
   );
+  const asked = feature(
+    assignment.answerModel,
+    [spec({ low: ordinary.low, high: changes.high }, 1, true)],
+    assignment,
+    prices,
+  );
+  // Each field takes the larger of the two cases, so the bound covers whichever happens: the
+  // input is max(1 change call, 2 ordinary calls) and the output and dollars are the larger too.
+  const envelope = (a: number, b: number): number => Math.max(a, b);
+  return {
+    ...usual,
+    high: {
+      calls: envelope(usual.high.calls, asked.high.calls),
+      inputTokens: envelope(usual.high.inputTokens, asked.high.inputTokens),
+      cachedInputTokens: envelope(
+        usual.high.cachedInputTokens,
+        asked.high.cachedInputTokens,
+      ),
+      cacheWriteTokens: envelope(
+        usual.high.cacheWriteTokens,
+        asked.high.cacheWriteTokens,
+      ),
+      outputTokens: envelope(usual.high.outputTokens, asked.high.outputTokens),
+      dollars: envelope(usual.high.dollars, asked.high.dollars),
+    },
+  };
 }

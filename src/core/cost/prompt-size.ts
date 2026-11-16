@@ -32,6 +32,8 @@ import { chunkDocument } from '../chunk/index.js';
 import { enrichDocument } from '../enrich/index.js';
 import {
   EMPTY_METADATA,
+  type Definition,
+  type ReferenceText,
   type NormalizedDoc,
   type SearchHit,
   type Section,
@@ -39,6 +41,12 @@ import {
 import { withInlineChanges } from '../pipeline/inline-changes.js';
 import { scenarioExcerptBlock } from '../scenario/generate.js';
 import { referenceTokens } from '../answer/references.js';
+import { assertChunkLimit } from '../parse/limits.js';
+import {
+  findDefinitionTargets,
+  MAX_TARGETS,
+} from '../enrich/definition-refs.js';
+import { MAX_TEXT_CHARS, referenceIdFor } from '../enrich/references.js';
 
 /** Characters in each whole-bill prompt's bill-sized block; 0 where that prompt is not whole. */
 export interface WholePromptSizes {
@@ -70,7 +78,16 @@ export interface WholePromptInput {
   >;
   /** The whole-bill token budget (`wholeBillMaxTokens`), before references are reserved. */
   configuredBudget: number;
+  /**
+   * Chunk and time limits for the sizing work. A quote passes the ingest's own, so a bill the
+   * ingest would refuse is refused at quote. Without them a fixed, generous cap applies:
+   * sizing an already-indexed document must not fail because a host lowered a limit since.
+   */
+  limits?: { maxChunks?: number; timeoutMs?: number; signal?: AbortSignal };
 }
+/** Caps for sizing an indexed document: far above any bill the default limits admit. */
+export const SIZING_MAX_CHUNKS = 50_000;
+export const SIZING_TIMEOUT_MS = 120_000;
 export interface WholePromptSizing {
   /** The mode summaries, scenarios and questions run in. */
   mode: ContextMode;
@@ -92,11 +109,34 @@ function sizingDocument(input: WholePromptInput): NormalizedDoc {
   };
 }
 
+/**
+ * Stand-ins for the U.S. Code texts a document's ingest will read, when it has not run yet (a
+ * quote, an admission check). The targets come from the sections alone, with no network, and
+ * each stand-in is as long as a read text can be, so the forecast is an upper bound on what the
+ * ingest will fetch. Documents that already carry `references` use those.
+ */
+export function placeholderReferences(
+  sections: readonly Section[],
+  definitions: readonly Definition[],
+): ReferenceText[] {
+  return findDefinitionTargets(sections, definitions)
+    .slice(0, MAX_TARGETS)
+    .map((target) => ({
+      sectionId: referenceIdFor(target.title, target.section),
+      citation: target.citation,
+      heading: `§${target.section}. Definitions (2024 edition)`,
+      sourceUrl: 'https://www.govinfo.gov/',
+      text: 'x'.repeat(MAX_TEXT_CHARS),
+      terms: target.terms.map((t) => t.term),
+      fetchedAt: '2000-01-01T00:00:00.000Z',
+    }));
+}
+
 /** The first, cached block of a whole-mode prompt: the bill, then any references. */
 function billBlock(
   metadata: NormalizedDoc['metadata'],
   hits: readonly SearchHit[],
-  references: NonNullable<WholePromptInput['document']>['references'],
+  references: readonly ReferenceText[] | undefined,
 ): number {
   const built = buildPrompt({
     mode: 'whole',
@@ -118,24 +158,35 @@ function hasAmendments(sections: readonly Section[]): boolean {
 }
 
 export function sizeWholePrompts(input: WholePromptInput): WholePromptSizing {
-  const references = input.document?.references;
   // Breakdown asks `documentContext` without reserving reference tokens, so its decision can
   // differ from the summary's when references crowd the budget. The looser budget is checked
   // first: when even that is not whole, nothing is.
   const looseBudget = billBudget(input.configuredBudget, 0);
-  const budget = billBudget(
-    input.configuredBudget,
-    referenceTokens(references),
-  );
   const none: WholePromptSizing = { mode: 'excerpts', sizes: NO_PROMPT };
   if (looseBudget <= 0 || exceedsScanGuard(input.sections, false, looseBudget))
     return none;
 
   const doc = sizingDocument(input);
-  const chunks = enrichDocument(
-    doc,
-    chunkDocument(doc, { maxChunks: Infinity, timeoutMs: 600_000 }),
-  ).chunks;
+  const maxChunks = input.limits?.maxChunks ?? SIZING_MAX_CHUNKS;
+  const chunked = chunkDocument(doc, {
+    maxChunks,
+    timeoutMs: input.limits?.timeoutMs ?? SIZING_TIMEOUT_MS,
+    signal: input.limits?.signal,
+  });
+  const enriched = enrichDocument(doc, chunked);
+  // Ingest also counts the records enrichment adds.
+  assertChunkLimit(enriched.chunks.length, maxChunks);
+  const chunks = enriched.chunks;
+  // References are read after ingest's enrichment. Before that (a quote) their targets are
+  // known but not their text: size them at their longest. The enriched definitions can name
+  // more targets than the parser's, so look them up there.
+  const references =
+    input.document?.references ??
+    placeholderReferences(input.sections, enriched.doc.definitions);
+  const budget = billBudget(
+    input.configuredBudget,
+    referenceTokens(references),
+  );
   const all = dropOverlap(chunks.map((chunk) => ({ chunk, score: 1 })));
   const live = all.filter((hit) => hit.chunk.amendmentStatus !== 'deleted');
   if (contextMode(hitTokens(live), looseBudget) !== 'whole') return none;

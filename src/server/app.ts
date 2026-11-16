@@ -1387,28 +1387,38 @@ export function createApp(
     // start more downloads and parses than ingests could.
     const release = await sharedLimits().acquire('ingest', signal);
     let doc;
+    let facts: BillFacts;
     try {
+      const parseLimits = ingestParseLimits();
       doc = await fetchAndParseDocument(
         url,
         {
           fetcher: ingestFetcher(),
           now: runtime.now,
           parsePdf: runtime.parsePdf ?? defaultParsePdf,
-          parseLimits: ingestParseLimits(),
+          parseLimits,
         },
         signal,
         // A quote stores nothing, not even the download.
         { commitCache: false },
       );
+      // Sizing chunks and enriches the document, the same work an ingest does, so it stays
+      // inside the permit and under the ingest's own limits: a bill the ingest would refuse is
+      // refused here. Its U.S. Code references are not read yet; they are sized at their longest.
+      facts = billFacts(doc.sections, {
+        breakdownUnitCap: coverage.breakdownUnitCap,
+        document: doc,
+        // The budget the runtime's own whole-bill decision reads.
+        wholeBillMaxTokens: wholeBillBudget(),
+        limits: {
+          maxChunks: parseLimits.maxChunks,
+          timeoutMs: parseLimits.timeoutMs,
+          signal,
+        },
+      });
     } finally {
       release();
     }
-    const facts = billFacts(doc.sections, {
-      breakdownUnitCap: coverage.breakdownUnitCap,
-      document: doc,
-      // The budget the runtime's own whole-bill decision reads.
-      wholeBillMaxTokens: wholeBillBudget(),
-    });
     return {
       doc,
       publicFacts: quoteFacts(doc, facts),

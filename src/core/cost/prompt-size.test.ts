@@ -29,10 +29,13 @@ import {
   type TextRequest,
 } from '../model/index.js';
 import { ask } from '../pipeline/ask.js';
+import { getChip, runChip } from '../chips.js';
 import { runBreakdown } from '../pipeline/breakdown.js';
 import { runScenario } from '../pipeline/scenario.js';
 import { Registry } from '../registry.js';
 import { billFacts } from './facts.js';
+import { placeholderReferences } from './prompt-size.js';
+import { MAX_TEXT_CHARS } from '../enrich/references.js';
 
 const DOC = 'c'.repeat(64);
 
@@ -61,6 +64,23 @@ function definitionsSection(count: number): Section {
     heading: 'Definitions',
     level: 3,
     spans: [{ text: `In this Act:\n${terms.join('\n')}`, status: 'unchanged' }],
+    children: [],
+  };
+}
+
+/** Definitions that borrow their meaning from the U.S. Code: the targets ingest will read. */
+function borrowedDefinitions(): Section {
+  return {
+    id: 'division-a/title-9/sec-borrowed',
+    num: '901',
+    heading: 'Borrowed terms',
+    level: 3,
+    spans: [
+      {
+        text: 'In this Act:\n(1) The term "financial institution" has the meaning given that term in section 509 of the Gramm-Leach-Bliley Act (15 U.S.C. 6809).\n(2) The term "agency" has the same meaning as in section 551 of title 5, United States Code.',
+        status: 'unchanged',
+      },
+    ],
     children: [],
   };
 }
@@ -97,6 +117,7 @@ function bill(options: { struckChars?: number } = {}): NormalizedDoc {
   const title = sections[0]?.children[0];
   title?.children.push(
     definitionsSection(40),
+    borrowedDefinitions(),
     amendedSection(
       'division-a/title-1/sec-amended-1',
       options.struckChars ?? 2400,
@@ -187,6 +208,20 @@ describe('whole-bill prompt sizes match what the pipeline sends', () => {
     );
     expect(facts.wholePrompt.summary).toBeGreaterThan(
       facts.wholePrompt.breakdown,
+    );
+  });
+
+  it('the summary chip sends the same bill block', async () => {
+    const indexed = await index(bill());
+    const facts = billFacts(indexed.sections, { document: indexed });
+    const run = await runChip(getChip('summary'), DOC, {
+      backend,
+      provider,
+      doc: indexed,
+    });
+    expect(run.answer.context).toBe('whole');
+    expect(billBlockOf(textRequests()[0]!).length).toBe(
+      facts.wholePrompt.summary,
     );
   });
 
@@ -356,5 +391,76 @@ describe('sizing an indexed document', () => {
     expect(facts.mode).toBe('excerpts');
     expect(facts.wholePrompt.summary).toBe(0);
     expect(facts.wholePrompt.breakdown).toBeGreaterThan(0);
+  });
+});
+
+describe('sizing at quote time, before ingest has read the references', () => {
+  /** What the ingest will read at most: every target's text at its longest. */
+  const fullSize = (count: number): ReferenceText[] =>
+    Array.from({ length: count }, (_, i) => ({
+      ...reference,
+      sectionId: `ref:usc/15/${String(6809 + i)}`,
+      citation: `15 U.S.C. ${String(6809 + i)}`,
+      terms: ['financial institution'],
+      text: 'The term "state" means each State. '
+        .repeat(Math.ceil(MAX_TEXT_CHARS / 30))
+        .slice(0, MAX_TEXT_CHARS),
+    }));
+
+  it('finds the borrowed definitions without any network', async () => {
+    const indexed = await index(bill());
+    const targets = placeholderReferences(
+      indexed.sections,
+      indexed.definitions,
+    );
+    expect(targets.map((t) => t.citation).sort()).toEqual([
+      '15 U.S.C. 6809',
+      '5 U.S.C. 551',
+    ]);
+  });
+
+  it('is at least the indexed sizing for the same bill', async () => {
+    const indexed = await index(bill());
+    const quoted = billFacts(indexed.sections, {
+      document: { ...indexed, references: undefined },
+    });
+    // The ingest read both targets, each at the longest a text can be.
+    const read = billFacts(indexed.sections, {
+      document: { ...indexed, references: fullSize(2) },
+    });
+    for (const key of ['summary', 'breakdown', 'scenario', 'question'] as const)
+      expect(quoted.wholePrompt[key]).toBeGreaterThanOrEqual(
+        read.wholePrompt[key],
+      );
+    // Without them the forecast would leave the references out entirely.
+    const bare = billFacts(indexed.sections, {
+      document: { ...indexed, references: [] },
+    });
+    expect(quoted.wholePrompt.summary).toBeGreaterThan(
+      bare.wholePrompt.summary + 2 * MAX_TEXT_CHARS,
+    );
+  });
+
+  it('reserves them from the budget, so a close call is not forecast whole', async () => {
+    const indexed = await index(bill());
+    const all = await documentContext(backend, DOC, indexed.sections, {
+      budget: 100_000,
+    });
+    const tokens = all.hits.reduce((n, h) => n + h.chunk.tokenCount, 0);
+    const quoted = billFacts(indexed.sections, {
+      document: { ...indexed, references: undefined },
+      wholeBillMaxTokens: tokens + 100,
+    });
+    expect(quoted.mode).toBe('excerpts');
+  });
+
+  it('refuses a bill the ingest would refuse, with the ingest limits', async () => {
+    const indexed = await index(bill());
+    expect(() =>
+      billFacts(indexed.sections, {
+        document: indexed,
+        limits: { maxChunks: 3 },
+      }),
+    ).toThrow(/chunk limit/);
   });
 });
