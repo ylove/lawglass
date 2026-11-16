@@ -17,7 +17,6 @@ import { BRAND, envVar } from '../core/brand.js';
 import {
   AppError,
   AskRequest,
-  type NormalizedDoc,
   CandidateLink,
   ClientConfig,
   DocSummary,
@@ -30,7 +29,7 @@ import {
 import { parsePdf as defaultParsePdf } from '../core/parse/index.js';
 import { readParseLimits } from '../core/parse/limits.js';
 import { ask, ingest, sectionExcerpt } from '../core/pipeline/index.js';
-import { fetchAndParseDocument } from '../core/pipeline/ingest.js';
+import { readDocument, type IngestDeps } from '../core/pipeline/ingest.js';
 import { sharedLimits } from '../core/pipeline/limits.js';
 import {
   billFacts,
@@ -101,6 +100,8 @@ import {
   questionEstimate,
   quoteFacts,
   QuoteStore,
+  QuotedDownloads,
+  sameQuotedBill,
   quoteTiers,
   type QuoteOptions,
 } from './quotes.js';
@@ -225,7 +226,9 @@ export interface AppOptions {
 const HOUR_MS = 60 * 60 * 1000;
 const GENERIC_ERROR = 'Something went wrong. Please try again.';
 
-const STATUS: Partial<Record<AppError['code'], 400 | 402 | 403 | 404 | 429>> = {
+const STATUS: Partial<
+  Record<AppError['code'], 400 | 402 | 403 | 404 | 429 | 502>
+> = {
   PAYMENT_REQUIRED: 402,
   BUDGET_EXHAUSTED: 403,
   INVALID_INPUT: 400,
@@ -235,6 +238,8 @@ const STATUS: Partial<Record<AppError['code'], 400 | 402 | 403 | 404 | 429>> = {
   PUBLIC_MODE_FORBIDDEN: 403,
   DOC_CAP_REACHED: 403,
   RATE_LIMITED: 429,
+  // The source could not be read (for example, no usable text version): not our fault, not a crash.
+  FETCH_FAILED: 502,
 };
 
 /** Only an AppError's plain-language message may reach the client; anything else is generic. */
@@ -615,6 +620,7 @@ export function createApp(
   const estimating =
     options.admission !== undefined || options.modelFor !== undefined;
   const quotes = new QuoteStore(now);
+  const quotedDownloads = new QuotedDownloads(now);
   // Per signed-in reader (auth and private modes), so one account cannot drive unbounded fetches.
   const readerQuotes = new SlidingWindowLimiter(
     options.quote?.perReaderPerHour ?? 60,
@@ -1380,9 +1386,9 @@ export function createApp(
     // The same concurrency pool as an ingest, so a burst of quotes or refused ingests cannot
     // start more downloads and parses than ingests could.
     const release = await sharedLimits().acquire('ingest', signal);
-    let doc;
+    let read;
     try {
-      doc = await fetchAndParseDocument(
+      read = await readDocument(
         url,
         {
           fetcher: ingestFetcher(),
@@ -1397,11 +1403,12 @@ export function createApp(
     } finally {
       release();
     }
+    const { doc } = read;
     const facts = billFacts(doc.sections, {
       breakdownUnitCap: coverage.breakdownUnitCap,
     });
     return {
-      doc,
+      ...read,
       publicFacts: quoteFacts(doc, facts),
       estimates: estimatesFor(facts, tiers(), options.quote, coverage),
     };
@@ -1435,6 +1442,8 @@ export function createApp(
       estimates: measured.estimates,
       readerId: readerFor(c),
     });
+    // The ingest this quote leads to reads these bytes instead of downloading again.
+    quotedDownloads.put(quoteId, measured);
     return c.json({
       quoteId,
       facts: measured.publicFacts,
@@ -1490,7 +1499,7 @@ export function createApp(
   ): Promise<
     | {
         scope: JobScope;
-        admitted?: { docId: string; doc?: NormalizedDoc };
+        admitted?: NonNullable<IngestDeps['admitted']>;
         settlement?: JobSettlement | undefined;
         /** Everything already exists for the reader's tier: the grant will have nothing to do. */
         docComplete?: boolean;
@@ -1503,15 +1512,32 @@ export function createApp(
     if (!hooked) return undefined;
     if (!estimating) return { scope: makeScope(c, { kind: 'ingest' }, {}) };
     const live = quotes.get(body.quoteId, readerFor(c), body.url);
-    let admitted: { docId: string; doc?: NormalizedDoc };
+    let admitted: NonNullable<IngestDeps['admitted']>;
     let estimates: Record<string, BillEstimate>;
-    if (live) {
-      admitted = { docId: live.contentHash };
+    const kept = live ? quotedDownloads.take(body.quoteId) : undefined;
+    if (live && kept) {
+      admitted = { docId: kept.fetched.docId, ...kept };
       estimates = live.estimates;
     } else {
+      // No quote, or its download expired or was evicted: measure again and read these bytes.
       const measured = await measure(body.url, c.req.raw.signal);
-      admitted = { docId: measured.doc.docId, doc: measured.doc };
-      estimates = measured.estimates;
+      // Bytes may differ on every download, so compare what was priced, not the hash.
+      if (live && !sameQuotedBill(live.facts, measured.publicFacts))
+        throw new AppError(
+          'PAYMENT_REQUIRED',
+          'The bill changed after it was quoted.',
+          {
+            userMessage:
+              'This bill changed after it was quoted. Please start again to get a new quote.',
+          },
+        );
+      admitted = {
+        docId: measured.doc.docId,
+        doc: measured.doc,
+        fetched: measured.fetched,
+        attachment: measured.attachment,
+      };
+      estimates = live ? live.estimates : measured.estimates;
     }
     const fields = {
       kind: 'ingest' as const,

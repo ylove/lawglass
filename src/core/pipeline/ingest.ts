@@ -126,10 +126,20 @@ export interface IngestDeps {
   parsePdf?: PdfParser | undefined;
   /**
    * A document a host already fetched and parsed to size and admit this ingest (ADR 0018). The
-   * ingest reuses its parse instead of parsing again, and refuses with PAYMENT_REQUIRED if the
-   * bytes it fetches now are a different document, so the reader is quoted again.
+   * ingest reuses its parse instead of parsing again. With `fetched` (and the history it was
+   * resolved with) it reads exactly the bytes that were priced and downloads nothing, which
+   * sources whose bytes change on every request (New York) need. Without `fetched` it downloads
+   * again and refuses with PAYMENT_REQUIRED if those bytes are a different document, so the
+   * reader is quoted again.
    */
-  admitted?: { docId: string; doc?: NormalizedDoc | undefined } | undefined;
+  admitted?:
+    | {
+        docId: string;
+        doc?: NormalizedDoc | undefined;
+        fetched?: SafeFetchResult | undefined;
+        attachment?: HistoryAttachment | undefined;
+      }
+    | undefined;
   /** Told when a U.S. Code reference could not be read: the citation and an error code only. */
   onReferenceSkip?: ((citation: string, code: string) => void) | undefined;
 }
@@ -179,7 +189,7 @@ const HISTORY_PARTIAL = 'Part of the legislative history was unavailable.';
 const HISTORY_UNAVAILABLE =
   'History unavailable: the official history could not be read or saved.';
 
-interface HistoryAttachment {
+export interface HistoryAttachment {
   record?: HistoryRecord;
   version: string;
 }
@@ -626,19 +636,36 @@ async function fetchIngestDocument(
   return { fetched, attachment };
 }
 
-export async function fetchAndParseDocument(
+/**
+ * Fetch and parse like an ingest, and also return the download and its history, so a host that
+ * priced this document can hand the same bytes to the ingest.
+ */
+export async function readDocument(
   url: string,
   deps: ReadDocumentDeps,
   signal?: AbortSignal,
   /** False for a quote or an admission check: nothing is written to the fetch cache. */
   options: { commitCache?: boolean } = {},
-): Promise<NormalizedDoc> {
-  const { fetched } = await fetchIngestDocument(url, deps, signal);
+): Promise<{
+  doc: NormalizedDoc;
+  fetched: SafeFetchResult;
+  attachment: HistoryAttachment | undefined;
+}> {
+  const { fetched, attachment } = await fetchIngestDocument(url, deps, signal);
   const doc = await parseFetched(fetched, deps, signal);
   signal?.throwIfAborted();
   if (options.commitCache !== false)
     await fetched.commitCache?.().catch(() => undefined);
-  return doc;
+  return { doc, fetched, attachment };
+}
+
+export async function fetchAndParseDocument(
+  url: string,
+  deps: ReadDocumentDeps,
+  signal?: AbortSignal,
+  options: { commitCache?: boolean } = {},
+): Promise<NormalizedDoc> {
+  return (await readDocument(url, deps, signal, options)).doc;
 }
 
 async function ingestWithinLimits(
@@ -649,7 +676,12 @@ async function ingestWithinLimits(
   const { signal } = opts;
   deps = { ...deps, parseLimits: deps.parseLimits ?? readParseLimits() };
   opts.onProgress?.({ stage: 'fetching', detail: url });
-  const { fetched, attachment } = await fetchIngestDocument(url, deps, signal);
+  // Admitted bytes are the ones that were priced: reading them again is what keeps the quote
+  // honest, so a bill that changed (or is byte-volatile) since the quote cannot be swapped in.
+  const reuse = deps.admitted?.fetched;
+  const { fetched, attachment } = reuse
+    ? { fetched: reuse, attachment: deps.admitted?.attachment }
+    : await fetchIngestDocument(url, deps, signal);
   const docId = fetched.docId;
   if (deps.admitted && deps.admitted.docId !== docId)
     throw new AppError(

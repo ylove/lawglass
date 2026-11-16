@@ -15,6 +15,8 @@ import {
   type ModelAssignment,
   type PriceTable,
 } from '../core/cost/index.js';
+import type { SafeFetchResult } from '../core/fetch/index.js';
+import type { HistoryAttachment } from '../core/pipeline/ingest.js';
 import type { NormalizedDoc } from '../core/model/index.js';
 import type { PregenerateExamples } from '../core/breakdown/coverage.js';
 
@@ -110,6 +112,100 @@ export class QuoteStore {
     for (const [id, entry] of this.entries)
       if (t - entry.createdAt >= this.ttlMs) this.entries.delete(id);
   }
+}
+
+/** What a quote downloaded, kept so the ingest it leads to reads exactly the bytes that were priced. */
+export interface QuotedDownload {
+  doc: NormalizedDoc;
+  fetched: SafeFetchResult;
+  attachment: HistoryAttachment | undefined;
+}
+
+export const DOWNLOAD_STORE_CAP = 50;
+/** Budget in bytes, not entries: a bill can be several MB, and so is its parse. */
+export const DOWNLOAD_STORE_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Short-lived downloads by quote id, bounded by age, count and bytes (oldest out first). Losing
+ * one is safe: the ingest measures again and checks the bill still matches the quote.
+ */
+export class QuotedDownloads {
+  private readonly entries = new Map<
+    string,
+    { download: QuotedDownload; size: number; createdAt: number }
+  >();
+  private bytes = 0;
+
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly ttlMs = QUOTE_TTL_MS,
+    private readonly cap = DOWNLOAD_STORE_CAP,
+    private readonly maxBytes = DOWNLOAD_STORE_BYTES,
+  ) {}
+
+  put(quoteId: string, download: QuotedDownload): void {
+    this.sweep();
+    // Twice the raw bytes: the parsed document is held beside them and is of similar size.
+    const size = download.fetched.bytes.byteLength * 2;
+    if (size > this.maxBytes) return;
+    while (this.entries.size >= this.cap || this.bytes + size > this.maxBytes)
+      if (!this.evictOldest()) break;
+    this.entries.set(quoteId, { download, size, createdAt: this.now() });
+    this.bytes += size;
+  }
+
+  /** The download for a quote, once: the ingest that uses it frees the memory. */
+  take(quoteId: string | undefined): QuotedDownload | undefined {
+    if (quoteId === undefined) return undefined;
+    const entry = this.entries.get(quoteId);
+    if (!entry) return undefined;
+    this.remove(quoteId);
+    return this.now() - entry.createdAt >= this.ttlMs
+      ? undefined
+      : entry.download;
+  }
+
+  get size(): number {
+    return this.entries.size;
+  }
+
+  get totalBytes(): number {
+    return this.bytes;
+  }
+
+  private remove(id: string): void {
+    const entry = this.entries.get(id);
+    if (!entry) return;
+    this.bytes -= entry.size;
+    this.entries.delete(id);
+  }
+
+  private evictOldest(): boolean {
+    const oldest = this.entries.keys().next();
+    if (oldest.done) return false;
+    this.remove(oldest.value);
+    return true;
+  }
+
+  private sweep(): void {
+    const t = this.now();
+    for (const [id, entry] of this.entries)
+      if (t - entry.createdAt >= this.ttlMs) this.remove(id);
+  }
+}
+
+/**
+ * Whether a fresh measure is still the bill the quote priced. Not a byte comparison: some
+ * sources (New York) change their bytes on every request, so the content hash can never match.
+ */
+export function sameQuotedBill(a: QuoteFacts, b: QuoteFacts): boolean {
+  return (
+    a.pages === b.pages &&
+    a.sections === b.sections &&
+    a.tokens === b.tokens &&
+    a.mode === b.mode &&
+    a.units === b.units
+  );
 }
 
 const DEFAULT_MODELS: ModelAssignment = {

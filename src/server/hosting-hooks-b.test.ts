@@ -1137,7 +1137,7 @@ describe('review: fetch and parse for admission are bounded and stateless', () =
     expect(await ingest('carol')).toBe(429);
   });
 
-  test('the measured document is reused, and a bill that changes before ingest is refused', async () => {
+  test('the measured document is reused: the bill is not downloaded again, so a later change cannot be swapped in', async () => {
     const original = env.runtime.fetcher;
     const small = bigBill(3, 'small');
     const large = bigBill(30, 'large');
@@ -1165,11 +1165,12 @@ describe('review: fetch and parse for admission are bounded and stateless', () =
     const res = await call(a, '/api/ingest', { body: { url } });
     const events: { type: string; error?: { code: string } }[] = [];
     for await (const e of readSseEvents(res, IngestEvent)) events.push(e);
-    expect(events.at(-1)).toMatchObject({
-      type: 'error',
-      error: { code: 'PAYMENT_REQUIRED' },
-    });
-    expect(await env.registry.list()).toEqual([]);
+    // The measured (small) bill is what was priced, so it is what is read; a second download
+    // (which would have been the large one) never happens. Refusing a changed bill when a
+    // quote's bytes are gone is covered in admitted-bytes.test.ts.
+    expect(events.at(-1)).toMatchObject({ type: 'done' });
+    expect(n).toBe(1);
+    expect(await env.registry.list()).toHaveLength(1);
     expect(jobs).toHaveLength(1);
   });
 });
