@@ -1,4 +1,6 @@
 import * as cheerio from 'cheerio';
+import { makeSectionedText } from '../../tests/synth/index.js';
+import { parseText } from '../core/parse/index.js';
 import { describe, expect, test } from 'vitest';
 import type { BillEstimate } from '../core/cost/index.js';
 import type { SafeFetchResult } from '../core/fetch/index.js';
@@ -20,18 +22,22 @@ const facts: QuoteFacts = {
   units: 2,
 };
 
-/** A download of `bytes` raw bytes whose parse holds `chars` characters of text. */
-const download = (bytes: number, chars = 0): QuotedDownload => ({
+/** A download of `bytes` raw bytes; with `chars`, its parse is one section holding that much text. */
+const download = (bytes: number, chars?: number): QuotedDownload => ({
   doc: {
-    sections: [
-      {
-        id: 's',
-        level: 1,
-        spans: [{ text: 'x'.repeat(chars), status: 'unchanged' }],
-        children: [],
-      },
-    ],
+    sections:
+      chars === undefined
+        ? []
+        : [
+            {
+              id: 's',
+              level: 1,
+              spans: [{ text: 'x'.repeat(chars), status: 'unchanged' }],
+              children: [],
+            },
+          ],
     definitions: [],
+    externalRefs: [],
   } as unknown as NormalizedDoc,
   fetched: { bytes: new Uint8Array(bytes) } as SafeFetchResult,
   attachment: undefined,
@@ -80,28 +86,62 @@ describe('QuotedDownloads', () => {
     expect(withDom.fetched.preparedHtml).toBeDefined();
   });
 
-  test('sizes an entry from its bytes and the parsed text, two bytes per character', () => {
-    expect(downloadSize(download(100, 10))).toBe(120);
+  test('sizes an entry from its bytes, its text and the overhead of each span, section and reference', () => {
+    // 100 raw bytes, one section (200) with one span (100) of 10 chars (20).
+    expect(downloadSize(download(100, 10))).toBe(100 + 200 + 100 + 20);
     const withDefinitions = download(0, 0);
     (withDefinitions.doc as { definitions: unknown }).definitions = [
       { term: 'ab', text: 'cde' },
     ];
     (withDefinitions.doc.sections[0] as { heading: string }).heading = 'hh';
-    expect(downloadSize(withDefinitions)).toBe(2 * (2 + 5));
+    expect(downloadSize(withDefinitions)).toBe(200 + 4 + 100 + (100 + 10));
     const nested = download(0, 1);
     (nested.doc.sections[0] as { children: unknown }).children = [
       { spans: [{ text: 'yy' }], children: [] },
     ];
-    expect(downloadSize(nested)).toBe(2 * 3);
+    expect(downloadSize(nested)).toBe(200 + 100 + 2 + (200 + 100 + 4));
+    const refs = download(0, 0);
+    (refs.doc as { externalRefs: unknown }).externalRefs = [
+      { text: 'ab', citation: 'c', sectionIds: ['s1', 's2'] },
+    ];
+    expect(downloadSize(refs)).toBe(200 + 100 + (100 + 6 + 80));
+  });
+
+  test('is at least text at two bytes a character plus 100 bytes a span, for a real parse', () => {
+    const sample = makeSectionedText();
+    const doc = parseText(sample.bytes, {
+      sourceUrl: 'https://example.gov/a.txt',
+      fetchedAt: '2026-10-13T00:00:00.000Z',
+    });
+    let spans = 0;
+    let chars = 0;
+    const walk = (sections: NormalizedDoc['sections']): void => {
+      for (const section of sections) {
+        for (const span of section.spans) {
+          spans++;
+          chars += span.text.length;
+        }
+        walk(section.children);
+      }
+    };
+    walk(doc.sections);
+    expect(spans).toBeGreaterThan(5);
+    const size = downloadSize({
+      ...download(sample.bytes.byteLength),
+      doc,
+    });
+    expect(size).toBeGreaterThanOrEqual(
+      sample.bytes.byteLength + 2 * chars + 100 * spans,
+    );
   });
 
   test('a big parse counts against the byte budget, not only the raw bytes', () => {
-    const store = new QuotedDownloads(() => 0, 100, 10, 100, 10);
-    store.put('a', 'u', download(10, 20)); // 50
-    store.put('b', 'u', download(10, 20)); // 50
+    const store = new QuotedDownloads(() => 0, 100, 10, 800, 10, 800);
+    store.put('a', 'u', download(10, 20)); // 10 + 200 + 100 + 40 = 350
+    store.put('b', 'u', download(10, 20));
     store.put('c', 'u', download(10, 20)); // pushes the oldest out
     expect(store.get('a', 'u')).toBeUndefined();
-    expect(store.totalBytes).toBeLessThanOrEqual(100);
+    expect(store.totalBytes).toBeLessThanOrEqual(800);
   });
 
   test('expires after the ttl, on get and on put', () => {
@@ -134,7 +174,7 @@ describe('QuotedDownloads', () => {
   });
 
   test('is bounded by bytes, and never keeps one bigger than the budget', () => {
-    const store = new QuotedDownloads(() => 0, 100, 10, 100, 10);
+    const store = new QuotedDownloads(() => 0, 100, 10, 100, 10, 100);
     store.put('a', 'u', download(30));
     store.put('b', 'u', download(30));
     store.put('c', 'u', download(30));
@@ -155,6 +195,29 @@ describe('QuotedDownloads', () => {
     expect(store.get('bob', 'u37')).toBeDefined();
     expect(store.get('bob', 'u36')).toBeUndefined();
     expect(store.size).toBe(4);
+  });
+});
+
+describe("a reader's byte share", () => {
+  test("one reader's large downloads never evict another reader's entry", () => {
+    // Budget 400, share 100: a reader may hold 100 bytes, however much room is left overall.
+    const store = new QuotedDownloads(() => 0, 100, 20, 400, 10, 100);
+    store.put('alice', 'u', download(10));
+    for (let i = 0; i < 10; i++)
+      store.put('bob', `u${String(i)}`, download(60));
+    expect(store.get('alice', 'u')).toBeDefined();
+    // Bob keeps only what his share allows: the newest.
+    expect(store.get('bob', 'u9')).toBeDefined();
+    expect(store.get('bob', 'u8')).toBeUndefined();
+  });
+
+  test("an entry bigger than a reader's share is not stored, and evicts nobody", () => {
+    const store = new QuotedDownloads(() => 0, 100, 20, 400, 10, 100);
+    store.put('alice', 'u', download(10));
+    const big = download(500);
+    expect(store.put('bob', 'big', big).fetched.bytes.byteLength).toBe(500);
+    expect(store.get('bob', 'big')).toBeUndefined();
+    expect(store.get('alice', 'u')).toBeDefined();
   });
 });
 

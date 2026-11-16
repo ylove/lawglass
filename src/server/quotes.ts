@@ -131,30 +131,50 @@ export const DOWNLOAD_PER_READER_CAP = 3;
 /** Budget in bytes of what an entry really holds (see `downloadSize`), not of entries. */
 export const DOWNLOAD_STORE_BYTES = 64 * 1024 * 1024;
 
+/** Heap held per parsed span or reference beyond its text: the object, its fields and its array slot. */
+const SPAN_OVERHEAD_BYTES = 100;
+const SECTION_OVERHEAD_BYTES = 200;
+
 /**
- * What an entry holds in memory: the raw bytes plus the parsed document's text. JS strings are
- * UTF-16, so 2 bytes per character. The Cheerio DOM of an HTML download is dropped before
- * storing (it measured about 32x the raw bytes), so it does not need counting.
+ * What an entry holds in memory: the raw bytes plus the parsed document. Text is 2 bytes per
+ * character (JS strings are UTF-16), and every span, section and external reference carries
+ * object overhead (measured on real parses, text alone undercounted by 2.5x). The Cheerio DOM of
+ * an HTML download is dropped before storing (it measured about 32x the raw bytes), so it is
+ * not counted.
  */
 export function downloadSize(download: QuotedDownload): number {
-  const textChars = (
+  const sectionBytes = (
     sections: readonly NormalizedDoc['sections'][number][],
   ): number =>
     sections.reduce(
       (n, section) =>
         n +
-        (section.heading?.length ?? 0) +
-        section.spans.reduce((m, span) => m + span.text.length, 0) +
-        textChars(section.children),
+        SECTION_OVERHEAD_BYTES +
+        2 * (section.heading?.length ?? 0) +
+        section.spans.reduce(
+          (m, span) => m + SPAN_OVERHEAD_BYTES + 2 * span.text.length,
+          0,
+        ) +
+        sectionBytes(section.children),
       0,
     );
-  const definitionChars = download.doc.definitions.reduce(
-    (n, d) => n + d.term.length + d.text.length,
+  const definitionBytes = download.doc.definitions.reduce(
+    (n, d) => n + SPAN_OVERHEAD_BYTES + 2 * (d.term.length + d.text.length),
+    0,
+  );
+  const refBytes = download.doc.externalRefs.reduce(
+    (n, ref) =>
+      n +
+      SPAN_OVERHEAD_BYTES +
+      2 * (ref.text.length + ref.citation.length) +
+      ref.sectionIds.length * 40,
     0,
   );
   return (
     download.fetched.bytes.byteLength +
-    2 * (textChars(download.doc.sections) + definitionChars)
+    sectionBytes(download.doc.sections) +
+    definitionBytes +
+    refBytes
   );
 }
 
@@ -186,6 +206,8 @@ export class QuotedDownloads {
     private readonly cap = DOWNLOAD_STORE_CAP,
     private readonly maxBytes = DOWNLOAD_STORE_BYTES,
     private readonly perReader = DOWNLOAD_PER_READER_CAP,
+    /** One reader's share of the byte budget; the rest is other readers'. */
+    private readonly perReaderBytes = Math.floor(maxBytes / 4),
   ) {}
 
   /** A reader id cannot contain the URL, but encode both so no pair can collide with another. */
@@ -209,10 +231,16 @@ export class QuotedDownloads {
     this.remove(key);
     this.sweep();
     const size = downloadSize(kept);
-    if (size > this.maxBytes) return kept;
+    // Bigger than a reader's share is bigger than anyone may hold: not kept, so it cannot push
+    // other readers' downloads out. The ingest still reads it from the returned copy.
+    if (size > Math.min(this.maxBytes, this.perReaderBytes)) return kept;
     const owner = reader ?? '';
-    // A reader over their share loses their own oldest entry first, never someone else's.
-    while (this.countFor(owner) >= this.perReader)
+    // A reader over their share, in entries or bytes, loses their own oldest first, never
+    // someone else's.
+    while (
+      this.countFor(owner) >= this.perReader ||
+      this.bytesFor(owner) + size > this.perReaderBytes
+    )
       if (!this.evictOldest((e) => e.reader === owner)) break;
     while (this.entries.size >= this.cap || this.bytes + size > this.maxBytes)
       if (!this.evictOldest(() => true)) break;
@@ -254,6 +282,13 @@ export class QuotedDownloads {
     if (!entry) return;
     this.bytes -= entry.size;
     this.entries.delete(id);
+  }
+
+  private bytesFor(reader: string): number {
+    let n = 0;
+    for (const entry of this.entries.values())
+      if (entry.reader === reader) n += entry.size;
+    return n;
   }
 
   private countFor(reader: string): number {
