@@ -4,7 +4,10 @@
  * public-mode policy and error mapping.
  */
 import { randomUUID } from 'node:crypto';
-import { deleteIndexedDocument } from '../core/answer/context.js';
+import {
+  deleteIndexedDocument,
+  wholeBillBudget,
+} from '../core/answer/context.js';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
@@ -897,6 +900,9 @@ export function createApp(
     const doc = await runtime.registry.getDocument(docId);
     const facts = billFacts(doc.sections, {
       breakdownUnitCap: coverage.breakdownUnitCap,
+      document: doc,
+      // The budget the runtime's own whole-bill decision reads.
+      wholeBillMaxTokens: wholeBillBudget(),
     });
     if (factsCache.size >= FACTS_CACHE_CAP) evictOldest(factsCache);
     factsCache.set(docId, facts);
@@ -1401,11 +1407,15 @@ export function createApp(
     // start more downloads and parses than ingests could.
     const release = await sharedLimits().acquire('ingest', signal);
     let read;
+    let sized;
     try {
       read = await readDocument(url, readDeps(), signal, {
         // A quote stores nothing, not even the download.
         commitCache: false,
       });
+      // Sizing chunks and enriches the document, the same work an ingest does, so it stays
+      // inside the permit and under the ingest's own limits.
+      sized = sizeOf(read.doc, signal);
     } finally {
       release();
     }
@@ -1414,7 +1424,7 @@ export function createApp(
     return {
       ...read,
       fetched: { ...read.fetched, preparedHtml: undefined },
-      ...sizeOf(read.doc),
+      ...sized,
     };
   }
 
@@ -1425,10 +1435,25 @@ export function createApp(
     parseLimits: ingestParseLimits(),
   });
 
-  /** What a quote shows and prices for a parsed document. */
-  function sizeOf(doc: NormalizedDoc) {
+  /**
+   * What a quote shows and prices for a parsed document. Callers hold the ingest permit: the
+   * sizing runs under the ingest's own chunk and time limits, so a bill the ingest would refuse
+   * is refused here. The U.S. Code references are read at ingest, so they are sized as
+   * placeholders (`preIngest`).
+   */
+  function sizeOf(doc: NormalizedDoc, signal: AbortSignal) {
+    const parseLimits = ingestParseLimits();
     const facts = billFacts(doc.sections, {
       breakdownUnitCap: coverage.breakdownUnitCap,
+      document: doc,
+      preIngest: true,
+      // The budget the runtime's own whole-bill decision reads.
+      wholeBillMaxTokens: wholeBillBudget(),
+      limits: {
+        maxChunks: parseLimits.maxChunks,
+        timeoutMs: parseLimits.timeoutMs,
+        signal,
+      },
     });
     return {
       publicFacts: quoteFacts(doc, facts),
@@ -1446,15 +1471,18 @@ export function createApp(
   ): Promise<QuotedDownload> {
     const release = await sharedLimits().acquire('ingest', signal);
     let doc: NormalizedDoc;
+    let sized: ReturnType<typeof sizeOf>;
     try {
       doc = await parseDocument(kept.fetched, readDeps(), signal);
+      // Held through the sizing, as in `measure`: it is the same chunking work.
+      sized = sizeOf(doc, signal);
     } finally {
       release();
     }
     if (
       !sameQuotedBill(
         { facts: kept.publicFacts, estimates: kept.estimates },
-        sizeOf(doc),
+        sized,
       )
     )
       throw new AppError(

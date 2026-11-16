@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { makeSectionedText } from '../../../tests/synth/text.js';
-import type { Section } from '../model/index.js';
+import { EMPTY_METADATA, type Section } from '../model/index.js';
 import { envVar } from '../brand.js';
 import { billFacts } from './facts.js';
+import { NO_PROMPT } from './prompt-size.js';
 
 function sections(count: number, chars = 100): Section[] {
   return Array.from({ length: count }, (_, i) => ({
@@ -16,6 +17,40 @@ function sections(count: number, chars = 100): Section[] {
 }
 
 describe('billFacts', () => {
+  it('sizes the whole-bill prompts only when the runtime would read the whole bill', () => {
+    const whole = billFacts(sections(5, 400));
+    expect(whole.mode).toBe('whole');
+    // Parts carry tags and attributes beyond the text itself.
+    expect(whole.wholePrompt.summary).toBeGreaterThan(whole.characters);
+    expect(whole.wholePrompt.breakdown).toBeGreaterThan(whole.characters);
+    const forced = billFacts(sections(5, 400), { wholeBillMaxTokens: 0 });
+    expect(forced.mode).toBe('excerpts');
+    expect(forced.wholePrompt).toEqual(NO_PROMPT);
+  });
+  it('adds reference texts to the summary prompt, not to breakdown or the scenario', () => {
+    const without = billFacts(sections(2, 400));
+    const withRef = billFacts(sections(2, 400), {
+      document: {
+        metadata: EMPTY_METADATA,
+        definitions: [],
+        externalRefs: [],
+        references: [
+          {
+            sectionId: 'ref:usc/15/6809',
+            citation: '15 U.S.C. 6809',
+            sourceUrl: 'https://example.gov/usc/15/6809',
+            text: 'y'.repeat(1000),
+            fetchedAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      },
+    });
+    expect(
+      withRef.wholePrompt.summary - without.wholePrompt.summary,
+    ).toBeGreaterThan(1000);
+    expect(withRef.wholePrompt.breakdown).toBe(without.wholePrompt.breakdown);
+    expect(withRef.wholePrompt.scenario).toBe(without.wholePrompt.scenario);
+  });
   it('counts the parsed synthetic tree, includes children, and omits boilerplate briefs', () => {
     const facts = billFacts(makeSectionedText().groundTruth.sections);
     expect(facts).toMatchObject({

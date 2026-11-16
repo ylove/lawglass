@@ -22,6 +22,7 @@ import {
   type EstimatePlan,
   type PriceTable,
 } from '../core/cost/index.js';
+import { readParseLimits } from '../core/parse/limits.js';
 import { safeText } from './sanitize.js';
 
 export interface EstimateRuntime extends ReadDocumentDeps {
@@ -73,7 +74,16 @@ export async function estimateUrl(
   runtime: EstimateRuntime,
 ): Promise<EstimateReport> {
   const doc = await fetchAndParseDocument(url, runtime);
+  // The ingest's own limits: a document it would refuse is refused here too.
+  const parseLimits = runtime.parseLimits ?? readParseLimits();
   const facts = billFacts(doc.sections, {
+    document: doc,
+    // The U.S. Code references are read at ingest, not here.
+    preIngest: true,
+    limits: {
+      maxChunks: parseLimits.maxChunks,
+      timeoutMs: parseLimits.timeoutMs,
+    },
     // The same cap the server will run with, so the estimate prices what would be made.
     breakdownUnitCap: runtime.breakdownUnitCap ?? breakdownMaxUnitsFromEnv(),
     ...(runtime.wholeBillMaxTokens === undefined

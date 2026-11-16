@@ -169,6 +169,8 @@ function dedupeDefinitionPieces(pieces: Piece[]): Piece[] {
 export function enrichDocument(
   input: NormalizedDoc,
   chunks: readonly Chunk[],
+  /** Called between chunks, so a caller with a deadline can stop a long enrichment. */
+  checkpoint?: () => void,
 ): EnrichedDocument {
   const parsed = NormalizedDoc.safeParse(input);
   if (!parsed.success)
@@ -201,9 +203,15 @@ export function enrichDocument(
   );
   const termsUsed = createTermMatcher(definitions);
 
-  const pieces = dedupeDefinitionPieces(chunks.flatMap(split));
+  const pieces = dedupeDefinitionPieces(
+    chunks.flatMap((chunk) => {
+      checkpoint?.();
+      return split(chunk);
+    }),
+  );
   const counters = new Map<string, number>();
   const enriched = pieces.map((p): Chunk => {
+    checkpoint?.();
     const { base, text, definesTerm } = p;
     const n = counters.get(base.sectionId) ?? 0;
     counters.set(base.sectionId, n + 1);

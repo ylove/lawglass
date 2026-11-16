@@ -90,11 +90,39 @@ const RELATED_TOKENS =
 /** Prompt/schema/citation framing is a heuristic, not a tokenizer or a provider guarantee. */
 const FRAMING = { low: 1000, high: 3000 };
 /**
- * The bill reaches the model wrapped in escaped <part> tags with ids, headings and page/line
- * markers, which chars/4 does not see. Measured on a 380K-character bill built into the real
- * whole-bill prompt: about 1.16 times the plain estimate. The high bound adds margin on top.
+ * Excerpt-mode contexts reach the model wrapped in escaped <excerpt> tags with ids, headings
+ * and page/line markers, which chars/4 does not see. Measured on a 380K-character bill: about
+ * 1.16 times the plain estimate; the high bound adds margin. Whole-bill contexts do not use
+ * this: they are sized from the built prompt (see `wholeContext`).
  */
 const PROMPT_MARKUP = { low: 1.1, high: 1.25 };
+/**
+ * Characters per token for the whole-bill prompt blocks (markup and text together), from the
+ * calibration run (#385, docs/calibration.md). Measured input per call, less about 2,000 tokens
+ * of system prompt, task and schema, over the characters `sizeWholePrompts` counts for the
+ * same real bill, chunked and enriched as ingest does and with the U.S. Code references read
+ * for it (a script ran `billFacts` on the fetched bills):
+ *   S. 1582 (684 sections): summary 209,210 chars: 2.82; breakdown 198,263: 2.77;
+ *                           scenario 200,437: 2.74; question (ordinary) 2.82
+ *   Ohio S.B. 113 (101):    summary 31,160: 2.64; breakdown 31,160: 2.50; scenario 31,432: 2.56;
+ *                           question (ordinary) 2.66
+ *   NJ S. 1000 (3):         summary 2,582: 2.82; question (ordinary) 2.99
+ * Low (2.9) is above every figure, so the low bound cannot exceed what was measured. High
+ * (2.2) is about 12% under the lowest (2.50), a margin for denser text such as numeric tables
+ * or citations, which tokenize worse than these bills; FRAMING.high carries about 1,000 tokens
+ * above the fitted framing besides (breakdown framing runs higher than the
+ * summary's: NJ's breakdown measured 3,504 tokens on 2,582 characters). Three bills are a thin
+ * sample: the next calibration run should check this figure.
+ */
+const WHOLE_PROMPT_CHARS_PER_TOKEN = { low: 2.9, high: 2.2 };
+
+/** A whole-bill prompt's bill-sized block, in tokens. Not scaled by PROMPT_MARKUP. */
+function wholeContext(characters: number, highCharacters = characters): Bounds {
+  return {
+    low: Math.ceil(characters / WHOLE_PROMPT_CHARS_PER_TOKEN.low),
+    high: Math.ceil(highCharacters / WHOLE_PROMPT_CHARS_PER_TOKEN.high),
+  };
+}
 
 function sum(a: TokenEstimate, b: TokenEstimate): TokenEstimate {
   return {
@@ -114,6 +142,8 @@ interface CallSpec {
   /** Calls at high include the initial call plus every retry/rewrite. */
   highCalls?: number;
   cachedPrefix?: boolean;
+  /** The context is already sized from the built prompt, so PROMPT_MARKUP must not scale it. */
+  promptSized?: boolean;
 }
 
 function feature(
@@ -134,7 +164,9 @@ function feature(
     for (const spec of specs) {
       const count = bound === 'low' ? 1 : (spec.highCalls ?? 1);
       for (let n = 0; n < count; n++) {
-        const context = Math.ceil(spec.context[bound] * PROMPT_MARKUP[bound]);
+        const context = spec.promptSized
+          ? spec.context[bound]
+          : Math.ceil(spec.context[bound] * PROMPT_MARKUP[bound]);
         const prefix = spec.cachedPrefix ? context + FRAMING[bound] : 0;
         const caching = spec.cachedPrefix === true && plan.cache !== 'none';
         // The high bound never counts on a cache hit: the provider's cache lasts minutes, and
@@ -214,12 +246,17 @@ export function estimateBill(
   modelPrice(plan.answerModel, prices);
   modelPrice(plan.extractModel, prices);
   const whole = facts.mode === 'whole';
-  const bill = boundedContext(facts.estimatedTokens);
+  // Breakdown decides without reserving reference tokens, so it can be whole when the rest is not.
+  const wholeBreakdown = facts.wholePrompt.breakdown > 0;
   const summary: CallSpec[] = [];
   if (plan.summary !== false && facts.characters > 0) {
     if (whole)
       summary.push({
-        context: bill,
+        context: wholeContext(
+          facts.wholePrompt.summary,
+          facts.wholePrompt.summaryHigh,
+        ),
+        promptSized: true,
         visibleOutput: 1000,
         maxTokens: 16_000,
         highCalls: 2,
@@ -248,18 +285,19 @@ export function estimateBill(
       ? []
       : batches(
           facts.breakdownUnitTokens,
-          whole ? WHOLE_BATCH_SIZE : EXCERPT_BATCH_SIZE,
+          wholeBreakdown ? WHOLE_BATCH_SIZE : EXCERPT_BATCH_SIZE,
         ).map((batch) => ({
-          context: whole
-            ? bill
+          context: wholeBreakdown
+            ? wholeContext(facts.wholePrompt.breakdown)
             : {
                 low: batch.reduce((a, b) => a + b, 0),
                 high: batch.reduce((a, b) => a + b + RELATED_TOKENS, 0),
               },
+          promptSized: wholeBreakdown,
           visibleOutput: batch.length * 200,
           maxTokens: 6000,
           highCalls: 3,
-          cachedPrefix: whole,
+          cachedPrefix: wholeBreakdown,
         }));
   const examples: CallSpec[] = facts.breakdownUnitTokens
     .slice(0, plan.exampleCount ?? examplesForPolicy(plan.pregenerateExamples))
@@ -313,8 +351,9 @@ export function estimateBill(
         ? [
             {
               context: whole
-                ? bill
+                ? wholeContext(facts.wholePrompt.scenario)
                 : boundedContext(Math.min(facts.estimatedTokens, 8 * 450)),
+              promptSized: whole,
               visibleOutput: 800,
               maxTokens: 2000,
               highCalls: 2,
@@ -341,7 +380,7 @@ export function estimateBill(
     },
     question: estimateQuestion(facts, prices, plan),
     assumptions: [
-      'Approximate tokens = live characters / 4; indexed context can change mode near the threshold.',
+      'Whole versus excerpts mode is forecast from the document chunked and enriched as ingest does; the runtime scan can still differ near the threshold. Whole-bill prompts are sized from the built <part> blocks at 2.2–2.9 characters per token. Before ingest has read its U.S. Code references, the summary and question blocks count each at its longest; the mode assumes none.',
       'Low: first pass and short output. High: full output budgets, all retries and reading-level rewrites.',
       `Cache policy: ${plan.cache ?? 'reuse'}; reuse assumes the same prefix stays cached for five minutes within each feature.`,
       `Thinking tokens per answer call: ${String(plan.thinkingTokensPerCall?.low ?? 0)}–${String(plan.thinkingTokensPerCall?.high ?? 0)}; included within output limits, high reserves the full limit.`,
@@ -366,20 +405,76 @@ export function estimateQuestion(
   };
   validatePlan(assignment);
   const whole = facts.mode === 'whole';
-  return feature(
+  const spec = (
+    context: Bounds,
+    highCalls: number,
+    sized: boolean,
+  ): CallSpec => ({
+    context,
+    promptSized: sized,
+    visibleOutput: 800,
+    maxTokens: whole ? 16_000 : 8192,
+    highCalls,
+    cachedPrefix: whole,
+  });
+  if (!whole)
+    return feature(
+      assignment.answerModel,
+      [spec(boundedContext(3500), 2, false)],
+      assignment,
+      prices,
+    );
+  const sizes = facts.wholePrompt;
+  const ordinary = wholeContext(sizes.summary, sizes.summaryHigh);
+  const changes = wholeContext(sizes.question, sizes.questionHigh);
+  // An ordinary question may be rewritten for reading level: two calls. A question about
+  // changes needs the bill's exact wording, so it is never rewritten: one call, on the larger
+  // prompt. The high bound is whichever of the two reachable cases costs more.
+  const usual = feature(
     assignment.answerModel,
-    [
-      {
-        context: whole
-          ? boundedContext(facts.estimatedTokens)
-          : boundedContext(3500),
-        visibleOutput: 800,
-        maxTokens: whole ? 16_000 : 8192,
-        highCalls: 2,
-        cachedPrefix: whole,
-      },
-    ],
+    [spec(ordinary, 2, true)],
     assignment,
     prices,
   );
+  const asked = feature(
+    assignment.answerModel,
+    [spec({ low: ordinary.low, high: changes.high }, 1, true)],
+    assignment,
+    prices,
+  );
+  // A change question that struck text takes over the whole-bill budget is answered from
+  // retrieved excerpts instead: one uncached call on that (smaller) prompt, 8,192 output.
+  const fallback =
+    sizes.changeExcerpts > 0
+      ? feature(
+          assignment.answerModel,
+          [
+            {
+              context: wholeContext(sizes.changeExcerpts),
+              promptSized: true,
+              visibleOutput: 800,
+              maxTokens: 8192,
+              highCalls: 1,
+            },
+          ],
+          assignment,
+          prices,
+        )
+      : undefined;
+  // Each field takes the larger of the reachable cases, so the bound covers whichever happens:
+  // the input is max(1 change call, 2 ordinary calls) and output and dollars are the larger too.
+  const cases = [usual.high, asked.high, ...(fallback ? [fallback.high] : [])];
+  const envelope = (pick: (t: TokenEstimate) => number): number =>
+    Math.max(...cases.map(pick));
+  return {
+    ...usual,
+    high: {
+      calls: envelope((t) => t.calls),
+      inputTokens: envelope((t) => t.inputTokens),
+      cachedInputTokens: envelope((t) => t.cachedInputTokens),
+      cacheWriteTokens: envelope((t) => t.cacheWriteTokens),
+      outputTokens: envelope((t) => t.outputTokens),
+      dollars: envelope((t) => t.dollars),
+    },
+  };
 }

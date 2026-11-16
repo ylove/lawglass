@@ -1,19 +1,40 @@
-import {
-  contextMode,
-  WHOLE_BILL_MAX_TOKENS,
-  type ContextMode,
-} from '../answer/context.js';
+import { WHOLE_BILL_MAX_TOKENS, type ContextMode } from '../answer/context.js';
 import { chooseBreakdownUnits } from '../breakdown/units.js';
 import { unitCapOf, type BreakdownMaxUnits } from '../breakdown/coverage.js';
 import { UNIT_TOKEN_BUDGET } from '../breakdown/context.js';
 import { buildOutline, chooseMapUnits } from '../chip-summary.js';
-import { sectionText, walkSections, type Section } from '../model/index.js';
+import {
+  sectionText,
+  walkSections,
+  type NormalizedDoc,
+  type Section,
+} from '../model/index.js';
 import { classifyBill } from '../scenario/detect.js';
+import {
+  sizeWholePrompts,
+  type WholePromptInput,
+  type WholePromptSizes,
+} from './prompt-size.js';
 
 export interface BillFactsOptions {
   /** The same value as the server's `breakdownMaxUnits`: a count, or `'all'`. Default 30. */
   breakdownUnitCap?: BreakdownMaxUnits;
   wholeBillMaxTokens?: number;
+  /** True on the quote path; see `WholePromptInput.preIngest`. */
+  preIngest?: boolean;
+  /** Chunk and time limits for sizing; see `WholePromptInput.limits`. */
+  limits?: WholePromptInput['limits'];
+  /**
+   * The parsed document, when there is one: its metadata, definitions and reference texts
+   * shape the chunks and what whole mode sends beside the bill. Without it the sizing uses
+   * the sections alone.
+   */
+  document?:
+    | Pick<
+        NormalizedDoc,
+        'metadata' | 'definitions' | 'externalRefs' | 'references'
+      >
+    | undefined;
 }
 
 export interface BillFacts {
@@ -22,6 +43,11 @@ export interface BillFacts {
   characters: number;
   estimatedTokens: number;
   mode: ContextMode;
+  /**
+   * Characters each whole-bill prompt's bill block holds, counted by building it from enriched
+   * chunks (see `prompt-size.ts`). All zero unless the runtime would read the whole bill.
+   */
+  wholePrompt: WholePromptSizes;
   breakdownUnits: number;
   omittedBreakdownUnits: number;
   mapUnits: number;
@@ -52,6 +78,15 @@ export function billFacts(
     0,
   );
   const tokens = Math.ceil(characters / 4);
+  // The runtime's own decision, from enriched chunks and with references reserved; the
+  // characters / 4 figure above only forecasts it.
+  const sizing = sizeWholePrompts({
+    sections,
+    document: opts.document,
+    configuredBudget: budget,
+    limits: opts.limits,
+    ...(opts.preIngest === undefined ? {} : { preIngest: opts.preIngest }),
+  });
   const map = chooseMapUnits(sections);
   const breakdown = chooseBreakdownUnits(
     sections,
@@ -68,7 +103,8 @@ export function billFacts(
     sectionCount: all.length,
     characters,
     estimatedTokens: tokens,
-    mode: contextMode(tokens, budget),
+    mode: sizing.mode,
+    wholePrompt: sizing.sizes,
     breakdownUnits: breakdown.units.length,
     omittedBreakdownUnits: breakdown.omitted,
     mapUnits: map.units.length,

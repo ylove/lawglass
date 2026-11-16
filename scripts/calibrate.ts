@@ -680,6 +680,7 @@ export async function runCalibration(
       const doc = await options.runtime.registry.getDocument(docId);
       const facts = billFacts(doc.sections, {
         breakdownUnitCap: planRun.breakdownMaxUnits,
+        document: doc,
       });
       const uncapped = billFacts(doc.sections, { breakdownUnitCap: 'all' });
       run.facts = {

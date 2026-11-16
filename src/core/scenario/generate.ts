@@ -100,6 +100,13 @@ export function subjectPersonaName(docId: string, subject: string): string {
   );
 }
 
+/** The `<excerpts>` body of a scenario prompt. Shared with the cost estimator so sizes match. */
+export function scenarioExcerptBlock(excerpts: readonly SearchHit[]): string {
+  return excerpts
+    .map((hit, index) => formatExcerpt(hit, String(index + 1)))
+    .join('\n');
+}
+
 export async function generateScenario(
   input: ScenarioInput,
 ): Promise<Scenario> {
@@ -122,7 +129,7 @@ export async function generateScenario(
         : focus !== undefined
           ? `${SCENARIO_SYSTEM_PROMPT}\n${SCENARIO_SECTION_RULE}`
           : SCENARIO_SYSTEM_PROMPT,
-    prompt: `<persona>${name}</persona>\n${subject === undefined ? '' : `<subject>${escapeText(subject)}</subject>\n`}${focus === undefined ? '' : `<focus>${escapeText(focus)}</focus>\n`}<excerpts>\n${excerpts.map((hit, index) => formatExcerpt(hit, String(index + 1))).join('\n')}\n</excerpts>\n<question>${escapeText(input.question ?? 'Show the cited effect on the example profile.')}</question>`,
+    prompt: `<persona>${name}</persona>\n${subject === undefined ? '' : `<subject>${escapeText(subject)}</subject>\n`}${focus === undefined ? '' : `<focus>${escapeText(focus)}</focus>\n`}<excerpts>\n${scenarioExcerptBlock(excerpts)}\n</excerpts>\n<question>${escapeText(input.question ?? 'Show the cited effect on the example profile.')}</question>`,
     schema: Scenario,
     schemaName: 'scenario',
     maxTokens: 2000,
