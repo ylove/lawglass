@@ -499,6 +499,83 @@ describe('a reader who leaves', () => {
   });
 });
 
+describe('a host that answers after the lock lease ran out', () => {
+  const LEASE = 60_000;
+  // Only the lock's timer is faked: the pipeline's own waits and flush() stay real.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  test('a late 402 is not served, and the next confirm matches the last quote', async () => {
+    const hold = deferred();
+    const entered = deferred();
+    const seen: string[] = [];
+    const a = hosted({
+      admission: async (_c, job) => {
+        seen.push(job.docId ?? '');
+        if (seen.length === 1) {
+          entered.resolve();
+          await hold.promise;
+          return {
+            allow: false as const,
+            status: 402 as const,
+            quote: { quoteId: 'host-q', display: '$1.00' },
+          };
+        }
+        return { allow: true as const, ref: 'ref' };
+      },
+    });
+    const admission = post(a, '/api/ingest', { url, quoteId: 'host-q' });
+    await entered.promise;
+    // A quote queues behind the stuck admission; once the lease runs out it replaces the bytes.
+    const queued = post(a, '/api/quote', { url });
+    await flush();
+    await vi.advanceTimersByTimeAsync(LEASE);
+    const latest = (await (await queued).json()) as {
+      facts: { contentHash: string };
+    };
+    hold.resolve();
+    const late = await admission;
+    // The stale quote (bound to the first bytes) is never shown to the reader.
+    expect(late.status).not.toBe(402);
+    expect(JSON.stringify(await late.json())).not.toContain('host-q');
+    vi.useRealTimers();
+    expect(await ingest(a, { url, quoteId: 'host-q' })).toMatchObject({
+      type: 'done',
+    });
+    expect(seen.at(-1)).toBe(latest.facts.contentHash);
+    expect(seen[0]).not.toBe(latest.facts.contentHash);
+  });
+
+  test('a late allow ends the job once, not ok, and registers nothing', async () => {
+    const hold = deferred();
+    const entered = deferred();
+    const ends: string[] = [];
+    const a = hosted({
+      admission: async () => {
+        entered.resolve();
+        await hold.promise;
+        return { allow: true as const, ref: 'r' };
+      },
+      onJobEnd: (end) => {
+        ends.push(end.outcome);
+      },
+    });
+    const response = post(a, '/api/ingest', { url, quoteId: 'host-q' });
+    await entered.promise;
+    await vi.advanceTimersByTimeAsync(LEASE);
+    hold.resolve();
+    expect((await response).status).not.toBe(200);
+    await flush();
+    expect(ends).toHaveLength(1);
+    expect(ends[0]).not.toBe('ok');
+    expect(await env.registry.list()).toEqual([]);
+  });
+});
+
 test('a source with no usable text version is a 502, not a 500', async () => {
   const res = await post(hosted(), '/api/quote', {
     url: 'https://govinfo.gov/missing.txt',

@@ -1,13 +1,17 @@
 /** How long a holder may keep a key before the next waiter is let in regardless. */
 export const LOCK_LEASE_MS = 60_000;
 
+/** Identifies one turn at a key; a stale holder's release must not touch a later turn. */
+interface Holder {
+  /** Aborts when the lease runs out, before the next waiter is let in. */
+  lease: AbortController;
+}
 interface Waiter {
   grant: () => void;
-  holder: object;
+  holder: Holder;
 }
 interface KeyState {
-  /** Identifies who holds the key now; a stale holder's release must not touch a later one. */
-  holder: object;
+  holder: Holder;
   lease: ReturnType<typeof setTimeout>;
   waiting: Waiter[];
 }
@@ -18,9 +22,10 @@ interface KeyState {
  *
  * Two things keep a stuck request from blocking a key for good (for example a host's admission
  * that never answers): a waiter whose signal aborts leaves the queue without running, and a
- * holder is only leased the key. After the lease the next waiter goes ahead while the holder's
- * task carries on; ordering is best-effort from then on, and the late holder's release is
- * ignored.
+ * holder is only leased the key. When the lease runs out the task's signal aborts, and only
+ * then does the next waiter go ahead. A task must treat that abort as "your turn is over" and
+ * not publish a result, so work that outlives its turn can never be seen after a later
+ * holder's. The late holder's release is ignored.
  */
 export class KeyedLock {
   private readonly keys = new Map<string, KeyState>();
@@ -29,7 +34,8 @@ export class KeyedLock {
 
   async run<T>(
     key: string,
-    task: () => Promise<T>,
+    /** Gets a signal that aborts when the lease runs out (the request's signal is separate). */
+    task: (lease: AbortSignal) => Promise<T>,
     signal?: AbortSignal,
   ): Promise<T> {
     signal?.throwIfAborted();
@@ -37,7 +43,7 @@ export class KeyedLock {
     try {
       // The wait may have been long: a reader who left meanwhile does no work.
       signal?.throwIfAborted();
-      return await task();
+      return await task(holder.lease.signal);
     } finally {
       this.release(key, holder);
     }
@@ -46,14 +52,14 @@ export class KeyedLock {
   private acquire(
     key: string,
     signal: AbortSignal | undefined,
-  ): Promise<object> {
-    const holder = {};
+  ): Promise<Holder> {
+    const holder: Holder = { lease: new AbortController() };
     const state = this.keys.get(key);
     if (!state) {
       this.keys.set(key, this.newState(key, holder));
       return Promise.resolve(holder);
     }
-    return new Promise<object>((resolve, reject) => {
+    return new Promise<Holder>((resolve, reject) => {
       const waiter: Waiter = {
         holder,
         grant: () => {
@@ -71,8 +77,9 @@ export class KeyedLock {
     });
   }
 
-  private newState(key: string, holder: object): KeyState {
+  private newState(key: string, holder: Holder): KeyState {
     const lease = setTimeout(() => {
+      holder.lease.abort(new Error('The lock lease ran out.'));
       this.release(key, holder);
     }, this.leaseMs);
     // A pending lease must not keep the process alive.
@@ -81,7 +88,7 @@ export class KeyedLock {
   }
 
   /** Hands the key to the next waiter, or forgets it. Does nothing for a holder that was leased out. */
-  private release(key: string, holder: object): void {
+  private release(key: string, holder: Holder): void {
     const state = this.keys.get(key);
     if (state?.holder !== holder) return;
     clearTimeout(state.lease);

@@ -1492,8 +1492,12 @@ export function createApp(
     // the reader sees last must be the same download.
     const { quoteId, measured } = await downloadLock.run(
       lockKey(readerFor(c), body.url),
-      async () => {
-        const measured = await measure(body.url, c.req.raw.signal);
+      async (lease) => {
+        const signal = AbortSignal.any([c.req.raw.signal, lease]);
+        const measured = await measure(body.url, signal);
+        // Past the lease another request may hold the key and have replaced the kept bytes:
+        // this quote must not be returned or stored over them.
+        signal.throwIfAborted();
         const { quoteId } = quotes.add({
           url: body.url,
           contentHash: measured.doc.docId,
@@ -1561,6 +1565,8 @@ export function createApp(
   async function admitIngestUnlocked(
     c: Context,
     body: { url: string; quoteId?: string | undefined },
+    /** Aborts when this request's turn at the lock runs out; what it decides is then stale. */
+    lease?: AbortSignal,
   ): Promise<
     | {
         scope: JobScope;
@@ -1576,6 +1582,9 @@ export function createApp(
   > {
     if (!hooked) return undefined;
     if (!estimating) return { scope: makeScope(c, { kind: 'ingest' }, {}) };
+    const signal = lease
+      ? AbortSignal.any([c.req.raw.signal, lease])
+      : c.req.raw.signal;
     const live = quotes.get(body.quoteId, readerFor(c), body.url);
     const reader = readerFor(c);
     const kept = quotedDownloads.get(reader, body.url);
@@ -1588,12 +1597,12 @@ export function createApp(
         sameQuotedBill(live, kept));
     let source: QuotedDownload;
     if (kept && keptMatches) {
-      source = kept.doc ? kept : await reparse(kept, c.req.raw.signal);
+      source = kept.doc ? kept : await reparse(kept, signal);
       // The time a host takes to answer 402 and be confirmed is not the download's age.
       quotedDownloads.touch(reader, body.url, kept);
     } else {
       // Nothing kept for this reader and address, or it is not what the quote priced.
-      const measured = await measure(body.url, c.req.raw.signal);
+      const measured = await measure(body.url, signal);
       // Bytes may differ on every download, so compare what was priced, not the hash.
       if (live && !sameQuotedBill(live, measured))
         throw new AppError(
@@ -1634,17 +1643,26 @@ export function createApp(
       estimates,
     };
     // A reader who left while this waited or measured is not worth asking the host about.
-    c.req.raw.signal.throwIfAborted();
+    signal.throwIfAborted();
     const models = options.modelFor
       ? checkedChoice(options.modelFor(fields, c))
       : undefined;
     const docComplete = await generationComplete(c, admitted.docId, models);
-    c.req.raw.signal.throwIfAborted();
-    const { budget, ref } = await consult(c, {
-      ...fields,
-      tier: tierName(models),
-      ...(docComplete ? { docComplete } : {}),
-    });
+    signal.throwIfAborted();
+    let decision: Awaited<ReturnType<typeof consult>>;
+    try {
+      decision = await consult(c, {
+        ...fields,
+        tier: tierName(models),
+        ...(docComplete ? { docComplete } : {}),
+      });
+    } catch (error) {
+      // A refusal (a quote) that arrives after this turn ended is bound to bytes that may have
+      // been replaced: never served; the reader retries.
+      signal.throwIfAborted();
+      throw error;
+    }
+    const { budget, ref } = decision;
     const scope = makeScope(
       c,
       { kind: 'ingest', docId: admitted.docId },
@@ -1652,6 +1670,12 @@ export function createApp(
     );
     // Only a job the host admitted has an end to report.
     const settlement = options.admission ? settlementFor(c, scope) : undefined;
+    if (signal.aborted) {
+      // The host's answer came too late (the reader left, or the lease ran out): tell it the
+      // job ended so it releases whatever it holds, and start nothing.
+      await settlement?.fail(signal.reason);
+      signal.throwIfAborted();
+    }
     // Asked now, before the ingest starts and before this job can end: a host that credits its
     // ledger when the job ends `ok` is never consulted after its own credit, so the grant the
     // server adds to a restored scope is counted exactly once.
@@ -1694,7 +1718,7 @@ export function createApp(
     if (!hooked || !estimating) return admitIngestUnlocked(c, body);
     return downloadLock.run(
       lockKey(readerFor(c), body.url),
-      () => admitIngestUnlocked(c, body),
+      (lease) => admitIngestUnlocked(c, body, lease),
       c.req.raw.signal,
     );
   }

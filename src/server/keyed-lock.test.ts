@@ -103,6 +103,30 @@ describe('the lease', () => {
     await first;
   });
 
+  test('the holder is told its turn is over before the next waiter starts', async () => {
+    const lock = new KeyedLock(1000);
+    const hung = deferred();
+    const log: string[] = [];
+    const first = lock.run('k', async (lease) => {
+      log.push(`first sees aborted=${String(lease.aborted)}`);
+      lease.addEventListener('abort', () => log.push('first told'));
+      await hung.promise;
+    });
+    const second = lock.run('k', () => {
+      log.push('second start');
+      return Promise.resolve();
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    await second;
+    expect(log).toEqual([
+      'first sees aborted=false',
+      'first told',
+      'second start',
+    ]);
+    hung.resolve();
+    await first;
+  });
+
   test('a late finish of the leased-out holder does not disturb the next holder', async () => {
     const lock = new KeyedLock(1000);
     const hung = deferred();
