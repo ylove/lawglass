@@ -339,6 +339,15 @@ function metered(provider: LlmProvider): {
   return { provider: wrapped, usage };
 }
 
+/** Parses bytes a caller already holds, down the same path an ingest takes (no fetch, no model). */
+export function parseDocument(
+  fetched: SafeFetchResult,
+  deps: ReadDocumentDeps,
+  signal?: AbortSignal,
+): Promise<NormalizedDoc> {
+  return parseFetched(fetched, deps, signal);
+}
+
 async function parseFetched(
   fetched: SafeFetchResult,
   deps: ReadDocumentDeps,

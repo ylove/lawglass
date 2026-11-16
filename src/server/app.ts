@@ -19,6 +19,7 @@ import {
   AskRequest,
   CandidateLink,
   ClientConfig,
+  type NormalizedDoc,
   DocSummary,
   IngestRequest,
   isAppError,
@@ -29,7 +30,11 @@ import {
 import { parsePdf as defaultParsePdf } from '../core/parse/index.js';
 import { readParseLimits } from '../core/parse/limits.js';
 import { ask, ingest, sectionExcerpt } from '../core/pipeline/index.js';
-import { readDocument, type IngestDeps } from '../core/pipeline/ingest.js';
+import {
+  parseDocument,
+  readDocument,
+  type IngestDeps,
+} from '../core/pipeline/ingest.js';
 import { sharedLimits } from '../core/pipeline/limits.js';
 import {
   billFacts,
@@ -620,7 +625,12 @@ export function createApp(
   const estimating =
     options.admission !== undefined || options.modelFor !== undefined;
   const quotes = new QuoteStore(now);
-  const quotedDownloads = new QuotedDownloads(now);
+  const quotedDownloads = new QuotedDownloads(
+    now,
+    undefined,
+    undefined,
+    options.quote?.downloadBudgetBytes,
+  );
   // Per signed-in reader (auth and private modes), so one account cannot drive unbounded fetches.
   const readerQuotes = new SlidingWindowLimiter(
     options.quote?.perReaderPerHour ?? 60,
@@ -1388,30 +1398,64 @@ export function createApp(
     const release = await sharedLimits().acquire('ingest', signal);
     let read;
     try {
-      read = await readDocument(
-        url,
-        {
-          fetcher: ingestFetcher(),
-          now: runtime.now,
-          parsePdf: runtime.parsePdf ?? defaultParsePdf,
-          parseLimits: ingestParseLimits(),
-        },
-        signal,
+      read = await readDocument(url, readDeps(), signal, {
         // A quote stores nothing, not even the download.
-        { commitCache: false },
-      );
+        commitCache: false,
+      });
     } finally {
       release();
     }
-    const { doc } = read;
+    return { ...read, ...sizeOf(read.doc) };
+  }
+
+  const readDeps = () => ({
+    fetcher: ingestFetcher(),
+    now: runtime.now,
+    parsePdf: runtime.parsePdf ?? defaultParsePdf,
+    parseLimits: ingestParseLimits(),
+  });
+
+  /** What a quote shows and prices for a parsed document. */
+  function sizeOf(doc: NormalizedDoc) {
     const facts = billFacts(doc.sections, {
       breakdownUnitCap: coverage.breakdownUnitCap,
     });
     return {
-      ...read,
       publicFacts: quoteFacts(doc, facts),
       estimates: estimatesFor(facts, tiers(), options.quote, coverage),
     };
+  }
+
+  /**
+   * Parses a kept download whose parse was too big to keep. Same pool and limits as `measure`,
+   * no fetch. Parsing is deterministic, but the result is checked against what was priced.
+   */
+  async function reparse(
+    kept: QuotedDownload,
+    signal: AbortSignal,
+  ): Promise<QuotedDownload> {
+    const release = await sharedLimits().acquire('ingest', signal);
+    let doc: NormalizedDoc;
+    try {
+      doc = await parseDocument(kept.fetched, readDeps(), signal);
+    } finally {
+      release();
+    }
+    if (
+      !sameQuotedBill(
+        { facts: kept.publicFacts, estimates: kept.estimates },
+        sizeOf(doc),
+      )
+    )
+      throw new AppError(
+        'PAYMENT_REQUIRED',
+        'The bill no longer parses as it was quoted.',
+        {
+          userMessage:
+            'This bill changed after it was quoted. Please start again to get a new quote.',
+        },
+      );
+    return { ...kept, doc };
   }
 
   app.post('/api/quote', async (c) => {
@@ -1525,7 +1569,7 @@ export function createApp(
         sameQuotedBill(live, kept));
     let source: QuotedDownload;
     if (kept && keptMatches) {
-      source = kept;
+      source = kept.doc ? kept : await reparse(kept, c.req.raw.signal);
       // The time a host takes to answer 402 and be confirmed is not the download's age.
       quotedDownloads.touch(reader, body.url);
     } else {
@@ -1547,7 +1591,7 @@ export function createApp(
     }
     const admitted: NonNullable<IngestDeps['admitted']> = {
       docId: source.fetched.docId,
-      doc: source.doc,
+      ...(source.doc ? { doc: source.doc } : {}),
       fetched: source.fetched,
       attachment: source.attachment,
     };

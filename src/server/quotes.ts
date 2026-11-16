@@ -56,6 +56,8 @@ export interface QuoteOptions {
   allowInPublicMode?: boolean;
   /** Quotes per client address per hour in hosted modes. Default 20. */
   perHour?: number;
+  /** Memory for kept downloads (see `QuotedDownloads`). Default 64 MiB; a reader may hold a quarter. */
+  downloadBudgetBytes?: number;
   /** Quotes and, separately, ingests per signed-in reader per hour in auth and private modes. Default 60. */
   perReaderPerHour?: number;
 }
@@ -117,7 +119,11 @@ export class QuoteStore {
 
 /** What a measure downloaded, kept so the ingest it leads to reads exactly the bytes that were priced. */
 export interface QuotedDownload {
-  doc: NormalizedDoc;
+  /**
+   * Absent in a stored "bytes-only" entry (the parse was too big to keep): parse `fetched`
+   * again at admission, and check it against `publicFacts` and `estimates`.
+   */
+  doc: NormalizedDoc | undefined;
   fetched: SafeFetchResult;
   attachment: HistoryAttachment | undefined;
   /** What the reader was shown for these bytes, for an ingest that has no quote of ours. */
@@ -143,6 +149,8 @@ const SECTION_OVERHEAD_BYTES = 200;
  * not counted.
  */
 export function downloadSize(download: QuotedDownload): number {
+  const { doc } = download;
+  if (!doc) return download.fetched.bytes.byteLength;
   const sectionBytes = (
     sections: readonly NormalizedDoc['sections'][number][],
   ): number =>
@@ -158,11 +166,11 @@ export function downloadSize(download: QuotedDownload): number {
         sectionBytes(section.children),
       0,
     );
-  const definitionBytes = download.doc.definitions.reduce(
+  const definitionBytes = doc.definitions.reduce(
     (n, d) => n + SPAN_OVERHEAD_BYTES + 2 * (d.term.length + d.text.length),
     0,
   );
-  const refBytes = download.doc.externalRefs.reduce(
+  const refBytes = doc.externalRefs.reduce(
     (n, ref) =>
       n +
       SPAN_OVERHEAD_BYTES +
@@ -172,7 +180,7 @@ export function downloadSize(download: QuotedDownload): number {
   );
   return (
     download.fetched.bytes.byteLength +
-    sectionBytes(download.doc.sections) +
+    sectionBytes(doc.sections) +
     definitionBytes +
     refBytes
   );
@@ -230,10 +238,18 @@ export class QuotedDownloads {
     // A newer measure replaces the older one for the same reader and URL.
     this.remove(key);
     this.sweep();
-    const size = downloadSize(kept);
-    // Bigger than a reader's share is bigger than anyone may hold: not kept, so it cannot push
-    // other readers' downloads out. The ingest still reads it from the returned copy.
-    if (size > Math.min(this.maxBytes, this.perReaderBytes)) return kept;
+    // The parse is the bulk of a big entry. When it alone does not fit a reader's share, keep
+    // just the bytes: a source whose bytes change on every download (New York) must still be
+    // read from these very bytes, and re-parsing them is deterministic. Bytes over the share
+    // are not kept at all, so nobody else's downloads are pushed out for them.
+    const limit = Math.min(this.maxBytes, this.perReaderBytes);
+    let stored = kept;
+    let size = downloadSize(kept);
+    if (size > limit) {
+      stored = { ...kept, doc: undefined };
+      size = downloadSize(stored);
+      if (size > limit) return kept;
+    }
     const owner = reader ?? '';
     // A reader over their share, in entries or bytes, loses their own oldest first, never
     // someone else's.
@@ -245,7 +261,7 @@ export class QuotedDownloads {
     while (this.entries.size >= this.cap || this.bytes + size > this.maxBytes)
       if (!this.evictOldest(() => true)) break;
     this.entries.set(key, {
-      download: kept,
+      download: stored,
       reader: owner,
       size,
       createdAt: this.now(),

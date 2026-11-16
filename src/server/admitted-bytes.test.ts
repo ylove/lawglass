@@ -259,6 +259,62 @@ describe('a host that binds its own quote to the docId it sees at admission', ()
   });
 });
 
+describe("a bill whose parse is too big for a reader's share", () => {
+  // Calibrated below: the sample's raw bytes fit the share, its counted parse does not.
+  const small = { quote: { downloadBudgetBytes: 8_000 } };
+
+  test('keeps only the bytes, re-parses at the confirm, and still downloads once', async () => {
+    const reparse = vi.spyOn(
+      await import('../core/pipeline/ingest.js'),
+      'parseDocument',
+    );
+    const seen: string[] = [];
+    const a = hosted({
+      ...small,
+      admission: (_c, job) => {
+        seen.push(job.docId ?? '');
+        return Promise.resolve(
+          seen.length === 1
+            ? {
+                allow: false as const,
+                status: 402 as const,
+                quote: { quoteId: 'host-q', display: '$1.00' },
+              }
+            : { allow: true as const, ref: 'ref' },
+        );
+      },
+    });
+    expect(
+      (await post(a, '/api/ingest', { url, quoteId: 'host-q' })).status,
+    ).toBe(402);
+    expect(await ingest(a, { url, quoteId: 'host-q' })).toMatchObject({
+      type: 'done',
+    });
+    expect(seen[1]).toBe(seen[0]);
+    expect(downloads).toHaveLength(1);
+    // The first ingest used its own fresh parse; only the confirm parses the kept bytes.
+    expect(reparse).toHaveBeenCalledTimes(1);
+  });
+
+  test('a re-parse that no longer prices the same is refused', async () => {
+    const a = hosted(small);
+    await post(a, '/api/quote', { url });
+    // The kept bytes now parse differently (a different parser build, say).
+    vi.spyOn(
+      await import('../core/pipeline/ingest.js'),
+      'parseDocument',
+    ).mockResolvedValueOnce(
+      (await import('../core/parse/index.js')).parseText(
+        new TextEncoder().encode('Other\nSECTION 1. X\nShort.\n'),
+        { sourceUrl: url, fetchedAt: '2026-10-13T00:00:00.000Z' },
+      ),
+    );
+    const res = await post(a, '/api/ingest', { url });
+    expect(res.status).toBe(402);
+    expect(await env.registry.list()).toEqual([]);
+  });
+});
+
 test('a source with no usable text version is a 502, not a 500', async () => {
   const res = await post(hosted(), '/api/quote', {
     url: 'https://govinfo.gov/missing.txt',

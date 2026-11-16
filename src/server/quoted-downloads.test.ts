@@ -93,10 +93,10 @@ describe('QuotedDownloads', () => {
     (withDefinitions.doc as { definitions: unknown }).definitions = [
       { term: 'ab', text: 'cde' },
     ];
-    (withDefinitions.doc.sections[0] as { heading: string }).heading = 'hh';
+    (withDefinitions.doc?.sections[0] as { heading: string }).heading = 'hh';
     expect(downloadSize(withDefinitions)).toBe(200 + 4 + 100 + (100 + 10));
     const nested = download(0, 1);
-    (nested.doc.sections[0] as { children: unknown }).children = [
+    (nested.doc?.sections[0] as { children: unknown }).children = [
       { spans: [{ text: 'yy' }], children: [] },
     ];
     expect(downloadSize(nested)).toBe(200 + 100 + 2 + (200 + 100 + 4));
@@ -211,7 +211,23 @@ describe("a reader's byte share", () => {
     expect(store.get('bob', 'u8')).toBeUndefined();
   });
 
-  test("an entry bigger than a reader's share is not stored, and evicts nobody", () => {
+  test('a parse too big for the share is dropped: the bytes-only entry counts at raw size', () => {
+    // Share 1000: 100 raw bytes with a 100,000-character parse does not fit, the bytes do.
+    const store = new QuotedDownloads(() => 0, 100, 20, 4000, 10, 1000);
+    const full = download(100, 100_000);
+    const returned = store.put('alice', 'u', full);
+    // This ingest still has its parse; the next one gets bytes only.
+    expect(returned.doc).toBeDefined();
+    const stored = store.get('alice', 'u');
+    expect(stored?.doc).toBeUndefined();
+    expect(stored?.fetched.bytes.byteLength).toBe(100);
+    expect(stored?.publicFacts).toBe(full.publicFacts);
+    expect(stored?.estimates).toBe(full.estimates);
+    expect(store.totalBytes).toBe(100);
+    expect(downloadSize({ ...full, doc: undefined })).toBe(100);
+  });
+
+  test("raw bytes bigger than a reader's share are not stored, and evicts nobody", () => {
     const store = new QuotedDownloads(() => 0, 100, 20, 400, 10, 100);
     store.put('alice', 'u', download(10));
     const big = download(500);
