@@ -14,7 +14,7 @@ import { IngestEvent } from '../core/model/index.js';
 import { resetSharedLimits } from '../core/pipeline/limits.js';
 import { readSseEvents } from '../web/sse.js';
 import { createApp, type AppOptions, type ExternalAuth } from './app.js';
-import { DOWNLOAD_STORE_CAP } from './quotes.js';
+import { DOWNLOAD_PER_READER_CAP } from './quotes.js';
 
 const url = 'https://govinfo.gov/a.txt';
 let env: PipelineEnv;
@@ -82,7 +82,7 @@ const post = (a: Hono, path: string, body: unknown, reader = 'alice') =>
   });
 /** Pushes this reader's kept download of `url` out by quoting other addresses (the count bound). */
 async function evictKept(a: Hono): Promise<void> {
-  for (let i = 0; i < DOWNLOAD_STORE_CAP; i++) {
+  for (let i = 0; i < DOWNLOAD_PER_READER_CAP; i++) {
     const other = `https://govinfo.gov/filler-${String(i)}.txt`;
     env.serve(other, makeSectionedText(), 'text/plain');
     await quote(a, other);
@@ -206,6 +206,46 @@ describe('a host that binds its own quote to the docId it sees at admission', ()
     expect(seen).toHaveLength(2);
     expect(seen[1]).toBe(seen[0]);
     expect(downloads).toHaveLength(1);
+  });
+
+  test('the 30 minutes run from the last admission, not from the download', async () => {
+    let t = 1_000_000;
+    const seen: string[] = [];
+    const a = hosted({
+      now: () => t,
+      admission: (_c, job) => {
+        seen.push(job.docId ?? '');
+        return Promise.resolve(
+          seen.length === 1
+            ? {
+                allow: false as const,
+                status: 402 as const,
+                quote: { quoteId: 'host-q', display: '$1.00' },
+              }
+            : { allow: true as const, ref: 'ref' },
+        );
+      },
+    });
+    await quote(a);
+    t += 25 * 60_000; // the reader reads the quote page for a while
+    expect((await post(a, '/api/ingest', { url, ...hostId })).status).toBe(402);
+    t += 6 * 60_000; // 31 minutes after the download, 6 after the refusal
+    expect(await ingest(a, { url, ...hostId })).toMatchObject({ type: 'done' });
+    expect(seen[1]).toBe(seen[0]);
+    expect(downloads).toHaveLength(1);
+  });
+
+  test("another reader's quotes do not push this reader's bytes out", async () => {
+    const { a, seen } = hostQuoted();
+    await post(a, '/api/ingest', { url, ...hostId });
+    for (let i = 0; i < 10; i++) {
+      const other = `https://govinfo.gov/bob-${String(i)}.txt`;
+      env.serve(other, makeSectionedText(), 'text/plain');
+      await post(a, '/api/quote', { url: other }, 'bob');
+    }
+    expect(await ingest(a, { url, ...hostId })).toMatchObject({ type: 'done' });
+    expect(seen[1]).toBe(seen[0]);
+    expect(downloads.filter((d) => d === url)).toHaveLength(1);
   });
 
   test('after /api/quote: no download beyond the quote', async () => {

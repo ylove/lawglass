@@ -55,6 +55,7 @@ import {
   chooseVersion,
   historySource,
   resolveHistory,
+  type HistoryPlan,
   type HistoryRecord,
 } from '../history/resolve.js';
 import { deleteHistory, writeHistory } from '../history/history-store.js';
@@ -547,6 +548,66 @@ export type ReadDocumentDeps = Pick<
   'fetcher' | 'now' | 'parsePdf' | 'parseLimits'
 >;
 
+/**
+ * The official history for a plan, or undefined when it cannot be read: an explicit version
+ * allows a text ingest even when the history is down. An abort is not swallowed.
+ */
+async function readHistoryRecord(
+  plan: HistoryPlan,
+  deps: ReadDocumentDeps,
+  signal: AbortSignal | undefined,
+): Promise<HistoryRecord | undefined> {
+  const source = historySource(plan.source);
+  const validateUrl = (url: URL): void => {
+    assertHistoryUrl(plan.source, url);
+  };
+  try {
+    return await source.read(
+      plan,
+      async (historyUrl) => {
+        assertHistoryUrl(plan.source, historyUrl);
+        const result = await deps.fetcher(historyUrl, {
+          signal,
+          validateUrl,
+          refresh: true,
+        });
+        assertHistoryUrl(plan.source, result.finalUrl);
+        return result;
+      },
+      deps.now,
+    );
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return undefined;
+  }
+}
+
+/**
+ * Admitted bytes may carry a history that failed to load when they were quoted. Try again now so
+ * the document is not indexed as "History unavailable" for a transient error. History normally
+ * decides which text version to fetch, so a record is adopted only when it names the very
+ * version the admitted bytes were fetched for; otherwise the kept attachment stands.
+ */
+async function refreshedAttachment(
+  url: string,
+  attachment: HistoryAttachment | undefined,
+  deps: ReadDocumentDeps,
+  signal: AbortSignal | undefined,
+): Promise<HistoryAttachment | undefined> {
+  if (!attachment || attachment.record) return attachment;
+  const plan = resolveHistory(url);
+  if (!plan) return attachment;
+  const record = await readHistoryRecord(plan, deps, signal);
+  if (!record) return attachment;
+  try {
+    if (chooseVersion(plan, record.history) !== attachment.version)
+      return attachment;
+  } catch {
+    return attachment;
+  }
+  return { version: attachment.version, record };
+}
+
 /** The exact URL resolution and integrity checks used by ingest, without indexing or LLM work. */
 async function fetchIngestDocument(
   url: string,
@@ -595,26 +656,7 @@ async function fetchIngestDocument(
     validateUrl = (url) => {
       assertHistoryUrl(plan.source, url);
     };
-    let record: HistoryRecord | undefined;
-    try {
-      record = await source.read(
-        plan,
-        async (historyUrl) => {
-          assertHistoryUrl(plan.source, historyUrl);
-          const result = await deps.fetcher(historyUrl, {
-            signal,
-            validateUrl,
-            refresh: true,
-          });
-          assertHistoryUrl(plan.source, result.finalUrl);
-          return result;
-        },
-        deps.now,
-      );
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      // An explicit version allows text ingest even when the official history is down.
-    }
+    const record = await readHistoryRecord(plan, deps, signal);
     const version = chooseVersion(plan, record?.history);
     fetchUrl = plan.textUrl ?? source.textUrl(plan, version);
     validateUrl(new URL(fetchUrl));
@@ -681,7 +723,15 @@ async function ingestWithinLimits(
   // honest, so a bill that changed (or is byte-volatile) since the quote cannot be swapped in.
   const reuse = deps.admitted?.fetched;
   const { fetched, attachment } = reuse
-    ? { fetched: reuse, attachment: deps.admitted?.attachment }
+    ? {
+        fetched: reuse,
+        attachment: await refreshedAttachment(
+          url,
+          deps.admitted?.attachment,
+          deps,
+          signal,
+        ),
+      }
     : await fetchIngestDocument(url, deps, signal);
   const docId = fetched.docId;
   if (deps.admitted && deps.admitted.docId !== docId)

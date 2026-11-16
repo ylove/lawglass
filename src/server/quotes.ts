@@ -4,6 +4,7 @@
  * the quote the reader saw.
  */
 import { randomBytes } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { z } from 'zod';
 import {
   estimateBill,
@@ -125,23 +126,58 @@ export interface QuotedDownload {
 }
 
 export const DOWNLOAD_STORE_CAP = 50;
-/** Budget in bytes, not entries: a bill can be several MB, and so is its parse. */
+/** One reader (or one guest address) cannot push everyone else's downloads out of the store. */
+export const DOWNLOAD_PER_READER_CAP = 3;
+/** Budget in bytes of what an entry really holds (see `downloadSize`), not of entries. */
 export const DOWNLOAD_STORE_BYTES = 64 * 1024 * 1024;
 
 /**
- * The latest download each reader was priced on for each URL, bounded by age, count and bytes
- * (oldest out first). It is keyed by reader and URL, not by our quote id, because a host binds
- * its own quote to the docId it saw at admission and never sends ours back; the ingest must
- * read those same bytes or that docId can never match (New York bytes differ on every download).
- * An entry is not removed on use: the host may refuse the ingest (402) and the confirm, or a
- * retry after a dropped connection, must see the same bytes. Losing one is safe: the ingest
- * measures again, and the host's own quote is checked against that new measure.
+ * What an entry holds in memory: the raw bytes plus the parsed document's text. JS strings are
+ * UTF-16, so 2 bytes per character. The Cheerio DOM of an HTML download is dropped before
+ * storing (it measured about 32x the raw bytes), so it does not need counting.
+ */
+export function downloadSize(download: QuotedDownload): number {
+  const textChars = (
+    sections: readonly NormalizedDoc['sections'][number][],
+  ): number =>
+    sections.reduce(
+      (n, section) =>
+        n +
+        (section.heading?.length ?? 0) +
+        section.spans.reduce((m, span) => m + span.text.length, 0) +
+        textChars(section.children),
+      0,
+    );
+  const definitionChars = download.doc.definitions.reduce(
+    (n, d) => n + d.term.length + d.text.length,
+    0,
+  );
+  return (
+    download.fetched.bytes.byteLength +
+    2 * (textChars(download.doc.sections) + definitionChars)
+  );
+}
+
+interface DownloadEntry {
+  download: QuotedDownload;
+  reader: string;
+  size: number;
+  createdAt: number;
+}
+
+/**
+ * The latest download each reader was priced on for each URL, bounded by age, count, bytes, and
+ * a share per reader (oldest out first). It is keyed by reader and URL, not by our quote id,
+ * because a host binds its own quote to the docId it saw at admission and never sends ours
+ * back; the ingest must read those same bytes or that docId can never match (New York bytes
+ * differ on every download). An entry is not removed on use: the host may refuse the ingest
+ * (402) and the confirm, or a retry after a dropped connection, must see the same bytes. An
+ * admission that uses an entry renews its age, so the time between a 402 and the confirm is not
+ * counted against it. Losing one is safe: the ingest measures again, and the host's own quote
+ * is checked against that new measure.
  */
 export class QuotedDownloads {
-  private readonly entries = new Map<
-    string,
-    { download: QuotedDownload; size: number; createdAt: number }
-  >();
+  private readonly entries = new Map<string, DownloadEntry>();
   private bytes = 0;
 
   constructor(
@@ -149,6 +185,7 @@ export class QuotedDownloads {
     private readonly ttlMs = QUOTE_TTL_MS,
     private readonly cap = DOWNLOAD_STORE_CAP,
     private readonly maxBytes = DOWNLOAD_STORE_BYTES,
+    private readonly perReader = DOWNLOAD_PER_READER_CAP,
   ) {}
 
   /** A reader id cannot contain the URL, but encode both so no pair can collide with another. */
@@ -156,30 +193,52 @@ export class QuotedDownloads {
     return JSON.stringify([reader ?? null, url]);
   }
 
-  put(reader: string | undefined, url: string, download: QuotedDownload): void {
+  /** Returns what is stored: the download without its parse-time DOM. */
+  put(
+    reader: string | undefined,
+    url: string,
+    download: QuotedDownload,
+  ): QuotedDownload {
     const key = QuotedDownloads.key(reader, url);
+    // Only what the ingest reads is kept; the DOM is of no use once `doc` is parsed.
+    const kept: QuotedDownload = {
+      ...download,
+      fetched: { ...download.fetched, preparedHtml: undefined },
+    };
     // A newer measure replaces the older one for the same reader and URL.
     this.remove(key);
     this.sweep();
-    // Twice the raw bytes: the parsed document is held beside them and is of similar size.
-    const size = download.fetched.bytes.byteLength * 2;
-    if (size > this.maxBytes) return;
+    const size = downloadSize(kept);
+    if (size > this.maxBytes) return kept;
+    const owner = reader ?? '';
+    // A reader over their share loses their own oldest entry first, never someone else's.
+    while (this.countFor(owner) >= this.perReader)
+      if (!this.evictOldest((e) => e.reader === owner)) break;
     while (this.entries.size >= this.cap || this.bytes + size > this.maxBytes)
-      if (!this.evictOldest()) break;
-    this.entries.set(key, { download, size, createdAt: this.now() });
+      if (!this.evictOldest(() => true)) break;
+    this.entries.set(key, {
+      download: kept,
+      reader: owner,
+      size,
+      createdAt: this.now(),
+    });
     this.bytes += size;
+    return kept;
   }
 
   /** The reader's latest live download of this URL, or undefined. */
   get(reader: string | undefined, url: string): QuotedDownload | undefined {
+    this.sweep();
+    return this.entries.get(QuotedDownloads.key(reader, url))?.download;
+  }
+
+  /** Restarts the entry's age (and puts it last in line to be evicted). */
+  touch(reader: string | undefined, url: string): void {
     const key = QuotedDownloads.key(reader, url);
     const entry = this.entries.get(key);
-    if (!entry) return undefined;
-    if (this.now() - entry.createdAt >= this.ttlMs) {
-      this.remove(key);
-      return undefined;
-    }
-    return entry.download;
+    if (!entry) return;
+    this.entries.delete(key);
+    this.entries.set(key, { ...entry, createdAt: this.now() });
   }
 
   get size(): number {
@@ -197,11 +256,19 @@ export class QuotedDownloads {
     this.entries.delete(id);
   }
 
-  private evictOldest(): boolean {
-    const oldest = this.entries.keys().next();
-    if (oldest.done) return false;
-    this.remove(oldest.value);
-    return true;
+  private countFor(reader: string): number {
+    let n = 0;
+    for (const entry of this.entries.values()) if (entry.reader === reader) n++;
+    return n;
+  }
+
+  private evictOldest(matches: (entry: DownloadEntry) => boolean): boolean {
+    for (const [id, entry] of this.entries)
+      if (matches(entry)) {
+        this.remove(id);
+        return true;
+      }
+    return false;
   }
 
   private sweep(): void {
@@ -212,16 +279,24 @@ export class QuotedDownloads {
 }
 
 /**
- * Whether a fresh measure is still the bill the quote priced. Not a byte comparison: some
- * sources (New York) change their bytes on every request, so the content hash can never match.
+ * Whether a fresh measure is still what the quote priced. Not a byte comparison: some sources
+ * (New York) change their bytes on every request, so the content hash can never match. The
+ * facts must agree and so must the whole estimate, since it also depends on parts the facts
+ * do not show (map units, single subject, omitted units).
  */
-export function sameQuotedBill(a: QuoteFacts, b: QuoteFacts): boolean {
+export function sameQuotedBill(
+  quoted: Pick<QuoteEntry, 'facts' | 'estimates'>,
+  measured: Pick<QuotedDownload, 'publicFacts' | 'estimates'>,
+): boolean {
+  const a = quoted.facts;
+  const b = measured.publicFacts;
   return (
     a.pages === b.pages &&
     a.sections === b.sections &&
     a.tokens === b.tokens &&
     a.mode === b.mode &&
-    a.units === b.units
+    a.units === b.units &&
+    isDeepStrictEqual(quoted.estimates, measured.estimates)
   );
 }
 

@@ -1522,15 +1522,17 @@ export function createApp(
       kept !== undefined &&
       (!live ||
         kept.fetched.docId === live.contentHash ||
-        sameQuotedBill(live.facts, kept.publicFacts));
+        sameQuotedBill(live, kept));
     let source: QuotedDownload;
     if (kept && keptMatches) {
       source = kept;
+      // The time a host takes to answer 402 and be confirmed is not the download's age.
+      quotedDownloads.touch(reader, body.url);
     } else {
       // Nothing kept for this reader and address, or it is not what the quote priced.
       const measured = await measure(body.url, c.req.raw.signal);
       // Bytes may differ on every download, so compare what was priced, not the hash.
-      if (live && !sameQuotedBill(live.facts, measured.publicFacts))
+      if (live && !sameQuotedBill(live, measured))
         throw new AppError(
           'PAYMENT_REQUIRED',
           'The bill changed after it was quoted.',
@@ -1541,8 +1543,7 @@ export function createApp(
         );
       // Stored before the host's admission runs: if it answers 402 with a quote bound to this
       // docId, the confirm must read these very bytes.
-      quotedDownloads.put(reader, body.url, measured);
-      source = measured;
+      source = quotedDownloads.put(reader, body.url, measured);
     }
     const admitted: NonNullable<IngestDeps['admitted']> = {
       docId: source.fetched.docId,
@@ -1550,7 +1551,8 @@ export function createApp(
       fetched: source.fetched,
       attachment: source.attachment,
     };
-    const estimates = live ? live.estimates : source.estimates;
+    // The bytes being read, which match any quote of ours, so the host prices what is indexed.
+    const estimates = source.estimates;
     const fields = {
       kind: 'ingest' as const,
       docId: admitted.docId,
