@@ -94,6 +94,30 @@ it('sends a plain string message unchanged and no effort by default', async () =
   expect(sent.output_config).toBeUndefined();
 });
 
+it('sends API version 2026-10-21 with a bearer key and never a sampling parameter', async () => {
+  const replay = httpReplay([
+    { body: asset('anthropic-stream.sse'), stream: true },
+  ]);
+  const provider = new AnthropicProvider(
+    { provider: 'anthropic', model: 'claude-sonnet-5-5', apiKey: KEY },
+    { fetch: replay.fetch },
+  );
+  await drain(provider, {
+    system: 'rules',
+    messages: [{ role: 'user', content: 'hello' }],
+    maxTokens: 100,
+    temperature: 0.2,
+  });
+  const request = replay.requests[0]!;
+  // A new SDK major that moves the API version again should fail here and get its own audit.
+  expect(request.headers.get('anthropic-version')).toBe('2026-10-21');
+  expect(request.headers.get('authorization')).toBe(`Bearer ${KEY}`);
+  expect(request.headers.get('x-api-key')).toBeNull();
+  const sent = (await request.json()) as Record<string, unknown>;
+  for (const field of ['temperature', 'top_p', 'top_k'])
+    expect(sent).not.toHaveProperty(field);
+});
+
 it('carries a cached prompt part and effort into structured output', async () => {
   const replay = httpReplay([{ body: asset('anthropic-object.json') }]);
   const provider = new AnthropicProvider(

@@ -73,7 +73,9 @@ export class AnthropicProvider implements LlmProvider {
           system: req.system,
           messages: req.messages.map(anthropicMessage),
           max_tokens: req.maxTokens,
-          temperature: req.temperature,
+          // `req.temperature` is deliberately not sent: API version 2026-10-21 (SDK 1.x) rejects
+          // `temperature`, `top_p` and `top_k` with a 400 on every model, even at their defaults.
+          // The generic `stream()` parameter hides an excess property from the type check.
           ...(req.effort ? { output_config: { effort: req.effort } } : {}),
         },
         { signal },

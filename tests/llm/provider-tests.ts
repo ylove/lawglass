@@ -133,13 +133,10 @@ export function describeHttpProvider(
           google: 'generativelanguage.googleapis.com',
         }[name],
       );
+      // Anthropic SDK 1.x sends the API key as `Authorization: Bearer`, like OpenAI.
       expect(
         request.headers.get(
-          name === 'anthropic'
-            ? 'x-api-key'
-            : name === 'google'
-              ? 'x-goog-api-key'
-              : 'authorization',
+          name === 'google' ? 'x-goog-api-key' : 'authorization',
         ),
       ).toContain(KEY);
     });
