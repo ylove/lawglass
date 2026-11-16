@@ -79,6 +79,12 @@ export interface WholePromptInput {
   /** The whole-bill token budget (`wholeBillMaxTokens`), before references are reserved. */
   configuredBudget: number;
   /**
+   * True on the quote path, before ingest has read the U.S. Code references. The summary and
+   * question blocks then carry a full-length placeholder for each target the document names.
+   * An indexed document never gets placeholders: it has the references it has, or none.
+   */
+  preIngest?: boolean;
+  /**
    * Chunk and time limits for the sizing work. A quote passes the ingest's own, so a bill the
    * ingest would refuse is refused at quote. Without them a fixed, generous cap applies:
    * sizing an already-indexed document must not fail because a host lowered a limit since.
@@ -112,8 +118,8 @@ function sizingDocument(input: WholePromptInput): NormalizedDoc {
 /**
  * Stand-ins for the U.S. Code texts a document's ingest will read, when it has not run yet (a
  * quote, an admission check). The targets come from the sections alone, with no network, and
- * each stand-in is as long as a read text can be, so the forecast is an upper bound on what the
- * ingest will fetch. Documents that already carry `references` use those.
+ * each stand-in is as long as a read text can be. They size the prompt blocks only; the
+ * whole-versus-excerpts decision never reserves for them (see `sizeWholePrompts`).
  */
 export function placeholderReferences(
   sections: readonly Section[],
@@ -177,16 +183,19 @@ export function sizeWholePrompts(input: WholePromptInput): WholePromptSizing {
   // Ingest also counts the records enrichment adds.
   assertChunkLimit(enriched.chunks.length, maxChunks);
   const chunks = enriched.chunks;
-  // References are read after ingest's enrichment. Before that (a quote) their targets are
-  // known but not their text: size them at their longest. The enriched definitions can name
-  // more targets than the parser's, so look them up there.
+  // The mode is chosen with the smallest reservation the runtime could make: the references
+  // the document holds, or none. Whole mode costs more than excerpts, so near the threshold
+  // that is the safe side, and it is what `documentContext` does for a document without them.
+  const held = input.document?.references;
+  const budget = billBudget(input.configuredBudget, referenceTokens(held));
+  // Before ingest (a quote) the targets are known but not their text: the blocks that carry
+  // references are sized with each at its longest. The enriched definitions can name more
+  // targets than the parser's, so look them up there.
   const references =
-    input.document?.references ??
-    placeholderReferences(input.sections, enriched.doc.definitions);
-  const budget = billBudget(
-    input.configuredBudget,
-    referenceTokens(references),
-  );
+    held ??
+    (input.preIngest === true
+      ? placeholderReferences(input.sections, enriched.doc.definitions)
+      : undefined);
   const all = dropOverlap(chunks.map((chunk) => ({ chunk, score: 1 })));
   const live = all.filter((hit) => hit.chunk.amendmentStatus !== 'deleted');
   if (contextMode(hitTokens(live), looseBudget) !== 'whole') return none;

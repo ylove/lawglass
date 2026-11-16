@@ -423,6 +423,7 @@ describe('sizing at quote time, before ingest has read the references', () => {
     const indexed = await index(bill());
     const quoted = billFacts(indexed.sections, {
       document: { ...indexed, references: undefined },
+      preIngest: true,
     });
     // The ingest read both targets, each at the longest a text can be.
     const read = billFacts(indexed.sections, {
@@ -441,17 +442,45 @@ describe('sizing at quote time, before ingest has read the references', () => {
     );
   });
 
-  it('reserves them from the budget, so a close call is not forecast whole', async () => {
+  it('chooses the mode as the runtime does with no references, not with the placeholders', async () => {
     const indexed = await index(bill());
     const all = await documentContext(backend, DOC, indexed.sections, {
       budget: 100_000,
     });
     const tokens = all.hits.reduce((n, h) => n + h.chunk.tokenCount, 0);
+    // The bill fits with room for less than the eight placeholders would reserve.
+    const budget = tokens + 100;
+    const noRefs = { ...indexed, references: undefined };
     const quoted = billFacts(indexed.sections, {
-      document: { ...indexed, references: undefined },
-      wholeBillMaxTokens: tokens + 100,
+      document: noRefs,
+      preIngest: true,
+      wholeBillMaxTokens: budget,
     });
-    expect(quoted.mode).toBe('excerpts');
+    const runtime = await documentContext(backend, DOC, indexed.sections, {
+      budget,
+      reservedTokens: 0,
+    });
+    expect(runtime.mode).toBe('whole');
+    expect(quoted.mode).toBe('whole');
+    // The blocks that carry references are still sized at their longest.
+    const indexedSizing = billFacts(indexed.sections, {
+      document: noRefs,
+      wholeBillMaxTokens: budget,
+    });
+    expect(quoted.wholePrompt.summary).toBeGreaterThan(
+      indexedSizing.wholePrompt.summary,
+    );
+  });
+
+  it('gives an indexed document with no references no placeholders', async () => {
+    const indexed = await index(bill());
+    const none = billFacts(indexed.sections, {
+      document: { ...indexed, references: undefined },
+    });
+    const empty = billFacts(indexed.sections, {
+      document: { ...indexed, references: [] },
+    });
+    expect(none.wholePrompt).toEqual(empty.wholePrompt);
   });
 
   it('refuses a bill the ingest would refuse, with the ingest limits', async () => {

@@ -42,11 +42,15 @@ every reference; breakdown sends live parts only; the summary scenario sends liv
 excerpts; a question's high bound is the worst case, a question about changes with struck text
 and inline markers. Struck text prices only that last case. Pass the parsed document as
 `document` so metadata, definitions and references shape the count. A quote or admission check
-runs before ingest has read the U.S. Code references. Their targets come from the sections
-alone, with no network, and each is counted as a placeholder text of the longest a read
-reference can be (9,000 characters plus its heading), both in the reserved budget and in the
-summary and question blocks, so quote-time sizing is an upper bound on the indexed sizing. A
-document that already carries `references` uses them. Quotes run under the ingest's own chunk
+runs before ingest has read the U.S. Code references (`preIngest: true`). Their targets come
+from the sections alone, with no network. The summary and question blocks are then sized with a
+placeholder of the longest a read reference can be (9,000 characters plus its heading) for every
+target, so those two blocks are an upper bound on what the ingest will read. The
+whole-versus-excerpts mode is not: it is chosen as the runtime chooses it with no references
+reserved, the smallest reservation it could make, because whole mode costs more near the
+threshold. An indexed document is sized with the references it holds, or none (documents
+indexed before references existed, or whose read failed, get no placeholders). A document that
+already carries `references` uses them. Quotes run under the ingest's own chunk
 and time limits (`limits`), inside its concurrency permit. Indexed documents are sized under fixed, generous caps (50,000 chunks, 120 s) instead, so a host that lowers a limit later cannot make an answerable document unsizable. The estimator divides the
 characters by a characters-per-token figure measured in the calibration run: 2.9 for the low
 bound and 2.2 for the high bound, about 12% under the lowest fitted value (derivation in `estimate.ts`; the old chars/4 times 1.25 ran
@@ -60,7 +64,7 @@ parse-only estimator cannot know which generated items will pass the picture eli
 These are planning ranges, not guaranteed provider billing limits: tokenization, prompt/schema
 framing (1,000–3,000 tokens per call), metadata already present in markup, generation lengths,
 optional scenarios, reference/definition context, and cache eligibility can change actual usage.
-Whole versus excerpts is forecast from the document chunked and enriched as ingest does, with the runtime's own budget helpers; near the threshold the runtime's scan of the indexed chunks can still choose differently (for example when a reference text read at ingest is longer than expected, or an index is incomplete).
+Whole versus excerpts is forecast from the document chunked and enriched as ingest does, with the runtime's own budget helpers; near the threshold the runtime's scan of the indexed chunks can still choose differently (for example when a reference text the ingest reads takes the bill over the budget, or an index is incomplete).
 Costs grow with added substantive units within a fixed strategy; crossing into omnibus
 classification disables the summary scenario, and switching context strategies can reduce cost.
 Embeddings, reranking, infrastructure, taxes and provider discounts are excluded.

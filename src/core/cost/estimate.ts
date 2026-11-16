@@ -377,7 +377,7 @@ export function estimateBill(
     },
     question: estimateQuestion(facts, prices, plan),
     assumptions: [
-      'Whole versus excerpts mode is forecast from the document chunked and enriched as ingest does; the runtime scan can still differ near the threshold. Whole-bill prompts are sized from the built <part> blocks at 2.2–2.9 characters per token. Before ingest has read its U.S. Code references, they are counted at their longest.',
+      'Whole versus excerpts mode is forecast from the document chunked and enriched as ingest does; the runtime scan can still differ near the threshold. Whole-bill prompts are sized from the built <part> blocks at 2.2–2.9 characters per token. Before ingest has read its U.S. Code references, the summary and question blocks count each at its longest; the mode assumes none.',
       'Low: first pass and short output. High: full output budgets, all retries and reading-level rewrites.',
       `Cache policy: ${plan.cache ?? 'reuse'}; reuse assumes the same prefix stays cached for five minutes within each feature.`,
       `Thinking tokens per answer call: ${String(plan.thinkingTokensPerCall?.low ?? 0)}–${String(plan.thinkingTokensPerCall?.high ?? 0)}; included within output limits, high reserves the full limit.`,

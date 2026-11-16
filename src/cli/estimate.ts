@@ -78,6 +78,8 @@ export async function estimateUrl(
   const parseLimits = runtime.parseLimits ?? readParseLimits();
   const facts = billFacts(doc.sections, {
     document: doc,
+    // The U.S. Code references are read at ingest, not here.
+    preIngest: true,
     limits: {
       maxChunks: parseLimits.maxChunks,
       timeoutMs: parseLimits.timeoutMs,

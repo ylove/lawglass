@@ -20,6 +20,8 @@ export interface BillFactsOptions {
   /** The same value as the server's `breakdownMaxUnits`: a count, or `'all'`. Default 30. */
   breakdownUnitCap?: BreakdownMaxUnits;
   wholeBillMaxTokens?: number;
+  /** True on the quote path; see `WholePromptInput.preIngest`. */
+  preIngest?: boolean;
   /** Chunk and time limits for sizing; see `WholePromptInput.limits`. */
   limits?: WholePromptInput['limits'];
   /**
@@ -83,6 +85,7 @@ export function billFacts(
     document: opts.document,
     configuredBudget: budget,
     limits: opts.limits,
+    ...(opts.preIngest === undefined ? {} : { preIngest: opts.preIngest }),
   });
   const map = chooseMapUnits(sections);
   const breakdown = chooseBreakdownUnits(

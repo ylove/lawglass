@@ -1408,6 +1408,8 @@ export function createApp(
       facts = billFacts(doc.sections, {
         breakdownUnitCap: coverage.breakdownUnitCap,
         document: doc,
+        // The U.S. Code references are read at ingest, not here.
+        preIngest: true,
         // The budget the runtime's own whole-bill decision reads.
         wholeBillMaxTokens: wholeBillBudget(),
         limits: {
