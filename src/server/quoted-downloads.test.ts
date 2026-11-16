@@ -156,14 +156,30 @@ describe('QuotedDownloads', () => {
   test('touch restarts the age', () => {
     let t = 0;
     const store = new QuotedDownloads(() => t, 100);
-    store.put('a', 'u', download(10));
+    const used = download(10);
+    store.put('a', 'u', used);
+    const kept = store.get('a', 'u');
     t = 90;
-    store.touch('a', 'u');
+    store.touch('a', 'u', kept ?? used);
     t = 150;
     expect(store.get('a', 'u')).toBeDefined();
     t = 190;
     expect(store.get('a', 'u')).toBeUndefined();
-    store.touch('nobody', 'u');
+    store.touch('nobody', 'u', used);
+  });
+
+  test('touch renews only the entry the caller used, not a replacement', () => {
+    let t = 0;
+    const store = new QuotedDownloads(() => t, 100);
+    store.put('a', 'u', download(10));
+    const first = store.get('a', 'u');
+    t = 50;
+    store.put('a', 'u', download(10)); // replaced by another download
+    t = 120;
+    store.touch('a', 'u', first ?? download(1));
+    // The replacement (put at 50) was not renewed, so it expires at 150.
+    t = 151;
+    expect(store.get('a', 'u')).toBeUndefined();
   });
 
   test('evicts oldest first past the entry cap', () => {

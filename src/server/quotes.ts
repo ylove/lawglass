@@ -276,11 +276,16 @@ export class QuotedDownloads {
     return this.entries.get(QuotedDownloads.key(reader, url))?.download;
   }
 
-  /** Restarts the entry's age (and puts it last in line to be evicted). */
-  touch(reader: string | undefined, url: string): void {
+  /** Restarts the age of the entry the caller used (and puts it last in line to be evicted). */
+  touch(
+    reader: string | undefined,
+    url: string,
+    /** The download the caller used: a replacement stored since is not the caller's to renew. */
+    used: QuotedDownload,
+  ): void {
     const key = QuotedDownloads.key(reader, url);
     const entry = this.entries.get(key);
-    if (!entry) return;
+    if (entry?.download !== used) return;
     this.entries.delete(key);
     this.entries.set(key, { ...entry, createdAt: this.now() });
   }

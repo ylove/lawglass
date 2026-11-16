@@ -110,6 +110,7 @@ import {
   quoteTiers,
   type QuoteOptions,
 } from './quotes.js';
+import { KeyedLock } from './keyed-lock.js';
 import { readExamples } from './examples.js';
 import {
   isReaderId,
@@ -625,6 +626,9 @@ export function createApp(
   const estimating =
     options.admission !== undefined || options.modelFor !== undefined;
   const quotes = new QuoteStore(now);
+  const downloadLock = new KeyedLock();
+  const lockKey = (reader: string | undefined, url: string): string =>
+    JSON.stringify([reader ?? null, url]);
   const quotedDownloads = new QuotedDownloads(
     now,
     undefined,
@@ -1405,7 +1409,13 @@ export function createApp(
     } finally {
       release();
     }
-    return { ...read, ...sizeOf(read.doc) };
+    // The parse tree has done its job (`readDocument` parsed with it). Dropped here so no caller,
+    // such as a route waiting on a host's admission, keeps it alive.
+    return {
+      ...read,
+      fetched: { ...read.fetched, preparedHtml: undefined },
+      ...sizeOf(read.doc),
+    };
   }
 
   const readDeps = () => ({
@@ -1478,16 +1488,24 @@ export function createApp(
       throw new AppError('RATE_LIMITED');
     if (hosted && !publicMode && !readerQuotes.take(readerFor(c)))
       throw new AppError('RATE_LIMITED');
-    const measured = await measure(body.url, c.req.raw.signal);
-    const { quoteId } = quotes.add({
-      url: body.url,
-      contentHash: measured.doc.docId,
-      facts: measured.publicFacts,
-      estimates: measured.estimates,
-      readerId: readerFor(c),
-    });
-    // The ingest this quote leads to reads these bytes instead of downloading again.
-    quotedDownloads.put(readerFor(c), body.url, measured);
+    // Ordered with admissions of the same reader and address: the kept bytes and the quote
+    // the reader sees last must be the same download.
+    const { quoteId, measured } = await downloadLock.run(
+      lockKey(readerFor(c), body.url),
+      async () => {
+        const measured = await measure(body.url, c.req.raw.signal);
+        const { quoteId } = quotes.add({
+          url: body.url,
+          contentHash: measured.doc.docId,
+          facts: measured.publicFacts,
+          estimates: measured.estimates,
+          readerId: readerFor(c),
+        });
+        // The ingest this quote leads to reads these bytes instead of downloading again.
+        quotedDownloads.put(readerFor(c), body.url, measured);
+        return { quoteId, measured };
+      },
+    );
     return c.json({
       quoteId,
       facts: measured.publicFacts,
@@ -1539,7 +1557,7 @@ export function createApp(
    * bill is downloaded and parsed once and the ingest reads exactly what was priced. If our own
    * quote is presented, the bill must still match it, or the reader is quoted again.
    */
-  async function admitIngest(
+  async function admitIngestUnlocked(
     c: Context,
     body: { url: string; quoteId?: string | undefined },
   ): Promise<
@@ -1571,7 +1589,7 @@ export function createApp(
     if (kept && keptMatches) {
       source = kept.doc ? kept : await reparse(kept, c.req.raw.signal);
       // The time a host takes to answer 402 and be confirmed is not the download's age.
-      quotedDownloads.touch(reader, body.url);
+      quotedDownloads.touch(reader, body.url, kept);
     } else {
       // Nothing kept for this reader and address, or it is not what the quote priced.
       const measured = await measure(body.url, c.req.raw.signal);
@@ -1657,6 +1675,22 @@ export function createApp(
       saved,
       savedResolved: options.backgroundScope !== undefined,
     };
+  }
+
+  /**
+   * One at a time per reader and address, from the lookup of kept bytes through the host's
+   * admission answer. Otherwise two requests could each measure, or a quote could replace the
+   * kept bytes while an admission is waiting on the host, and the quote the reader sees last
+   * would be bound to bytes that are no longer kept. Released before the ingest itself runs.
+   */
+  function admitIngest(
+    c: Context,
+    body: { url: string; quoteId?: string | undefined },
+  ): ReturnType<typeof admitIngestUnlocked> {
+    if (!hooked || !estimating) return admitIngestUnlocked(c, body);
+    return downloadLock.run(lockKey(readerFor(c), body.url), () =>
+      admitIngestUnlocked(c, body),
+    );
   }
 
   app.post('/api/ingest', async (c) => {

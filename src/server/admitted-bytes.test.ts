@@ -19,6 +19,21 @@ import { DOWNLOAD_PER_READER_CAP } from './quotes.js';
 const url = 'https://govinfo.gov/a.txt';
 let env: PipelineEnv;
 let downloads: string[];
+/** Lets a test hold a download open; called as each download starts. */
+let fetchGate: (() => Promise<void>) | undefined;
+
+const deferred = () => {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+};
+/** Long enough for any request that is not waiting on something to reach where it will wait. */
+const flush = async () => {
+  for (let i = 0; i < 10; i++)
+    await new Promise((resolve) => setImmediate(resolve));
+};
 
 const auth: ExternalAuth = {
   middleware: async (c, next) =>
@@ -37,8 +52,10 @@ beforeEach(async () => {
   const real = env.runtime.fetcher;
   let n = 0;
   downloads = [];
+  fetchGate = undefined;
   env.runtime.fetcher = async (u, o) => {
     downloads.push(u);
+    await fetchGate?.();
     const page = await real(u, o);
     // A fixed-length counter in a trailing line: the bytes differ, the bill's size does not.
     const suffix = new TextEncoder().encode(String(++n).padStart(6, '0'));
@@ -312,6 +329,86 @@ describe("a bill whose parse is too big for a reader's share", () => {
     const res = await post(a, '/api/ingest', { url });
     expect(res.status).toBe(402);
     expect(await env.registry.list()).toEqual([]);
+  });
+});
+
+describe('requests of one reader for one address are ordered', () => {
+  const refuseFirst =
+    (seen: string[]): AppOptions['admission'] =>
+    (_c, job) => {
+      seen.push(job.docId ?? '');
+      return Promise.resolve(
+        seen.length === 1
+          ? {
+              allow: false as const,
+              status: 402 as const,
+              quote: { quoteId: 'host-q', display: '$1.00' },
+            }
+          : { allow: true as const, ref: 'ref' },
+      );
+    };
+
+  test('two ingests that both miss do not download twice: the second reads the first bytes', async () => {
+    const gates: ReturnType<typeof deferred>[] = [];
+    fetchGate = () => {
+      const gate = deferred();
+      gates.push(gate);
+      return gate.promise;
+    };
+    const seen: string[] = [];
+    const a = hosted({ admission: refuseFirst(seen) });
+    const one = post(a, '/api/ingest', { url, quoteId: 'host-q' });
+    const two = post(a, '/api/ingest', { url, quoteId: 'host-q' });
+    await flush();
+    // The second waits behind the first instead of starting a download of its own.
+    expect(gates).toHaveLength(1);
+    gates[0]?.resolve();
+    const results = await Promise.all([one, two]);
+    await Promise.all(results.map((r) => r.text()));
+    expect(results.map((r) => r.status).sort()).toEqual([200, 402]);
+    expect(seen[1]).toBe(seen[0]);
+    expect(downloads).toHaveLength(1);
+  });
+
+  test('a quote cannot replace the kept bytes while an admission is re-parsing them', async () => {
+    const ingestModule = await import('../core/pipeline/ingest.js');
+    const realParse = ingestModule.parseDocument;
+    const reparseGate = deferred();
+    const reparseEntered = deferred();
+    vi.spyOn(ingestModule, 'parseDocument').mockImplementationOnce(
+      async (...args: Parameters<typeof realParse>) => {
+        reparseEntered.resolve();
+        await reparseGate.promise;
+        return realParse(...args);
+      },
+    );
+    const seen: string[] = [];
+    // Share small enough that only the bytes are kept, so admission has to re-parse them.
+    const a = hosted({
+      quote: { downloadBudgetBytes: 8_000 },
+      admission: refuseFirst(seen),
+    });
+    const first = (await (await post(a, '/api/quote', { url })).json()) as {
+      facts: { contentHash: string };
+    };
+    const admission = post(a, '/api/ingest', { url, quoteId: 'host-q' });
+    // The quote is sent while the admission is paused inside its re-parse.
+    await reparseEntered.promise;
+    const second = post(a, '/api/quote', { url });
+    await flush();
+    // The new quote waits behind the admission instead of downloading and replacing the entry.
+    expect(downloads).toHaveLength(1);
+    reparseGate.resolve();
+    const refused = await admission;
+    expect(refused.status).toBe(402);
+    expect(seen[0]).toBe(first.facts.contentHash);
+    const latest = (await (await second).json()) as {
+      facts: { contentHash: string };
+    };
+    expect(latest.facts.contentHash).not.toBe(first.facts.contentHash);
+    // What the reader last saw (the second quote) is what is kept for the next admission.
+    await (await post(a, '/api/ingest', { url, quoteId: 'host-q' })).text();
+    expect(seen[1]).toBe(latest.facts.contentHash);
   });
 });
 
