@@ -122,10 +122,11 @@ it('sends API version 2026-10-21 with a bearer key and never a sampling paramete
 });
 
 it('keeps its own key when ANTHROPIC_CUSTOM_HEADERS carries other credentials', async () => {
-  // Header names in both cases: the environment's lines are parsed as written.
+  // The environment's lines are parsed as written, so each name can appear in several cases.
   for (const env of [
     'Authorization: Bearer stale-token\nX-Api-Key: other-key',
     'authorization: Bearer stale-token\nx-api-key: other-key',
+    'Authorization: Bearer stale-1\nauthorization: Bearer stale-2\nAUTHORIZATION: Bearer stale-3\nX-Api-Key: other-1\nx-api-key: other-2',
   ]) {
     vi.stubEnv('ANTHROPIC_CUSTOM_HEADERS', env);
     try {

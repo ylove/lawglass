@@ -41,6 +41,14 @@ export class AnthropicProvider implements LlmProvider {
   readonly id = 'anthropic' as const;
   readonly model: string;
   private readonly client: Anthropic;
+  /**
+   * Sent with every request. The SDK also reads ANTHROPIC_CUSTOM_HEADERS from the environment
+   * (often set for a Claude Code gateway) and applies it after authentication, so an
+   * `Authorization` line there, in any letter case, would replace this key and an `X-Api-Key` line
+   * would add a second credential. Per-request headers are applied last, after the client's
+   * defaults and the environment's, so they pin the one credential whatever the case.
+   */
+  private readonly credentialHeaders: Record<string, string | null>;
 
   constructor(
     private readonly config: ProviderConfig,
@@ -48,13 +56,13 @@ export class AnthropicProvider implements LlmProvider {
   ) {
     this.model = config.model;
     const apiKey = requireKey(config.apiKey);
+    this.credentialHeaders = {
+      Authorization: `Bearer ${apiKey}`,
+      'X-Api-Key': null,
+    };
     this.client = new Anthropic({
       apiKey,
       authToken: null,
-      // The SDK also reads ANTHROPIC_CUSTOM_HEADERS from the environment (often set for a Claude
-      // Code gateway) and applies it after authentication, so an `Authorization` line there would
-      // replace this key. Headers given here win over the environment's: pin the one credential.
-      defaultHeaders: { Authorization: `Bearer ${apiKey}`, 'X-Api-Key': null },
       baseURL: 'https://api.anthropic.com',
       timeout: config.timeoutMs,
       maxRetries: 0,
@@ -83,7 +91,7 @@ export class AnthropicProvider implements LlmProvider {
           // The generic `stream()` parameter hides an excess property from the type check.
           ...(req.effort ? { output_config: { effort: req.effort } } : {}),
         },
-        { signal },
+        { signal, headers: this.credentialHeaders },
       );
       for await (const event of stream) {
         if (event.type === 'message_start')
@@ -141,7 +149,7 @@ export class AnthropicProvider implements LlmProvider {
             ...(req.effort ? { effort: req.effort } : {}),
           },
         },
-        { signal },
+        { signal, headers: this.credentialHeaders },
       );
       // The API billed this call whatever happens next; failures below carry its usage.
       const usage = anthropicUsage(message.usage);
