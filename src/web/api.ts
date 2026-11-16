@@ -98,6 +98,19 @@ export const REQUEST_TIMEOUT_MS = 30_000;
  * ordinary request.
  */
 export const SUMMARY_TIMEOUT_MS = 40_000;
+/**
+ * Give up waiting after four minutes; the "Summarize this bill" chip still works. The summary is
+ * cached only once its story is done, so this covers writing the summary and its plain-language
+ * rewrite on a long bill, then up to two story attempts of a minute each on the server
+ * (`BACKGROUND_SCENARIO_TIMEOUT_MS`).
+ */
+export const SUMMARY_MAX_WAIT_MS = 240_000;
+/**
+ * A reader-requested example is drawn while the request waits: retrieval, then up to two model
+ * attempts of `SCENARIO_TIMEOUT_MS` (30 s) each on the server, the second only after a rejected
+ * reply. The deadline covers both attempts with room for the rest.
+ */
+export const SCENARIO_REQUEST_TIMEOUT_MS = 75_000;
 export const TIMED_OUT =
   'The server took too long to answer. Please try again.';
 
@@ -274,12 +287,17 @@ export function createHttpApi(options: HttpApiOptions = {}): ApiClient {
         Math.max(defaultTimeout, SUMMARY_TIMEOUT_MS),
       ),
     getScenario: (docId, req, signal) =>
-      request(`${docPath(docId)}/scenario`, ScenarioResponse, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(req),
-        ...(signal ? { signal } : {}),
-      }),
+      request(
+        `${docPath(docId)}/scenario`,
+        ScenarioResponse,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(req),
+          ...(signal ? { signal } : {}),
+        },
+        Math.max(defaultTimeout, SCENARIO_REQUEST_TIMEOUT_MS),
+      ),
     getSection: (docId, sectionId) =>
       request(
         `${docPath(docId)}/sections/${encodeURIComponent(sectionId)}`,

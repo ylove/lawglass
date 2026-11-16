@@ -114,6 +114,74 @@ describe('createScenario', () => {
     ).rejects.toMatchObject({ name: 'AbortError' });
   });
 
+  it('gives a retry its own time budget (#408)', async () => {
+    // Each AbortSignal.timeout is a controller the test fires, so "the budget ran out" is exact.
+    const budgets: { ms: number; controller: AbortController }[] = [];
+    const timeout = vi
+      .spyOn(AbortSignal, 'timeout')
+      .mockImplementation((ms: number) => {
+        const controller = new AbortController();
+        budgets.push({ ms, controller });
+        return controller.signal;
+      });
+    try {
+      const excerpts = scenarioExcerpts();
+      const good = exampleScenario(personaName(excerpts));
+      const scripted = providerFor(good);
+      const seen: (AbortSignal | undefined)[] = [];
+      const provider: LlmProvider = {
+        id: scripted.id,
+        model: scripted.model,
+        streamText: scripted.streamText.bind(scripted),
+        generateObject<T>(request: ObjectRequest<T>) {
+          seen.push(request.signal);
+          if (seen.length === 1) {
+            // The rejected reply arrives just as the first attempt's budget runs out.
+            budgets[0]!.controller.abort(
+              new DOMException('timed out', 'TimeoutError'),
+            );
+            return Promise.reject(new AppError('PROVIDER_BAD_OUTPUT'));
+          }
+          return scripted.generateObject(request);
+        },
+      };
+      const result = await createScenario(
+        { provider, excerpts },
+        { attemptTimeoutMs: 30_000 },
+      );
+      expect(result.scenario).toEqual(good);
+      expect(budgets.map((b) => b.ms)).toEqual([30_000, 30_000]);
+      expect(seen[1]).not.toBe(seen[0]);
+      expect(seen[1]?.aborted).toBe(false);
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
+  it('cuts an attempt off at its budget, and the caller can still cancel it', async () => {
+    const hang = (request: ObjectRequest<unknown>) =>
+      new Promise<never>((_, reject) => {
+        request.signal?.addEventListener('abort', () => {
+          reject(new DOMException('aborted', 'AbortError'));
+        });
+      });
+    const provider = providerFor(exampleScenario());
+    vi.spyOn(provider, 'generateObject').mockImplementation(hang);
+    await expect(
+      createScenario(
+        { provider, excerpts: scenarioExcerpts() },
+        { attemptTimeoutMs: 20 },
+      ),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+    const controller = new AbortController();
+    const pending = createScenario(
+      { provider, excerpts: scenarioExcerpts(), signal: controller.signal },
+      { attemptTimeoutMs: 60_000 },
+    );
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   it('a retrieved adversarial tax bill with no rates yields qualitative effects or a dropped scenario', async () => {
     const backend = new MemoryBackend();
     const bill = noRateBill();
