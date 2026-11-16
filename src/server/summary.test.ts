@@ -28,6 +28,14 @@ import {
   waitForSummary,
 } from './summary.js';
 import { EXCERPT_FILTER_VERSION } from '../core/answer/excerpt-filter.js';
+import {
+  BACKGROUND_SCENARIO_TIMEOUT_MS,
+  SCENARIO_TIMEOUT_MS,
+} from '../core/scenario/attach.js';
+import {
+  SCENARIO_REQUEST_TIMEOUT_MS,
+  SUMMARY_MAX_WAIT_MS,
+} from '../web/api.js';
 import { REGENERATION_VERSION } from '../core/answer/regenerate.js';
 import { forgetDocument } from '../core/answer/context.js';
 import { AnswerCache } from '../core/answer-cache.js';
@@ -243,6 +251,34 @@ describe('GET /api/docs/:docId/summary', () => {
     // And the cached copy keeps it, with no second scenario call.
     expect((await summary(a, docId)).answer?.scenario).toBeDefined();
     expect(provider.scenarioCalls).toBe(1);
+  });
+
+  test("the summary's story gets the background time budget (#408)", async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    try {
+      const provider = scenarioProvider(env.provider);
+      Object.assign(env.runtime, { answerProvider: provider });
+      const a = app();
+      const docId = await ingestDoc(a);
+      await summary(a, docId);
+      await settled(a, docId);
+      expect(provider.scenarioCalls).toBe(1);
+      expect(timeout).toHaveBeenCalledWith(BACKGROUND_SCENARIO_TIMEOUT_MS);
+    } finally {
+      timeout.mockRestore();
+    }
+  });
+
+  test("the web client's waits cover the server's story budgets (#408)", () => {
+    // The panel waits for the summary, which is cached only after its story's two attempts;
+    // allow at least two more minutes for the summary and its rewrite.
+    expect(SUMMARY_MAX_WAIT_MS).toBeGreaterThanOrEqual(
+      2 * BACKGROUND_SCENARIO_TIMEOUT_MS + 120_000,
+    );
+    // A requested example holds its request open for up to two attempts.
+    expect(SCENARIO_REQUEST_TIMEOUT_MS).toBeGreaterThan(
+      2 * SCENARIO_TIMEOUT_MS,
+    );
   });
 
   test('the cache key covers the scenario prompt: a changed version is a miss', async () => {

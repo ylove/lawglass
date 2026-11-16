@@ -220,7 +220,7 @@ export async function runBreakdown(
 // Per-section examples
 // ---------------------------------------------------------------------------------------------
 
-/** The reader sees a loader for an example, so it may take longer than an automatic one (12 s). */
+/** Per attempt, like `SCENARIO_TIMEOUT_MS`: the reader sees a loader for an example. */
 export const SECTION_EXAMPLE_TIMEOUT_MS = 30_000;
 
 export interface SectionExampleDeps {

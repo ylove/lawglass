@@ -19,6 +19,7 @@ import {
   type AnswerCacheKey,
 } from '../core/answer-cache.js';
 import { SUMMARY_PROMPT_VERSION } from '../core/chip-summary.js';
+import { BACKGROUND_SCENARIO_TIMEOUT_MS } from '../core/scenario/attach.js';
 import { SCENARIO_PROMPT_VERSION } from '../core/scenario/generate.js';
 import type { SummaryResponse } from '../core/model/index.js';
 import { ask } from '../core/pipeline/index.js';
@@ -202,7 +203,10 @@ export function createSummaryService(
             readingLevel: { background: true },
             log: options.log,
             // Not deferred: a single-subject bill's cached summary carries its scenario.
-            scenario: { enabled: true },
+            scenario: {
+              enabled: true,
+              timeoutMs: BACKGROUND_SCENARIO_TIMEOUT_MS,
+            },
           },
         );
         return result.answer;

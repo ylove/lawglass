@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { MockProvider } from '../llm/mock.js';
 import {
   type LlmProvider,
@@ -8,7 +8,11 @@ import {
 } from '../model/index.js';
 import { scenarioProvider } from '../../../tests/support/scenario-provider.js';
 import { scenarioExcerpts } from '../../../tests/synth/scenario.js';
-import { addScenarioUsage, attachScenario } from './attach.js';
+import {
+  addScenarioUsage,
+  attachScenario,
+  SCENARIO_TIMEOUT_MS,
+} from './attach.js';
 
 function provider() {
   return scenarioProvider(new MockProvider());
@@ -63,6 +67,23 @@ describe('attachScenario', () => {
       timeoutMs: 20,
     });
     expect(result.scenario).toBeUndefined();
+  });
+
+  it('bounds each attempt by SCENARIO_TIMEOUT_MS unless told otherwise', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    try {
+      await attachScenario({ provider: provider(), hits: scenarioExcerpts() });
+      expect(timeout).toHaveBeenCalledWith(SCENARIO_TIMEOUT_MS);
+      timeout.mockClear();
+      await attachScenario({
+        provider: provider(),
+        hits: scenarioExcerpts(),
+        timeoutMs: 45_000,
+      });
+      expect(timeout).toHaveBeenCalledWith(45_000);
+    } finally {
+      timeout.mockRestore();
+    }
   });
 
   it('stops when the caller aborts', async () => {

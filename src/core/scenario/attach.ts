@@ -16,8 +16,24 @@ import {
 } from '../model/index.js';
 import { createScenario } from './index.js';
 
-/** A story is optional and arrives after `done`, but a hung provider should still be cut off. */
-export const SCENARIO_TIMEOUT_MS = 12_000;
+/**
+ * Per attempt (a rejected reply gets one retry, with its own budget). A story is optional and
+ * arrives after `done`, but a hung provider should still be cut off.
+ *
+ * Sized for models that think by default (Claude Haiku 5.5 and Sonnet 5.5 do, and thinking
+ * counts toward `maxTokens`). Measured for #408: a story call on a small bill took about 7 s on
+ * Haiku, about 1,000 of its output tokens being thinking. In the 2026-11-16 calibration the old
+ * 12 s budget, shared by both attempts, cut off 4 of 6 summary stories, each a retry after a
+ * rejected reply or a whole-bill call on Sonnet; section examples, with 30 s, lost 1 call of 26
+ * on Sonnet. Output is capped at 2,000 tokens, so an attempt's length is bounded either way.
+ */
+export const SCENARIO_TIMEOUT_MS = 30_000;
+/**
+ * A summary's story is drawn in the background, with no loader on screen, and the summary is
+ * cached with whatever story it got: a cut-off story stays missing for every reader. Whole-bill
+ * prompts (75,000 input tokens on S. 1582) also take longer to read than excerpts.
+ */
+export const BACKGROUND_SCENARIO_TIMEOUT_MS = 60_000;
 /** Excerpts shown to the scenario model; bounds the prompt for chips with many hits. */
 export const MAX_SCENARIO_EXCERPTS = 8;
 
@@ -44,6 +60,7 @@ export interface AttachScenarioInput {
    */
   captureError?: boolean | undefined;
   signal?: AbortSignal | undefined;
+  /** Bounds each attempt; defaults to `SCENARIO_TIMEOUT_MS`. */
   timeoutMs?: number | undefined;
 }
 
@@ -86,23 +103,22 @@ export async function attachScenario(
   const hits = input.whole ? live : ranked.slice(0, MAX_SCENARIO_EXCERPTS);
   if (hits.length === 0) return { usage };
 
-  const timeout = AbortSignal.timeout(input.timeoutMs ?? SCENARIO_TIMEOUT_MS);
-  const signal = input.signal
-    ? AbortSignal.any([input.signal, timeout])
-    : timeout;
   try {
-    const { scenario } = await createScenario({
-      provider: counting,
-      excerpts: hits,
-      question: input.question,
-      ...(input.subject === undefined
-        ? {}
-        : { subject: input.subject, docId: input.docId ?? '' }),
-      ...(input.focusSectionId === undefined
-        ? {}
-        : { focusSectionId: input.focusSectionId }),
-      signal,
-    });
+    const { scenario } = await createScenario(
+      {
+        provider: counting,
+        excerpts: hits,
+        question: input.question,
+        ...(input.subject === undefined
+          ? {}
+          : { subject: input.subject, docId: input.docId ?? '' }),
+        ...(input.focusSectionId === undefined
+          ? {}
+          : { focusSectionId: input.focusSectionId }),
+        signal: input.signal,
+      },
+      { attemptTimeoutMs: input.timeoutMs ?? SCENARIO_TIMEOUT_MS },
+    );
     return scenario ? { scenario, usage } : { usage };
   } catch (error) {
     // Deliberately silent by default: the error may carry provider text, and the answer stands

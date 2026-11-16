@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import type { AnswerResult, DocDetail } from '../../core/model/index.js';
-import type { ApiClient } from '../api.js';
+import { SUMMARY_MAX_WAIT_MS, type ApiClient } from '../api.js';
 import { linkifyGov } from '../linkify.js';
 import { AnswerText, type OpenCitation } from '../AnswerText.js';
 import { PicturePanels } from './PicturePanels.js';
@@ -9,8 +9,7 @@ import { ScenarioStrip } from './ScenarioStrip.js';
 
 /** The server starts the run on the first look, so this is how often we ask again. */
 export const SUMMARY_POLL_MS = 2000;
-/** Give up waiting after two minutes; the "Summarize this bill" chip still works. */
-export const SUMMARY_MAX_WAIT_MS = 120_000;
+export { SUMMARY_MAX_WAIT_MS };
 
 type State =
   | { kind: 'loading' }

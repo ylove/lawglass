@@ -3,7 +3,11 @@ import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import { z } from 'zod';
-import { anySignal, createHttpApi } from './api.js';
+import {
+  anySignal,
+  createHttpApi,
+  SCENARIO_REQUEST_TIMEOUT_MS,
+} from './api.js';
 import { CitationDrawer } from './CitationDrawer.js';
 import { App } from './App.js';
 import { DocumentView } from './DocumentView.js';
@@ -57,6 +61,19 @@ describe('request timeouts', () => {
     await vi.advanceTimersByTimeAsync(35_000);
     expect(settled).toBe(false);
     await vi.advanceTimersByTimeAsync(10_000);
+    expect(settled).toBe(true);
+  });
+
+  test('a requested example waits for both server attempts (#408)', async () => {
+    // Two 30 s attempts on the server (SCENARIO_TIMEOUT_MS; kept in step by summary.test.ts).
+    const api = createHttpApi({ fetchImpl: hangingFetch });
+    let settled = false;
+    void api
+      .getScenario('d1', { subject: 'a renter' })
+      .catch(() => (settled = true));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(SCENARIO_REQUEST_TIMEOUT_MS - 60_000);
     expect(settled).toBe(true);
   });
 
