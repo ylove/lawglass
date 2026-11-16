@@ -7,13 +7,24 @@ import { chooseBreakdownUnits } from '../breakdown/units.js';
 import { unitCapOf, type BreakdownMaxUnits } from '../breakdown/coverage.js';
 import { UNIT_TOKEN_BUDGET } from '../breakdown/context.js';
 import { buildOutline, chooseMapUnits } from '../chip-summary.js';
-import { sectionText, walkSections, type Section } from '../model/index.js';
+import {
+  sectionText,
+  walkSections,
+  type ReferenceText,
+  type Section,
+} from '../model/index.js';
 import { classifyBill } from '../scenario/detect.js';
+import { wholePromptCharacters } from './prompt-size.js';
 
 export interface BillFactsOptions {
   /** The same value as the server's `breakdownMaxUnits`: a count, or `'all'`. Default 30. */
   breakdownUnitCap?: BreakdownMaxUnits;
   wholeBillMaxTokens?: number;
+  /**
+   * Other law's text read for the document (`doc.references`). Whole-bill mode shows all of
+   * it after the bill, so it counts toward the prompt. Absent before enrichment.
+   */
+  references?: readonly ReferenceText[] | undefined;
 }
 
 export interface BillFacts {
@@ -22,6 +33,11 @@ export interface BillFacts {
   characters: number;
   estimatedTokens: number;
   mode: ContextMode;
+  /**
+   * Characters of the `<part>` blocks (bill and references) the whole-bill prompt would hold,
+   * counted by building them. Zero unless `mode` is `whole`: other modes never send them.
+   */
+  wholePromptCharacters: number;
   breakdownUnits: number;
   omittedBreakdownUnits: number;
   mapUnits: number;
@@ -52,6 +68,7 @@ export function billFacts(
     0,
   );
   const tokens = Math.ceil(characters / 4);
+  const mode = contextMode(tokens, budget);
   const map = chooseMapUnits(sections);
   const breakdown = chooseBreakdownUnits(
     sections,
@@ -68,7 +85,10 @@ export function billFacts(
     sectionCount: all.length,
     characters,
     estimatedTokens: tokens,
-    mode: contextMode(tokens, budget),
+    mode,
+    // Chunking is only worth doing when the prompt will really carry the whole bill.
+    wholePromptCharacters:
+      mode === 'whole' ? wholePromptCharacters(sections, opts.references) : 0,
     breakdownUnits: breakdown.units.length,
     omittedBreakdownUnits: breakdown.omitted,
     mapUnits: map.units.length,

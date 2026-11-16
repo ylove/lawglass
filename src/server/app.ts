@@ -877,6 +877,7 @@ export function createApp(
     const doc = await runtime.registry.getDocument(docId);
     const facts = billFacts(doc.sections, {
       breakdownUnitCap: coverage.breakdownUnitCap,
+      references: doc.references,
     });
     if (factsCache.size >= FACTS_CACHE_CAP) evictOldest(factsCache);
     factsCache.set(docId, facts);
@@ -1399,6 +1400,7 @@ export function createApp(
     }
     const facts = billFacts(doc.sections, {
       breakdownUnitCap: coverage.breakdownUnitCap,
+      references: doc.references,
     });
     return {
       doc,

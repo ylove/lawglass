@@ -141,7 +141,7 @@ function overlapWindow(text: string): string {
  * Every chunk, and so every section id, stays present and citable. Token counts shrink in
  * proportion, so the budget decision counts the de-duplicated size.
  */
-function dropOverlap(hits: readonly SearchHit[]): SearchHit[] {
+export function dropOverlap(hits: readonly SearchHit[]): SearchHit[] {
   return hits.map((hit, i) => {
     const prev = hits[i - 1]?.chunk;
     const chunk = hit.chunk;
