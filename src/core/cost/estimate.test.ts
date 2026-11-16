@@ -252,22 +252,30 @@ it('prices the high bound for the real prompt size, including the long-context t
 /**
  * The whole-bill input forecast against what the providers reported in the calibration run
  * (#385, docs/calibration.md): input tokens per call, cache reads and writes included, the same
- * for Haiku and Sonnet. The bills are synthetic trees with the real section counts, live
- * characters and (to within a few percent) prompt size, because unit tests use no fixtures or
- * network. Before #410 the high bound ran up to 1.87x low on these shapes.
+ * for Haiku and Sonnet. `wholePrompt` holds the character counts `billFacts` produced for the
+ * real bills (fetched, chunked, enriched, with the U.S. Code references the ingest read), so
+ * this suite needs no fixtures or network; `prompt-size.test.ts` checks that those counts are
+ * what the pipeline sends. Before #410 the high bound ran up to 1.87x low on these bills.
+ * The shapes only supply unit counts for batching.
  */
-const NJ_SHAPE: BillShape = {
+const NJ_SHAPE_UNITS: BillShape = {
   divisions: 1,
   titles: 1,
   sectionsPerTitle: 1,
   sectionChars: 2003,
   headingChars: 30,
 };
+
 const CALIBRATED = [
   {
-    name: 'S. 1582 (684 sections)',
+    name: 'S. 1582 (684 sections, 6 references)',
     shape: S1582_SHAPE,
-    promptCharacters: 195_113,
+    wholePrompt: {
+      summary: 209_210,
+      breakdown: 198_263,
+      scenario: 200_437,
+      question: 209_210,
+    },
     measured: {
       summary: 76_133,
       breakdown: 73_513,
@@ -278,7 +286,14 @@ const CALIBRATED = [
   {
     name: 'Ohio S.B. 113 (101 sections)',
     shape: OHIO_SHAPE,
-    promptCharacters: 31_145,
+    // Its question figure is the worst case, a question about changes; the two questions
+    // measured were ordinary ones, which send the summary-sized prompt.
+    wholePrompt: {
+      summary: 31_160,
+      breakdown: 31_160,
+      scenario: 31_432,
+      question: 39_933,
+    },
     measured: {
       summary: 13_785,
       breakdown: 14_452,
@@ -288,8 +303,13 @@ const CALIBRATED = [
   },
   {
     name: 'NJ S. 1000 (3 sections)',
-    shape: NJ_SHAPE,
-    promptCharacters: 2486,
+    shape: NJ_SHAPE_UNITS,
+    wholePrompt: {
+      summary: 2582,
+      breakdown: 2582,
+      scenario: 2306,
+      question: 2840,
+    },
     measured: {
       summary: 2917,
       breakdown: 3504,
@@ -298,12 +318,13 @@ const CALIBRATED = [
     },
   },
 ] as const;
-
 describe.each(CALIBRATED)('whole-bill input forecast: $name', (bill) => {
   // The real bills were single-subject, so the scenario ran; a synthetic tree's heading words
   // decide that differently, and this suite is about sizing, not classification.
   const facts = {
     ...billFacts(shapedBill(bill.shape)),
+    mode: 'whole' as const,
+    wholePrompt: bill.wholePrompt,
     singleSubject: true,
   };
   const perCall = (t: { inputTokens: number; calls: number }): number =>
@@ -311,15 +332,6 @@ describe.each(CALIBRATED)('whole-bill input forecast: $name', (bill) => {
   for (const answerModel of ['claude-haiku-5-5', 'claude-sonnet-5-5']) {
     const estimate = estimateBill(facts, { ...plan, answerModel });
     const question = estimateQuestion(facts, {}, { answerModel });
-    it(`is shaped like the real prompt (${answerModel})`, () => {
-      expect(facts.mode).toBe('whole');
-      expect(
-        facts.wholePromptCharacters / bill.promptCharacters,
-      ).toBeGreaterThan(0.93);
-      expect(facts.wholePromptCharacters / bill.promptCharacters).toBeLessThan(
-        1.07,
-      );
-    });
     it(`bounds the measured input per call from above (${answerModel})`, () => {
       expect(perCall(estimate.features.summary.high)).toBeGreaterThanOrEqual(
         bill.measured.summary,
@@ -344,9 +356,33 @@ describe.each(CALIBRATED)('whole-bill input forecast: $name', (bill) => {
       expect(
         perCall(estimate.features.summaryScenario.low),
       ).toBeLessThanOrEqual(bill.measured.scenario);
+      // The question's low is the plain prompt (the summary's size), as measured.
       expect(perCall(question.low)).toBeLessThanOrEqual(bill.measured.question);
     });
   }
+});
+
+it('prices each feature from its own prompt size', () => {
+  const base = billFacts(shapedBill(S1582_SHAPE));
+  const facts = {
+    ...base,
+    mode: 'whole' as const,
+    singleSubject: true,
+    wholePrompt: {
+      summary: 240_000,
+      breakdown: 120_000,
+      scenario: 60_000,
+      question: 300_000,
+    },
+  };
+  const { features } = estimateBill(facts, plan);
+  const high = (f: { high: { inputTokens: number; calls: number } }): number =>
+    f.high.inputTokens / f.high.calls;
+  expect(high(features.summary)).toBeGreaterThan(high(features.breakdown));
+  expect(high(features.breakdown)).toBeGreaterThan(
+    high(features.summaryScenario),
+  );
+  expect(high(estimateQuestion(facts))).toBeGreaterThan(high(features.summary));
 });
 
 it('does not hold the high bound to the calibration shapes alone: markup-heavy bills cost more per character', () => {
@@ -354,6 +390,7 @@ it('does not hold the high bound to the calibration shapes alone: markup-heavy b
   const sparse = billFacts(shapedBill({ ...S1582_SHAPE, headingChars: 20 }));
   const high = (f: typeof dense) =>
     estimateBill(f, plan).features.summary.high.inputTokens;
+  expect(dense.mode).toBe('whole');
   expect(dense.characters).toBeGreaterThan(sparse.characters * 0.99);
   expect(high(dense)).toBeGreaterThan(high(sparse) * 1.3);
 });

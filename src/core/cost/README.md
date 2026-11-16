@@ -31,13 +31,19 @@ is priced as a write. Excerpt-mode contexts are multiplied by a prompt markup (1
 high) for the escaped `<excerpt>` tags, ids and page/line markers that chars/4 does not see
 (measured at about 1.16 on a 380K-character bill).
 
-Whole-bill contexts (summary, breakdown, summary scenario and questions in whole mode) are not
-scaled that way. `billFacts` builds the real `<part>` blocks (`prompt-size.ts` runs the chunker
-and the answer pipeline's own formatter, so markup per part follows the heading path, ids and
-page/line markers of that bill) and reports `wholePromptCharacters`, including any
-`references` text. The estimator divides that by a characters-per-token figure measured in the
-calibration run: 2.8 for the low bound and 2.4 for the high bound (derivation in `estimate.ts`;
-the old chars/4 times 1.25 ran up to 1.87x low on bills with many short sections, #410). Long-context
+Whole-bill contexts are not scaled that way. `billFacts` chunks and enriches the sections as
+ingest does (definitions become chunks of their own), decides whole versus excerpts with the
+runtime's own helpers (`billBudget`, `exceedsScanGuard`, `hitTokens`, reference tokens
+reserved), and reports `wholePrompt`: the characters each feature's bill block holds, counted
+by building it with the same code the feature runs. Summary and model chips send live parts plus
+every reference; breakdown sends live parts only; the summary scenario sends live parts as
+excerpts; a question's high bound is the worst case, a question about changes with struck text
+and inline markers. Struck text prices only that last case. Pass the parsed document as
+`document` so metadata, definitions and references shape the count. Ingest's chunk and time
+limits are not applied, so an indexed document can always be sized. The estimator divides the
+characters by a characters-per-token figure measured in the calibration run: 2.9 for the low
+bound and 2.4 for the high bound (derivation in `estimate.ts`; the old chars/4 times 1.25 ran
+up to 1.87x low on bills with many short sections, #410). Long-context
 pricing tiers apply when the real prompt crosses them. Use `cold` to charge a write on every call, or `none`
 for providers without prompt caching. Summary scenarios and examples currently send their
 context uncached. Summary and breakdown picture jobs batch separately and send generated

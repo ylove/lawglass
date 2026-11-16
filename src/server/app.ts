@@ -4,7 +4,10 @@
  * public-mode policy and error mapping.
  */
 import { randomUUID } from 'node:crypto';
-import { deleteIndexedDocument } from '../core/answer/context.js';
+import {
+  deleteIndexedDocument,
+  wholeBillBudget,
+} from '../core/answer/context.js';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
@@ -877,7 +880,9 @@ export function createApp(
     const doc = await runtime.registry.getDocument(docId);
     const facts = billFacts(doc.sections, {
       breakdownUnitCap: coverage.breakdownUnitCap,
-      references: doc.references,
+      document: doc,
+      // The budget the runtime's own whole-bill decision reads.
+      wholeBillMaxTokens: wholeBillBudget(),
     });
     if (factsCache.size >= FACTS_CACHE_CAP) evictOldest(factsCache);
     factsCache.set(docId, facts);
@@ -1400,7 +1405,9 @@ export function createApp(
     }
     const facts = billFacts(doc.sections, {
       breakdownUnitCap: coverage.breakdownUnitCap,
-      references: doc.references,
+      document: doc,
+      // The budget the runtime's own whole-bill decision reads.
+      wholeBillMaxTokens: wholeBillBudget(),
     });
     return {
       doc,

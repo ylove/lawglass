@@ -1,112 +1,360 @@
-import { describe, expect, it } from 'vitest';
-import { dropOverlap } from '../answer/context.js';
-import { buildPrompt } from '../answer/prompt.js';
+/**
+ * The forecast sizes of each whole-bill prompt against the prompt the real pipeline sends.
+ *
+ * The documents here are indexed the way ingest indexes them (chunked, then enriched, so
+ * definitions are split into chunks of their own) and run through the real `ask`, breakdown
+ * and scenario code with a recording provider. What the provider receives is measured and
+ * compared with `billFacts(...).wholePrompt`, so a change to a prompt, to chunking or to the
+ * selection rules cannot leave the estimator behind.
+ */
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { MemoryBackend } from '../../../tests/contracts/memory-backend.js';
+import { ScriptedProvider } from '../../../tests/contracts/scripted-provider.js';
+import { scenarioProvider } from '../../../tests/support/scenario-provider.js';
+import { shapedBill } from '../../../tests/synth/bill-shape.js';
+import { envVar } from '../brand.js';
+import { documentContext } from '../answer/context.js';
+import { referenceTokens } from '../answer/references.js';
 import { chunkDocument } from '../chunk/index.js';
-import { EMPTY_METADATA, type ReferenceText } from '../model/index.js';
-import { makeSectionedText } from '../../../tests/synth/text.js';
-import { S1582_SHAPE, shapedBill } from '../../../tests/synth/bill-shape.js';
-import { wholePromptCharacters } from './prompt-size.js';
+import { enrichDocument } from '../enrich/index.js';
+import {
+  EMPTY_METADATA,
+  type NormalizedDoc,
+  type ObjectRequest,
+  type ReferenceText,
+  type Section,
+  type TextRequest,
+} from '../model/index.js';
+import { ask } from '../pipeline/ask.js';
+import { runBreakdown } from '../pipeline/breakdown.js';
+import { runScenario } from '../pipeline/scenario.js';
+import { Registry } from '../registry.js';
+import { billFacts } from './facts.js';
+
+const DOC = 'c'.repeat(64);
 
 const reference: ReferenceText = {
   sectionId: 'ref:usc/15/6809',
   citation: '15 U.S.C. 6809',
   heading: '§6809. Definitions',
   sourceUrl: 'https://example.gov/usc/15/6809',
-  text: 'The term "nonpublic personal information" means <anything> & more.',
+  text: 'The term "nonpublic personal information" means <anything> & more. '.repeat(
+    20,
+  ),
+  terms: ['nonpublic personal information'],
   fetchedAt: '2026-01-01T00:00:00.000Z',
 };
 
-/** Builds the prompt the answer pipeline builds and returns its bill and reference blocks. */
-function realPartBlocks(
-  sections: ReturnType<typeof shapedBill>,
-  references: ReferenceText[] = [],
-): string {
-  const doc = {
-    docId: '0'.repeat(64),
-    sourceUrl: 'https://estimate.invalid/',
-    format: 'text' as const,
-    fetchedAt: '2000-01-01T00:00:00.000Z',
-    metadata: EMPTY_METADATA,
+/** Many short definitions in one section, which enrichment splits into chunks of their own. */
+function definitionsSection(count: number): Section {
+  const terms = Array.from(
+    { length: count },
+    (_, i) =>
+      `(${String(i + 1)}) The term "grant term ${String(i + 1)}" means a thing the program funds.`,
+  );
+  return {
+    id: 'division-a/title-9/sec-definitions',
+    num: '900',
+    heading: 'Definitions',
+    level: 3,
+    spans: [{ text: `In this Act:\n${terms.join('\n')}`, status: 'unchanged' }],
+    children: [],
+  };
+}
+
+/** A section whose text is partly struck and partly inserted. */
+function amendedSection(id: string, struckChars: number): Section {
+  return {
+    id,
+    num: id.slice(-3),
+    heading: 'Amended rule',
+    level: 3,
+    spans: [
+      { text: 'Subsection (b) is amended by striking ', status: 'unchanged' },
+      {
+        text: 'old wording of the rule '.repeat(struckChars / 24),
+        status: 'deleted',
+      },
+      { text: ' and inserting ', status: 'unchanged' },
+      { text: 'new wording of the rule', status: 'inserted' },
+      { text: '.', status: 'unchanged' },
+    ],
+    children: [],
+  };
+}
+
+function bill(options: { struckChars?: number } = {}): NormalizedDoc {
+  const sections = shapedBill({
+    divisions: 1,
+    titles: 2,
+    sectionsPerTitle: 6,
+    sectionChars: 300,
+    headingChars: 24,
+  });
+  const title = sections[0]?.children[0];
+  title?.children.push(
+    definitionsSection(40),
+    amendedSection(
+      'division-a/title-1/sec-amended-1',
+      options.struckChars ?? 2400,
+    ),
+    amendedSection(
+      'division-a/title-1/sec-amended-2',
+      options.struckChars ?? 2400,
+    ),
+  );
+  return {
+    docId: DOC,
+    sourceUrl: 'https://example.gov/bill.xml',
+    format: 'xml',
+    fetchedAt: '2026-10-26T00:00:00.000Z',
+    metadata: {
+      ...EMPTY_METADATA,
+      title: 'Garden grants',
+      billNumber: 'H.R. 1',
+    },
     sections,
     definitions: [],
     externalRefs: [],
+    references: [reference],
     warnings: [],
   };
-  const hits = dropOverlap(
-    chunkDocument(doc).map((chunk) => ({ chunk, score: 1 })),
-  );
-  const built = buildPrompt({
-    mode: 'whole',
-    question: 'q',
-    hits,
-    references,
-  });
-  if (typeof built.user === 'string')
-    throw new Error('Whole mode sends a cached first block.');
-  const first = built.user[0];
-  if (!first) throw new Error('Whole mode sends a cached first block.');
-  return first.text;
 }
 
-describe('wholePromptCharacters', () => {
-  it('counts the part blocks the real whole-bill prompt builder emits', () => {
-    // The wrappers around the parts are `<bill>\n` ... `\n</bill>\n` and the references pair;
-    // everything else, tags and attributes included, is what the forecast must see. If the
-    // prompt format grows markup, this fails with the builder rather than silently drifting.
-    const sections = shapedBill({
-      divisions: 1,
-      titles: 2,
-      sectionsPerTitle: 3,
-      sectionChars: 120,
-      headingChars: 30,
-    });
-    const text = realPartBlocks(sections);
-    const body = text.slice('<bill>\n'.length, -'\n</bill>\n'.length);
-    expect(wholePromptCharacters(sections)).toBe(body.length + 1);
+let dir: string;
+let backend: MemoryBackend;
+let registry: Registry;
+let provider: ScriptedProvider;
+
+/** Index a document the way ingest does, and register it. Returns the enriched document. */
+async function index(source: NormalizedDoc): Promise<NormalizedDoc> {
+  const enriched = enrichDocument(source, chunkDocument(source));
+  await backend.upsertChunks(source.docId, enriched.chunks);
+  await registry.add(enriched.doc, { label: 'bill', backend: 'local' });
+  return enriched.doc;
+}
+
+/** The cached first block of a whole-mode request: the bill, then any references. */
+function billBlockOf(request: TextRequest | ObjectRequest<unknown>): string {
+  const content =
+    'messages' in request ? request.messages[0]?.content : request.prompt;
+  if (content === undefined || typeof content === 'string')
+    throw new Error('Expected a prompt in parts.');
+  return content[0]?.text ?? '';
+}
+const textRequests = (): TextRequest[] =>
+  provider.calls.filter((c): c is TextRequest => 'messages' in c);
+
+beforeEach(async () => {
+  vi.stubEnv(envVar('WHOLE_BILL_MAX_TOKENS'), '100000');
+  dir = await mkdtemp(join(tmpdir(), 'prompt-size-'));
+  registry = new Registry(dir);
+  backend = new MemoryBackend();
+  provider = new ScriptedProvider({
+    reply: 'The grants fund gardens [S:division-a].',
   });
-  it('counts reference blocks after the bill, escaped like the builder escapes them', () => {
-    const sections = shapedBill({
-      divisions: 1,
-      titles: 1,
-      sectionsPerTitle: 2,
-      sectionChars: 100,
-      headingChars: 20,
+});
+afterEach(async () => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+  await rm(dir, { recursive: true, force: true });
+});
+
+describe('whole-bill prompt sizes match what the pipeline sends', () => {
+  it('has definitions the enrichment splits, which raw chunks would miss', () => {
+    const source = bill();
+    const raw = chunkDocument(source);
+    expect(enrichDocument(source, raw).chunks.length).toBeGreaterThan(
+      raw.length + 20,
+    );
+  });
+
+  it('summary and plain questions: live parts plus every reference', async () => {
+    const indexed = await index(bill());
+    const facts = billFacts(indexed.sections, { document: indexed });
+    expect(facts.mode).toBe('whole');
+    const result = await ask(
+      DOC,
+      { question: 'Who can apply?' },
+      { backend, registry, provider },
+    );
+    expect(result.answer.context).toBe('whole');
+    expect(billBlockOf(textRequests()[0]!).length).toBe(
+      facts.wholePrompt.summary,
+    );
+    expect(facts.wholePrompt.summary).toBeGreaterThan(
+      facts.wholePrompt.breakdown,
+    );
+  });
+
+  it('a question about changes: struck text and inline markers, whichever prompt is larger', async () => {
+    const indexed = await index(bill());
+    const facts = billFacts(indexed.sections, { document: indexed });
+    await ask(
+      DOC,
+      { question: 'What was removed from the rule?' },
+      { backend, registry, provider },
+    );
+    const sent = billBlockOf(textRequests()[0]!);
+    expect(sent).toContain('[struck]');
+    expect(sent.length).toBe(facts.wholePrompt.question);
+    expect(facts.wholePrompt.question).toBeGreaterThan(
+      facts.wholePrompt.summary,
+    );
+  });
+
+  it('breakdown batches: live parts, no references', async () => {
+    const indexed = await index(bill());
+    const facts = billFacts(indexed.sections, { document: indexed });
+    await runBreakdown(DOC, {
+      backend,
+      registry,
+      provider: scenarioProvider(provider),
+      endpoint: 'mock:local',
     });
-    const without = realPartBlocks(sections);
-    const withRefs = realPartBlocks(sections, [reference]);
-    const added = withRefs.length - without.length;
-    // `<references>\n` and `\n</references>\n` wrap the one block.
-    const wrapper = '<references>\n'.length + '\n</references>\n'.length;
+    const call = provider.calls.find(
+      (c): c is ObjectRequest<unknown> =>
+        'schemaName' in c && c.schemaName === 'section_briefs',
+    );
+    if (!call) throw new Error('No breakdown call was made.');
+    const sent = billBlockOf(call);
+    expect(sent).not.toContain('<references>');
+    expect(sent.length).toBe(facts.wholePrompt.breakdown);
+  });
+
+  it('summary scenario: live parts as excerpts, no references', async () => {
+    const indexed = await index(bill());
+    const facts = billFacts(indexed.sections, { document: indexed });
+    const scenarios = scenarioProvider(provider);
+    await runScenario(DOC, 'a gardener', {
+      backend,
+      registry,
+      provider: scenarios,
+    });
+    const prompt = scenarios.prompts[0] ?? '';
+    const body = /<excerpts>\n([\s\S]*)\n<\/excerpts>/.exec(prompt)?.[1] ?? '';
+    expect(prompt).not.toContain('<references>');
+    expect(body.length).toBe(facts.wholePrompt.scenario);
+  });
+});
+
+describe('what each feature leaves out', () => {
+  it('struck text never reaches the summary, breakdown or scenario, so it does not price them', () => {
+    const plain = billFacts(bill({ struckChars: 240 }).sections, {
+      document: bill({ struckChars: 240 }),
+    });
+    const struck = billFacts(bill({ struckChars: 24_000 }).sections, {
+      document: bill({ struckChars: 24_000 }),
+    });
+    expect(struck.wholePrompt.summary).toBe(plain.wholePrompt.summary);
+    expect(struck.wholePrompt.breakdown).toBe(plain.wholePrompt.breakdown);
+    expect(struck.wholePrompt.scenario).toBe(plain.wholePrompt.scenario);
+    // Only a question about changes reads it.
+    expect(struck.wholePrompt.question).toBeGreaterThan(
+      plain.wholePrompt.question,
+    );
+  });
+});
+
+describe('the whole-versus-excerpts decision is the runtime decision', () => {
+  /** Short words make characters / 4 undercount tokens (the chunker counts 1.3 per word). */
+  function shortWords(chars: number): NormalizedDoc {
+    const word = 'a ab ac ad ae af ag ah ai aj ';
+    const sections: Section[] = Array.from({ length: 20 }, (_, i) => ({
+      id: `sec-${String(i + 1)}`,
+      num: String(i + 1),
+      heading: 'Gardens',
+      level: 1,
+      spans: [
+        {
+          text: word.repeat(Math.floor(chars / 20 / word.length)),
+          status: 'unchanged',
+        },
+      ],
+      children: [],
+    }));
+    return { ...bill(), sections, references: undefined };
+  }
+
+  it.each([60_000, 90_000, 120_000, 140_000])(
+    'agrees with documentContext for a %i-token budget',
+    async (budget) => {
+      const source = shortWords(280_000);
+      const indexed = await index(source);
+      const facts = billFacts(indexed.sections, {
+        document: indexed,
+        wholeBillMaxTokens: budget,
+      });
+      const actual = await documentContext(backend, DOC, indexed.sections, {
+        budget,
+        reservedTokens: referenceTokens(indexed.references),
+      });
+      expect(facts.mode).toBe(actual.mode);
+      expect(facts.wholePrompt.summary > 0).toBe(actual.mode === 'whole');
+    },
+  );
+  it('reserves reference tokens, as documentContext does', async () => {
+    const source = bill();
+    const indexed = await index(source);
+    const plain = billFacts(indexed.sections, {
+      document: { ...indexed, references: undefined },
+    });
+    expect(plain.mode).toBe('whole');
+    const reserved = referenceTokens(indexed.references);
+    // A budget the bill fits but bill plus references does not.
+    const tokens = (
+      await documentContext(backend, DOC, indexed.sections, { budget: 100_000 })
+    ).hits.reduce((n, h) => n + h.chunk.tokenCount, 0);
+    const budget = tokens + Math.floor(reserved / 2);
+    const facts = billFacts(indexed.sections, {
+      document: indexed,
+      wholeBillMaxTokens: budget,
+    });
+    const actual = await documentContext(backend, DOC, indexed.sections, {
+      budget,
+      reservedTokens: reserved,
+    });
+    expect(actual.mode).toBe('excerpts');
+    expect(facts.mode).toBe('excerpts');
+  });
+});
+
+describe('sizing an indexed document', () => {
+  it('is not refused by a chunk limit set lower after the document was indexed', async () => {
+    const indexed = await index(bill());
+    vi.stubEnv(envVar('MAX_CHUNKS'), '1');
+    expect(() =>
+      billFacts(indexed.sections, { document: indexed }),
+    ).not.toThrow();
     expect(
-      wholePromptCharacters(sections, [reference]) -
-        wholePromptCharacters(sections),
-    ).toBe(added - wrapper + 1);
+      billFacts(indexed.sections, { document: indexed }).wholePrompt.summary,
+    ).toBeGreaterThan(0);
   });
-  it('weighs each part for its breadcrumb, not just its text', () => {
-    const base = { divisions: 2, titles: 3, sectionsPerTitle: 5 } as const;
-    const shallow = shapedBill({
-      ...base,
-      sectionChars: 100,
-      headingChars: 10,
+  it('sizes nothing for a bill the runtime reads in excerpts', () => {
+    const facts = billFacts(bill().sections, { wholeBillMaxTokens: 0 });
+    expect(facts.mode).toBe('excerpts');
+    expect(facts.wholePrompt).toEqual({
+      summary: 0,
+      breakdown: 0,
+      scenario: 0,
+      question: 0,
     });
-    const deep = shapedBill({ ...base, sectionChars: 100, headingChars: 80 });
-    // The same text; every part's heading="..." attribute carries three names 70 characters
-    // longer. Small sibling sections share a chunk, so there are fewer parts than sections:
-    // 2,000 is well under one part's worth of extra heading per ten sections.
-    expect(wholePromptCharacters(deep)).toBeGreaterThan(
-      wholePromptCharacters(shallow) + 2000,
-    );
   });
-  it('sizes an empty bill at nothing', () => {
-    expect(wholePromptCharacters([])).toBe(0);
-  });
-  it('reads a synthetic bill the way the parser would (sanity)', () => {
-    const { sections } = makeSectionedText().groundTruth;
-    expect(wholePromptCharacters(sections)).toBeGreaterThan(0);
-  });
-  it('is large for a many-section bill (S. 1582 shape)', () => {
-    expect(wholePromptCharacters(shapedBill(S1582_SHAPE))).toBeGreaterThan(
-      150_000,
-    );
+  it('sizes the breakdown on its own when references crowd the summary out of whole mode', async () => {
+    const indexed = await index(bill());
+    const all = await documentContext(backend, DOC, indexed.sections, {
+      budget: 100_000,
+    });
+    const tokens = all.hits.reduce((n, h) => n + h.chunk.tokenCount, 0);
+    const facts = billFacts(indexed.sections, {
+      document: indexed,
+      wholeBillMaxTokens: tokens + 1,
+    });
+    expect(facts.mode).toBe('excerpts');
+    expect(facts.wholePrompt.summary).toBe(0);
+    expect(facts.wholePrompt.breakdown).toBeGreaterThan(0);
   });
 });

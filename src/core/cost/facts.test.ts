@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { makeSectionedText } from '../../../tests/synth/text.js';
-import type { Section } from '../model/index.js';
+import { EMPTY_METADATA, type Section } from '../model/index.js';
 import { envVar } from '../brand.js';
 import { billFacts } from './facts.js';
 
@@ -16,31 +16,44 @@ function sections(count: number, chars = 100): Section[] {
 }
 
 describe('billFacts', () => {
-  it('counts the whole-bill prompt only when the prompt will carry the whole bill', () => {
+  it('sizes the whole-bill prompts only when the runtime would read the whole bill', () => {
     const whole = billFacts(sections(5, 400));
     expect(whole.mode).toBe('whole');
     // Parts carry tags and attributes beyond the text itself.
-    expect(whole.wholePromptCharacters).toBeGreaterThan(whole.characters);
+    expect(whole.wholePrompt.summary).toBeGreaterThan(whole.characters);
+    expect(whole.wholePrompt.breakdown).toBeGreaterThan(whole.characters);
     const forced = billFacts(sections(5, 400), { wholeBillMaxTokens: 0 });
     expect(forced.mode).toBe('excerpts');
-    expect(forced.wholePromptCharacters).toBe(0);
+    expect(forced.wholePrompt).toEqual({
+      summary: 0,
+      breakdown: 0,
+      scenario: 0,
+      question: 0,
+    });
   });
-  it('adds reference texts to the whole-bill prompt', () => {
+  it('adds reference texts to the summary prompt, not to breakdown or the scenario', () => {
     const without = billFacts(sections(2, 400));
     const withRef = billFacts(sections(2, 400), {
-      references: [
-        {
-          sectionId: 'ref:usc/15/6809',
-          citation: '15 U.S.C. 6809',
-          sourceUrl: 'https://example.gov/usc/15/6809',
-          text: 'y'.repeat(1000),
-          fetchedAt: '2026-01-01T00:00:00.000Z',
-        },
-      ],
+      document: {
+        metadata: EMPTY_METADATA,
+        definitions: [],
+        externalRefs: [],
+        references: [
+          {
+            sectionId: 'ref:usc/15/6809',
+            citation: '15 U.S.C. 6809',
+            sourceUrl: 'https://example.gov/usc/15/6809',
+            text: 'y'.repeat(1000),
+            fetchedAt: '2026-01-01T00:00:00.000Z',
+          },
+        ],
+      },
     });
     expect(
-      withRef.wholePromptCharacters - without.wholePromptCharacters,
+      withRef.wholePrompt.summary - without.wholePrompt.summary,
     ).toBeGreaterThan(1000);
+    expect(withRef.wholePrompt.breakdown).toBe(without.wholePrompt.breakdown);
+    expect(withRef.wholePrompt.scenario).toBe(without.wholePrompt.scenario);
   });
   it('counts the parsed synthetic tree, includes children, and omits boilerplate briefs', () => {
     const facts = billFacts(makeSectionedText().groundTruth.sections);

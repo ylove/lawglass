@@ -234,8 +234,35 @@ function memoFor(backend: RetrievalBackend): Memo {
   return memo;
 }
 
-const tokensOf = (hits: readonly SearchHit[]): number =>
+/** The token count the whole-bill decision uses: the indexed chunks' own counts, summed. */
+export const hitTokens = (hits: readonly SearchHit[]): number =>
   hits.reduce((n, h) => n + h.chunk.tokenCount, 0);
+const tokensOf = hitTokens;
+
+/**
+ * Tokens the bill itself may take once reference texts (which follow it in the prompt) are
+ * reserved. Zero means whole-bill mode is off. `documentContext` and the cost estimator both
+ * decide with this, so they cannot disagree about the budget.
+ */
+export function billBudget(
+  configured: number,
+  reservedTokens: number | undefined,
+): number {
+  if (configured === 0) return 0;
+  return Math.max(0, configured - Math.max(0, reservedTokens ?? 0));
+}
+
+/**
+ * A bill far over budget (the NDAA) must not fetch every chunk on every question just to learn
+ * that. Characters / 4 approximates tokens; the margin keeps borderline bills exact.
+ */
+export function exceedsScanGuard(
+  sections: readonly Section[],
+  includeDeleted: boolean,
+  budget: number,
+): boolean {
+  return estimatedTokens(sections, includeDeleted) > budget * 1.5;
+}
 
 /**
  * Forget a document's scan and invalidate any scan in flight. Call it when the document's
@@ -393,16 +420,12 @@ export async function documentContext(
     reservedTokens?: number | undefined;
   } = {},
 ): Promise<DocumentContext> {
-  // Reference texts follow the bill in the same prompt, so the bill gets what they leave.
   const configured = options.budget ?? wholeBillBudget();
-  const budget =
-    configured === 0
-      ? 0
-      : configured - Math.max(0, options.reservedTokens ?? 0);
-  if (configured === 0 || budget <= 0) return { mode: 'excerpts', hits: [] };
-  // A bill far over budget (the NDAA) must not fetch every chunk on every question just to
-  // learn that. Characters / 4 approximates tokens; the margin keeps borderline bills exact.
-  if (estimatedTokens(sections, options.includeDeleted === true) > budget * 1.5)
+  const budget = billBudget(configured, options.reservedTokens);
+  if (
+    budget <= 0 ||
+    exceedsScanGuard(sections, options.includeDeleted === true, budget)
+  )
     return { mode: 'excerpts', hits: [] };
   const all = await scanned(backend, docId, sections, options.signal);
   // An incomplete index is not "the whole bill": let retrieval work with what it has.
@@ -411,6 +434,6 @@ export async function documentContext(
     (h) =>
       options.includeDeleted === true || h.chunk.amendmentStatus !== 'deleted',
   );
-  const mode = contextMode(tokensOf(hits), budget);
+  const mode = contextMode(hitTokens(hits), budget);
   return { mode, hits: mode === 'whole' ? hits : [] };
 }

@@ -74,6 +74,7 @@ export async function estimateUrl(
 ): Promise<EstimateReport> {
   const doc = await fetchAndParseDocument(url, runtime);
   const facts = billFacts(doc.sections, {
+    document: doc,
     // The same cap the server will run with, so the estimate prices what would be made.
     breakdownUnitCap: runtime.breakdownUnitCap ?? breakdownMaxUnitsFromEnv(),
     ...(runtime.wholeBillMaxTokens === undefined

@@ -97,30 +97,29 @@ const FRAMING = { low: 1000, high: 3000 };
  */
 const PROMPT_MARKUP = { low: 1.1, high: 1.25 };
 /**
- * Characters per token for the whole-bill `<part>` blocks (markup and text together), from the
+ * Characters per token for the whole-bill prompt blocks (markup and text together), from the
  * calibration run (#385, docs/calibration.md). Measured input per call, less about 2,000 tokens
- * of system prompt, task and schema, over the characters `wholePromptCharacters` counts for
- * the same real bill (a script ran `billFacts` on the fetched bills):
- *   S. 1582 (684 sections, 195,113 chars):  summary 2.63, breakdown 2.73, scenario 2.67
- *   Ohio S.B. 113 (101 sections, 31,145):   summary 2.64, breakdown 2.50, scenario 2.53
- *   NJ S. 1000 (3 sections, 2,486):         summary 2.71
- * Low (2.8) is above every figure, so the low bound cannot exceed what was measured. High (2.4)
- * is below the lowest (2.50), about 4% of margin on the text, and FRAMING.high carries about
- * 1,000 tokens above the fitted framing besides (breakdown framing runs higher than the
- * summary's: NJ's breakdown measured 3,504 tokens on 2,486 characters). Three bills are a thin
+ * of system prompt, task and schema, over the characters `sizeWholePrompts` counts for the
+ * same real bill, chunked and enriched as ingest does and with the U.S. Code references read
+ * for it (a script ran `billFacts` on the fetched bills):
+ *   S. 1582 (684 sections): summary 209,210 chars: 2.82; breakdown 198,263: 2.77;
+ *                           scenario 200,437: 2.74; question (ordinary) 2.82
+ *   Ohio S.B. 113 (101):    summary 31,160: 2.64; breakdown 31,160: 2.50; scenario 31,432: 2.56;
+ *                           question (ordinary) 2.66
+ *   NJ S. 1000 (3):         summary 2,582: 2.82; question (ordinary) 2.99
+ * Low (2.9) is above every figure, so the low bound cannot exceed what was measured. High
+ * (2.4) is below the lowest (2.50), about 4% of margin on the text, and FRAMING.high carries
+ * about 1,000 tokens above the fitted framing besides (breakdown framing runs higher than the
+ * summary's: NJ's breakdown measured 3,504 tokens on 2,582 characters). Three bills are a thin
  * sample: the next calibration run should check this figure.
  */
-const WHOLE_PROMPT_CHARS_PER_TOKEN = { low: 2.8, high: 2.4 };
+const WHOLE_PROMPT_CHARS_PER_TOKEN = { low: 2.9, high: 2.4 };
 
-/** The whole-bill prompt's bill and reference blocks, in tokens. Not scaled by PROMPT_MARKUP. */
-function wholeContext(facts: BillFacts): Bounds {
+/** A whole-bill prompt's bill-sized block, in tokens. Not scaled by PROMPT_MARKUP. */
+function wholeContext(characters: number): Bounds {
   return {
-    low: Math.ceil(
-      facts.wholePromptCharacters / WHOLE_PROMPT_CHARS_PER_TOKEN.low,
-    ),
-    high: Math.ceil(
-      facts.wholePromptCharacters / WHOLE_PROMPT_CHARS_PER_TOKEN.high,
-    ),
+    low: Math.ceil(characters / WHOLE_PROMPT_CHARS_PER_TOKEN.low),
+    high: Math.ceil(characters / WHOLE_PROMPT_CHARS_PER_TOKEN.high),
   };
 }
 
@@ -246,11 +245,13 @@ export function estimateBill(
   modelPrice(plan.answerModel, prices);
   modelPrice(plan.extractModel, prices);
   const whole = facts.mode === 'whole';
+  // Breakdown decides without reserving reference tokens, so it can be whole when the rest is not.
+  const wholeBreakdown = facts.wholePrompt.breakdown > 0;
   const summary: CallSpec[] = [];
   if (plan.summary !== false && facts.characters > 0) {
     if (whole)
       summary.push({
-        context: wholeContext(facts),
+        context: wholeContext(facts.wholePrompt.summary),
         promptSized: true,
         visibleOutput: 1000,
         maxTokens: 16_000,
@@ -280,19 +281,19 @@ export function estimateBill(
       ? []
       : batches(
           facts.breakdownUnitTokens,
-          whole ? WHOLE_BATCH_SIZE : EXCERPT_BATCH_SIZE,
+          wholeBreakdown ? WHOLE_BATCH_SIZE : EXCERPT_BATCH_SIZE,
         ).map((batch) => ({
-          context: whole
-            ? wholeContext(facts)
+          context: wholeBreakdown
+            ? wholeContext(facts.wholePrompt.breakdown)
             : {
                 low: batch.reduce((a, b) => a + b, 0),
                 high: batch.reduce((a, b) => a + b + RELATED_TOKENS, 0),
               },
-          promptSized: whole,
+          promptSized: wholeBreakdown,
           visibleOutput: batch.length * 200,
           maxTokens: 6000,
           highCalls: 3,
-          cachedPrefix: whole,
+          cachedPrefix: wholeBreakdown,
         }));
   const examples: CallSpec[] = facts.breakdownUnitTokens
     .slice(0, plan.exampleCount ?? examplesForPolicy(plan.pregenerateExamples))
@@ -346,7 +347,7 @@ export function estimateBill(
         ? [
             {
               context: whole
-                ? wholeContext(facts)
+                ? wholeContext(facts.wholePrompt.scenario)
                 : boundedContext(Math.min(facts.estimatedTokens, 8 * 450)),
               promptSized: whole,
               visibleOutput: 800,
@@ -375,7 +376,7 @@ export function estimateBill(
     },
     question: estimateQuestion(facts, prices, plan),
     assumptions: [
-      'Approximate tokens = live characters / 4 to pick the mode; indexed context can change it near the threshold. Whole-bill prompts are sized from the built <part> blocks at 2.4–2.8 characters per token.',
+      'Approximate tokens = live characters / 4 to pick the mode; indexed context can change it near the threshold. Whole-bill prompts are sized from the built <part> blocks at 2.4–2.9 characters per token.',
       'Low: first pass and short output. High: full output budgets, all retries and reading-level rewrites.',
       `Cache policy: ${plan.cache ?? 'reuse'}; reuse assumes the same prefix stays cached for five minutes within each feature.`,
       `Thinking tokens per answer call: ${String(plan.thinkingTokensPerCall?.low ?? 0)}–${String(plan.thinkingTokensPerCall?.high ?? 0)}; included within output limits, high reserves the full limit.`,
@@ -404,7 +405,13 @@ export function estimateQuestion(
     assignment.answerModel,
     [
       {
-        context: whole ? wholeContext(facts) : boundedContext(3500),
+        // Low is the ordinary question; high is the worst case, a question about changes.
+        context: whole
+          ? {
+              low: wholeContext(facts.wholePrompt.summary).low,
+              high: wholeContext(facts.wholePrompt.question).high,
+            }
+          : boundedContext(3500),
         promptSized: whole,
         visibleOutput: 800,
         maxTokens: whole ? 16_000 : 8192,

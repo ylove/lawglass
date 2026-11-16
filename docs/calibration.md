@@ -144,4 +144,4 @@ Hand-written after the generated report above. Run `lawglass-calibration-6v4qk` 
   - The one decline was Sonnet on NJ S. 1000, a three-section bill. The run does not record which answer declined.
 - **The NDAA**, capped at 30 parts, extrapolates to about $1.08 for breakdown and pictures across all 910 parts on Haiku. Examples are a floor there (`small` policy).
 
-- **Update (2026-11-16, #410):** the input forecast for whole-bill prompts was corrected. It is now sized from the built `<part>` blocks at a measured characters-per-token figure, not chars/4 times a flat markup, so the input weakness above no longer applies. The numbers recorded in this document are unchanged.
+- **Update (2026-11-16, #410):** the input forecast for whole-bill prompts was corrected. Each feature's prompt is now sized from the chunks the runtime would send (enriched, live text only except for questions about changes, references where the feature sends them) at a characters-per-token figure measured in this run, not chars/4 times a flat markup, so the input weakness above no longer applies. The numbers recorded in this document are unchanged.

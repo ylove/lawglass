@@ -1,8 +1,4 @@
-import {
-  contextMode,
-  WHOLE_BILL_MAX_TOKENS,
-  type ContextMode,
-} from '../answer/context.js';
+import { WHOLE_BILL_MAX_TOKENS, type ContextMode } from '../answer/context.js';
 import { chooseBreakdownUnits } from '../breakdown/units.js';
 import { unitCapOf, type BreakdownMaxUnits } from '../breakdown/coverage.js';
 import { UNIT_TOKEN_BUDGET } from '../breakdown/context.js';
@@ -10,21 +6,27 @@ import { buildOutline, chooseMapUnits } from '../chip-summary.js';
 import {
   sectionText,
   walkSections,
-  type ReferenceText,
+  type NormalizedDoc,
   type Section,
 } from '../model/index.js';
 import { classifyBill } from '../scenario/detect.js';
-import { wholePromptCharacters } from './prompt-size.js';
+import { sizeWholePrompts, type WholePromptSizes } from './prompt-size.js';
 
 export interface BillFactsOptions {
   /** The same value as the server's `breakdownMaxUnits`: a count, or `'all'`. Default 30. */
   breakdownUnitCap?: BreakdownMaxUnits;
   wholeBillMaxTokens?: number;
   /**
-   * Other law's text read for the document (`doc.references`). Whole-bill mode shows all of
-   * it after the bill, so it counts toward the prompt. Absent before enrichment.
+   * The parsed document, when there is one: its metadata, definitions and reference texts
+   * shape the chunks and what whole mode sends beside the bill. Without it the sizing uses
+   * the sections alone.
    */
-  references?: readonly ReferenceText[] | undefined;
+  document?:
+    | Pick<
+        NormalizedDoc,
+        'metadata' | 'definitions' | 'externalRefs' | 'references'
+      >
+    | undefined;
 }
 
 export interface BillFacts {
@@ -34,10 +36,10 @@ export interface BillFacts {
   estimatedTokens: number;
   mode: ContextMode;
   /**
-   * Characters of the `<part>` blocks (bill and references) the whole-bill prompt would hold,
-   * counted by building them. Zero unless `mode` is `whole`: other modes never send them.
+   * Characters each whole-bill prompt's bill block holds, counted by building it from enriched
+   * chunks (see `prompt-size.ts`). All zero unless the runtime would read the whole bill.
    */
-  wholePromptCharacters: number;
+  wholePrompt: WholePromptSizes;
   breakdownUnits: number;
   omittedBreakdownUnits: number;
   mapUnits: number;
@@ -68,7 +70,13 @@ export function billFacts(
     0,
   );
   const tokens = Math.ceil(characters / 4);
-  const mode = contextMode(tokens, budget);
+  // The runtime's own decision, from enriched chunks and with references reserved; the
+  // characters / 4 figure above only forecasts it.
+  const sizing = sizeWholePrompts({
+    sections,
+    document: opts.document,
+    configuredBudget: budget,
+  });
   const map = chooseMapUnits(sections);
   const breakdown = chooseBreakdownUnits(
     sections,
@@ -85,10 +93,8 @@ export function billFacts(
     sectionCount: all.length,
     characters,
     estimatedTokens: tokens,
-    mode,
-    // Chunking is only worth doing when the prompt will really carry the whole bill.
-    wholePromptCharacters:
-      mode === 'whole' ? wholePromptCharacters(sections, opts.references) : 0,
+    mode: sizing.mode,
+    wholePrompt: sizing.sizes,
     breakdownUnits: breakdown.units.length,
     omittedBreakdownUnits: breakdown.omitted,
     mapUnits: map.units.length,
