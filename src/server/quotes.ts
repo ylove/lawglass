@@ -114,11 +114,14 @@ export class QuoteStore {
   }
 }
 
-/** What a quote downloaded, kept so the ingest it leads to reads exactly the bytes that were priced. */
+/** What a measure downloaded, kept so the ingest it leads to reads exactly the bytes that were priced. */
 export interface QuotedDownload {
   doc: NormalizedDoc;
   fetched: SafeFetchResult;
   attachment: HistoryAttachment | undefined;
+  /** What the reader was shown for these bytes, for an ingest that has no quote of ours. */
+  publicFacts: QuoteFacts;
+  estimates: Record<string, BillEstimate>;
 }
 
 export const DOWNLOAD_STORE_CAP = 50;
@@ -126,8 +129,13 @@ export const DOWNLOAD_STORE_CAP = 50;
 export const DOWNLOAD_STORE_BYTES = 64 * 1024 * 1024;
 
 /**
- * Short-lived downloads by quote id, bounded by age, count and bytes (oldest out first). Losing
- * one is safe: the ingest measures again and checks the bill still matches the quote.
+ * The latest download each reader was priced on for each URL, bounded by age, count and bytes
+ * (oldest out first). It is keyed by reader and URL, not by our quote id, because a host binds
+ * its own quote to the docId it saw at admission and never sends ours back; the ingest must
+ * read those same bytes or that docId can never match (New York bytes differ on every download).
+ * An entry is not removed on use: the host may refuse the ingest (402) and the confirm, or a
+ * retry after a dropped connection, must see the same bytes. Losing one is safe: the ingest
+ * measures again, and the host's own quote is checked against that new measure.
  */
 export class QuotedDownloads {
   private readonly entries = new Map<
@@ -143,26 +151,35 @@ export class QuotedDownloads {
     private readonly maxBytes = DOWNLOAD_STORE_BYTES,
   ) {}
 
-  put(quoteId: string, download: QuotedDownload): void {
+  /** A reader id cannot contain the URL, but encode both so no pair can collide with another. */
+  private static key(reader: string | undefined, url: string): string {
+    return JSON.stringify([reader ?? null, url]);
+  }
+
+  put(reader: string | undefined, url: string, download: QuotedDownload): void {
+    const key = QuotedDownloads.key(reader, url);
+    // A newer measure replaces the older one for the same reader and URL.
+    this.remove(key);
     this.sweep();
     // Twice the raw bytes: the parsed document is held beside them and is of similar size.
     const size = download.fetched.bytes.byteLength * 2;
     if (size > this.maxBytes) return;
     while (this.entries.size >= this.cap || this.bytes + size > this.maxBytes)
       if (!this.evictOldest()) break;
-    this.entries.set(quoteId, { download, size, createdAt: this.now() });
+    this.entries.set(key, { download, size, createdAt: this.now() });
     this.bytes += size;
   }
 
-  /** The download for a quote, once: the ingest that uses it frees the memory. */
-  take(quoteId: string | undefined): QuotedDownload | undefined {
-    if (quoteId === undefined) return undefined;
-    const entry = this.entries.get(quoteId);
+  /** The reader's latest live download of this URL, or undefined. */
+  get(reader: string | undefined, url: string): QuotedDownload | undefined {
+    const key = QuotedDownloads.key(reader, url);
+    const entry = this.entries.get(key);
     if (!entry) return undefined;
-    this.remove(quoteId);
-    return this.now() - entry.createdAt >= this.ttlMs
-      ? undefined
-      : entry.download;
+    if (this.now() - entry.createdAt >= this.ttlMs) {
+      this.remove(key);
+      return undefined;
+    }
+    return entry.download;
   }
 
   get size(): number {

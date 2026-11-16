@@ -36,7 +36,6 @@ import {
   newSpend,
   runInJob,
   tierName,
-  type BillEstimate,
   type BillFacts,
   type FeatureEstimate,
   addBudget,
@@ -101,6 +100,7 @@ import {
   quoteFacts,
   QuoteStore,
   QuotedDownloads,
+  type QuotedDownload,
   sameQuotedBill,
   quoteTiers,
   type QuoteOptions,
@@ -1443,7 +1443,7 @@ export function createApp(
       readerId: readerFor(c),
     });
     // The ingest this quote leads to reads these bytes instead of downloading again.
-    quotedDownloads.put(quoteId, measured);
+    quotedDownloads.put(readerFor(c), body.url, measured);
     return c.json({
       quoteId,
       facts: measured.publicFacts,
@@ -1489,9 +1489,11 @@ export function createApp(
 
   /**
    * Admission for an ingest, new or reused. Needs the bill's size, so it fetches and parses
-   * first (or reuses the quote this server issued to the reader); no model has been called yet.
-   * The measured document is handed to the ingest so it is parsed once, and the ingest refuses
-   * if the bytes it fetches turn out to be a different document.
+   * first; no model has been called yet. It reuses the download this reader was last priced on
+   * for this URL (from a quote or an earlier admission), because a host binds its own quote to
+   * the docId it sees here and never sends ours back. The bytes are handed to the ingest, so the
+   * bill is downloaded and parsed once and the ingest reads exactly what was priced. If our own
+   * quote is presented, the bill must still match it, or the reader is quoted again.
    */
   async function admitIngest(
     c: Context,
@@ -1512,14 +1514,20 @@ export function createApp(
     if (!hooked) return undefined;
     if (!estimating) return { scope: makeScope(c, { kind: 'ingest' }, {}) };
     const live = quotes.get(body.quoteId, readerFor(c), body.url);
-    let admitted: NonNullable<IngestDeps['admitted']>;
-    let estimates: Record<string, BillEstimate>;
-    const kept = live ? quotedDownloads.take(body.quoteId) : undefined;
-    if (live && kept) {
-      admitted = { docId: kept.fetched.docId, ...kept };
-      estimates = live.estimates;
+    const reader = readerFor(c);
+    const kept = quotedDownloads.get(reader, body.url);
+    // Our quote, if any, must still describe the kept bytes. A host's own quote is not ours to
+    // check here: it binds to the docId this ingest is admitted with, which is the kept one.
+    const keptMatches =
+      kept !== undefined &&
+      (!live ||
+        kept.fetched.docId === live.contentHash ||
+        sameQuotedBill(live.facts, kept.publicFacts));
+    let source: QuotedDownload;
+    if (kept && keptMatches) {
+      source = kept;
     } else {
-      // No quote, or its download expired or was evicted: measure again and read these bytes.
+      // Nothing kept for this reader and address, or it is not what the quote priced.
       const measured = await measure(body.url, c.req.raw.signal);
       // Bytes may differ on every download, so compare what was priced, not the hash.
       if (live && !sameQuotedBill(live.facts, measured.publicFacts))
@@ -1531,14 +1539,18 @@ export function createApp(
               'This bill changed after it was quoted. Please start again to get a new quote.',
           },
         );
-      admitted = {
-        docId: measured.doc.docId,
-        doc: measured.doc,
-        fetched: measured.fetched,
-        attachment: measured.attachment,
-      };
-      estimates = live ? live.estimates : measured.estimates;
+      // Stored before the host's admission runs: if it answers 402 with a quote bound to this
+      // docId, the confirm must read these very bytes.
+      quotedDownloads.put(reader, body.url, measured);
+      source = measured;
     }
+    const admitted: NonNullable<IngestDeps['admitted']> = {
+      docId: source.fetched.docId,
+      doc: source.doc,
+      fetched: source.fetched,
+      attachment: source.attachment,
+    };
+    const estimates = live ? live.estimates : source.estimates;
     const fields = {
       kind: 'ingest' as const,
       docId: admitted.docId,

@@ -128,7 +128,8 @@ export interface IngestDeps {
    * A document a host already fetched and parsed to size and admit this ingest (ADR 0018). The
    * ingest reuses its parse instead of parsing again. With `fetched` (and the history it was
    * resolved with) it reads exactly the bytes that were priced and downloads nothing, which
-   * sources whose bytes change on every request (New York) need. Without `fetched` it downloads
+   * sources whose bytes change on every request (New York) need, since a host binds its quote to
+   * this docId and a second download would never match it. Without `fetched` it downloads
    * again and refuses with PAYMENT_REQUIRED if those bytes are a different document, so the
    * reader is quoted again.
    */

@@ -74,18 +74,30 @@ const hosted = (options: AppOptions = {}): Hono =>
       ...options.quote,
     },
   });
-const post = (a: Hono, path: string, body: unknown) =>
+const post = (a: Hono, path: string, body: unknown, reader = 'alice') =>
   a.request(path, {
     method: 'POST',
-    headers: { 'x-reader': 'alice', 'content-type': 'application/json' },
+    headers: { 'x-reader': reader, 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
+/** Pushes this reader's kept download of `url` out by quoting other addresses (the count bound). */
+async function evictKept(a: Hono): Promise<void> {
+  for (let i = 0; i < DOWNLOAD_STORE_CAP; i++) {
+    const other = `https://govinfo.gov/filler-${String(i)}.txt`;
+    env.serve(other, makeSectionedText(), 'text/plain');
+    await quote(a, other);
+  }
+}
 const quote = async (a: Hono, source = url) =>
   (await (await post(a, '/api/quote', { url: source })).json()) as {
     quoteId: string;
   };
-async function ingest(a: Hono, body: { url: string; quoteId?: string }) {
-  const res = await post(a, '/api/ingest', body);
+async function ingest(
+  a: Hono,
+  body: { url: string; quoteId?: string },
+  reader = 'alice',
+) {
+  const res = await post(a, '/api/ingest', body, reader);
   const events = [];
   for await (const e of readSseEvents(res, IngestEvent)) events.push(e);
   return events.at(-1);
@@ -106,18 +118,25 @@ describe('an admitted ingest of a source whose bytes change on every download', 
     expect(downloads).toHaveLength(1);
   });
 
-  test('a quote is used once; a second ingest measures again and still completes', async () => {
+  test('the kept bytes survive an ingest, so a retry reads them too', async () => {
     const a = hosted();
     const { quoteId } = await quote(a);
     await ingest(a, { url, quoteId });
     expect(await ingest(a, { url, quoteId })).toMatchObject({ type: 'done' });
+    expect(downloads).toHaveLength(1);
+  });
+
+  test('another reader does not get these bytes: they download their own', async () => {
+    const a = hosted();
+    await quote(a);
+    expect(await ingest(a, { url }, 'bob')).toMatchObject({ type: 'done' });
     expect(downloads).toHaveLength(2);
   });
 
   test('a quote whose download was evicted measures again and completes', async () => {
     const a = hosted();
     const { quoteId } = await quote(a);
-    for (let i = 0; i < DOWNLOAD_STORE_CAP; i++) await quote(a);
+    await evictKept(a);
     expect(await ingest(a, { url, quoteId })).toMatchObject({ type: 'done' });
   });
 });
@@ -132,7 +151,7 @@ describe('a genuinely different document is still refused', () => {
   test('when the quote was evicted and the bill changed since', async () => {
     const a = hosted();
     const { quoteId } = await quote(a);
-    for (let i = 0; i < DOWNLOAD_STORE_CAP; i++) await quote(a);
+    await evictKept(a);
     env.serve(url, other, 'text/plain');
     // Refused at admission, before a stream opens.
     const res = await post(a, '/api/ingest', { url, quoteId });
@@ -153,6 +172,50 @@ describe('a genuinely different document is still refused', () => {
     expect(
       JSON.stringify(await env.registry.getDocument(doc!.docId)),
     ).not.toContain('wholly different');
+  });
+});
+
+describe('a host that binds its own quote to the docId it sees at admission', () => {
+  /** Refuses the first ingest with a 402 and admits the second only for the same docId. */
+  function hostQuoted() {
+    const seen: string[] = [];
+    const a = hosted({
+      admission: (_c, job) => {
+        if (job.kind !== 'ingest') return Promise.resolve({ allow: true });
+        seen.push(job.docId ?? '');
+        return Promise.resolve(
+          seen.length === 1 || job.docId !== seen[0]
+            ? {
+                allow: false as const,
+                status: 402 as const,
+                quote: { quoteId: 'host-q', display: '$1.00' },
+              }
+            : { allow: true as const, ref: 'ref' },
+        );
+      },
+    });
+    return { a, seen };
+  }
+  const hostId = { quoteId: 'host-q' };
+
+  test('with no earlier /api/quote: one download across the refusal and the confirm', async () => {
+    const { a, seen } = hostQuoted();
+    const refused = await post(a, '/api/ingest', { url, ...hostId });
+    expect(refused.status).toBe(402);
+    expect(await ingest(a, { url, ...hostId })).toMatchObject({ type: 'done' });
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toBe(seen[0]);
+    expect(downloads).toHaveLength(1);
+  });
+
+  test('after /api/quote: no download beyond the quote', async () => {
+    const { a, seen } = hostQuoted();
+    const { quoteId: ours } = await quote(a);
+    expect(ours).not.toBe('host-q');
+    await post(a, '/api/ingest', { url, ...hostId });
+    expect(await ingest(a, { url, ...hostId })).toMatchObject({ type: 'done' });
+    expect(seen[1]).toBe(seen[0]);
+    expect(downloads).toHaveLength(1);
   });
 });
 
