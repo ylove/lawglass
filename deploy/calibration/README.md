@@ -25,7 +25,8 @@ The image the service uses (`deploy/cloud-run/deploy.sh`) predates this script, 
 PROJECT_ID=lawglass-preview
 REGION=us-east1
 REF=chore/385-calibration            # or the merged commit
-IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/lawglass/lawglass:calibration-$(git rev-parse --short "$REF^{commit}")"
+# Its own package: never lawglass/lawglass (see the warning below).
+IMAGE="$REGION-docker.pkg.dev/$PROJECT_ID/lawglass/lawglass-calibration:$(git rev-parse --short "$REF^{commit}")"
 
 context=$(mktemp -d)
 git archive "$REF" | tar -x -C "$context"
@@ -34,9 +35,11 @@ docker buildx build --platform linux/amd64 --provenance=false --tag "$IMAGE" --p
 docker logout "https://$REGION-docker.pkg.dev"
 ```
 
+**Do not push this image under `lawglass/lawglass`.** The repository's cleanup policy keeps the two most recent versions _per package_ and deletes the rest after a day. A third image in the service's package would delete the image the live service runs. A separate package (`lawglass-calibration`) has its own two slots.
+
 ## Create the service account
 
-The job runs as its own account, which can read the one secret and nothing else (the service's `lawglass-run` account can also read the access key and write the state bucket):
+The 2026-11-16 run used the service's existing `lawglass-run` account (pass `--service-account lawglass-run@lawglass-preview.iam.gserviceaccount.com` below instead). A dedicated account is tighter: it can read the one secret and nothing else, while `lawglass-run` can also read the access key and write the state bucket.
 
 ```sh
 gcloud iam service-accounts create lawglass-calibration \
@@ -71,7 +74,9 @@ gcloud run jobs create lawglass-calibration \
 
 `--max-retries 0` matters: a retry would spend the budget again from zero. The task timeout is four hours; the script stops starting runs after 210 minutes (`--deadline-minutes`) so the report prints before it.
 
-To change the image or arguments later, use `gcloud run jobs update lawglass-calibration ...` with the same flags.
+To change the image or arguments later, use `gcloud run jobs update lawglass-calibration ...` with the same flags. The 2026-11-16 run used `--max-usd,4,--max-usd-per-bill,2` and spent $2.17 (`docs/calibration.md`).
+
+`--args` rejects a value that appears twice: `--max-usd,1,--max-usd-per-bill,1` fails with "1 cannot be specified multiple times", so make the two caps differ.
 
 ## Try it without spending
 
