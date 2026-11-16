@@ -195,30 +195,32 @@ function changeExcerptBlock(
   references: readonly ReferenceText[] | undefined,
   checkpoint: () => void,
 ): number {
-  const inline = withInlineChanges(
-    all,
-    { sections: [...sections] },
-    docId,
-    false,
-    checkpoint,
-  );
+  const doc = { sections: [...sections] };
   const size = (hit: SearchHit): number => formatExcerpt(hit).length;
-  const largest = (hits: readonly SearchHit[], count: number): SearchHit[] =>
-    [...hits].sort((a, b) => size(b) - size(a)).slice(0, count);
-  const definitions = largest(
-    all.filter((hit) => hit.chunk.chunkType === 'definition'),
-    MAX_INJECTED_DEFINITIONS,
-  );
+  const definitions = all
+    .filter((hit) => hit.chunk.chunkType === 'definition')
+    .sort((a, b) => size(b) - size(a))
+    .slice(0, MAX_INJECTED_DEFINITIONS);
+  // The runtime keeps the top retrieved chunks first and only then renders each with its
+  // changes inline (a chunk expands to every section it covers). So the largest prompt is the
+  // DEFAULT_TOP_K chunks whose complete renderings are largest, not the largest renderings
+  // out of a pool that was expanded first.
+  const rendered = all
+    .filter((hit) => !definitions.includes(hit))
+    .map((hit) => {
+      checkpoint();
+      const hits = withInlineChanges([hit], doc, docId, false);
+      return { hits, chars: hits.reduce((n, h) => n + size(h), 0) };
+    })
+    .sort((a, b) => b.chars - a.chars)
+    .slice(0, DEFAULT_TOP_K);
   const bigRefs = [...(references ?? [])]
     .sort((a, b) => b.text.length - a.text.length)
     .slice(0, MAX_EXCERPT_REFERENCES);
   const built = buildPrompt({
     mode: 'excerpts',
     question: '',
-    hits: largest(
-      inline.filter((hit) => !definitions.includes(hit)),
-      DEFAULT_TOP_K,
-    ),
+    hits: rendered.flatMap((r) => r.hits),
     definitions,
     references: bigRefs,
     metadata,
@@ -244,19 +246,17 @@ export function sizeWholePrompts(input: WholePromptInput): WholePromptSizing {
   const none: WholePromptSizing = { mode: 'excerpts', sizes: NO_PROMPT };
   const tooBig =
     looseBudget <= 0 || exceedsScanGuard(input.sections, false, looseBudget);
-  if (tooBig) {
-    // A quote still checks the ingest's chunk limit: it would refuse this document whatever
-    // mode the forecast picks. An indexed document passes no limits and is not re-checked.
-    if (input.limits !== undefined) chunkDocument(doc, chunkOptions);
-    return none;
-  }
+  // An indexed document passes no limits and, when too big for whole mode, needs no chunks.
+  if (tooBig && input.limits === undefined) return none;
 
+  // A quote checks what the ingest checks whatever mode it forecasts: the chunker's count, and
+  // the count after enrichment splits definitions, since the ingest would refuse either.
   const chunked = chunkDocument(doc, chunkOptions);
   checkpoint();
   const enriched = enrichDocument(doc, chunked, checkpoint);
-  // Ingest also counts the records enrichment adds.
   assertChunkLimit(enriched.chunks.length, maxChunks);
   checkpoint();
+  if (tooBig) return none;
   // The mode is chosen with the smallest reservation the runtime could make: the references
   // the document holds, or none. Whole mode costs more than excerpts, so near the threshold
   // that is the safe side, and it is what `documentContext` does for a document without them.

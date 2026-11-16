@@ -581,7 +581,93 @@ describe('a change question that cannot read the whole bill', () => {
   });
 });
 
+describe('a change question whose retrieved chunk covers many sections', () => {
+  it('sizes each selected chunk by its complete rendering, as the runtime renders it', async () => {
+    const tiny = (i: number): Section => ({
+      id: `sec-m/c${String(i)}`,
+      num: `(${String(i)})`,
+      heading: 'Tiny',
+      level: 2,
+      spans: [
+        { text: 'The tiny rule is amended by adding ', status: 'unchanged' },
+        { text: 'a new rule', status: 'inserted' },
+        { text: '.', status: 'unchanged' },
+      ],
+      children: [],
+    });
+    const merged: Section = {
+      id: 'sec-m',
+      num: '9',
+      heading: 'Tiny rule changes',
+      level: 1,
+      spans: [],
+      children: Array.from({ length: 300 }, (_, i) => tiny(i + 1)),
+    };
+    const repeal: Section = {
+      id: 'sec-repeal',
+      num: '10',
+      heading: 'Repeal',
+      level: 1,
+      spans: [
+        { text: 'Repealed: ', status: 'unchanged' },
+        { text: 'a long repealed passage. '.repeat(1200), status: 'deleted' },
+      ],
+      children: [],
+    };
+    const source = {
+      ...bill(),
+      sections: [merged, repeal],
+      references: undefined,
+    };
+    const indexed = await index(source);
+    const scan = await documentContext(backend, DOC, indexed.sections, {
+      budget: 100_000,
+    });
+    // The live bill fits; with its struck text the change question does not.
+    const budget = hitTokens(scan.hits) + 500;
+    const facts = billFacts(indexed.sections, {
+      document: indexed,
+      wholeBillMaxTokens: budget,
+    });
+    expect(facts.wholePrompt.changeExcerpts).toBeGreaterThan(0);
+    await ask(
+      DOC,
+      { question: 'What was removed about the tiny rule?' },
+      { backend, registry, provider, wholeBillMaxTokens: budget },
+    );
+    const content = textRequests()[0]?.messages[0]?.content;
+    const sent = typeof content === 'string' ? content : '';
+    // Merged chunks were retrieved and each expanded to the sections it covers.
+    expect(sent.length).toBeGreaterThan(5_000);
+    expect(sent.length - 200).toBeLessThanOrEqual(
+      facts.wholePrompt.changeExcerpts,
+    );
+  });
+});
+
 describe('limits and deadlines', () => {
+  it('counts the chunks enrichment adds against the ingest limit, even for an excerpts forecast', () => {
+    const sections = Array.from({ length: 40 }, (_, i) => ({
+      ...definitionsSection(8),
+      id: `sec-d${String(i)}`,
+      num: String(i),
+    }));
+    const source = { ...bill(), sections };
+    const raw = chunkDocument(source).length;
+    const enriched = enrichDocument(source, chunkDocument(source)).chunks
+      .length;
+    // Between the two counts: the raw chunks pass, the enriched ones do not.
+    const maxChunks = Math.floor((raw + enriched) / 2);
+    expect(raw).toBeLessThan(maxChunks);
+    expect(() =>
+      billFacts(sections, {
+        document: source,
+        wholeBillMaxTokens: 0,
+        limits: { maxChunks },
+      }),
+    ).toThrow(/chunk limit/);
+  });
+
   it('checks the ingest chunk limit even when the forecast is excerpts', async () => {
     const indexed = await index(bill());
     expect(() =>
