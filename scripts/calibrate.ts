@@ -92,7 +92,7 @@ const SONNET = 'claude-sonnet-5-5';
 /** The URLs are the forms each resolver accepts (checked in calibrate.test.ts). */
 export const BILLS = {
   'S. 1582': 'https://www.congress.gov/bill/119th-congress/senate-bill/1582',
-  'S. 5687': 'https://www.congress.gov/bill/118th-congress/senate-bill/5687',
+  'S. 2200': 'https://www.congress.gov/bill/118th-congress/senate-bill/2200',
   'NY A. 5000': 'https://www.nysenate.gov/legislation/bills/2025/A5000',
   'NJ S. 1000': 'https://www.njleg.state.nj.us/bill-search/2024/S1000',
   'Ohio S.B. 113': 'https://www.legislature.ohio.gov/legislation/136/sb113',

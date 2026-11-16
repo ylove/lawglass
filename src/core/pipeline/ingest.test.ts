@@ -26,6 +26,7 @@ import { AppError, messageText, type AnswerResult } from '../model/index.js';
 import {
   hostLabel,
   ingest,
+  readDocument,
   type IngestDeps,
   type IngestProgress,
 } from './ingest.js';
@@ -1103,4 +1104,35 @@ test('NJ lookup that returns an HTML page is FETCH_FAILED, never WRAPPER_PAGE wi
     ingest('https://www.njleg.state.nj.us/bill-search/2024/S1000', deps()),
   ).rejects.toMatchObject({ code: 'FETCH_FAILED' });
   expect(env.fetches).toEqual([njApi('S1000', 2024)]);
+});
+
+test('an admitted docId with no kept bytes refuses a download that is a different document', async () => {
+  const url = 'https://govinfo.gov/admitted.txt';
+  env.serve(url, makeSectionedText(), 'text/plain');
+  await expect(
+    ingest(url, deps({ admitted: { docId: 'f'.repeat(64) } })),
+  ).rejects.toMatchObject({ code: 'PAYMENT_REQUIRED' });
+  expect(await env.registry.list()).toEqual([]);
+});
+
+test('admitted bytes are read as given: the source is not downloaded again', async () => {
+  const url = 'https://govinfo.gov/admitted.txt';
+  env.serve(url, makeSectionedText(), 'text/plain');
+  const read = await readDocument(url, deps());
+  const before = env.fetches.length;
+  // The page changes, but the priced bytes are what is indexed.
+  env.serve(url, makeSectionedText(), 'text/plain');
+  const result = await ingest(
+    url,
+    deps({
+      admitted: {
+        docId: read.fetched.docId,
+        doc: read.doc,
+        fetched: read.fetched,
+        attachment: read.attachment,
+      },
+    }),
+  );
+  expect(env.fetches.length).toBe(before);
+  expect(result.doc.docId).toBe(read.fetched.docId);
 });

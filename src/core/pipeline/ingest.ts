@@ -55,6 +55,7 @@ import {
   chooseVersion,
   historySource,
   resolveHistory,
+  type HistoryPlan,
   type HistoryRecord,
 } from '../history/resolve.js';
 import { deleteHistory, writeHistory } from '../history/history-store.js';
@@ -126,10 +127,21 @@ export interface IngestDeps {
   parsePdf?: PdfParser | undefined;
   /**
    * A document a host already fetched and parsed to size and admit this ingest (ADR 0018). The
-   * ingest reuses its parse instead of parsing again, and refuses with PAYMENT_REQUIRED if the
-   * bytes it fetches now are a different document, so the reader is quoted again.
+   * ingest reuses its parse instead of parsing again. With `fetched` (and the history it was
+   * resolved with) it reads exactly the bytes that were priced and downloads nothing, which
+   * sources whose bytes change on every request (New York) need, since a host binds its quote to
+   * this docId and a second download would never match it. Without `fetched` it downloads
+   * again and refuses with PAYMENT_REQUIRED if those bytes are a different document, so the
+   * reader is quoted again.
    */
-  admitted?: { docId: string; doc?: NormalizedDoc | undefined } | undefined;
+  admitted?:
+    | {
+        docId: string;
+        doc?: NormalizedDoc | undefined;
+        fetched?: SafeFetchResult | undefined;
+        attachment?: HistoryAttachment | undefined;
+      }
+    | undefined;
   /** Told when a U.S. Code reference could not be read: the citation and an error code only. */
   onReferenceSkip?: ((citation: string, code: string) => void) | undefined;
 }
@@ -179,7 +191,7 @@ const HISTORY_PARTIAL = 'Part of the legislative history was unavailable.';
 const HISTORY_UNAVAILABLE =
   'History unavailable: the official history could not be read or saved.';
 
-interface HistoryAttachment {
+export interface HistoryAttachment {
   record?: HistoryRecord;
   version: string;
 }
@@ -325,6 +337,15 @@ function metered(provider: LlmProvider): {
     },
   };
   return { provider: wrapped, usage };
+}
+
+/** Parses bytes a caller already holds, down the same path an ingest takes (no fetch, no model). */
+export function parseDocument(
+  fetched: SafeFetchResult,
+  deps: ReadDocumentDeps,
+  signal?: AbortSignal,
+): Promise<NormalizedDoc> {
+  return parseFetched(fetched, deps, signal);
 }
 
 async function parseFetched(
@@ -536,6 +557,66 @@ export type ReadDocumentDeps = Pick<
   'fetcher' | 'now' | 'parsePdf' | 'parseLimits'
 >;
 
+/**
+ * The official history for a plan, or undefined when it cannot be read: an explicit version
+ * allows a text ingest even when the history is down. An abort is not swallowed.
+ */
+async function readHistoryRecord(
+  plan: HistoryPlan,
+  deps: ReadDocumentDeps,
+  signal: AbortSignal | undefined,
+): Promise<HistoryRecord | undefined> {
+  const source = historySource(plan.source);
+  const validateUrl = (url: URL): void => {
+    assertHistoryUrl(plan.source, url);
+  };
+  try {
+    return await source.read(
+      plan,
+      async (historyUrl) => {
+        assertHistoryUrl(plan.source, historyUrl);
+        const result = await deps.fetcher(historyUrl, {
+          signal,
+          validateUrl,
+          refresh: true,
+        });
+        assertHistoryUrl(plan.source, result.finalUrl);
+        return result;
+      },
+      deps.now,
+    );
+  } catch (error) {
+    if (signal?.aborted) throw error;
+    return undefined;
+  }
+}
+
+/**
+ * Admitted bytes may carry a history that failed to load when they were quoted. Try again now so
+ * the document is not indexed as "History unavailable" for a transient error. History normally
+ * decides which text version to fetch, so a record is adopted only when it names the very
+ * version the admitted bytes were fetched for; otherwise the kept attachment stands.
+ */
+async function refreshedAttachment(
+  url: string,
+  attachment: HistoryAttachment | undefined,
+  deps: ReadDocumentDeps,
+  signal: AbortSignal | undefined,
+): Promise<HistoryAttachment | undefined> {
+  if (!attachment || attachment.record) return attachment;
+  const plan = resolveHistory(url);
+  if (!plan) return attachment;
+  const record = await readHistoryRecord(plan, deps, signal);
+  if (!record) return attachment;
+  try {
+    if (chooseVersion(plan, record.history) !== attachment.version)
+      return attachment;
+  } catch {
+    return attachment;
+  }
+  return { version: attachment.version, record };
+}
+
 /** The exact URL resolution and integrity checks used by ingest, without indexing or LLM work. */
 async function fetchIngestDocument(
   url: string,
@@ -584,26 +665,7 @@ async function fetchIngestDocument(
     validateUrl = (url) => {
       assertHistoryUrl(plan.source, url);
     };
-    let record: HistoryRecord | undefined;
-    try {
-      record = await source.read(
-        plan,
-        async (historyUrl) => {
-          assertHistoryUrl(plan.source, historyUrl);
-          const result = await deps.fetcher(historyUrl, {
-            signal,
-            validateUrl,
-            refresh: true,
-          });
-          assertHistoryUrl(plan.source, result.finalUrl);
-          return result;
-        },
-        deps.now,
-      );
-    } catch (error) {
-      if (signal?.aborted) throw error;
-      // An explicit version allows text ingest even when the official history is down.
-    }
+    const record = await readHistoryRecord(plan, deps, signal);
     const version = chooseVersion(plan, record?.history);
     fetchUrl = plan.textUrl ?? source.textUrl(plan, version);
     validateUrl(new URL(fetchUrl));
@@ -626,19 +688,36 @@ async function fetchIngestDocument(
   return { fetched, attachment };
 }
 
-export async function fetchAndParseDocument(
+/**
+ * Fetch and parse like an ingest, and also return the download and its history, so a host that
+ * priced this document can hand the same bytes to the ingest.
+ */
+export async function readDocument(
   url: string,
   deps: ReadDocumentDeps,
   signal?: AbortSignal,
   /** False for a quote or an admission check: nothing is written to the fetch cache. */
   options: { commitCache?: boolean } = {},
-): Promise<NormalizedDoc> {
-  const { fetched } = await fetchIngestDocument(url, deps, signal);
+): Promise<{
+  doc: NormalizedDoc;
+  fetched: SafeFetchResult;
+  attachment: HistoryAttachment | undefined;
+}> {
+  const { fetched, attachment } = await fetchIngestDocument(url, deps, signal);
   const doc = await parseFetched(fetched, deps, signal);
   signal?.throwIfAborted();
   if (options.commitCache !== false)
     await fetched.commitCache?.().catch(() => undefined);
-  return doc;
+  return { doc, fetched, attachment };
+}
+
+export async function fetchAndParseDocument(
+  url: string,
+  deps: ReadDocumentDeps,
+  signal?: AbortSignal,
+  options: { commitCache?: boolean } = {},
+): Promise<NormalizedDoc> {
+  return (await readDocument(url, deps, signal, options)).doc;
 }
 
 async function ingestWithinLimits(
@@ -649,7 +728,20 @@ async function ingestWithinLimits(
   const { signal } = opts;
   deps = { ...deps, parseLimits: deps.parseLimits ?? readParseLimits() };
   opts.onProgress?.({ stage: 'fetching', detail: url });
-  const { fetched, attachment } = await fetchIngestDocument(url, deps, signal);
+  // Admitted bytes are the ones that were priced: reading them again is what keeps the quote
+  // honest, so a bill that changed (or is byte-volatile) since the quote cannot be swapped in.
+  const reuse = deps.admitted?.fetched;
+  const { fetched, attachment } = reuse
+    ? {
+        fetched: reuse,
+        attachment: await refreshedAttachment(
+          url,
+          deps.admitted?.attachment,
+          deps,
+          signal,
+        ),
+      }
+    : await fetchIngestDocument(url, deps, signal);
   const docId = fetched.docId;
   if (deps.admitted && deps.admitted.docId !== docId)
     throw new AppError(

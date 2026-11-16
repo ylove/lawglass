@@ -174,7 +174,7 @@ describe('the default plan', () => {
     expect(resolveHistory(BILLS['S. 1582'])).toMatchObject({
       source: 'govinfo',
     });
-    expect(resolveHistory(BILLS['S. 5687'])).toMatchObject({
+    expect(resolveHistory(BILLS['S. 2200'])).toMatchObject({
       source: 'govinfo',
     });
     expect(resolveHistory(BILLS['H.R. 5009 (NDAA)'])).toMatchObject({

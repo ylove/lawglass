@@ -428,7 +428,7 @@ describe('onJobEnd: exactly once per admitted job', () => {
     expect(end.delivered).toBe('partial');
   });
 
-  test('ingest: a source that changed after admission is failed', async () => {
+  test('ingest: a source that changes after admission is not read again; the measured bill is', async () => {
     let admissions = 0;
     const a = hosted({
       admission: (c, job) => {
@@ -448,9 +448,9 @@ describe('onJobEnd: exactly once per admitted job', () => {
     });
     env.serve(url, makeSectionedText(), 'text/plain');
     const res = await call(a, '/api/ingest', { body: { url } });
-    expect(await res.text()).toContain('"type":"error"');
+    expect(await res.text()).toContain('"type":"done"');
     const end = await onlyEnd('ingest');
-    expect(end.outcome).toBe('failed');
+    expect(end.outcome).toBe('ok');
   });
 
   test('ingest: a wrapper page that lists candidate files ends the job as failed', async () => {

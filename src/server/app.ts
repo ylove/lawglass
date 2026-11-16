@@ -20,9 +20,9 @@ import { BRAND, envVar } from '../core/brand.js';
 import {
   AppError,
   AskRequest,
-  type NormalizedDoc,
   CandidateLink,
   ClientConfig,
+  type NormalizedDoc,
   DocSummary,
   IngestRequest,
   isAppError,
@@ -33,14 +33,17 @@ import {
 import { parsePdf as defaultParsePdf } from '../core/parse/index.js';
 import { readParseLimits } from '../core/parse/limits.js';
 import { ask, ingest, sectionExcerpt } from '../core/pipeline/index.js';
-import { fetchAndParseDocument } from '../core/pipeline/ingest.js';
+import {
+  parseDocument,
+  readDocument,
+  type IngestDeps,
+} from '../core/pipeline/ingest.js';
 import { sharedLimits } from '../core/pipeline/limits.js';
 import {
   billFacts,
   newSpend,
   runInJob,
   tierName,
-  type BillEstimate,
   type BillFacts,
   type FeatureEstimate,
   addBudget,
@@ -104,9 +107,13 @@ import {
   questionEstimate,
   quoteFacts,
   QuoteStore,
+  QuotedDownloads,
+  type QuotedDownload,
+  sameQuotedBill,
   quoteTiers,
   type QuoteOptions,
 } from './quotes.js';
+import { KeyedLock } from './keyed-lock.js';
 import { readExamples } from './examples.js';
 import {
   isReaderId,
@@ -228,7 +235,9 @@ export interface AppOptions {
 const HOUR_MS = 60 * 60 * 1000;
 const GENERIC_ERROR = 'Something went wrong. Please try again.';
 
-const STATUS: Partial<Record<AppError['code'], 400 | 402 | 403 | 404 | 429>> = {
+const STATUS: Partial<
+  Record<AppError['code'], 400 | 402 | 403 | 404 | 429 | 502>
+> = {
   PAYMENT_REQUIRED: 402,
   BUDGET_EXHAUSTED: 403,
   INVALID_INPUT: 400,
@@ -238,6 +247,8 @@ const STATUS: Partial<Record<AppError['code'], 400 | 402 | 403 | 404 | 429>> = {
   PUBLIC_MODE_FORBIDDEN: 403,
   DOC_CAP_REACHED: 403,
   RATE_LIMITED: 429,
+  // The source could not be read (for example, no usable text version): not our fault, not a crash.
+  FETCH_FAILED: 502,
 };
 
 /** Only an AppError's plain-language message may reach the client; anything else is generic. */
@@ -618,6 +629,15 @@ export function createApp(
   const estimating =
     options.admission !== undefined || options.modelFor !== undefined;
   const quotes = new QuoteStore(now);
+  const downloadLock = new KeyedLock();
+  const lockKey = (reader: string | undefined, url: string): string =>
+    JSON.stringify([reader ?? null, url]);
+  const quotedDownloads = new QuotedDownloads(
+    now,
+    undefined,
+    undefined,
+    options.quote?.downloadBudgetBytes,
+  );
   // Per signed-in reader (auth and private modes), so one account cannot drive unbounded fetches.
   const readerQuotes = new SlidingWindowLimiter(
     options.quote?.perReaderPerHour ?? 60,
@@ -1386,46 +1406,94 @@ export function createApp(
     // The same concurrency pool as an ingest, so a burst of quotes or refused ingests cannot
     // start more downloads and parses than ingests could.
     const release = await sharedLimits().acquire('ingest', signal);
-    let doc;
-    let facts: BillFacts;
+    let read;
+    let sized;
     try {
-      const parseLimits = ingestParseLimits();
-      doc = await fetchAndParseDocument(
-        url,
-        {
-          fetcher: ingestFetcher(),
-          now: runtime.now,
-          parsePdf: runtime.parsePdf ?? defaultParsePdf,
-          parseLimits,
-        },
-        signal,
+      read = await readDocument(url, readDeps(), signal, {
         // A quote stores nothing, not even the download.
-        { commitCache: false },
-      );
-      // Sizing chunks and enriches the document, the same work an ingest does, so it stays
-      // inside the permit and under the ingest's own limits: a bill the ingest would refuse is
-      // refused here. Its U.S. Code references are not read yet; they are sized at their longest.
-      facts = billFacts(doc.sections, {
-        breakdownUnitCap: coverage.breakdownUnitCap,
-        document: doc,
-        // The U.S. Code references are read at ingest, not here.
-        preIngest: true,
-        // The budget the runtime's own whole-bill decision reads.
-        wholeBillMaxTokens: wholeBillBudget(),
-        limits: {
-          maxChunks: parseLimits.maxChunks,
-          timeoutMs: parseLimits.timeoutMs,
-          signal,
-        },
+        commitCache: false,
       });
+      // Sizing chunks and enriches the document, the same work an ingest does, so it stays
+      // inside the permit and under the ingest's own limits.
+      sized = sizeOf(read.doc, signal);
     } finally {
       release();
     }
+    // The parse tree has done its job (`readDocument` parsed with it). Dropped here so no caller,
+    // such as a route waiting on a host's admission, keeps it alive.
     return {
-      doc,
+      ...read,
+      fetched: { ...read.fetched, preparedHtml: undefined },
+      ...sized,
+    };
+  }
+
+  const readDeps = () => ({
+    fetcher: ingestFetcher(),
+    now: runtime.now,
+    parsePdf: runtime.parsePdf ?? defaultParsePdf,
+    parseLimits: ingestParseLimits(),
+  });
+
+  /**
+   * What a quote shows and prices for a parsed document. Callers hold the ingest permit: the
+   * sizing runs under the ingest's own chunk and time limits, so a bill the ingest would refuse
+   * is refused here. The U.S. Code references are read at ingest, so they are sized as
+   * placeholders (`preIngest`).
+   */
+  function sizeOf(doc: NormalizedDoc, signal: AbortSignal) {
+    const parseLimits = ingestParseLimits();
+    const facts = billFacts(doc.sections, {
+      breakdownUnitCap: coverage.breakdownUnitCap,
+      document: doc,
+      preIngest: true,
+      // The budget the runtime's own whole-bill decision reads.
+      wholeBillMaxTokens: wholeBillBudget(),
+      limits: {
+        maxChunks: parseLimits.maxChunks,
+        timeoutMs: parseLimits.timeoutMs,
+        signal,
+      },
+    });
+    return {
       publicFacts: quoteFacts(doc, facts),
       estimates: estimatesFor(facts, tiers(), options.quote, coverage),
     };
+  }
+
+  /**
+   * Parses a kept download whose parse was too big to keep. Same pool and limits as `measure`,
+   * no fetch. Parsing is deterministic, but the result is checked against what was priced.
+   */
+  async function reparse(
+    kept: QuotedDownload,
+    signal: AbortSignal,
+  ): Promise<QuotedDownload> {
+    const release = await sharedLimits().acquire('ingest', signal);
+    let doc: NormalizedDoc;
+    let sized: ReturnType<typeof sizeOf>;
+    try {
+      doc = await parseDocument(kept.fetched, readDeps(), signal);
+      // Held through the sizing, as in `measure`: it is the same chunking work.
+      sized = sizeOf(doc, signal);
+    } finally {
+      release();
+    }
+    if (
+      !sameQuotedBill(
+        { facts: kept.publicFacts, estimates: kept.estimates },
+        sized,
+      )
+    )
+      throw new AppError(
+        'PAYMENT_REQUIRED',
+        'The bill no longer parses as it was quoted.',
+        {
+          userMessage:
+            'This bill changed after it was quoted. Please start again to get a new quote.',
+        },
+      );
+    return { ...kept, doc };
   }
 
   app.post('/api/quote', async (c) => {
@@ -1448,14 +1516,29 @@ export function createApp(
       throw new AppError('RATE_LIMITED');
     if (hosted && !publicMode && !readerQuotes.take(readerFor(c)))
       throw new AppError('RATE_LIMITED');
-    const measured = await measure(body.url, c.req.raw.signal);
-    const { quoteId } = quotes.add({
-      url: body.url,
-      contentHash: measured.doc.docId,
-      facts: measured.publicFacts,
-      estimates: measured.estimates,
-      readerId: readerFor(c),
-    });
+    // Ordered with admissions of the same reader and address: the kept bytes and the quote
+    // the reader sees last must be the same download.
+    const { quoteId, measured } = await downloadLock.run(
+      lockKey(readerFor(c), body.url),
+      async (lease) => {
+        const signal = AbortSignal.any([c.req.raw.signal, lease]);
+        const measured = await measure(body.url, signal);
+        // Past the lease another request may hold the key and have replaced the kept bytes:
+        // this quote must not be returned or stored over them.
+        signal.throwIfAborted();
+        const { quoteId } = quotes.add({
+          url: body.url,
+          contentHash: measured.doc.docId,
+          facts: measured.publicFacts,
+          estimates: measured.estimates,
+          readerId: readerFor(c),
+        });
+        // The ingest this quote leads to reads these bytes instead of downloading again.
+        quotedDownloads.put(readerFor(c), body.url, measured);
+        return { quoteId, measured };
+      },
+      c.req.raw.signal,
+    );
     return c.json({
       quoteId,
       facts: measured.publicFacts,
@@ -1501,17 +1584,21 @@ export function createApp(
 
   /**
    * Admission for an ingest, new or reused. Needs the bill's size, so it fetches and parses
-   * first (or reuses the quote this server issued to the reader); no model has been called yet.
-   * The measured document is handed to the ingest so it is parsed once, and the ingest refuses
-   * if the bytes it fetches turn out to be a different document.
+   * first; no model has been called yet. It reuses the download this reader was last priced on
+   * for this URL (from a quote or an earlier admission), because a host binds its own quote to
+   * the docId it sees here and never sends ours back. The bytes are handed to the ingest, so the
+   * bill is downloaded and parsed once and the ingest reads exactly what was priced. If our own
+   * quote is presented, the bill must still match it, or the reader is quoted again.
    */
-  async function admitIngest(
+  async function admitIngestUnlocked(
     c: Context,
     body: { url: string; quoteId?: string | undefined },
+    /** Aborts when this request's turn at the lock runs out; what it decides is then stale. */
+    lease?: AbortSignal,
   ): Promise<
     | {
         scope: JobScope;
-        admitted?: { docId: string; doc?: NormalizedDoc };
+        admitted?: NonNullable<IngestDeps['admitted']>;
         settlement?: JobSettlement | undefined;
         /** Everything already exists for the reader's tier: the grant will have nothing to do. */
         docComplete?: boolean;
@@ -1523,17 +1610,49 @@ export function createApp(
   > {
     if (!hooked) return undefined;
     if (!estimating) return { scope: makeScope(c, { kind: 'ingest' }, {}) };
+    const signal = lease
+      ? AbortSignal.any([c.req.raw.signal, lease])
+      : c.req.raw.signal;
     const live = quotes.get(body.quoteId, readerFor(c), body.url);
-    let admitted: { docId: string; doc?: NormalizedDoc };
-    let estimates: Record<string, BillEstimate>;
-    if (live) {
-      admitted = { docId: live.contentHash };
-      estimates = live.estimates;
+    const reader = readerFor(c);
+    const kept = quotedDownloads.get(reader, body.url);
+    // Our quote, if any, must still describe the kept bytes. A host's own quote is not ours to
+    // check here: it binds to the docId this ingest is admitted with, which is the kept one.
+    const keptMatches =
+      kept !== undefined &&
+      (!live ||
+        kept.fetched.docId === live.contentHash ||
+        sameQuotedBill(live, kept));
+    let source: QuotedDownload;
+    if (kept && keptMatches) {
+      source = kept.doc ? kept : await reparse(kept, signal);
+      // The time a host takes to answer 402 and be confirmed is not the download's age.
+      quotedDownloads.touch(reader, body.url, kept);
     } else {
-      const measured = await measure(body.url, c.req.raw.signal);
-      admitted = { docId: measured.doc.docId, doc: measured.doc };
-      estimates = measured.estimates;
+      // Nothing kept for this reader and address, or it is not what the quote priced.
+      const measured = await measure(body.url, signal);
+      // Bytes may differ on every download, so compare what was priced, not the hash.
+      if (live && !sameQuotedBill(live, measured))
+        throw new AppError(
+          'PAYMENT_REQUIRED',
+          'The bill changed after it was quoted.',
+          {
+            userMessage:
+              'This bill changed after it was quoted. Please start again to get a new quote.',
+          },
+        );
+      // Stored before the host's admission runs: if it answers 402 with a quote bound to this
+      // docId, the confirm must read these very bytes.
+      source = quotedDownloads.put(reader, body.url, measured);
     }
+    const admitted: NonNullable<IngestDeps['admitted']> = {
+      docId: source.fetched.docId,
+      ...(source.doc ? { doc: source.doc } : {}),
+      fetched: source.fetched,
+      attachment: source.attachment,
+    };
+    // The bytes being read, which match any quote of ours, so the host prices what is indexed.
+    const estimates = source.estimates;
     const fields = {
       kind: 'ingest' as const,
       docId: admitted.docId,
@@ -1551,15 +1670,27 @@ export function createApp(
       estimate: firstOf(estimates),
       estimates,
     };
+    // A reader who left while this waited or measured is not worth asking the host about.
+    signal.throwIfAborted();
     const models = options.modelFor
       ? checkedChoice(options.modelFor(fields, c))
       : undefined;
     const docComplete = await generationComplete(c, admitted.docId, models);
-    const { budget, ref } = await consult(c, {
-      ...fields,
-      tier: tierName(models),
-      ...(docComplete ? { docComplete } : {}),
-    });
+    signal.throwIfAborted();
+    let decision: Awaited<ReturnType<typeof consult>>;
+    try {
+      decision = await consult(c, {
+        ...fields,
+        tier: tierName(models),
+        ...(docComplete ? { docComplete } : {}),
+      });
+    } catch (error) {
+      // A refusal (a quote) that arrives after this turn ended is bound to bytes that may have
+      // been replaced: never served; the reader retries.
+      signal.throwIfAborted();
+      throw error;
+    }
+    const { budget, ref } = decision;
     const scope = makeScope(
       c,
       { kind: 'ingest', docId: admitted.docId },
@@ -1567,6 +1698,15 @@ export function createApp(
     );
     // Only a job the host admitted has an end to report.
     const settlement = options.admission ? settlementFor(c, scope) : undefined;
+    // The host's answer, or the setup after it, can come too late (the reader left, or the lease
+    // ran out): tell the host the job ended so it releases what it holds, and start nothing.
+    // `fail` reaches the host once, so calling this after each wait is safe.
+    const settleIfAborted = async (): Promise<void> => {
+      if (!signal.aborted) return;
+      await settlement?.fail(signal.reason);
+      signal.throwIfAborted();
+    };
+    await settleIfAborted();
     // Asked now, before the ingest starts and before this job can end: a host that credits its
     // ledger when the job ends `ok` is never consulted after its own credit, so the grant the
     // server adds to a restored scope is counted exactly once.
@@ -1586,6 +1726,8 @@ export function createApp(
         throw error;
       }
     }
+    // The last wait after the host's allow was the saved-scope lookup above.
+    await settleIfAborted();
     return {
       scope,
       admitted,
@@ -1594,6 +1736,24 @@ export function createApp(
       saved,
       savedResolved: options.backgroundScope !== undefined,
     };
+  }
+
+  /**
+   * One at a time per reader and address, from the lookup of kept bytes through the host's
+   * admission answer. Otherwise two requests could each measure, or a quote could replace the
+   * kept bytes while an admission is waiting on the host, and the quote the reader sees last
+   * would be bound to bytes that are no longer kept. Released before the ingest itself runs.
+   */
+  function admitIngest(
+    c: Context,
+    body: { url: string; quoteId?: string | undefined },
+  ): ReturnType<typeof admitIngestUnlocked> {
+    if (!hooked || !estimating) return admitIngestUnlocked(c, body);
+    return downloadLock.run(
+      lockKey(readerFor(c), body.url),
+      (lease) => admitIngestUnlocked(c, body, lease),
+      c.req.raw.signal,
+    );
   }
 
   app.post('/api/ingest', async (c) => {
