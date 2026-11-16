@@ -1670,12 +1670,15 @@ export function createApp(
     );
     // Only a job the host admitted has an end to report.
     const settlement = options.admission ? settlementFor(c, scope) : undefined;
-    if (signal.aborted) {
-      // The host's answer came too late (the reader left, or the lease ran out): tell it the
-      // job ended so it releases whatever it holds, and start nothing.
+    // The host's answer, or the setup after it, can come too late (the reader left, or the lease
+    // ran out): tell the host the job ended so it releases what it holds, and start nothing.
+    // `fail` reaches the host once, so calling this after each wait is safe.
+    const settleIfAborted = async (): Promise<void> => {
+      if (!signal.aborted) return;
       await settlement?.fail(signal.reason);
       signal.throwIfAborted();
-    }
+    };
+    await settleIfAborted();
     // Asked now, before the ingest starts and before this job can end: a host that credits its
     // ledger when the job ends `ok` is never consulted after its own credit, so the grant the
     // server adds to a restored scope is counted exactly once.
@@ -1695,6 +1698,8 @@ export function createApp(
         throw error;
       }
     }
+    // The last wait after the host's allow was the saved-scope lookup above.
+    await settleIfAborted();
     return {
       scope,
       admitted,

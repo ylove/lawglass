@@ -413,6 +413,40 @@ describe('requests of one reader for one address are ordered', () => {
 });
 
 describe('a reader who leaves', () => {
+  test("while the host's saved scope is pending: no ingest starts and the job ends once", async () => {
+    const lookup = deferred();
+    const looking = deferred();
+    const ends: string[] = [];
+    const gone = new AbortController();
+    const a = hosted({
+      admission: () => Promise.resolve({ allow: true as const, ref: 'r' }),
+      backgroundScope: async () => {
+        looking.resolve();
+        await lookup.promise;
+        return undefined;
+      },
+      onJobEnd: (end) => {
+        ends.push(end.outcome);
+      },
+    });
+    const response = Promise.resolve(
+      a.request('/api/ingest', {
+        method: 'POST',
+        headers: { 'x-reader': 'alice', 'content-type': 'application/json' },
+        body: JSON.stringify({ url, quoteId: 'host-q' }),
+        signal: gone.signal,
+      }),
+    ).catch(() => undefined);
+    await looking.promise;
+    gone.abort();
+    lookup.resolve();
+    await response;
+    await flush();
+    expect(ends).toHaveLength(1);
+    expect(ends[0]).not.toBe('ok');
+    expect(await env.registry.list()).toEqual([]);
+  });
+
   const go = (a: Hono, signal: AbortSignal, quoteId = 'host-q') =>
     Promise.resolve(
       a.request('/api/ingest', {
@@ -548,6 +582,32 @@ describe('a host that answers after the lock lease ran out', () => {
     });
     expect(seen.at(-1)).toBe(latest.facts.contentHash);
     expect(seen[0]).not.toBe(latest.facts.contentHash);
+  });
+
+  test("lease expiry while the host's saved scope is pending starts no ingest and ends the job once", async () => {
+    const lookup = deferred();
+    const looking = deferred();
+    const ends: string[] = [];
+    const a = hosted({
+      admission: () => Promise.resolve({ allow: true as const, ref: 'r' }),
+      backgroundScope: async () => {
+        looking.resolve();
+        await lookup.promise;
+        return undefined;
+      },
+      onJobEnd: (end) => {
+        ends.push(end.outcome);
+      },
+    });
+    const response = post(a, '/api/ingest', { url, quoteId: 'host-q' });
+    await looking.promise;
+    await vi.advanceTimersByTimeAsync(LEASE);
+    lookup.resolve();
+    expect((await response).status).not.toBe(200);
+    await flush();
+    expect(ends).toHaveLength(1);
+    expect(ends[0]).not.toBe('ok');
+    expect(await env.registry.list()).toEqual([]);
   });
 
   test('a late allow ends the job once, not ok, and registers nothing', async () => {
