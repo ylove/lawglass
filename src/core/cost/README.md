@@ -27,10 +27,18 @@ limit. Default zero is an explicit uncalibrated assumption. Use usage events to 
 The default cache policy `reuse` charges an initial write per feature and reads on later calls
 in the **low** bound, assuming a five-minute cache lifetime. The **high** bound never counts on a
 cache hit: background batches can run further apart than the cache lasts, so every cached prefix
-is priced as a write. Contexts are multiplied by a prompt markup (1.1 low, 1.25 high) for the
-escaped `<part>` tags, ids and page/line markers that chars/4 does not see (measured at about
-1.16 on a 380K-character bill), so long-context pricing tiers apply when the real prompt crosses
-them. Use `cold` to charge a write on every call, or `none`
+is priced as a write. Excerpt-mode contexts are multiplied by a prompt markup (1.1 low, 1.25
+high) for the escaped `<excerpt>` tags, ids and page/line markers that chars/4 does not see
+(measured at about 1.16 on a 380K-character bill).
+
+Whole-bill contexts (summary, breakdown, summary scenario and questions in whole mode) are not
+scaled that way. `billFacts` builds the real `<part>` blocks (`prompt-size.ts` runs the chunker
+and the answer pipeline's own formatter, so markup per part follows the heading path, ids and
+page/line markers of that bill) and reports `wholePromptCharacters`, including any
+`references` text. The estimator divides that by a characters-per-token figure measured in the
+calibration run: 2.8 for the low bound and 2.4 for the high bound (derivation in `estimate.ts`;
+the old chars/4 times 1.25 ran up to 1.87x low on bills with many short sections, #410). Long-context
+pricing tiers apply when the real prompt crosses them. Use `cold` to charge a write on every call, or `none`
 for providers without prompt caching. Summary scenarios and examples currently send their
 context uncached. Summary and breakdown picture jobs batch separately and send generated
 item text, not the bill. Their item counts are forecasts from map/brief counts, because a
