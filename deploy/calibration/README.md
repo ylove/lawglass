@@ -12,7 +12,7 @@ Five smaller bills on two plans, then the NDAA on one:
 
 | Bill                                                                    | Plans                                                                    |
 | ----------------------------------------------------------------------- | ------------------------------------------------------------------------ |
-| S. 1582 (119th), S. 5687 (118th), NY A. 5000, NJ S. 1000, Ohio S.B. 113 | Haiku 5.5 (answer and extract); Sonnet 5.5 answer with Haiku 5.5 extract |
+| S. 1582 (119th), S. 2200 (118th), NY A. 5000, NJ S. 1000, Ohio S.B. 113 | Haiku 5.5 (answer and extract); Sonnet 5.5 answer with Haiku 5.5 extract |
 | H.R. 5009 (118th, NDAA)                                                 | Haiku 5.5 only; breakdown capped at 30 parts, examples `small`           |
 
 Small bills use full coverage (`breakdownMaxUnits: all`, `pregenerateExamples: all`). The order is Haiku runs, then the NDAA, then Sonnet runs, so the cheap and most useful numbers exist if the cap binds. Replace the plan with `--plan plan.json` (an array of `{bill, url, plan, answerModel, extractModel, breakdownMaxUnits, pregenerateExamples}`) and filter with `--only <text>`.

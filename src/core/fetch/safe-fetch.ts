@@ -290,6 +290,10 @@ export async function safeFetch(
         const result = makeResult(bytes, url.href, contentType, false, opts);
         const finalUrl = url.href;
         const budgetBytes = opts.cacheBudgetBytes ?? DEFAULT_CACHE_BUDGET_BYTES;
+        // Read here, not through `result` inside `commit`: a closure that names `result` keeps its
+        // parse-time DOM alive for as long as the caller holds `commitCache`, which a server
+        // that keeps downloads between a quote and an ingest does for minutes.
+        const docId = result.docId;
         const commit = async (): Promise<void> => {
           await writeCache(
             bytes,
@@ -302,7 +306,7 @@ export async function safeFetch(
             cacheDir,
             { budgetBytes },
           );
-          await evictToBudget(cacheDir, budgetBytes, result.docId);
+          await evictToBudget(cacheDir, budgetBytes, docId);
         };
         if (opts.deferCacheWrite) return { ...result, commitCache: commit };
         await commit();

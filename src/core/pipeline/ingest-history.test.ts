@@ -13,7 +13,12 @@ import { makeCongressionalBillXml } from '../../../tests/synth/index.js';
 import { safeFetch } from '../fetch/index.js';
 import * as historyStore from '../history/history-store.js';
 import { Registry } from '../registry.js';
-import { ingest, type IngestDeps, type Fetcher } from './ingest.js';
+import {
+  ingest,
+  readDocument,
+  type IngestDeps,
+  type Fetcher,
+} from './ingest.js';
 import { AppError } from '../model/index.js';
 
 let dir: string;
@@ -396,4 +401,49 @@ test('an aborted history read is propagated instead of ingesting text', async ()
     ingest(`${page}/text/ih`, deps, { signal: controller.signal }),
   ).rejects.toThrow();
   expect(deps.fetcher).toHaveBeenCalledOnce();
+});
+
+test('admitted bytes quoted while history was down get their history at ingest, with no second text download', async () => {
+  agent.get(origin).intercept({ path: statusPath }).reply(503, 'unavailable');
+  serveText('ih');
+  const read = await readDocument(`${page}/text/ih`, deps);
+  expect(read.attachment?.record).toBeUndefined();
+  // History is back; the text is NOT served again, so a second download would fail the test.
+  serveStatus();
+  serveDirectory();
+  const result = await ingest(`${page}/text/ih`, {
+    ...deps,
+    admitted: {
+      docId: read.fetched.docId,
+      doc: read.doc,
+      fetched: read.fetched,
+      attachment: read.attachment,
+    },
+  });
+  expect(result.normalized.warnings.join(' ')).not.toMatch(
+    /History unavailable/,
+  );
+  expect(await historyStore.readHistory(dir, result.doc.docId)).toBeDefined();
+  agent.assertNoPendingInterceptors();
+});
+
+test('admitted bytes keep the failed history when it is still down at ingest', async () => {
+  agent
+    .get(origin)
+    .intercept({ path: statusPath })
+    .reply(503, 'unavailable')
+    .times(2);
+  serveText('ih');
+  const read = await readDocument(`${page}/text/ih`, deps);
+  const result = await ingest(`${page}/text/ih`, {
+    ...deps,
+    admitted: {
+      docId: read.fetched.docId,
+      doc: read.doc,
+      fetched: read.fetched,
+      attachment: read.attachment,
+    },
+  });
+  expect(result.normalized.warnings.join(' ')).toMatch(/History unavailable/);
+  expect(await deps.backend.hasDocument(result.doc.docId)).toBe(true);
 });
