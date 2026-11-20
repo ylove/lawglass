@@ -16,11 +16,12 @@ import {
   ScenarioResponse,
   SectionExcerpt,
   SummaryResponse,
-  type AskRequest,
   type IngestRequest,
   type ScenarioRequest,
 } from '../core/model/index.js';
-import { createMockApi } from './mock-api.js';
+import type { AskWithMode } from '../core/answer/modes.js';
+import { QuestionQuoteResponse } from '../core/answer/question-quote.js';
+import { createMockApi, MOCK_QUESTION_QUOTE } from './mock-api.js';
 import {
   ApiError,
   DEFAULT_IDLE_MS,
@@ -77,9 +78,17 @@ export interface ApiClient {
   ingest(req: IngestRequest, signal?: AbortSignal): AsyncIterable<IngestEvent>;
   ask(
     docId: string,
-    req: AskRequest,
+    req: AskWithMode,
     signal?: AbortSignal,
   ): AsyncIterable<AskEvent>;
+  /**
+   * What a question costs in each answer mode, in the host's units; `quote` is null when the
+   * server has no host hook (a local run), and the question is then asked directly.
+   */
+  getQuestionQuote(
+    docId: string,
+    signal?: AbortSignal,
+  ): Promise<QuestionQuoteResponse>;
 }
 
 export interface HttpApiOptions {
@@ -316,6 +325,13 @@ export function createHttpApi(options: HttpApiOptions = {}): ApiClient {
     ingest: (req, signal) => stream('/api/ingest', req, IngestEvent, signal),
     ask: (docId, req, signal) =>
       stream(`${docPath(docId)}/ask`, req, AskEvent, signal),
+    getQuestionQuote: (docId, signal) =>
+      request(`${docPath(docId)}/question-quote`, QuestionQuoteResponse, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{}',
+        ...(signal ? { signal } : {}),
+      }),
   };
 }
 
@@ -352,7 +368,13 @@ export function selectApi(search: string, envFlag?: string): ApiClient {
     const mock =
       new URLSearchParams(search).get('mock') === '1' ||
       (envFlag !== undefined && envFlag !== '' && envFlag !== '0');
-    if (mock) return createMockApi({ publicMode: isPublicMock(search) });
+    if (mock)
+      return createMockApi({
+        publicMode: isPublicMock(search),
+        ...(new URLSearchParams(search).get('quote') === '1'
+          ? { questionQuote: MOCK_QUESTION_QUOTE }
+          : {}),
+      });
   }
   return createHttpApi();
 }

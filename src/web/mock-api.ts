@@ -6,7 +6,6 @@ import {
   DECLINE_TEXT,
   type AnswerResult,
   type AskEvent,
-  type AskRequest,
   type BillHistory,
   type BreakdownResponse,
   type SectionBrief,
@@ -26,6 +25,8 @@ import {
   type SponsorProfile,
   type SummaryResponse,
 } from '../core/model/index.js';
+import type { AskWithMode } from '../core/answer/modes.js';
+import type { QuestionQuote } from '../core/answer/question-quote.js';
 import { listItems } from '../core/answer/list-items.js';
 import { BRAND } from '../core/brand.js';
 import { NO_EXAMPLE_NOTE } from '../core/breakdown/notes.js';
@@ -37,7 +38,17 @@ export interface MockApiOptions {
   delayMs?: number;
   /** Simulates a public server: no freeform questions. */
   publicMode?: boolean;
+  /** Simulates a host's question quote (`?mock=1&quote=1` in the browser). Default: no hook. */
+  questionQuote?: QuestionQuote | undefined;
 }
+
+/** The demo quote: a whole-bill read costs four of the reader's questions, a focused one costs one. */
+export const MOCK_QUESTION_QUOTE: QuestionQuote = {
+  whole: { units: 4 },
+  focused: { units: 1 },
+  remaining: 30,
+  unit: 'questions',
+};
 
 export const MOCK_HINT =
   'Demo mode. Any web address works. Try one containing "wrapper" to see the file picker, "fail" to see an error, or ending in .xml for a document without page and line numbers. One containing "charter" gives a scanned city charter amendment.';
@@ -1028,9 +1039,12 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
       };
     },
 
+    getQuestionQuote: () =>
+      Promise.resolve({ quote: options.questionQuote ?? null }),
+
     async *ask(
       docId: string,
-      req: AskRequest,
+      req: AskWithMode,
       signal?: AbortSignal,
     ): AsyncGenerator<AskEvent> {
       const doc = need(docId);

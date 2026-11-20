@@ -2,11 +2,9 @@
 // "referenced, not loaded" panel. This file keeps the state and the SSE run; the pieces it
 // composes live in ./document/.
 import { useEffect, useRef, useState } from 'react';
-import type {
-  AskRequest,
-  ClientConfig,
-  DocDetail,
-} from '../core/model/index.js';
+import type { AskWithMode } from '../core/answer/modes.js';
+import type { QuestionQuote } from '../core/answer/question-quote.js';
+import type { ClientConfig, DocDetail } from '../core/model/index.js';
 import type { ApiClient } from './api.js';
 import { CitationDrawer } from './CitationDrawer.js';
 import { AnswerCard } from './document/AnswerCard.js';
@@ -14,6 +12,10 @@ import { LocateCard } from './document/LocateCard.js';
 import { AskForm } from './document/AskForm.js';
 import { BreakdownPanel } from './document/BreakdownPanel.js';
 import { ChipRow } from './document/ChipRow.js';
+import {
+  needsModeChoice,
+  QuestionModeDialog,
+} from './document/QuestionModeDialog.js';
 import { MetadataHeader } from './document/MetadataHeader.js';
 import { NoticeBar } from './document/NoticeBar.js';
 import { ReferencedCard } from './document/ReferencedCard.js';
@@ -54,6 +56,12 @@ export function DocumentView({
     sectionId: string;
     trigger: HTMLElement;
   } | null>(null);
+  // A typed question held while the reader chooses how much of the bill to read (issue #429).
+  const [choosing, setChoosing] = useState<{
+    question: string;
+    quote: QuestionQuote;
+  } | null>(null);
+  const [checking, setChecking] = useState(false);
   const abort = useRef<AbortController | null>(null);
   const nextTurnId = useRef(0);
   const loaded = useRef(onLoaded);
@@ -77,9 +85,31 @@ export function DocumentView({
     };
   }, [api, docId, attempt]);
 
-  const busy = turn?.phase === 'searching' || turn?.phase === 'writing';
+  const busy =
+    checking || turn?.phase === 'searching' || turn?.phase === 'writing';
 
-  async function run(req: AskRequest, label: string) {
+  /**
+   * Asks the host what each answer mode costs, when the server has a host hook, and holds the
+   * question for a choice if the whole-bill read costs more. Anything else is asked directly:
+   * no hook, one price for both, or a quote that could not be fetched (the host's admission
+   * still decides whether the question may run).
+   */
+  async function ask(question: string) {
+    if (busy) return;
+    setChecking(true);
+    let quote: QuestionQuote | null = null;
+    try {
+      quote = (await api.getQuestionQuote(docId)).quote;
+    } catch {
+      /* ask directly */
+    } finally {
+      setChecking(false);
+    }
+    if (quote && needsModeChoice(quote)) setChoosing({ question, quote });
+    else void run({ question }, question);
+  }
+
+  async function run(req: AskWithMode, label: string) {
     if (busy) return;
     abort.current?.abort();
     const controller = new AbortController();
@@ -229,7 +259,7 @@ export function DocumentView({
             <AskForm
               busy={busy}
               onAsk={(q) => {
-                void run({ question: q }, q);
+                void ask(q);
               }}
             />
           )}
@@ -264,6 +294,19 @@ export function DocumentView({
           />
         </aside>
       </div>
+      {choosing && (
+        <QuestionModeDialog
+          quote={choosing.quote}
+          onChoose={(mode) => {
+            const { question } = choosing;
+            setChoosing(null);
+            void run({ question, mode }, question);
+          }}
+          onCancel={() => {
+            setChoosing(null);
+          }}
+        />
+      )}
       {open && (
         <CitationDrawer
           key={open.sectionId}
