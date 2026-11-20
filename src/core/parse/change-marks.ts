@@ -24,12 +24,21 @@ const NJ_HOSTS = new Set([
   'pub.njleg.state.nj.us',
 ]);
 
+const PA_HOSTS = new Set([
+  'palegis.us',
+  'www.palegis.us',
+  'legis.state.pa.us',
+  'www.legis.state.pa.us',
+]);
+
 export function changeMarkJurisdiction(
   context: ChangeMarkContext,
-): 'NY' | 'NJ' | undefined {
+): 'NY' | 'NJ' | 'PA' | undefined {
   const host = new URL(context.sourceUrl).hostname;
   if (NY_HOSTS.has(host) || context.jurisdiction === 'New York') return 'NY';
   if (NJ_HOSTS.has(host) || context.jurisdiction === 'New Jersey') return 'NJ';
+  if (PA_HOSTS.has(host) || context.jurisdiction === 'Pennsylvania')
+    return 'PA';
   return undefined;
 }
 
@@ -39,6 +48,24 @@ const NY_LEGEND =
   /EXPLANATION\s*[-–—]+\s*Matter in italics\s*\(underscored\) is new;\s*matter in brackets\s*\[\s*\]\s*is old law to be omitted\./gi;
 const NJ_LEGEND =
   /EXPLANATION\s*[-–—]+\s*Matter enclosed in bold-faced brackets\s*\[thus\]\s*in the above bill is\s*not enacted and is intended to be omitted in the law\.\s*Matter underlined thus is new matter\.?/gi;
+
+/**
+ * Pennsylvania prints no legend on the bill itself. The legislature explains its marks on a
+ * separate help page ("Explanation to facilitate reading of legislative bills"): light face
+ * brackets "are used only in bills amending an existing law" and enclose old law to be omitted.
+ * So the gate is the printed cover plus the bill saying it amends something; a standalone act
+ * or resolution, where a bracket is ordinary punctuation, is left alone.
+ */
+const PA_COVER = /THE\s+GENERAL\s+ASSEMBLY\s+OF\s+PENNSYLVANIA/;
+const PA_AMENDATORY = /\b(?:Amending|(?:is|are|be) amended)\b/;
+/** The cover is on page one; mentions deep in a bill's prose do not count. */
+const PA_COVER_WINDOW = 3000;
+
+export function pennsylvaniaAmendingBill(text: string): boolean {
+  return (
+    PA_COVER.test(text.slice(0, PA_COVER_WINDOW)) && PA_AMENDATORY.test(text)
+  );
+}
 
 function legendFor(context: ChangeMarkContext): RegExp | undefined {
   const state = changeMarkJurisdiction(context);
@@ -54,6 +81,8 @@ export function changeMarkConvention(
   text: string,
   context: ChangeMarkContext,
 ): ChangeMarkConvention {
+  if (changeMarkJurisdiction(context) === 'PA')
+    return pennsylvaniaAmendingBill(text) ? 'bracket-underline' : 'default';
   const legend = legendFor(context);
   return legend && new RegExp(legend.source, 'i').test(text)
     ? 'bracket-underline'
@@ -117,6 +146,7 @@ function recoveryBoundaries(lines: readonly SourceLine[]): number[] {
 export const LEGEND_NOT_FOUND_WARNINGS = {
   NY: "This New York bill's change legend was not found, so bracketed wording could not be marked as removed.",
   NJ: "This New Jersey bill's change legend was not found, so bracketed wording could not be marked as removed.",
+  PA: "This Pennsylvania document's printed bill cover was not found, so bracketed wording could not be marked as removed.",
 } as const;
 
 export function isLegendNotFoundWarning(warning: string): boolean {
@@ -165,13 +195,127 @@ function superscriptFootnotes(
   return notes;
 }
 
+/** The line that ends a Pennsylvania cover and starts the measure's own title. */
+const PA_TITLE_LINE = /^\s*(?:AN ACT|A (?:JOINT |CONCURRENT )?RESOLUTION)\s*$/;
+/** The cover is the first page; a title line is looked for only near the top. */
+const PA_COVER_LINES = 60;
+/** Only a print that was amended in a chamber lists the earlier printer's numbers. */
+const PA_AMENDED_PRINT = /PRIOR\s+PRINTER'?S\s+NOS?\./;
+const CAPS_WORD = /^[A-Z][A-Z0-9'’.,;:()§"&/-]*$/;
+const SINGLE_CAPS_WORD = /^[AI]$/;
+
+/**
+ * Words printed in CAPITAL LETTERS by an amendment. The legislature's rule: capitals "indicate
+ * that the matter in capital letters did not appear in the original print of the bill, but was
+ * inserted into the bill by amendment". Amended bills that change existing law also underline
+ * such text (read as an insertion by the geometry), but an amended new act has no underlining,
+ * so its added words show only as capitals. To avoid reading acronyms and headings as
+ * insertions, only a run of two or more capitalised words counts, and only after the title.
+ */
+function markCapitalLetterInsertions(
+  lines: readonly { text: string; statuses: SpanStatus[] }[],
+  from: number,
+): void {
+  interface Word {
+    line: number;
+    start: number;
+    end: number;
+    caps: boolean;
+  }
+  const flush = (run: Word[]): void => {
+    while (run.length && !run[run.length - 1]?.caps) run.pop();
+    if (run.filter((word) => word.caps).length < 2) return;
+    for (const [at, word] of run.entries()) {
+      const line = lines[word.line];
+      // Spaces between two words of the run are part of it, so the insertion is one span.
+      const next = run[at + 1];
+      const end = next?.line === word.line ? next.start : word.end;
+      for (let char = word.start; char < end; char++)
+        if (line?.statuses[char] === 'unchanged')
+          line.statuses[char] = 'inserted';
+    }
+  };
+  let run: Word[] = [];
+  for (const [index, line] of lines.entries()) {
+    if (index < from) continue;
+    for (const match of line.text.matchAll(/\S+/g)) {
+      const token = match[0];
+      const caps = CAPS_WORD.test(token) && /[A-Z]{2}/.test(token);
+      const connector = !caps && SINGLE_CAPS_WORD.test(token);
+      if (caps || (connector && run.length > 0))
+        run.push({
+          line: index,
+          start: match.index,
+          end: match.index + token.length,
+          caps,
+        });
+      else {
+        flush(run);
+        run = [];
+      }
+    }
+    // A blank line ends a paragraph; a wrapped line does not end the run.
+    if (!line.text.trim()) {
+      flush(run);
+      run = [];
+    }
+  }
+  flush(run);
+}
+
+/**
+ * Pennsylvania-only repairs before the text is read:
+ * - Amended prints put a "<--" pointer in the margin beside each changed line. It is the
+ *   legislature's finger pointing at the change, not words of the bill, so it is dropped
+ *   (in new acts too, where the pointers also appear).
+ * - The cover prints "PRINTER'S NO. 4082" and "PRIOR PRINTER'S NOS." over a rule, which reads as
+ *   underlined (inserted) text. Nothing above the title line is law, so it stays unchanged.
+ * - In an amended print, capital-letter runs are the amendment's insertions.
+ */
+function readPennsylvaniaPrint<T extends SourceLine>(
+  lines: readonly T[],
+): (T & SourceLine)[] {
+  const titleAt = lines
+    .slice(0, PA_COVER_LINES)
+    .findIndex((line) => PA_TITLE_LINE.test(line.text));
+  const cleaned: { line: T; text: string; statuses: SpanStatus[] }[] = [];
+  for (const [index, line] of lines.entries()) {
+    const cover = index < titleAt;
+    let text = '';
+    const statuses: SpanStatus[] = [];
+    for (let at = 0; at < line.text.length; at++) {
+      if (line.text.startsWith('<--', at)) {
+        at += 2;
+        continue;
+      }
+      text += line.text.charAt(at);
+      statuses.push(cover ? 'unchanged' : (line.statuses?.[at] ?? 'unchanged'));
+    }
+    if (text.trim()) cleaned.push({ line, text, statuses });
+  }
+  const coverText = lines
+    .slice(0, Math.max(titleAt, 0))
+    .map((line) => line.text)
+    .join('\n');
+  if (titleAt >= 0 && PA_AMENDED_PRINT.test(coverText))
+    markCapitalLetterInsertions(
+      cleaned,
+      cleaned.findIndex((entry) => PA_TITLE_LINE.test(entry.text)) + 1,
+    );
+  return cleaned.map(({ line, text, statuses }) => ({
+    ...line,
+    text,
+    statuses,
+  }));
+}
+
 /**
  * One document-wide pass, before section detection. Joining lines keeps state across HTML
  * elements and PDF pages; splitting back preserves every printed coordinate. Legend text is
  * removed before scanning, including a footer inside a deletion that spans the page break.
  */
 export function applyChangeMarks<T extends SourceLine>(
-  lines: readonly T[],
+  printedLines: readonly T[],
   context: ChangeMarkContext,
   /** PDF layout may already have removed a repeated legend footer. */
   legendText?: string,
@@ -182,16 +326,23 @@ export function applyChangeMarks<T extends SourceLine>(
 } {
   const jurisdiction = changeMarkJurisdiction(context);
   if (!jurisdiction)
-    return { lines: [...lines], convention: 'default', warnings: [] };
+    return { lines: [...printedLines], convention: 'default', warnings: [] };
+  const lines =
+    jurisdiction === 'PA' ? readPennsylvaniaPrint(printedLines) : printedLines;
   const text = lines.map((line) => line.text).join('\n');
   const convention = changeMarkConvention(legendText ?? text, context);
   if (convention === 'default')
     return {
       lines: [...lines],
       convention,
-      warnings: text.includes('[')
-        ? [LEGEND_NOT_FOUND_WARNINGS[jurisdiction]]
-        : [],
+      warnings:
+        text.includes('[') &&
+        // A Pennsylvania document with a cover that does not amend anything may use brackets as
+        // ordinary punctuation, so only a missing cover (nothing verified) is worth a warning.
+        (jurisdiction !== 'PA' ||
+          !PA_COVER.test(text.slice(0, PA_COVER_WINDOW)))
+          ? [LEGEND_NOT_FOUND_WARNINGS[jurisdiction]]
+          : [],
     };
   const statuses: SpanStatus[] = [];
   for (const line of lines) {
@@ -206,11 +357,13 @@ export function applyChangeMarks<T extends SourceLine>(
         if (statuses[at] === 'inserted') statuses[at] = 'unchanged';
   }
   const removed = new Uint8Array(text.length);
+  // Pennsylvania has no printed legend sentence to set aside; its gate was the cover itself.
   const legend = legendFor(context);
-  if (!legend)
+  if (!legend && jurisdiction !== 'PA')
     return { lines: [...lines], convention: 'default', warnings: [] };
-  for (const match of text.matchAll(new RegExp(legend.source, 'gi')))
-    removed.fill(1, match.index, match.index + match[0].length);
+  if (legend)
+    for (const match of text.matchAll(new RegExp(legend.source, 'gi')))
+      removed.fill(1, match.index, match.index + match[0].length);
   if (jurisdiction === 'NJ') {
     // Reprints print "Matter enclosed in superscript numerals has been adopted as follows:"
     // and the committee-amendment list at the foot of a page, which can fall mid-sentence.
