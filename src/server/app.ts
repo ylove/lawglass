@@ -56,8 +56,10 @@ import {
   grantEpoch,
   budgetRemaining,
   topUp,
+  type CallEnd,
   type JobKind,
   type JobScope,
+  type SpendGate,
   type ModelAssignment,
   type ModelChoice,
   type UsageEvent,
@@ -184,12 +186,31 @@ export interface AppOptions {
    */
   onJobEnd?: (end: JobEnd) => void | Promise<void>;
   /**
-   * Synchronous kill switch, checked before EVERY model call, background work included. While it
-   * returns anything but `true` (or throws), calls are refused with `BUDGET_EXHAUSTED` and
-   * background work stops cleanly with `stoppedReason: 'spend_gate'`, keeping what it wrote. A
-   * later generating request resumes when it reopens.
+   * The host's spend gate, in one of two forms, told apart by the number of parameters.
+   *
+   * `() => boolean`: a synchronous kill switch, checked before EVERY model call, background work
+   * included. While it returns anything but `true` (or throws), calls are refused with
+   * `BUDGET_EXHAUSTED` and background work stops cleanly with `stoppedReason: 'spend_gate'`,
+   * keeping what it wrote. A later generating request resumes when it reopens.
+   *
+   * `(call: GateCall) => boolean | Promise<boolean>`: a per-call gate. It is given the call (job
+   * `ref`, `jobKind`, `docId`, a unique `callId`, the `model` and the call's `worstCaseUsd`) and
+   * awaited before EVERY provider call: answers, chips, stories, locate, summary, breakdown,
+   * pictures, examples, metadata, retries and each of several parallel calls. Anything but
+   * `true`, or a throw or rejection, refuses that call the way a closed kill switch does. The
+   * same `callId` arrives in that call's `UsageEvent` and in `onCallEnd`. The server does not
+   * serialize calls: a host that must cap spend reserves `worstCaseUsd` inside the gate.
+   * There is no before-the-work check for this form; refusals stop work as they arrive.
    */
-  spendGate?: () => boolean;
+  spendGate?: SpendGate;
+  /**
+   * Told once for each call a per-call gate (or any call in a job scope) let through, after its
+   * usage event, with whether one was delivered. `reported: false` means the call ended with no
+   * usage (it threw before the provider billed anything, or could not say), so a host that
+   * reserved `worstCaseUsd` for it can release the reservation. Calls the gate refused are not
+   * reported here. The same `callId` as the gate's call.
+   */
+  onCallEnd?: (end: CallEnd) => void | Promise<void>;
   /**
    * Per request: when it returns `true`, the server serves cached results only and never starts
    * or resumes generation for any source, like public mode. Ingest, questions, quotes, locate
@@ -335,6 +356,7 @@ export function createApp(
     modelFor: options.modelFor,
     onJobEnd: options.onJobEnd,
     spendGate: options.spendGate,
+    onCallEnd: options.onCallEnd,
     readOnly: options.readOnly,
     landing: options.site?.landing,
     quickstart: options.site?.quickstart,
@@ -653,7 +675,8 @@ export function createApp(
     options.onUsage !== undefined ||
     options.modelFor !== undefined ||
     options.backgroundScope !== undefined ||
-    options.spendGate !== undefined;
+    options.spendGate !== undefined ||
+    options.onCallEnd !== undefined;
   const estimating =
     options.admission !== undefined || options.modelFor !== undefined;
   const quotes = new QuoteStore(now);
@@ -913,6 +936,7 @@ export function createApp(
     budget: extra.budget,
     models: extra.models,
     spendGate: options.spendGate,
+    onCallEnd: options.onCallEnd,
     prices: options.quote?.prices,
     onUsage: options.onUsage,
     onBudgetExhausted: (spent) => {

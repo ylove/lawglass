@@ -11,6 +11,7 @@
  * `_MAX_CONCURRENT_ASK`, `_MAX_CONCURRENT_CLAUDE_CLI` and `_MAX_CALLS_PER_MINUTE`
  * (not `ConfigSettings`, which is strict).
  */
+import { randomUUID } from 'node:crypto';
 import {
   AppError,
   type LlmProvider,
@@ -26,10 +27,14 @@ import {
 } from '../cost/usage.js';
 import {
   assertBudget,
+  callGateOf,
   chargeJob,
   currentJob,
+  gateCall,
   type JobContext,
+  type JobScope,
 } from '../cost/job.js';
+import { callDollars, modelPrice } from '../cost/prices.js';
 
 export const DEFAULT_MAX_CONCURRENT_INGEST = 2;
 export const DEFAULT_MAX_CONCURRENT_ASK = 4;
@@ -280,6 +285,90 @@ export class Limits {
       const job = currentJob();
       return job ? { ...job.context } : undefined;
     };
+    /**
+     * One model call's identity. Created when the call starts; `gated` is set once the host's
+     * per-call gate (if any) has allowed it, and `reported` once a usage event was delivered.
+     */
+    interface Call {
+      callId: string;
+      job: JobScope | undefined;
+      started: JobContext | undefined;
+      reported: boolean;
+      allowed: boolean;
+    }
+    /** The most a call can cost; Infinity when the model has no price, so a capping host refuses it. */
+    const worstCase = (
+      model: string,
+      req: {
+        system: string;
+        messages?: unknown;
+        prompt?: unknown;
+        maxTokens: number;
+      },
+      job: JobScope,
+    ): number => {
+      try {
+        const price = modelPrice(model, job.prices);
+        // Input at the dearest input rate: a prompt written to the cache costs more than a read.
+        return callDollars(
+          {
+            inputTokens: promptTokens(req),
+            cachedInputTokens: 0,
+            cacheWriteTokens: promptTokens(req),
+            outputTokens: req.maxTokens,
+          },
+          price,
+        );
+      } catch {
+        return Number.POSITIVE_INFINITY;
+      }
+    };
+    /** Begins a call: asks the host's per-call gate (awaited), which may refuse it. */
+    const begin = async (req: {
+      system: string;
+      messages?: unknown;
+      prompt?: unknown;
+      maxTokens: number;
+    }): Promise<Call> => {
+      const job = currentJob();
+      const call: Call = {
+        callId: randomUUID(),
+        job,
+        started: startContext(),
+        reported: false,
+        allowed: false,
+      };
+      if (job && callGateOf(job)) {
+        const context = job.context;
+        await gateCall(job, {
+          jobKind: context.jobKind,
+          callId: call.callId,
+          model: provider.model,
+          worstCaseUsd: worstCase(provider.model, req, job),
+          ...(context.ref === undefined ? {} : { ref: context.ref }),
+          ...(context.docId === undefined ? {} : { docId: context.docId }),
+        });
+      }
+      call.allowed = true;
+      return call;
+    };
+    /** Ends a call the gate allowed: tells the host whether a usage event was delivered for it. */
+    const finish = async (call: Call): Promise<void> => {
+      const job = call.job;
+      if (!call.allowed || !job?.onCallEnd) return;
+      const context = call.started ?? job.context;
+      try {
+        await job.onCallEnd({
+          callId: call.callId,
+          reported: call.reported,
+          jobKind: context.jobKind,
+          ...(context.ref === undefined ? {} : { ref: context.ref }),
+          ...(context.docId === undefined ? {} : { docId: context.docId }),
+        });
+      } catch {
+        /* The host's bookkeeping failing must not change the call's result. */
+      }
+    };
     // Accounting failures must not discard a paid-for model answer or cause a retry.
     const report = async (
       usage: LlmUsage,
@@ -287,6 +376,7 @@ export class Limits {
       estimated = false,
       /** Who the call was for when it STARTED: a top-up may switch the scope's payer meanwhile. */
       started?: JobContext,
+      call?: Call,
     ): Promise<void> => {
       // The scope is read when the call finishes, inside the async chain that made it (ADR 0018,
       // section 5); the context it is reported under was fixed when the call began.
@@ -298,7 +388,9 @@ export class Limits {
         usage: { ...usage },
         ...(estimated ? { estimated: true } : {}),
         ...(job ? { job: { ...(started ?? job.context) } } : {}),
+        ...(job && call ? { callId: call.callId } : {}),
       };
+      if (call) call.reported = true;
       try {
         await sink.record(event);
       } catch {
@@ -322,16 +414,18 @@ export class Limits {
       streamText: (req) => {
         assertBudget();
         this.ceiling.admit();
-        const started = startContext();
-        let partial: LlmUsage | undefined;
-        const stream = provider.streamText({
-          ...req,
-          onPartialUsage: (usage) => {
-            partial = usage;
-            req.onPartialUsage?.(usage);
-          },
-        });
         return (async function* () {
+          // Gated before the provider is touched: a refused call never starts a stream.
+          const call = await begin(req);
+          const started = call.started;
+          let partial: LlmUsage | undefined;
+          const stream = provider.streamText({
+            ...req,
+            onPartialUsage: (usage) => {
+              partial = usage;
+              req.onPartialUsage?.(usage);
+            },
+          });
           let finished = false;
           let failed = false;
           let chars = 0;
@@ -340,64 +434,73 @@ export class Limits {
               if (event.type === 'text') chars += event.text.length;
               if (event.type === 'done') {
                 finished = true;
-                await report(event.usage, feature, false, started);
+                await report(event.usage, feature, false, started, call);
               }
               yield event;
             }
           } catch (error) {
             failed = true;
             if (!finished && error instanceof AppError && error.usage)
-              await report(error.usage, feature, false, started);
+              await report(error.usage, feature, false, started, call);
             else if (!finished && partial)
-              await report(partial, feature, false, started);
+              await report(partial, feature, false, started, call);
             else if (
               !finished &&
               (chars > 0 || req.signal?.aborted || maybeBilled(error))
             )
               // A timeout or an overload mid-answer: the provider billed what it produced.
-              await report(guess(req, chars), feature, true, started);
+              await report(guess(req, chars), feature, true, started, call);
             throw error;
           } finally {
             // The reader left mid-answer: the provider billed what it had produced so far.
             if (!finished && !failed)
               await (partial
-                ? report(partial, feature, false, started)
-                : report(guess(req, chars), feature, true, started));
+                ? report(partial, feature, false, started, call)
+                : report(guess(req, chars), feature, true, started, call));
+            await finish(call);
           }
         })();
       },
       generateObject: async (req) => {
         assertBudget();
         this.ceiling.admit();
-        const started = startContext();
-        let result;
+        const call = await begin(req);
+        const started = call.started;
         try {
-          result = await provider.generateObject(req);
-        } catch (error) {
-          // A reply that arrived but was unusable (cut off, invalid) was still billed.
-          if (error instanceof AppError && error.usage)
-            await report(
-              error.usage,
-              objectFeature(req.schemaName),
-              false,
-              started,
-            );
-          else if (req.signal?.aborted || maybeBilled(error))
-            await report(
-              { inputTokens: promptTokens(req), outputTokens: req.maxTokens },
-              objectFeature(req.schemaName),
-              true,
-              started,
-            );
-          throw error;
+          let result;
+          try {
+            result = await provider.generateObject(req);
+          } catch (error) {
+            // A reply that arrived but was unusable (cut off, invalid) was still billed.
+            if (error instanceof AppError && error.usage)
+              await report(
+                error.usage,
+                objectFeature(req.schemaName),
+                false,
+                started,
+                call,
+              );
+            else if (req.signal?.aborted || maybeBilled(error))
+              await report(
+                { inputTokens: promptTokens(req), outputTokens: req.maxTokens },
+                objectFeature(req.schemaName),
+                true,
+                started,
+                call,
+              );
+            throw error;
+          }
+          await report(
+            result.usage,
+            objectFeature(req.schemaName),
+            false,
+            started,
+            call,
+          );
+          return result;
+        } finally {
+          await finish(call);
         }
-        await report(
-          result.usage,
-          objectFeature(req.schemaName),
-          false,
-          started,
-        );
-        return result;
       },
     };
   }

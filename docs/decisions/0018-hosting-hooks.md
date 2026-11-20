@@ -141,6 +141,12 @@ A read-only request runs in a scope with a zero budget on the reader's own tier 
 - **Web.** With `ClientConfig.questionQuote` true, the UI asks the endpoint before a typed question. Only when `whole.units > focused.units` does it show the choice (focused answer first, then the whole read, each with its units, and cancel); otherwise it asks directly as before. If the quote request fails it sends `mode: 'focused'`, never `auto`. Without the flag it never calls the endpoint.
 - **Bound.** `questionCeiling` is a high bound: it counts the optional story calls, sizes focused input at the most an excerpt prompt can hold, and sizes a forced-focused change question on an amended bill that fits whole.
 
+**Amendment (2026-11-20, #435): a per-call spend gate and call ends.** A zero-parameter `spendGate` cannot hard-cap spend: it has no job or call identity, and the budget is charged after a call, so parallel calls, retries and late stories overshoot. `spendGate` now also accepts `(call) => boolean | Promise<boolean>`, told apart by its parameter count (a zero-parameter host behaves exactly as before).
+
+- **Gate.** The call is `{ ref, jobKind, docId, callId, model, worstCaseUsd }`, asked and awaited before EVERY provider call, at the one metering seam every feature uses (answers, chips, stories, locate, summary, breakdown, pictures, examples, metadata, retries, each parallel call). `worstCaseUsd` is the prompt (four characters a token, at the dearest input rate, the cache-write rate) plus `maxTokens` at the output rate, from the cost tables; `Infinity` for a model with no price. Anything but `true`, or a throw or rejection, refuses the call with the same `BUDGET_EXHAUSTED` / `spend_gate` stop a closed kill switch makes, so jobs fail or stop the way they do today. The server does not serialize calls; a host reserves `worstCaseUsd` inside the gate. There is no before-the-work check for this form.
+- **Usage.** `UsageEvent.callId` is the same id.
+- **Call end.** `onCallEnd({ callId, reported, jobKind, ref?, docId? })` fires once for each call the gate allowed, after its usage event: `reported: false` means no usage was delivered (it failed before billing, or the provider could not say), so a host can release the reservation. Refused calls get no end.
+
 ## Consequences
 
 - The open-source server stays complete on its own. Local mode, `--private` and `--public` are unchanged, and every hook is optional with a no-op default.

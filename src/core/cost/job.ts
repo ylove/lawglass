@@ -30,6 +30,49 @@ export interface JobBudget {
   tokens?: number;
 }
 
+/**
+ * What a per-call spend gate is told about one model call, before it is made. Carries no text,
+ * URLs or credentials.
+ */
+export interface GateCall {
+  /** The host's admission reference for the job, when it gave one. */
+  ref?: string;
+  jobKind: JobKind;
+  docId?: string;
+  /** Unique per call. The same id arrives in that call's `UsageEvent` and `CallEnd`. */
+  callId: string;
+  model: string;
+  /**
+   * The most this call can cost: the prompt (about four characters a token, at the dearest
+   * input rate) plus `maxTokens` at the output rate. `Infinity` for a model with no price, so
+   * a host that caps spend refuses it.
+   */
+  worstCaseUsd: number;
+}
+
+/**
+ * How a gated call ended. Sent once for every call the gate allowed, after its usage event (if
+ * any) was delivered. `reported` is false when the call produced no usage event (it failed
+ * before the provider billed anything, or the provider could not say), so a host that reserved
+ * `worstCaseUsd` can release the reservation.
+ */
+export interface CallEnd {
+  callId: string;
+  reported: boolean;
+  ref?: string;
+  jobKind: JobKind;
+  docId?: string;
+}
+
+/**
+ * The host's gate. Zero parameters (`() => boolean`, synchronous) is the original kill switch:
+ * it is checked before every call and before background work starts. One parameter is the
+ * per-call gate: it is given the call, may be async, and is awaited before each provider call;
+ * anything but `true`, or a throw or rejection, refuses that call.
+ */
+export type SpendGate =
+  (() => boolean) | ((call: GateCall) => boolean | Promise<boolean>);
+
 export interface ModelChoice {
   answer?: string;
   extract?: string;
@@ -51,7 +94,9 @@ export interface JobScope {
    * background included. Synchronous: the host keeps its state in memory. A gate that returns
    * anything but `true`, or throws, is closed.
    */
-  spendGate?: (() => boolean) | undefined;
+  spendGate?: SpendGate | undefined;
+  /** Told how each call the gate allowed ended; see `CallEnd`. */
+  onCallEnd?: ((end: CallEnd) => void | Promise<void>) | undefined;
   /** The grant epoch of the (document, tier) when this scope was resolved or handed out. */
   epoch?: number | undefined;
   /** Shared by every scope derived from the same admission, so one budget covers them all. */
@@ -107,14 +152,45 @@ export function currentTier(): string {
 export function spendGateOpen(
   scope: JobScope | undefined = currentJob(),
 ): boolean {
-  if (!scope?.spendGate) return true;
+  // A per-call gate is asked at each call, not here: a before-the-work check has no call to give.
+  if (!scope?.spendGate || scope.spendGate.length > 0) return true;
   try {
-    const open: unknown = scope.spendGate();
+    const open: unknown = (scope.spendGate as () => boolean)();
     return open === true;
   } catch {
     // A broken gate cannot be trusted to be open.
     return false;
   }
+}
+
+/** The per-call gate of this job, if the host gave one (a gate that takes the call). */
+export function callGateOf(
+  scope: JobScope | undefined,
+): ((call: GateCall) => boolean | Promise<boolean>) | undefined {
+  const gate = scope?.spendGate;
+  return gate && gate.length > 0
+    ? (gate as (call: GateCall) => boolean | Promise<boolean>)
+    : undefined;
+}
+
+/**
+ * Asks the per-call gate about one call and waits for the answer. Throws BUDGET_EXHAUSTED with
+ * `details.reason: 'spend_gate'` (the same stop a closed zero-arg gate makes) unless it says `true`.
+ */
+export async function gateCall(scope: JobScope, call: GateCall): Promise<void> {
+  const gate = callGateOf(scope);
+  if (!gate) return;
+  let open = false;
+  try {
+    open = (await gate(call)) === true;
+  } catch {
+    // A broken gate cannot be trusted to be open.
+  }
+  if (open) return;
+  scope.spent.refusal = 'spend_gate';
+  throw new AppError('BUDGET_EXHAUSTED', 'The spend gate is closed.', {
+    details: { reason: 'spend_gate' },
+  });
 }
 
 /** True when a model call may be made now: the gate is open and the budget has room. */
