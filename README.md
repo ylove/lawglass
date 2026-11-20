@@ -432,4 +432,6 @@ Scheduled work is in [issues](https://github.com/ylove/lawglass/issues). Designe
 
 ## License
 
-[MIT](LICENSE)
+[Apache License 2.0](LICENSE) from v2.1.0 (see [NOTICE](NOTICE)). Earlier releases (v2.0.0 and before) are under the MIT License, as in those tags.
+
+Contributions are accepted under the Apache License 2.0 (inbound = outbound).

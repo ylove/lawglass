@@ -23,13 +23,14 @@ export function assertPackageFiles(paths: readonly string[]): void {
     'dist/server.js',
     'dist/server.d.ts',
     'dist/web/index.html',
+    'NOTICE',
   ]) {
     assert(files.includes(required), `Tarball is missing ${required}`);
   }
   // An allowlist, so widening package.json#files can't quietly ship scripts, e2e or src. Source
   // maps stay out too: they would add ~15 MB (bundled dependency sources) to every npx install.
   const allowed = (path: string): boolean =>
-    /^(package\.json|README\.md|LICENSE)$/.test(path) ||
+    /^(package\.json|README\.md|LICENSE|NOTICE)$/.test(path) ||
     (path.startsWith('dist/') && !path.endsWith('.map'));
   const forbidden = files.filter(
     (path) =>

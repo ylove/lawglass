@@ -21,9 +21,10 @@
     "!dist/**/*.map",
     "!dist/calibrate.js",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "homepage": "https://lawglass.xyz",
   "repository": {
     "type": "git",
