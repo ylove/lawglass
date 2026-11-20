@@ -23,7 +23,7 @@
     "README.md",
     "LICENSE"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "homepage": "https://lawglass.xyz",
   "repository": {
     "type": "git",

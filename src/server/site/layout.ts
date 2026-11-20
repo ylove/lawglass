@@ -102,7 +102,7 @@ export function footer(): string {
 <li>${externalLink(BRAND.repositoryUrl, 'GitHub')}</li>
 </ul>
 </nav>
-<p class="fine">Not legal advice. Bill text comes from official sources; explanations are written by an AI model and checked against that text. Open source under the MIT license.</p>
+<p class="fine">Not legal advice. Bill text comes from official sources; explanations are written by an AI model and checked against that text. Open source under the Apache 2.0 license.</p>
 </div>
 </footer>`;
 }
