@@ -168,7 +168,7 @@ describe('a per-call gate sees every model call exactly once', () => {
       'question',
       'chip',
       'locate',
-    ] as const)
+    ])
       expect(features, feature).toContain(feature);
     // Usage carries the id of the call it was for; every allowed call ends exactly once.
     expect(usage.length).toBeGreaterThan(0);

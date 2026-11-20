@@ -40,7 +40,8 @@ const limits = () =>
     maxCallsPerMinute: 1000,
   });
 async function drain(it: AsyncIterable<unknown>): Promise<void> {
-  for await (const _ of it) void _;
+  const seen: unknown[] = [];
+  for await (const event of it) seen.push(event);
 }
 
 function scope(extra: Partial<JobScope> = {}): {
@@ -228,6 +229,7 @@ describe('call end notices', () => {
     const metered = limits().meter(
       scripted(() =>
         (async function* () {
+          await Promise.resolve();
           yield* [] as LlmStreamEvent[];
           throw new AppError('FETCH_FAILED');
         })(),
@@ -248,14 +250,15 @@ describe('call end notices', () => {
     const metered = limits().meter(
       scripted(() =>
         (async function* () {
+          await Promise.resolve();
           yield { type: 'text', text: 'partial answer' } as const;
           yield { type: 'text', text: 'more' } as const;
         })(),
       ),
     );
     await runInJob(job, async () => {
-      for await (const _ of metered.streamText(textReq)) {
-        void _;
+      for await (const event of metered.streamText(textReq)) {
+        expect(event.type).toBe('text');
         break;
       }
     });
@@ -271,6 +274,7 @@ describe('call end notices', () => {
     const metered = limits().meter(
       scripted(() =>
         (async function* () {
+          await Promise.resolve();
           yield* [] as LlmStreamEvent[];
           throw new Error('socket closed');
         })(),
