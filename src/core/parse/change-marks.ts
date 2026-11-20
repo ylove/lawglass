@@ -186,6 +186,9 @@ export function pennsylvaniaSections(lines: readonly string[]): PaSection[] {
       expected++;
     } else if (operative && number > expected && number <= expected + 3) {
       expected = number + 1;
+    } else if (number < expected && number >= expected - 3) {
+      // A number already used: a quoted heading shadowing the real section. It still bounds
+      // pairs, but expected is unchanged and nothing in it is verified unless it is operative.
     } else continue;
     let quotedFrom = Infinity;
     if (operative) {
@@ -280,7 +283,7 @@ function recoveryBoundaries(lines: readonly SourceLine[]): number[] {
 export const LEGEND_NOT_FOUND_WARNINGS = {
   NY: "This New York bill's change legend was not found, so bracketed wording could not be marked as removed.",
   NJ: "This New Jersey bill's change legend was not found, so bracketed wording could not be marked as removed.",
-  PA: "This Pennsylvania document's printed bill cover was not found, so bracketed wording could not be marked as removed.",
+  PA: 'This Pennsylvania document is not an amending measure, or its title could not be verified, so bracketed wording could not be marked as removed.',
 } as const;
 
 export function isLegendNotFoundWarning(warning: string): boolean {
@@ -347,7 +350,7 @@ const SINGLE_CAPS_WORD = /^[AI]$/;
  * insertions, only a run of two or more capitalised words counts, and only after the title.
  */
 function markCapitalLetterInsertions(
-  lines: readonly { text: string; statuses: SpanStatus[] }[],
+  lines: readonly { text: string; statuses: SpanStatus[]; caps: boolean[] }[],
   from: number,
 ): void {
   interface Word {
@@ -365,8 +368,10 @@ function markCapitalLetterInsertions(
       const next = run[at + 1];
       const end = next?.line === word.line ? next.start : word.end;
       for (let char = word.start; char < end; char++)
-        if (line?.statuses[char] === 'unchanged')
+        if (line?.statuses[char] === 'unchanged') {
           line.statuses[char] = 'inserted';
+          line.caps[char] = true;
+        }
     }
   };
   let run: Word[] = [];
@@ -408,11 +413,16 @@ function markCapitalLetterInsertions(
  */
 function readPennsylvaniaPrint<T extends SourceLine>(
   lines: readonly T[],
-): (T & SourceLine)[] {
+): { lines: (T & SourceLine)[]; caps: boolean[][] } {
   const titleAt = lines
     .slice(0, PA_COVER_LINES)
     .findIndex((line) => PA_TITLE_LINE.test(line.text));
-  const cleaned: { line: T; text: string; statuses: SpanStatus[] }[] = [];
+  const cleaned: {
+    line: T;
+    text: string;
+    statuses: SpanStatus[];
+    caps: boolean[];
+  }[] = [];
   for (const [index, line] of lines.entries()) {
     const cover = index < titleAt;
     let text = '';
@@ -428,7 +438,7 @@ function readPennsylvaniaPrint<T extends SourceLine>(
     // Blank lines stay: they bound an unclosed bracket's recovery. Only a line the pointer
     // removal emptied is dropped.
     if (text.trim() || !line.text.trim())
-      cleaned.push({ line, text, statuses });
+      cleaned.push({ line, text, statuses, caps: [] });
   }
   const coverText = lines
     .slice(0, Math.max(titleAt, 0))
@@ -439,11 +449,14 @@ function readPennsylvaniaPrint<T extends SourceLine>(
       cleaned,
       cleaned.findIndex((entry) => PA_TITLE_LINE.test(entry.text)) + 1,
     );
-  return cleaned.map(({ line, text, statuses }) => ({
-    ...line,
-    text,
-    statuses,
-  }));
+  return {
+    lines: cleaned.map(({ line, text, statuses }) => ({
+      ...line,
+      text,
+      statuses,
+    })),
+    caps: cleaned.map((entry) => entry.caps),
+  };
 }
 
 /**
@@ -464,8 +477,16 @@ export function applyChangeMarks<T extends SourceLine>(
   const jurisdiction = changeMarkJurisdiction(context);
   if (!jurisdiction)
     return { lines: [...printedLines], convention: 'default', warnings: [] };
-  const lines =
-    jurisdiction === 'PA' ? readPennsylvaniaPrint(printedLines) : printedLines;
+  const pa =
+    jurisdiction === 'PA' ? readPennsylvaniaPrint(printedLines) : undefined;
+  const lines = pa?.lines ?? printedLines;
+  /** Characters inserted only by the capital-letters rule, not by a drawn underline. */
+  const capsMask: boolean[] = [];
+  for (const [index, line] of lines.entries()) {
+    for (let at = 0; at < line.text.length; at++)
+      capsMask.push(pa?.caps[index]?.[at] === true);
+    capsMask.push(false);
+  }
   const text = lines.map((line) => line.text).join('\n');
   // Pennsylvania: the title is read with struck-through words removed, as metadata does.
   const gateText =
@@ -556,6 +577,11 @@ export function applyChangeMarks<T extends SourceLine>(
   let outsideQuoted = false;
   let overwroteInserted = false;
   let verifiedSection = -1;
+  const coversDrawnInsertion = (start: number, end: number): boolean => {
+    for (let at = start; at < end; at++)
+      if (statuses[at] === 'inserted' && !capsMask[at]) return true;
+    return false;
+  };
   const mark = (start: number, end: number): void => {
     for (let at = start; at < end; at++)
       if (!removed[at]) statuses[at] = 'deleted';
@@ -598,10 +624,7 @@ export function applyChangeMarks<T extends SourceLine>(
         ))
     )
       continue;
-    if (
-      jurisdiction === 'PA' &&
-      statuses.slice(start, end).includes('inserted')
-    )
+    if (jurisdiction === 'PA' && coversDrawnInsertion(start, end))
       overwroteInserted = true;
     mark(start, end);
     deletedThrough = end;

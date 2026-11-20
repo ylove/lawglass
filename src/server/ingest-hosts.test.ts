@@ -196,3 +196,13 @@ test.each([
     checkIngestHost(url, ingestHosts({}));
   }).toThrow(expect.objectContaining({ code: 'INVALID_INPUT' }));
 });
+
+test('a text fetch (locate) never follows a Pennsylvania redirect to /404', () => {
+  const missing = new URL('https://www.palegis.us/404');
+  expect(() => {
+    checkIngestFetchHost(missing, ingestHosts({}));
+  }).not.toThrow();
+  expect(() => {
+    checkIngestFetchHost(missing, ingestHosts({}), { textFetch: true });
+  }).toThrow(expect.objectContaining({ code: 'SSRF_BLOCKED' }));
+});

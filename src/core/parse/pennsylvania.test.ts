@@ -649,3 +649,64 @@ test('a crossing pair through an undetected-style section (HB 150 shape) and a p
     expect.stringMatching(/outside amended text/),
   );
 });
+
+test('a quoted heading that shadows the next bill number cannot hide the real section (K)', () => {
+  const doc = read(
+    act(
+      'Amending the act.',
+      'Section 1. Section 2 of the act is amended to read:',
+      'Section 2. Definitions.',
+      '"Fee." The [ten] twenty dollar fee.',
+      'Section 2. The survey form shall read "Name [optional]".',
+      'Section 3. This act shall take effect in 60 days.',
+    ),
+  );
+  expect(runs(doc, 'deleted')).toContain('[optional]');
+  expect(doc.warnings).toContainEqual(
+    expect.stringMatching(/outside amended text/),
+  );
+});
+
+test('a pair cannot run across the real section after a shadowing heading (L)', () => {
+  const doc = read(
+    act(
+      'Amending the act.',
+      'Section 1. Section 2 of the act is amended to read:',
+      'Section 2. Definitions.',
+      '"Fee." The fee is [ten twenty dollars.',
+      'Section 2. Section 5 of the act is amended to read:',
+      'Section 5. Terms.',
+      'The term is six] years.',
+      'Section 3. This act shall take effect in 60 days.',
+    ),
+  );
+  expect(runs(doc, 'deleted').join(' ')).not.toContain('The term is six');
+  expect(doc.warnings).toContainEqual(expect.stringMatching(/not closed/));
+});
+
+test('an old-style quoted heading with ".--" is still ignored (M)', () => {
+  const doc = read(
+    act(
+      'Amending the act.',
+      'Section 1. Section 2 of the act is amended to read:',
+      'Section 2. Findings.--The [old] findings.',
+      'Section 2. This act shall take effect immediately.',
+    ),
+  );
+  expect(runs(doc, 'deleted')).toEqual(['[old]']);
+  expect(doc.warnings).toEqual([]);
+});
+
+test('an ordinary resolution with brackets warns that it is not an amending measure', () => {
+  const doc = read(
+    [
+      COVER,
+      'A RESOLUTION',
+      'Designating a week.',
+      'RESOLVED, That the [x] week.',
+    ].join('\n'),
+  );
+  expect(runs(doc, 'deleted')).toEqual([]);
+  expect(doc.warnings.join(' ')).toMatch(/not an amending measure/);
+  expect(doc.warnings.join(' ')).not.toMatch(/cover was not found/);
+});

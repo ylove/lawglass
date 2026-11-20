@@ -2086,7 +2086,7 @@ export function createApp(
       : undefined,
     validateUrl: hosted
       ? (url) => {
-          checkIngestFetchHost(url, hosts);
+          checkIngestFetchHost(url, hosts, { textFetch: true });
         }
       : undefined,
   });

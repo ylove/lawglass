@@ -47,6 +47,8 @@ export function checkIngestHost(url: string, hosts: ReadonlySet<string>): void {
 export function checkIngestFetchHost(
   url: URL,
   hosts: ReadonlySet<string>,
+  /** A text fetch (the locate route) must never follow a Pennsylvania redirect to /404. */
+  options: { textFetch?: boolean } = {},
 ): void {
   // Senate landing pages are pasted inputs only; the resolver maps them to text hosts.
   if (url.hostname === 'nysenate.gov' || url.hostname === 'www.nysenate.gov')
@@ -58,7 +60,7 @@ export function checkIngestFetchHost(
   if (NEW_JERSEY_HOSTS.includes(url.hostname)) assertNewJerseyFetch(url);
   // Pennsylvania: only the bill page (for its printer's numbers) and the PDF text are fetched.
   if (PENNSYLVANIA_HOSTS.includes(url.hostname))
-    assertPennsylvaniaFetch(url, true);
+    assertPennsylvaniaFetch(url, !options.textFetch);
   if (hosts.has(url.hostname)) return;
   // Sponsor enrichment permits these exact published directory files, never arbitrary paths.
   if ((Object.values(LEGISLATORS_URLS) as string[]).includes(url.href)) return;
