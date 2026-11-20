@@ -69,7 +69,7 @@ const PA_GUTTER = /^[ \t]*\d{1,2}[ \t]+/gm;
 const PA_TITLE_START =
   /^[ \t]*(AN ACT|A JOINT RESOLUTION|A CONCURRENT RESOLUTION|A RESOLUTION)[ \t]*$/m;
 const PA_TITLE_END =
-  /The General Assembly of the Commonwealth of Pennsylvania|\bWHEREAS\b|\bRESOLVED\b/i;
+  /The\s+General\s+Assembly\s+of\s+the\s+Commonwealth\s+of\s+Pennsylvania|\bWHEREAS\b|\bRESOLVED\b/i;
 const PA_TITLE_AMENDS = /\b(?:amending|re-?enacting|repealing)\b/i;
 const PA_TITLE_PROPOSES =
   /\bproposing\b[\s\S]*?\bamendments?\b[\s\S]*?\bconstitution\b/i;
@@ -85,12 +85,11 @@ function pennsylvaniaTitle(
   if (!start || start.index > PA_COVER_WINDOW) return undefined;
   const rest = plain.slice(start.index + start[0].length);
   const end = PA_TITLE_END.exec(rest);
+  // No verified boundary means no verified title: never scan body text for a decision.
+  if (!end) return undefined;
   return {
     kind: (start[1] ?? '').toUpperCase(),
-    title: rest
-      .slice(0, end?.index ?? 2000)
-      .replace(/\s+/g, ' ')
-      .trim(),
+    title: rest.slice(0, end.index).replace(/\s+/g, ' ').trim(),
   };
 }
 
@@ -108,6 +107,37 @@ export function pennsylvaniaAmendingBill(text: string): boolean {
   // A simple or concurrent resolution is ordinary text unless it adopts, readopts or amends
   // chamber rules (which print their changes in brackets) or says it is amending.
   return PA_TITLE_RULES.test(found.title) || /\bamending\b/i.test(found.title);
+}
+
+/** Words that make a "Section N." line a bill's own directive rather than a quoted heading. */
+const PA_OPERATIVE_SECTION =
+  /\b(?:amended|added|repealed|re-?enacted|to read|take effect|takes effect|The following)\b/i;
+
+/**
+ * Offsets where a bill's own operative section starts: "Section N." at a line start, N
+ * continuing the bill's sequence, with an operative phrase in its first lines. A bracket
+ * pair never legitimately crosses one, whereas a repealed run can span quoted sections inside it.
+ */
+function pennsylvaniaSectionBoundaries(
+  lines: readonly { text: string }[],
+): number[] {
+  const boundaries: number[] = [];
+  let expected = 1;
+  let position = 0;
+  for (const [index, line] of lines.entries()) {
+    const match = PA_SECTION_START.exec(line.text);
+    if (match && Number(/\d+/.exec(match[0])?.[0]) === expected) {
+      const near = [line.text, lines[index + 1]?.text, lines[index + 2]?.text]
+        .join(' ')
+        .replace(/\s+/g, ' ');
+      if (PA_OPERATIVE_SECTION.test(near)) {
+        boundaries.push(position);
+        expected++;
+      }
+    }
+    position += line.text.length + 1;
+  }
+  return boundaries;
 }
 
 /** A bill section opening ("Section 2."): a paragraph boundary for bracket recovery. */
@@ -390,6 +420,10 @@ export function applyChangeMarks<T extends SourceLine>(
     };
   // Pennsylvania: brackets pair and recover within a paragraph (blank line or bill section).
   const paragraphStarts = new Set<number>();
+  const sectionBoundaries =
+    jurisdiction === 'PA' ? pennsylvaniaSectionBoundaries(lines) : [];
+  /** Unmatched openings (including pairs that crossed a bill section), recovered below. */
+  const unmatchedOpens: number[] = [];
   if (jurisdiction === 'PA') {
     let position = 0;
     for (const line of lines) {
@@ -444,6 +478,14 @@ export function applyChangeMarks<T extends SourceLine>(
       const start = stack.pop();
       if (start === undefined) {
         unmatchedClosing = true;
+      } else if (
+        jurisdiction === 'PA' &&
+        sectionBoundaries.some((boundary) => boundary > start && boundary < at)
+      ) {
+        // A pair that crosses into the next operative bill section cannot be legitimate:
+        // read its opening as unmatched (bounded to its paragraph) and warn.
+        unmatchedOpens.push(start);
+        unmatchedClosing = true;
       } else pairs.push({ start, end: at + 1 });
     }
   }
@@ -453,10 +495,12 @@ export function applyChangeMarks<T extends SourceLine>(
   for (const { start, end } of pairs.sort((a, b) => a.start - b.start)) {
     if (
       start < deletedThrough ||
-      literalBracket(
-        text.slice(start + 1, end - 1),
-        text.slice(text.lastIndexOf('\n', start) + 1, start),
-      )
+      // PA keeps no literal exemptions: "[Reserved]" or "[sic]" there is old law to omit.
+      (jurisdiction !== 'PA' &&
+        literalBracket(
+          text.slice(start + 1, end - 1),
+          text.slice(text.lastIndexOf('\n', start) + 1, start),
+        ))
     )
       continue;
     mark(start, end);
@@ -475,16 +519,17 @@ export function applyChangeMarks<T extends SourceLine>(
     warnings.push(
       'An unmatched closing amendment bracket was found; check the original document.',
     );
-  if (jurisdiction === 'PA' && stack.length) {
+  if (jurisdiction === 'PA' && (stack.length || unmatchedOpens.length)) {
     // Balanced pairs were matched across paragraphs and quoted headings above (a repealed run
-    // can enclose several sections). Only a genuinely unmatched opening is bounded: it
-    // deletes to the end of its own paragraph.
+    // can enclose several sections). Only an unmatched opening is bounded: it deletes to the
+    // end of its own paragraph. One advancing cursor keeps this linear.
     const starts = [...paragraphStarts].sort((a, b) => a - b);
+    let cursor = 0;
     let recoveredThrough = 0;
-    for (const start of stack) {
+    for (const start of [...stack, ...unmatchedOpens].sort((a, b) => a - b)) {
       if (start < recoveredThrough) continue;
-      recoveredThrough =
-        starts.find((boundary) => boundary > start) ?? text.length;
+      while (cursor < starts.length && (starts[cursor] ?? 0) <= start) cursor++;
+      recoveredThrough = starts[cursor] ?? text.length;
       mark(start, recoveredThrough);
     }
     stack.length = 0;

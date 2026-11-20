@@ -362,3 +362,60 @@ test('brackets inside verified inserted words stay literal', async () => {
   ]);
   expect(runs(doc, 'deleted')).toEqual(['[removed words]']);
 });
+
+test('a pair never crosses into the next operative bill section: its opening is bounded and warns', () => {
+  const doc = read(
+    act(
+      'Amending the act.',
+      'Section 1. Section 3 of the act is amended to read:',
+      'A literal [ stays only to its paragraph end.',
+      '',
+      'Current text of section one stays.',
+      'Section 2. Section 4 of the act is amended to read:',
+      'Text with a stray ] here.',
+    ),
+  );
+  const deleted = runs(doc, 'deleted').join(' ');
+  expect(deleted).toContain('[ stays only to its paragraph end.');
+  expect(deleted).not.toContain('Current text of section one');
+  expect(doc.warnings).toContainEqual(expect.stringMatching(/not closed/));
+});
+
+test('an enacting clause wrapped between "of" and "Pennsylvania" still ends the title', () => {
+  const text = [
+    COVER,
+    'AN ACT',
+    'Providing for samples.',
+    'The General Assembly of the Commonwealth of',
+    'Pennsylvania hereby enacts as follows:',
+    'Section 1. The bylaws are amending [rules] only as written.',
+  ].join('\n');
+  expect(pennsylvaniaAmendingBill(text)).toBe(false);
+  expect(runs(read(text), 'deleted')).toEqual([]);
+  // No verified boundary at all: not amending, and brackets warn instead of being decided silently.
+  const open = [COVER, 'AN ACT', 'Amending the act [x].'].join('\n');
+  expect(pennsylvaniaAmendingBill(open)).toBe(false);
+  expect(read(open).warnings.length).toBeGreaterThan(0);
+});
+
+test('[Reserved] and [sic] are deleted wording in an amending PA measure', () => {
+  const doc = read(
+    act(
+      'Amending the act.',
+      'Section 1. Section 2 is amended to read:',
+      'A [Reserved] and [sic] word.',
+    ),
+  );
+  expect(runs(doc, 'deleted')).toEqual(['[Reserved]', '[sic]']);
+});
+
+test('recovering many unmatched openings stays linear', () => {
+  const body = Array.from(
+    { length: 4000 },
+    (_, i) => `word [open ${String(i)}`,
+  );
+  const started = performance.now();
+  const doc = read(act('Amending the act.', ...body));
+  expect(performance.now() - started).toBeLessThan(2000);
+  expect(runs(doc, 'deleted').length).toBeGreaterThan(0);
+});
