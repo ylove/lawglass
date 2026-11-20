@@ -25,15 +25,19 @@ export function withRetryGate<T>(
       return {
         next: () => storage.run(gate, () => inner.next()),
         return: (value?: unknown) =>
-          inner.return
-            ? storage.run(gate, () => inner.return!(value))
-            : Promise.resolve({ done: true as const, value: undefined }),
+          storage.run(gate, () =>
+            inner.return
+              ? inner.return(value)
+              : Promise.resolve({ done: true as const, value: undefined }),
+          ),
         throw: (error?: unknown) =>
-          inner.throw
-            ? storage.run(gate, () => inner.throw!(error))
-            : Promise.reject(
-                error instanceof Error ? error : new Error(String(error)),
-              ),
+          storage.run(gate, () =>
+            inner.throw
+              ? inner.throw(error)
+              : Promise.reject(
+                  error instanceof Error ? error : new Error(String(error)),
+                ),
+          ),
       };
     },
   };

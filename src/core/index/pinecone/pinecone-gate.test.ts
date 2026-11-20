@@ -12,7 +12,7 @@ import {
 } from '../../cost/index.js';
 import { PineconeBackend } from './pinecone.js';
 
-function setup(prices: JobScope['prices'] = undefined) {
+function setup(prices?: JobScope['prices']) {
   const sdk = fakeSdk();
   let time = 0;
   const backend = new PineconeBackend({
