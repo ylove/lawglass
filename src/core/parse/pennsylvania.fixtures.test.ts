@@ -202,3 +202,18 @@ await describeWithFixture('pa-sb605-2025-pn0613', () => {
     });
   });
 });
+
+await describeWithFixture('pa-hb918-2011-pn981', () => {
+  const doc = load('pa-hb918-2011-pn981');
+  it('a 2011 joint resolution with numbered directives is an amending measure read as a resolution', () => {
+    expect(doc().metadata).toMatchObject({
+      billNumber: 'HB 918',
+      docKind: 'resolution',
+      session: '2011-2012 Regular Session',
+      version: "Printer's No. 981",
+    });
+    expect(runs(doc(), 'inserted').length).toBeGreaterThan(50);
+    // The whole text parses with no unclosed-bracket or missing-cover warning.
+    expect(noMarkWarnings(doc()).join(' ')).not.toMatch(/bracket|cover/i);
+  });
+});

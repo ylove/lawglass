@@ -122,97 +122,140 @@ test('brackets are ordinary text on a host that is not a PA source', () => {
   expect(doc.metadata.jurisdiction).toBe('Pennsylvania');
 });
 
-test('the gate needs the printed cover and a directive that replaces existing law', () => {
+const COVER = 'THE GENERAL ASSEMBLY OF PENNSYLVANIA';
+const ENACT =
+  'The General Assembly of the Commonwealth of Pennsylvania\nhereby enacts as follows:';
+const act = (title: string, ...body: string[]) =>
+  [COVER, 'AN ACT', ...title.split('\n'), ENACT, ...body].join('\n');
+const read = (text: string) => parseText(Buffer.from(text), context);
+
+test('the gate is the title: amending, reenacting, repealing or a constitutional amendment', () => {
   expect(pennsylvaniaAmendingBill(paAmendingText())).toBe(true);
-  // A cover that amends nothing keeps its brackets.
+  // Upper case, wrapped title lines and printed line-number gutters.
   expect(
     pennsylvaniaAmendingBill(
-      'THE GENERAL ASSEMBLY OF PENNSYLVANIA\nAN ACT\nProviding for samples.\nSection 1. A [sic] note.',
-    ),
-  ).toBe(false);
-  // No cover.
-  expect(
-    pennsylvaniaAmendingBill('Section 1. The act is amended to read:\nold'),
-  ).toBe(false);
-  // A joint resolution amends the Constitution.
-  expect(
-    pennsylvaniaAmendingBill(
-      'THE GENERAL ASSEMBLY OF PENNSYLVANIA\nA JOINT RESOLUTION\nThat Article III be\namended to read:\n[old]',
+      `${COVER}\nAN ACT\n1 REENACTING AND\n2 AMENDING the act.\n${ENACT}`,
     ),
   ).toBe(true);
-  // Adding only is new law, not a replaced block.
+  expect(pennsylvaniaAmendingBill(act('Repealing section 5 of the act.'))).toBe(
+    true,
+  );
   expect(
     pennsylvaniaAmendingBill(
-      'THE GENERAL ASSEMBLY OF PENNSYLVANIA\nAN ACT\nSection 1. Title 75 is amended by adding a section to read:\n§ 1. New.',
+      `${COVER}\nA JOINT RESOLUTION\nProposing an amendment to the Constitution.\nThe General Assembly of the Commonwealth of Pennsylvania\nhereby resolves as follows:`,
+    ),
+  ).toBe(true);
+  expect(
+    pennsylvaniaAmendingBill(
+      `${COVER}\nA JOINT RESOLUTION\nProposing integrated amendments to the\nConstitution of the Commonwealth of Pennsylvania.\nThe General Assembly of the Commonwealth of Pennsylvania\nhereby resolves as follows:`,
+    ),
+  ).toBe(true);
+  // New acts, simple and concurrent resolutions, and "amended" in the body never qualify.
+  expect(
+    pennsylvaniaAmendingBill(
+      act('Providing for samples.', 'Section 1. Bylaws may be amended.'),
     ),
   ).toBe(false);
+  for (const kind of ['A RESOLUTION', 'A CONCURRENT RESOLUTION'])
+    expect(
+      pennsylvaniaAmendingBill(
+        `${COVER}\n${kind}\nAmending the rules.\nWHEREAS, x; therefore be it`,
+      ),
+    ).toBe(false);
+  expect(pennsylvaniaAmendingBill('AN ACT\nAmending Title 1.\n' + ENACT)).toBe(
+    false,
+  );
 });
 
-const pa = (...lines: string[]) =>
-  parseText(
-    Buffer.from(
-      [
-        'THE GENERAL ASSEMBLY OF PENNSYLVANIA',
-        'AN ACT',
-        'Title.',
-        ...lines,
-      ].join('\n'),
+test('every bracket outside an underlined run is deleted in an amending measure, anywhere in the body', () => {
+  const doc = read(
+    act(
+      'Amending the act of June 1, 2001 (P.L.1, No.2), known as the Sample Act.',
+      'Section 1. Section 3 of the act is amended to read:',
+      'Section 2. Quoted heading.--',
+      'A person [shall pay a fee] may pay.',
+      'Section 3. This act takes effect [in 60 days] immediately.',
     ),
-    context,
   );
-
-test('a reenacting directive across citation periods and line breaks scopes deletion', () => {
-  const doc = pa(
-    'Providing a title.',
-    'Section 1. Section 3 of the act of June 1, 2001 (P.L.1,',
-    'No.2), known as the Sample Act, is reenacted and',
-    'AMENDED to read:',
-    'Section 3. Fees.',
-    'A person [shall pay a fee] may pay.',
-  );
-  expect(runs(doc, 'deleted')).toEqual(['[shall pay a fee]']);
+  expect(runs(doc, 'deleted')).toEqual(['[shall pay a fee]', '[in 60 days]']);
 });
 
-test('recitals, titles and resolving clauses never enable deletion', () => {
-  const doc = parseText(
-    Buffer.from(
-      [
-        'THE GENERAL ASSEMBLY OF PENNSYLVANIA',
-        'A RESOLUTION',
-        'Recommending that Article III be amended [as recorded].',
-        'WHEREAS, It was recommended that Article III be amended to read [as recorded]; and',
-        'RESOLVED, That Section 1 is amended to read [thus].',
-      ].join('\n'),
+test('trade-off: a literal bracket in a plain new section of an amending bill is read as deleted', () => {
+  const doc = read(
+    act(
+      'Amending Title 75.',
+      'Section 1. Section 5 of Title 75 is amended to read:',
+      'Old [removed] law.',
+      'Section 2. The survey form shall read "Name [optional]".',
     ),
-    context,
   );
-  expect(runs(doc, 'deleted')).toEqual([]);
+  expect(runs(doc, 'deleted')).toEqual(['[removed]', '[optional]']);
 });
 
-test('in a mixed bill only the replaced law block loses its brackets', () => {
-  const doc = pa(
-    'Section 1. Section 5 of Title 75 is amended to read:',
-    '§ 5. Rule.',
-    'Old [removed] law.',
-    'Section 2. The survey form shall read "Name [optional]".',
-    'Section 3. This act shall take effect immediately.',
+test('a new act and every kind of resolution keep their brackets', () => {
+  const newAct = read(
+    act(
+      'Providing for samples.',
+      'Section 1. Section 4 is amended [as recorded].',
+    ),
   );
-  expect(runs(doc, 'deleted')).toEqual(['[removed]']);
-  expect(
-    [...walkSections(doc.sections)]
-      .flatMap((x) => x.spans.map((y) => y.text))
-      .join(''),
-  ).toContain('Name [optional]');
+  expect(runs(newAct, 'deleted')).toEqual([]);
+  const resolution = read(
+    [
+      COVER,
+      'A RESOLUTION',
+      'Recommending that Article III be amended.',
+      'WHEREAS, It was recommended that Article III be amended to read [as recorded]; and',
+      'RESOLVED, That Section 1 is amended to read [thus].',
+    ].join('\n'),
+  );
+  expect(runs(resolution, 'deleted')).toEqual([]);
+  // A WHEREAS recital in a joint resolution is outside the title too.
+  const joint = read(
+    [
+      COVER,
+      'A JOINT RESOLUTION',
+      'Proposing an amendment to the Constitution.',
+      'The General Assembly of the Commonwealth of Pennsylvania',
+      'hereby resolves as follows:',
+      '(1) That section 3 of Article III be amended to read:',
+      'Old [removed] text.',
+    ].join('\n'),
+  );
+  expect(runs(joint, 'deleted')).toEqual(['[removed]']);
 });
 
-test('an unclosed bracket stops at the blank line before the next paragraph', () => {
-  const doc = pa(
-    'Section 1. Section 5 of Title 75 is amended to read:',
-    'Old [removed words',
-    '',
-    'A separate paragraph that stays.',
+test('numbered gutters, line breaks and gaps in section numbers do not matter', () => {
+  const doc = read(
+    [
+      COVER,
+      'AN ACT',
+      '1 Amending the act.',
+      ENACT,
+      'Section 1. Section 2 of the act is',
+      '2 amended to read:',
+      'A [first] word.',
+      'Section 4. A [fourth] word.',
+    ].join('\n'),
   );
-  expect(runs(doc, 'deleted')).toEqual(['[removed words']);
+  expect(runs(doc, 'deleted')).toEqual(['[first]', '[fourth]']);
+});
+
+test('brackets never pair across a paragraph; an unclosed one stops there and warns', () => {
+  const doc = read(
+    act(
+      'Amending Title 75.',
+      'Old [removed words',
+      '',
+      'A separate paragraph that stays] with a stray close.',
+      'Section 2. Another [kept? no] bracket.',
+    ),
+  );
+  expect(runs(doc, 'deleted')).toEqual(['[removed words', '[kept? no]']);
+  expect(doc.warnings).toContainEqual(expect.stringMatching(/not closed/));
+  expect(doc.warnings).toContainEqual(
+    expect.stringMatching(/unmatched closing/),
+  );
 });
 
 test('a Pennsylvania text with brackets and no cover warns that nothing was verified', () => {
@@ -231,25 +274,6 @@ test('a Pennsylvania text with brackets and no cover warns that nothing was veri
     context,
   );
   expect(act.warnings).toHaveLength(1);
-});
-
-test('unbalanced brackets are recovered at the next boundary, as for other states', () => {
-  const doc = parseText(
-    Buffer.from(
-      [
-        'THE GENERAL ASSEMBLY OF PENNSYLVANIA',
-        'AN ACT',
-        'Amending Title 1 of the Pennsylvania Consolidated Statutes.',
-        'Section 1. Section 2 of Title 1 is amended to read:',
-        'A rule [that was removed',
-        '',
-        'Section 2. This act shall take effect immediately.',
-      ].join('\n'),
-    ),
-    context,
-  );
-  expect(runs(doc, 'deleted')).toEqual(['[that was removed']);
-  expect(doc.warnings).toContainEqual(expect.stringMatching(/not closed/));
 });
 
 test('metadata is empty without the bill designation or for a mirror without an amending bill', () => {

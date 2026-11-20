@@ -97,18 +97,29 @@ effect as light face brackets, added by an amendment).
 | `<--` in the margin | Points at a changed line | Removed from the text                                                                  |
 | `* * *`             | Unchanged law left out   | Kept as printed                                                                        |
 
-**Gate instead of a legend.** The NY and NJ bracket rule is switched on by a printed legend.
-Pennsylvania has none, so the rule is switched on by the page itself: the host is a
-Pennsylvania source (or the parser is told the jurisdiction), the text opens with `THE
-GENERAL ASSEMBLY OF PENNSYLVANIA`, and the bill says it amends something (`Amending ...`,
-`is amended`, `be amended`). This follows the legislature's own statement that brackets are
-used only in bills amending existing law: in a new act or a resolution a bracket is ordinary
-text (`[sic]`) and stays unchanged. A Pennsylvania document with brackets and no cover gets the
-same "bracketed wording could not be marked as removed" warning New York and New Jersey get;
-a cover that amends nothing gets none.
+**Gate instead of a legend: the title.** The NY and NJ bracket rule is switched on by a printed
+legend. Pennsylvania has none, so the rule is decided from the measure's **title** alone: the
+text between the cover's `AN ACT` / `A JOINT RESOLUTION` line and the enacting or resolving
+clause (gutters stripped, lines joined, case ignored). A measure is _amending_ when the cover
+reads `THE GENERAL ASSEMBLY OF PENNSYLVANIA` and the title of an act says it is amending,
+reenacting and amending, or repealing, or the title of a joint resolution proposes an amendment
+(or amendments) to the Constitution. New acts, simple resolutions and concurrent resolutions are
+never amending. This follows the legislature's statement that brackets are used only in bills
+amending existing law. In an amending measure, every bracketed run outside an underlined
+(inserted) run is deleted, anywhere in the body; in any other measure a bracket is ordinary
+text (`[sic]`). Brackets pair and recover within a paragraph (a blank line or a `Section N.`
+start), never across one: an unclosed bracket deletes to the end of its paragraph and warns. A
+Pennsylvania document with brackets that this rule does not read as deleted carries the
+"bracketed wording could not be marked as removed" warning New York and New Jersey get.
 
-Shared with NY/NJ: nested brackets, runs that cross pages, and an unclosed bracket being
-bounded at the next section, page or blank line. Three Pennsylvania-only repairs run first:
+**Known trade-off.** Because the rule uses the title and not the structure, a literal bracket
+in a plain, non-underlined new section of an amending bill (for example a form reading
+`Name [optional]`) is read as deleted. That errs toward the hard rule that removed text is never
+presented as current law; underlined text is never touched. A structural scope (only after
+"is amended to read:") was tried and dropped: quoted statute section numbers, line-number
+gutters, numbering gaps and long directives defeated it.
+
+Shared with NY/NJ: nested brackets and runs that cross pages. Three Pennsylvania-only repairs run first:
 the `<--` pointers are dropped; the cover lines above the title (`PRINTER'S NO. 4082`,
 `PRIOR PRINTER'S NOS. 3253, 3616`) are printed over a rule that reads as underline, so they
 are kept unchanged; and in a print that lists prior printer's numbers, a run of capitalised
@@ -153,19 +164,20 @@ carry it often, so it is a known noisy warning.
 Counted on the extracted text layer and the drawn rules of each PDF; bracket pairs were
 checked against the printed brackets. For HB 150 the whole-section bracket and the page-by-page
 marks were checked; its eleven short struck runs (mostly cross-references such as `(a)(2)`) are
-the parser's reading of the drawn rules and were not each re-read on the rendered page. Run `npm run fixtures:fetch -- --only pa-hb170-2025-pn2721,pa-sb1273-2025-pn1610,pa-hb150-2025-pn2066,pa-hb2443-2025-pn4082,pa-sr374-2025-pn1942,pa-hr607-2025-pn3853,pa-sb605-2025-pn0613,pa-hr125-2025-pn1009`
+the parser's reading of the drawn rules and were not each re-read on the rendered page. Run `npm run fixtures:fetch -- --only pa-hb170-2025-pn2721,pa-sb1273-2025-pn1610,pa-hb150-2025-pn2066,pa-hb2443-2025-pn4082,pa-sr374-2025-pn1942,pa-hr607-2025-pn3853,pa-sb605-2025-pn0613,pa-hr125-2025-pn1009,pa-hb918-2011-pn981`
 then `npm test -- src/core/parse/pennsylvania.fixtures.test.ts`; missing snapshots skip.
 
-| Snapshot                                                                                  | Kind                            |                             Deletions counted | Found | False positives | Insertion runs counted | Found |
-| ----------------------------------------------------------------------------------------- | ------------------------------- | --------------------------------------------: | ----: | --------------: | ---------------------: | ----: |
-| [HB 170 PN 2721](https://www.palegis.us/legislation/bills/text/PDF/2025/0/HB0170/PN2721)  | Amends Title 75                 |                                             2 |     2 |               0 |                      4 |     4 |
-| [SB 1273 PN 1610](https://www.palegis.us/legislation/bills/text/PDF/2025/0/SB1273/PN1610) | Adds new law only               |                                             0 |     0 |               0 |                      1 |     1 |
-| [HB 150 PN 2066](https://www.palegis.us/legislation/bills/text/PDF/2025/0/HB0150/PN2066)  | Repeals section 9777, adds 9778 | 12 (the bracketed section and 11 struck runs) |    12 |               0 |                     12 |    12 |
-| [HB 2443 PN 4082](https://www.palegis.us/legislation/bills/text/PDF/2025/0/HB2443/PN4082) | Senate-amended new act          |                                             4 |     4 |               0 |                      1 |     1 |
-| [SR 374 PN 1942](https://www.palegis.us/legislation/bills/text/PDF/2025/0/SR0374/PN1942)  | Senate resolution               |                                             0 |     0 |               0 |                      0 |     0 |
-| [HR 607 PN 3853](https://www.palegis.us/legislation/bills/text/PDF/2025/0/HR0607/PN3853)  | House resolution                |                                             0 |     0 |               0 |                      0 |     0 |
-| [SB 605 PN 613](https://www.palegis.us/legislation/bills/text/PDF/2025/0/SB0605/PN0613)   | Joint resolution                |                                             0 |     0 |               0 |                      1 |     1 |
-| [HR 125 PN 1009](https://www.palegis.us/legislation/bills/text/PDF/2025/0/HR0125/PN1009)  | Concurrent resolution           |                                             0 |     0 |               0 |                      0 |     0 |
+| Snapshot                                                                                       | Kind                                            |                             Deletions counted | Found | False positives |          Insertion runs counted | Found |
+| ---------------------------------------------------------------------------------------------- | ----------------------------------------------- | --------------------------------------------: | ----: | --------------: | ------------------------------: | ----: |
+| [HB 170 PN 2721](https://www.palegis.us/legislation/bills/text/PDF/2025/0/HB0170/PN2721)       | Amends Title 75                                 |                                             2 |     2 |               0 |                               4 |     4 |
+| [SB 1273 PN 1610](https://www.palegis.us/legislation/bills/text/PDF/2025/0/SB1273/PN1610)      | Adds new law only                               |                                             0 |     0 |               0 |                               1 |     1 |
+| [HB 150 PN 2066](https://www.palegis.us/legislation/bills/text/PDF/2025/0/HB0150/PN2066)       | Repeals section 9777, adds 9778                 | 12 (the bracketed section and 11 struck runs) |    12 |               0 |                              12 |    12 |
+| [HB 2443 PN 4082](https://www.palegis.us/legislation/bills/text/PDF/2025/0/HB2443/PN4082)      | Senate-amended new act                          |                                             4 |     4 |               0 |                               1 |     1 |
+| [SR 374 PN 1942](https://www.palegis.us/legislation/bills/text/PDF/2025/0/SR0374/PN1942)       | Senate resolution                               |                                             0 |     0 |               0 |                               0 |     0 |
+| [HR 607 PN 3853](https://www.palegis.us/legislation/bills/text/PDF/2025/0/HR0607/PN3853)       | House resolution                                |                                             0 |     0 |               0 |                               0 |     0 |
+| [SB 605 PN 613](https://www.palegis.us/legislation/bills/text/PDF/2025/0/SB0605/PN0613)        | Joint resolution                                |                                             0 |     0 |               0 |                               1 |     1 |
+| [HB 918 PN 981 (2011)](https://www.palegis.us/legislation/bills/text/PDF/2011/0/HB0918/PN0981) | Joint resolution, numbered lowercase directives |                                             0 |     0 |               0 | many (parsed, not hand-counted) |   n/a |
+| [HR 125 PN 1009](https://www.palegis.us/legislation/bills/text/PDF/2025/0/HR0125/PN1009)       | Concurrent resolution                           |                                             0 |     0 |               0 |                               0 |     0 |
 
 HB 170's current-law text reads cleanly ("farm vehicles for which a Type D, Type AA, Type BB or
 Type CC biennial certificate of exemption has been issued"). A further sweep of 24 bills and

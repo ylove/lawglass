@@ -337,6 +337,17 @@
       "retrievedAt": "2026-11-19",
       "jurisdiction": "Pennsylvania",
       "notes": "A concurrent resolution is numbered as a House or Senate resolution and titled 'A CONCURRENT RESOLUTION'. Checked for #422."
+    },
+    {
+      "name": "pa-hb918-2011-pn981",
+      "description": "2011 joint resolution (House Bill 918) proposing integrated constitutional amendments, with numbered lowercase directives such as '(1) That section 1 of Article II be amended to read:'.",
+      "format": "pdf",
+      "url": "https://www.palegis.us/legislation/bills/text/PDF/2011/0/HB0918/PN0981",
+      "sha256": "68667e5dea0f315f72e49e12d8e90af65bd26649f58e4076dcbc4e8b88aacca5",
+      "bytes": 101530,
+      "retrievedAt": "2026-11-19",
+      "jurisdiction": "Pennsylvania",
+      "notes": "Joint resolution numbered as a bill; found by Codex review of #427. Large amendment with many underlined runs; its title, not its directives, makes it an amending measure."
     }
   ]
 }
