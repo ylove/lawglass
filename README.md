@@ -8,7 +8,7 @@ Lawglass is a free, open-source bill explainer. Bills are long, written for lawy
 
 ![Opening a real federal bill in Lawglass: a plain-language summary on arrival, an illustrated example, its legislative history and sponsor links, then a cited answer to 'Who does it affect?' with the source text.](docs/demo.gif)
 
-_The demo shows a real federal bill, S. 202 of the 119th Congress, answered by Claude._
+_The demo shows a real federal bill, S. 202 of the 119th Congress, answered by Claude (Haiku 5.5), recorded from the v2.1 build. The "What changes" picture on the public site is from Pennsylvania HB 170, which amends existing law._
 
 ## What it does
 
