@@ -75,7 +75,7 @@ describe('Pinecone integrated inference under a call gate', () => {
     expect(calls.every((c) => c.ref === 'hold-1' && c.docId === DOC_A)).toBe(
       true,
     );
-    // No price entry for a hosted embedding model: a capping host must price it itself.
+    // Pinecone bills in units and per request: always Infinity, a host applies its own policy.
     expect(
       calls.every((c) => c.worstCaseUsd === Number.POSITIVE_INFINITY),
     ).toBe(true);
@@ -83,7 +83,7 @@ describe('Pinecone integrated inference under a call gate', () => {
     expect(ends.every((e) => !e.reported)).toBe(true);
   });
 
-  it('prices a request from the job price table when it has the model: input bytes at the input rate', async () => {
+  it('is Infinity even when the price table names the model: units and per-request billing have no rate bound', async () => {
     const config = pineconeConfig({}, {});
     const rate = { input: 2, output: 0, cacheRead: 0, cacheWrite: 0 };
     const { backend, job, calls } = setup({ [config.rerankModel]: rate });
@@ -99,8 +99,36 @@ describe('Pinecone integrated inference under a call gate', () => {
     });
     expect(calls).toHaveLength(1);
     expect(calls[0]?.model).toBe(config.rerankModel);
-    expect(calls[0]?.worstCaseUsd).toBeGreaterThan(0);
-    expect(Number.isFinite(calls[0]?.worstCaseUsd)).toBe(true);
+    expect(calls[0]?.worstCaseUsd).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('gates the billed reads: completion checks, chunk fetches and index stats', async () => {
+    const { backend, job, calls, ends } = setup();
+    await backend.ensureReady();
+    await runInJob(job, () => backend.upsertChunks(DOC_A, CHUNKS_A));
+    calls.length = 0;
+    ends.length = 0;
+    await runInJob(job, async () => {
+      await backend.hasDocument(DOC_A);
+      await backend.getChunks(DOC_A, [CHUNKS_A[0]!.id]);
+      await backend.recordCounts(DOC_A);
+    });
+    // One completion fetch, one chunk fetch, one stats call per index (dense and sparse).
+    expect(calls).toHaveLength(4);
+    expect(new Set(calls.map((c) => c.callId)).size).toBe(4);
+    expect(ends).toHaveLength(4);
+  });
+
+  it('a refusing gate stops reads before any SDK call', async () => {
+    const { backend, sdk, job, deny } = setup();
+    await backend.ensureReady();
+    await runInJob(job, () => backend.upsertChunks(DOC_A, CHUNKS_A));
+    deny();
+    sdk.dense.fetch.mockClear();
+    await expect(
+      runInJob(job, () => backend.getChunks(DOC_A, [CHUNKS_A[0]!.id])),
+    ).rejects.toMatchObject({ code: 'BUDGET_EXHAUSTED' });
+    expect(sdk.dense.fetch).not.toHaveBeenCalled();
   });
 
   it('each 429 retry is a new billed attempt and is gated again', async () => {

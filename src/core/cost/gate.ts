@@ -15,7 +15,6 @@ import {
   type JobContext,
   type JobScope,
 } from './job.js';
-import { modelPrice } from './prices.js';
 
 /** How long a host's gate may take to decide before the attempt is refused. */
 export const DEFAULT_GATE_TIMEOUT_MS = 30_000;
@@ -131,38 +130,26 @@ export async function endAttempt(attempt: Attempt): Promise<void> {
 }
 
 /**
- * A billed backend request (an embedding or rerank call to a hosted index) is gated like a model
- * call, and `onCallEnd` is told afterwards (`reported: false`: backends report no `UsageEvent`).
- * `worstCaseUsd` comes from the job's price table when it has an entry for `model` (its `input`
- * rate applied to one token per input byte, a bound), else `Infinity`: a host that gates
- * Pinecone inference must price it. `signal` ends the wait for the gate.
+ * A billed backend request (an embedding, rerank, fetch or delete on a hosted index) is gated
+ * like a model call, and `onCallEnd` is told afterwards (`reported: false`: backends report no
+ * `UsageEvent`). `worstCaseUsd` is always `Infinity`: Pinecone bills in read and write units and
+ * per rerank request, which no price-table rate times input size bounds. A host that gates
+ * Pinecone must apply its own policy to these calls (they carry the index model name). `signal`
+ * ends the wait for the gate.
  */
 export async function startBackendCall(input: {
   model: string;
-  inputBytes: number;
   signal?: AbortSignal | undefined;
 }): Promise<{ end(): Promise<void> }> {
   const attempt = await beginAttempt({
     signal: input.signal,
     describe: () => ({
       model: input.model,
-      worstCaseUsd: backendWorstCase(input),
+      worstCaseUsd: Number.POSITIVE_INFINITY,
     }),
   });
   attempt.dispatched = true;
   return { end: () => endAttempt(attempt) };
-}
-
-function backendWorstCase(input: {
-  model: string;
-  inputBytes: number;
-}): number {
-  try {
-    const price = modelPrice(input.model, currentJob()?.prices);
-    return (input.inputBytes * price.input) / 1_000_000;
-  } catch {
-    return Number.POSITIVE_INFINITY;
-  }
 }
 
 /**

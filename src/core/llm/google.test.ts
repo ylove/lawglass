@@ -67,31 +67,37 @@ it('defaults missing usage to zero', async () => {
     ).usage,
   ).toEqual({ inputTokens: 0, outputTokens: 0 });
 });
-it('asks the SDK for one HTTP request per call: automatic continuation is off', async () => {
+const continuation = (text: string) => ({
+  candidates: [
+    {
+      content: { parts: [{ text }] },
+      finishReason: 'CONTINUATION',
+      continuationToken: 'token-1',
+    },
+  ],
+  usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 2 },
+});
+it('sends one HTTP request per call even when the model answers CONTINUATION (object)', async () => {
   const replay = httpReplay([
     {
-      body: asset('google-object.json'),
+      body: JSON.stringify(continuation('{"billNumber":null,"sponsors":null}')),
     },
+    { body: asset('google-object.json') },
   ]);
-  const provider = make(replay.fetch);
-  const models = (
-    provider as unknown as {
-      client: {
-        models: Record<string, (...args: unknown[]) => Promise<unknown>>;
-      };
-    }
-  ).client.models;
-  const configs: unknown[] = [];
-  for (const method of ['generateContent', 'generateContentStream'] as const) {
-    const original = models[method]!.bind(models);
-    models[method] = (...args: unknown[]) => {
-      configs.push((args[0] as { config?: unknown }).config);
-      return original(...args);
-    };
-  }
-  await provider.generateObject(objectRequest);
+  await make(replay.fetch)
+    .generateObject(objectRequest)
+    .catch(() => undefined);
+  // The SDK would have resumed from the token with a second billed request.
   expect(replay.requests).toHaveLength(1);
-  expect(configs[0]).toMatchObject({
-    automaticFunctionCalling: { disable: true },
-  });
+});
+it('sends one HTTP request per call even when the stream ends at a CONTINUATION checkpoint', async () => {
+  const replay = httpReplay([
+    {
+      stream: true,
+      body: `data: ${JSON.stringify(continuation('Hello'))}\n\n`,
+    },
+    { stream: true, body: asset('google-stream.sse') },
+  ]);
+  await drain(make(replay.fetch)).catch(() => undefined);
+  expect(replay.requests).toHaveLength(1);
 });

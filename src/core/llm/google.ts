@@ -71,6 +71,7 @@ export class GoogleProvider implements LlmProvider {
           // One call is one HTTP request: the SDK's automatic continuation would make more,
           // billed on the accumulated context, under a single gate decision.
           automaticFunctionCalling: { disable: true },
+          automaticContinuation: false,
         },
       });
       let usage = ZERO_LLM_USAGE;
@@ -104,6 +105,7 @@ export class GoogleProvider implements LlmProvider {
           maxOutputTokens: req.maxTokens,
           abortSignal: signal,
           automaticFunctionCalling: { disable: true },
+          automaticContinuation: false,
           responseMimeType: 'application/json',
           responseJsonSchema: jsonSchema(req.schema),
         },
