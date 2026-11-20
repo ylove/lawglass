@@ -211,7 +211,9 @@ export interface AppOptions {
    * Output-token ceilings for one answer call per mode, thinking included. Unset values keep
    * the defaults (16,000 whole, 8,192 focused), so local behaviour is unchanged. A lower focused
    * cap also lowers the model's reasoning effort so a short answer still fits. Estimates and
-   * `questionQuote` worst cases use the same caps.
+   * `questionQuote` worst cases use the same caps. The caps apply to every provider, including
+   * OpenAI, Google and claude-cli, some of which allow less output than Claude: set them to
+   * what the configured model accepts.
    */
   answerLimits?: AnswerLimits;
   /**
@@ -999,7 +1001,7 @@ export function createApp(
           extractModel: models?.extract ?? base.extractModel,
         },
         options.quote,
-        typed ? { mode, limits: options.answerLimits } : {},
+        typed ? { mode, limits: options.answerLimits, story: true } : {},
       );
     const fields = {
       kind: job.kind,
@@ -2051,7 +2053,7 @@ export function createApp(
           extractModel: models?.extract ?? base.extractModel,
         },
         options.quote,
-        { mode: read.mode, limits: options.answerLimits },
+        { mode: read.mode, limits: options.answerLimits, story: true },
       );
     const models = options.modelFor
       ? checkedChoice(

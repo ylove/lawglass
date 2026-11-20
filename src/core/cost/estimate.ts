@@ -396,7 +396,7 @@ export function estimateBill(
       `Cache policy: ${plan.cache ?? 'reuse'}; reuse assumes the same prefix stays cached for five minutes within each feature.`,
       `Thinking tokens per answer call: ${String(plan.thinkingTokensPerCall?.low ?? 0)}–${String(plan.thinkingTokensPerCall?.high ?? 0)}; included within output limits, high reserves the full limit.`,
       'Picture item counts and prompt framing are forecasts; metadata may already be present and require no call.',
-      'Question/chip/locate estimate is separate from bill totals; excludes optional scenarios, embeddings, reranking and hosting.',
+      "Question/chip/locate estimate is separate from bill totals; excludes optional scenarios (a typed question's high bound counts them when asked to), embeddings, reranking and hosting.",
     ],
   };
 }
@@ -405,6 +405,11 @@ export function estimateBill(
 export interface QuestionOptions {
   mode?: AnswerMode | undefined;
   limits?: AnswerLimits | undefined;
+  /**
+   * Count the short story a typed question may draw (up to two more calls, high bound only).
+   * Off by default: chips, locate, examples and the CLI line do not draw one this way.
+   */
+  story?: boolean | undefined;
 }
 
 /** One answer-like question/chip/locate, including a possible reading-level rewrite.
@@ -435,25 +440,25 @@ export function estimateQuestion(
       MAX_EXCERPT_REFERENCES * Math.ceil(MAX_TEXT_CHARS / 4)) *
       PROMPT_MARKUP.high,
   );
-  // Forced to excerpts on an amended bill that fits whole, a change question retrieves sections
-  // with their struck and inserted words inline: take the larger of the two bounds.
   // A bill that fits whole cannot send more than itself (and its references) plus the injected
   // definitions, however much the constants allow.
   const wholeSized = Math.ceil(
     wholeContext(facts.wholePrompt.questionHigh).high * PROMPT_MARKUP.high +
       MAX_INJECTED_DEFINITIONS * 450,
   );
+  // A change question forced to excerpts on an amended bill that fits whole is also inside this
+  // bound: `questionHigh` holds every changed section in full, with its inline markers.
   const focused: Bounds = {
     low: Math.ceil(3500 * PROMPT_MARKUP.low),
-    high: Math.max(
+    high:
       facts.mode === 'whole' && wholeSized > 0
         ? Math.min(focusedHigh, wholeSized)
         : focusedHigh,
-      wholeContext(facts.wholePrompt.focusedChange).high,
-    ),
   };
   // A typed question may also draw a short story: up to two object calls over the same read.
-  const story = (context: Bounds): CallSpec => ({
+  const storyCalls = (context: Bounds): CallSpec[] =>
+    question.story === true ? [storySpec(context)] : [];
+  const storySpec = (context: Bounds): CallSpec => ({
     context,
     promptSized: true,
     visibleOutput: 800,
@@ -481,7 +486,7 @@ export function estimateQuestion(
   if (!whole)
     return feature(
       assignment.answerModel,
-      [spec(focused, 2, true), story(storyExcerpts)],
+      [spec(focused, 2, true), ...storyCalls(storyExcerpts)],
       assignment,
       prices,
     );
@@ -493,7 +498,7 @@ export function estimateQuestion(
   // prompt. The high bound is whichever of the two reachable cases costs more.
   const usual = feature(
     assignment.answerModel,
-    [spec(ordinary, 2, true), story(wholeContext(sizes.scenario))],
+    [spec(ordinary, 2, true), ...storyCalls(wholeContext(sizes.scenario))],
     assignment,
     prices,
   );
@@ -501,7 +506,7 @@ export function estimateQuestion(
     assignment.answerModel,
     [
       spec({ low: ordinary.low, high: changes.high }, 1, true),
-      story(wholeContext(sizes.scenario)),
+      ...storyCalls(wholeContext(sizes.scenario)),
     ],
     assignment,
     prices,
@@ -520,7 +525,7 @@ export function estimateQuestion(
               maxTokens: focusedCap,
               highCalls: 1,
             },
-            story(storyExcerpts),
+            ...storyCalls(storyExcerpts),
           ],
           assignment,
           prices,

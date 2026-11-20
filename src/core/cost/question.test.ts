@@ -27,7 +27,7 @@ describe('estimateQuestion by mode', () => {
     expect(estimateQuestion(facts, {}, {}, { mode: 'whole' })).toEqual(auto);
     const focused = estimateQuestion(facts, {}, {}, { mode: 'focused' });
     expect(focused.high.dollars).toBeLessThan(auto.high.dollars);
-    expect(focused.high.outputTokens).toBe(2 * 8192 + 2 * 2000);
+    expect(focused.high.outputTokens).toBe(2 * 8192);
   });
 
   it('a bill too long for whole reads excerpts whatever the mode', () => {
@@ -38,23 +38,21 @@ describe('estimateQuestion by mode', () => {
 
   it('defaults to the old caps and follows host caps', () => {
     const facts = small();
-    expect(estimateQuestion(facts).high.outputTokens).toBe(
-      16_000 * 2 + 2 * 2000,
-    );
+    expect(estimateQuestion(facts).high.outputTokens).toBe(16_000 * 2);
     const capped = estimateQuestion(
       facts,
       {},
       {},
       { limits: { wholeMaxTokens: 10_000 } },
     );
-    expect(capped.high.outputTokens).toBe(10_000 * 2 + 2 * 2000);
+    expect(capped.high.outputTokens).toBe(10_000 * 2);
     const focused = estimateQuestion(
       facts,
       {},
       {},
       { mode: 'focused', limits: { focusedMaxTokens: 4096 } },
     );
-    expect(focused.high.outputTokens).toBe(4096 * 2 + 2 * 2000);
+    expect(focused.high.outputTokens).toBe(4096 * 2);
   });
 });
 
@@ -111,7 +109,12 @@ describe('questionCeiling is a bound, not a forecast', () => {
   it('counts the optional story: up to two more calls on top of the answer', () => {
     const c = questionCeiling(small());
     // Whole: the answer and its rewrite, plus two story calls.
-    const answerOnly = estimateQuestion(small(), {}, {}, { mode: 'whole' });
+    const answerOnly = estimateQuestion(
+      small(),
+      {},
+      {},
+      { mode: 'whole', story: true },
+    );
     expect(answerOnly.high.calls).toBe(4);
     expect(c.whole!.calls).toBe(4);
     expect(c.focused.calls).toBe(4);
@@ -128,22 +131,31 @@ describe('questionCeiling is a bound, not a forecast', () => {
     expect(c.focused.inputTokens).toBeGreaterThan(2 * 18_000);
   });
 
-  it('forced focused on an amended bill that fits whole is sized from inline-change excerpts', () => {
-    const amended: Section[] = Array.from({ length: 12 }, (_, i) => ({
-      id: `sec-${String(i + 1)}`,
-      heading: 'Grants',
-      level: 1,
-      spans: [
-        { text: 'The department shall award ', status: 'unchanged' },
-        { text: 'old '.repeat(2000), status: 'deleted' },
-        { text: 'new '.repeat(2000), status: 'inserted' },
-      ],
-      children: [],
-    }));
-    const facts = billFacts(amended);
-    expect(facts.mode).toBe('whole');
-    expect(facts.wholePrompt.focusedChange).toBeGreaterThan(0);
-    const plain = billFacts(many(12, 100));
-    expect(plain.wholePrompt.focusedChange).toBe(0);
+  it('does not slow sizing for an amended bill that fits whole (no per-chunk re-rendering)', () => {
+    const runs = (changed: boolean): Section[] => [
+      {
+        id: 'sec-1',
+        heading: 'Grants',
+        level: 1,
+        spans: Array.from({ length: 400 }, (_, i) => ({
+          text: `Clause ${String(i)} of the grant program applies to each town. `,
+          status:
+            changed && i % 2 === 0
+              ? ('deleted' as const)
+              : ('unchanged' as const),
+        })),
+        children: [],
+      },
+    ];
+    const time = (sections: Section[]): number => {
+      const start = performance.now();
+      billFacts(sections);
+      return performance.now() - start;
+    };
+    time(runs(true)); // warm up
+    const plain = time(runs(false));
+    const amended = time(runs(true));
+    // It was about 12 times slower with the extra pass; generous so load cannot flake it.
+    expect(amended).toBeLessThan(plain * 6 + 200);
   });
 });

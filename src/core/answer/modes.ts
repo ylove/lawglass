@@ -32,7 +32,7 @@ export const DEFAULT_WHOLE_MAX_TOKENS = 16_000;
 export const DEFAULT_FOCUSED_MAX_TOKENS = 8192;
 /** Enough for a low-effort reasoning pass and a cited answer; below it replies get cut off. */
 export const MIN_ANSWER_MAX_TOKENS = 2048;
-/** The most output a current Claude model allows in one call. */
+/** A conservative ceiling below current Claude output limits. */
 export const MAX_ANSWER_MAX_TOKENS = 64_000;
 
 const Cap = z

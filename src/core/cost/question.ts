@@ -47,12 +47,14 @@ export function questionCeiling(
   const focused = estimateQuestion(facts, prices, plan, {
     mode: 'focused',
     limits,
+    story: true,
   });
   if (facts.mode !== 'whole')
     return { model: focused.model, focused: focused.high };
   const whole = estimateQuestion(facts, prices, plan, {
     mode: 'whole',
     limits,
+    story: true,
   });
   return { model: whole.model, focused: focused.high, whole: whole.high };
 }
