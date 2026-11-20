@@ -814,7 +814,7 @@ describe('attempts keep their own context, dispatch and admission', () => {
     const topUpBetween = {
       id: base.id,
       model: base.model,
-      streamText: base.streamText,
+      streamText: (req: TextRequest) => base.streamText(req),
       generateObject: async () => {
         job.context.ref = 'hold-b'; // admitted again while the first request was in flight
         await gateRetry();
