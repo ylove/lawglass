@@ -57,25 +57,92 @@ const NJ_LEGEND =
  * or resolution, where a bracket is ordinary punctuation, is left alone.
  */
 const PA_COVER = /THE\s+GENERAL\s+ASSEMBLY\s+OF\s+PENNSYLVANIA/;
-/**
- * A real amending directive, not prose that happens to say "amended": an amendatory title
- * ("AN ACT Amending ..."), an operative "Section N. ... is amended" clause, or a joint
- * resolution's "That Article III be amended". Whitespace (line breaks) is normalised first.
- */
-const PA_AMENDATORY = [
-  /(?:AN ACT|A JOINT RESOLUTION)\s+(?:to\s+)?amend(?:ing|s)?\b/i,
-  /(?:^|\. )Section \d+[a-z]?\.\s[^.]{0,300}?\b(?:is|are) (?:hereby )?amended\b/i,
-  /\bThat (?:Article|Section)\b[^.]{0,200}?\bbe amended\b/i,
-];
 /** The cover is on page one; mentions deep in a bill's prose do not count. */
 const PA_COVER_WINDOW = 3000;
+/** The printed line-number gutter may precede a line's own text in the raw layer. */
+const GUTTER = String.raw`^[ \t]*(?:\d{1,2}[ \t]+)?`;
+/** A bill's own section opener ("Section 2."); only the next number in sequence counts. */
+const PA_SECTION_LINE = new RegExp(`${GUTTER}Section[ \\t]+(\\d+)[a-z]?\\.`);
+/** A joint resolution's directive ("That Article III be amended ..."). */
+const PA_JOINT_LINE = new RegExp(`${GUTTER}That[ \\t]+(?:Article|Section)\\b`);
+/**
+ * What makes an existing-law block: the directive says the provision "is amended" (or "is
+ * reenacted and amended", "is repealed", "be amended") and does not merely add to it.
+ * "amended by adding ... to read" is new law: underline marks it, and brackets stay literal.
+ */
+const PA_REPLACING =
+  /\b(?:(?:is|are) (?:hereby )?(?:re-?enacted and )?amended|be amended|(?:is|are) repealed)\b(?! by adding)/i;
+/** How a bill's own section opens: naming the law it changes, or its own effect. */
+const PA_DIRECTIVE_OPENING =
+  /^\s*(?:Sections?|Titles?|Chapters?|Articles?|Subchapters?|Parts?|The\b|This act|Subsections?|Paragraphs?|A new|Repeal|\d)/;
+/** Verbs of an operative directive, as opposed to quoted statute text. */
+const PA_OPERATIVE = /\b(?:amended|repealed|re-?enacted|take effect)\b/i;
+/** A directive clause ends at its colon ("to read:"); this many lines is the safety bound. */
+const PA_CLAUSE_LINES = 12;
 
+/**
+ * Line ranges of Pennsylvania text that quote EXISTING law being replaced or repealed: the
+ * lines after an operative directive whose clause is "... is amended to read:" (or
+ * "reenacted and amended", "repealed", or a joint resolution's "be amended"), up to the next
+ * directive. Titles, recitals, resolving clauses and new sections are never inside one, so
+ * a bracket there is ordinary text. Clauses are read across wrapped lines and the periods in
+ * citations such as "(P.L.1, No.2)", because the clause ends at its colon, not at a period.
+ */
+export function pennsylvaniaAmendedBlocks(
+  lines: readonly string[],
+): { start: number; end: number }[] {
+  const starts: { line: number; clauseEnd: number; replacing: boolean }[] = [];
+  let expected = 1;
+  for (const [index, line] of lines.entries()) {
+    const section = PA_SECTION_LINE.exec(line);
+    const joint = !section && PA_JOINT_LINE.test(line);
+    if (section ? Number(section[1]) !== expected : !joint) continue;
+    // A quoted statute's own "Section 2. Findings and policy.--" is a heading, not a directive:
+    // a bill's directive opens with a reference to what it changes, or with "This act".
+    if (section) {
+      const rest = line.slice(section.index + section[0].length);
+      const near = [rest, lines[index + 1] ?? '', lines[index + 2] ?? '']
+        .join(' ')
+        .replace(/\s+/g, ' ');
+      if (
+        !PA_DIRECTIVE_OPENING.test(rest) &&
+        !(!/^.{0,100}\.--/.test(rest) && PA_OPERATIVE.test(near))
+      )
+        continue;
+    }
+    if (section) expected++;
+    let clauseEnd = index;
+    let clause = '';
+    for (
+      ;
+      clauseEnd < Math.min(lines.length, index + PA_CLAUSE_LINES);
+      clauseEnd++
+    ) {
+      clause += ` ${lines[clauseEnd] ?? ''}`;
+      if ((lines[clauseEnd] ?? '').trimEnd().endsWith(':')) break;
+    }
+    starts.push({
+      line: index,
+      clauseEnd,
+      replacing: PA_REPLACING.test(clause.replace(/\s+/g, ' ')),
+    });
+  }
+  const blocks: { start: number; end: number }[] = [];
+  for (const [at, directive] of starts.entries()) {
+    if (!directive.replacing) continue;
+    blocks.push({
+      start: directive.clauseEnd + 1,
+      end: starts[at + 1]?.line ?? lines.length,
+    });
+  }
+  return blocks;
+}
+
+/** A Pennsylvania cover whose bill has at least one block of replaced or repealed law. */
 export function pennsylvaniaAmendingBill(text: string): boolean {
-  // The raw text layer keeps the printed line-number gutter at the start of each line.
-  const flat = text.replace(/^[ \t]*\d{1,2}[ \t]+/gm, '').replace(/\s+/g, ' ');
   return (
-    PA_COVER.test(flat.slice(0, PA_COVER_WINDOW)) &&
-    PA_AMENDATORY.some((pattern) => pattern.test(flat))
+    PA_COVER.test(text.replace(/\s+/g, ' ').slice(0, PA_COVER_WINDOW)) &&
+    pennsylvaniaAmendedBlocks(text.split('\n')).length > 0
   );
 }
 
@@ -303,7 +370,10 @@ function readPennsylvaniaPrint<T extends SourceLine>(
       text += line.text.charAt(at);
       statuses.push(cover ? 'unchanged' : (line.statuses?.[at] ?? 'unchanged'));
     }
-    if (text.trim()) cleaned.push({ line, text, statuses });
+    // Blank lines stay: they bound an unclosed bracket's recovery. Only a line the pointer
+    // removal emptied is dropped.
+    if (text.trim() || !line.text.trim())
+      cleaned.push({ line, text, statuses });
   }
   const coverText = lines
     .slice(0, Math.max(titleAt, 0))
@@ -351,6 +421,22 @@ export function applyChangeMarks<T extends SourceLine>(
         // Fail safe: brackets that could not be classified are never silently current law.
         text.includes('[') ? [LEGEND_NOT_FOUND_WARNINGS[jurisdiction]] : [],
     };
+  // Pennsylvania: only text quoting replaced or repealed law can hold a deletion.
+  const inScope = new Uint8Array(text.length);
+  if (jurisdiction === 'PA') {
+    const starts: number[] = [];
+    let position = 0;
+    for (const line of lines) {
+      starts.push(position);
+      position += line.text.length + 1;
+    }
+    for (const block of pennsylvaniaAmendedBlocks(lines.map((l) => l.text)))
+      inScope.fill(
+        1,
+        starts[block.start] ?? text.length,
+        starts[block.end] ?? text.length,
+      );
+  }
   const statuses: SpanStatus[] = [];
   for (const line of lines) {
     for (let at = 0; at < line.text.length; at++)
@@ -388,7 +474,8 @@ export function applyChangeMarks<T extends SourceLine>(
   for (let at = 0; at < text.length; at++) {
     if (removed[at]) continue;
     // Verified inserted words (Pennsylvania) may contain literal brackets, e.g. a form's "[optional]".
-    if (jurisdiction === 'PA' && statuses[at] === 'inserted') continue;
+    if (jurisdiction === 'PA' && (!inScope[at] || statuses[at] === 'inserted'))
+      continue;
     if (text[at] === '[') stack.push(at);
     else if (text[at] === ']') {
       const start = stack.pop();

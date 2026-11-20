@@ -122,7 +122,7 @@ test('brackets are ordinary text on a host that is not a PA source', () => {
   expect(doc.metadata.jurisdiction).toBe('Pennsylvania');
 });
 
-test('the gate needs the printed cover and an amending bill', () => {
+test('the gate needs the printed cover and a directive that replaces existing law', () => {
   expect(pennsylvaniaAmendingBill(paAmendingText())).toBe(true);
   // A cover that amends nothing keeps its brackets.
   expect(
@@ -130,16 +130,89 @@ test('the gate needs the printed cover and an amending bill', () => {
       'THE GENERAL ASSEMBLY OF PENNSYLVANIA\nAN ACT\nProviding for samples.\nSection 1. A [sic] note.',
     ),
   ).toBe(false);
-  // "amended" in a bill that is not on the cover page of a Pennsylvania document.
+  // No cover.
   expect(
-    pennsylvaniaAmendingBill('Section 1. The act is amended to read:'),
+    pennsylvaniaAmendingBill('Section 1. The act is amended to read:\nold'),
   ).toBe(false);
   // A joint resolution amends the Constitution.
   expect(
     pennsylvaniaAmendingBill(
-      'THE GENERAL ASSEMBLY OF PENNSYLVANIA\nA JOINT RESOLUTION\nThat Article III be amended by adding a section',
+      'THE GENERAL ASSEMBLY OF PENNSYLVANIA\nA JOINT RESOLUTION\nThat Article III be\namended to read:\n[old]',
     ),
   ).toBe(true);
+  // Adding only is new law, not a replaced block.
+  expect(
+    pennsylvaniaAmendingBill(
+      'THE GENERAL ASSEMBLY OF PENNSYLVANIA\nAN ACT\nSection 1. Title 75 is amended by adding a section to read:\n§ 1. New.',
+    ),
+  ).toBe(false);
+});
+
+const pa = (...lines: string[]) =>
+  parseText(
+    Buffer.from(
+      [
+        'THE GENERAL ASSEMBLY OF PENNSYLVANIA',
+        'AN ACT',
+        'Title.',
+        ...lines,
+      ].join('\n'),
+    ),
+    context,
+  );
+
+test('a reenacting directive across citation periods and line breaks scopes deletion', () => {
+  const doc = pa(
+    'Providing a title.',
+    'Section 1. Section 3 of the act of June 1, 2001 (P.L.1,',
+    'No.2), known as the Sample Act, is reenacted and',
+    'AMENDED to read:',
+    'Section 3. Fees.',
+    'A person [shall pay a fee] may pay.',
+  );
+  expect(runs(doc, 'deleted')).toEqual(['[shall pay a fee]']);
+});
+
+test('recitals, titles and resolving clauses never enable deletion', () => {
+  const doc = parseText(
+    Buffer.from(
+      [
+        'THE GENERAL ASSEMBLY OF PENNSYLVANIA',
+        'A RESOLUTION',
+        'Recommending that Article III be amended [as recorded].',
+        'WHEREAS, It was recommended that Article III be amended to read [as recorded]; and',
+        'RESOLVED, That Section 1 is amended to read [thus].',
+      ].join('\n'),
+    ),
+    context,
+  );
+  expect(runs(doc, 'deleted')).toEqual([]);
+});
+
+test('in a mixed bill only the replaced law block loses its brackets', () => {
+  const doc = pa(
+    'Section 1. Section 5 of Title 75 is amended to read:',
+    '§ 5. Rule.',
+    'Old [removed] law.',
+    'Section 2. The survey form shall read "Name [optional]".',
+    'Section 3. This act shall take effect immediately.',
+  );
+  expect(runs(doc, 'deleted')).toEqual(['[removed]']);
+  expect(
+    [...walkSections(doc.sections)]
+      .flatMap((x) => x.spans.map((y) => y.text))
+      .join(''),
+  ).toContain('Name [optional]');
+});
+
+test('an unclosed bracket stops at the blank line before the next paragraph', () => {
+  const doc = pa(
+    'Section 1. Section 5 of Title 75 is amended to read:',
+    'Old [removed words',
+    '',
+    'A separate paragraph that stays.',
+  );
+  expect(runs(doc, 'deleted')).toEqual(['[removed words']);
 });
 
 test('a Pennsylvania text with brackets and no cover warns that nothing was verified', () => {
@@ -216,38 +289,6 @@ test('metadata is empty without the bill designation or for a mirror without an 
     version: "Printer's No. 613",
   });
   expect(pennsylvaniaSessionLabel(2025, 0)).toBe('2025-2026 Regular Session');
-});
-
-test('the gate reads upper case and wrapped directives, not incidental prose', () => {
-  const cover = 'THE GENERAL ASSEMBLY OF PENNSYLVANIA\n';
-  expect(pennsylvaniaAmendingBill(`${cover}AN ACT\nAMENDING Title 1.`)).toBe(
-    true,
-  );
-  expect(
-    pennsylvaniaAmendingBill(
-      `${cover}AN ACT\nProviding.\nSection 2. Section 5 of the act\nIS AMENDED to read:`,
-    ),
-  ).toBe(true);
-  expect(
-    pennsylvaniaAmendingBill(
-      `${cover}A JOINT RESOLUTION\nThat Article III\nbe\namended by adding.`,
-    ),
-  ).toBe(true);
-  expect(
-    pennsylvaniaAmendingBill(
-      `${cover}AN ACT\nProviding for bylaws.\nSection 3. The bylaws may be amended annually.`,
-    ),
-  ).toBe(false);
-  // Bracketed words in such an act are unverified, so the document warns.
-  const lines = [
-    { text: 'THE GENERAL ASSEMBLY OF PENNSYLVANIA' },
-    { text: 'AN ACT' },
-    { text: 'Providing for bylaws.' },
-    {
-      text: 'Section 3. The bylaws may be amended annually [shall pay a fee].',
-    },
-  ];
-  expect(applyChangeMarks(lines, context).warnings).toHaveLength(1);
 });
 
 test('brackets inside verified inserted words stay literal', async () => {
