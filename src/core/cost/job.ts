@@ -168,9 +168,7 @@ export function callGateOf(
   scope: JobScope | undefined,
 ): ((call: GateCall) => boolean | Promise<boolean>) | undefined {
   const gate = scope?.spendGate;
-  return gate && gate.length > 0
-    ? (gate as (call: GateCall) => boolean | Promise<boolean>)
-    : undefined;
+  return gate && gate.length > 0 ? gate : undefined;
 }
 
 /**
@@ -182,7 +180,9 @@ export async function gateCall(scope: JobScope, call: GateCall): Promise<void> {
   if (!gate) return;
   let open = false;
   try {
-    open = (await gate(call)) === true;
+    // A host's answer is untrusted at runtime: only a real `true` opens the gate.
+    const answer: unknown = await gate(call);
+    open = answer === true;
   } catch {
     // A broken gate cannot be trusted to be open.
   }
