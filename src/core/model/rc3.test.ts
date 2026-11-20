@@ -289,3 +289,24 @@ describe('an rc.2 reader (frozen schemas from fb663d1) parses rc.3 data', () => 
     expect('scenariosEnabled' in config).toBe(false);
   });
 });
+
+describe('question mode contracts (#431)', () => {
+  it('ClientConfig.questionQuote is optional and boolean', () => {
+    const base = {
+      productName: 'x',
+      publicMode: false,
+      freeformEnabled: true,
+      backend: 'local',
+      provider: 'mock',
+      model: 'm',
+      chips: [],
+    };
+    expect(ClientConfig.parse(base).questionQuote).toBeUndefined();
+    expect(
+      ClientConfig.parse({ ...base, questionQuote: true }).questionQuote,
+    ).toBe(true);
+    expect(
+      ClientConfig.safeParse({ ...base, questionQuote: 'yes' }).success,
+    ).toBe(false);
+  });
+});
