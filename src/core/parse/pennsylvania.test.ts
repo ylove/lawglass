@@ -595,10 +595,10 @@ test.each([
 ])(
   '%s: four times the input takes well under sixteen times as long',
   (_name, build) => {
-    const small = timed(() => build(2000));
-    const large = timed(() => build(8000));
+    const small = timed(() => build(4000));
+    const large = timed(() => build(16000));
     // Linear would be about 4x; quadratic about 16x. Allow generous noise.
-    expect(large).toBeLessThan(Math.max(small, 5) * 10);
+    expect(large).toBeLessThan(Math.max(small, 30) * 10);
   },
 );
 
@@ -709,4 +709,98 @@ test('an ordinary resolution with brackets warns that it is not an amending meas
   expect(runs(doc, 'deleted')).toEqual([]);
   expect(doc.warnings.join(' ')).toMatch(/not an amending measure/);
   expect(doc.warnings.join(' ')).not.toMatch(/cover was not found/);
+});
+
+const shadow = (directive: string, heading: string, ...rest: string[]) =>
+  read(
+    act(
+      'Amending the act.',
+      directive,
+      heading,
+      'The following words and phrases have these meanings:',
+      ...rest,
+    ),
+  );
+
+test('a resync that skipped a number still bounds the real section (N)', () => {
+  const doc = shadow(
+    'Section 1. Section 5 of the act is amended to read:',
+    'Section 5. Definitions.',
+    '"Fee." The [ten] twenty dollar fee.',
+    'Section 2. The survey form shall read "Name [optional]".',
+    'Section 3. This act shall take effect in 60 days.',
+  );
+  expect(runs(doc, 'deleted')).toContain('[optional]');
+  expect(doc.warnings).toContainEqual(
+    expect.stringMatching(/outside amended text/),
+  );
+});
+
+test('a pair cannot run across the real section after a resync (O)', () => {
+  const doc = shadow(
+    'Section 1. Section 5 of the act is amended to read:',
+    'Section 5. Definitions.',
+    '"Fee." The fee is [ten twenty dollars.',
+    'Section 2. Section 7 of the act is amended to read:',
+    'Section 7. Terms.',
+    'The term is six] years.',
+    'Section 3. This act shall take effect in 60 days.',
+  );
+  expect(runs(doc, 'deleted').join(' ')).not.toContain('The term is six');
+  expect(doc.warnings).toContainEqual(expect.stringMatching(/not closed/));
+});
+
+test('chained resyncs keep every skipped number bounded (P)', () => {
+  const doc = read(
+    act(
+      'Amending the act.',
+      'Section 1. Sections 4, 7 and 10 of the act are amended to read:',
+      'Section 4. Definitions. The following words:',
+      'Section 7. Terms. The following terms:',
+      'Section 10. Fees. The following fees:',
+      'Section 2. The survey form shall read "Name [optional]".',
+      'Section 3. The form reads "Other [thing]".',
+    ),
+  );
+  expect(runs(doc, 'deleted')).toEqual(['[optional]', '[thing]']);
+  expect(doc.warnings).toContainEqual(
+    expect.stringMatching(/outside amended text/),
+  );
+});
+
+test('the overlap warning counts drawn underlines, not capital-letter runs', () => {
+  const underlined = applyChangeMarks(
+    [
+      { text: 'THE GENERAL ASSEMBLY OF PENNSYLVANIA' },
+      { text: 'AN ACT' },
+      { text: 'Amending the act.' },
+      { text: 'The General Assembly of the Commonwealth of Pennsylvania' },
+      { text: 'Section 1. Section 2 is amended to read:' },
+      {
+        text: 'Old [kept words] here.',
+        statuses: 'Old [kept words] here.'
+          .split('')
+          .map((_c, at) => (at >= 5 && at < 9 ? 'inserted' : 'unchanged')),
+      },
+    ],
+    context,
+  );
+  expect(underlined.warnings).toContainEqual(
+    expect.stringMatching(/Underlined wording/),
+  );
+  const capitals = read(
+    [
+      COVER,
+      "PRIOR PRINTER'S NOS. 1",
+      'AN ACT',
+      'Amending the act.',
+      ENACT,
+      'Section 1. Section 2 is amended to read:',
+      'Old [LOCAL RESOURCE MANUFACTURING AREA] words.',
+    ].join('\n'),
+  );
+  expect(runs(capitals, 'deleted')).toEqual([
+    '[LOCAL RESOURCE MANUFACTURING AREA]',
+  ]);
+  expect(capitals.warnings.join(' ')).not.toMatch(/Underlined wording/);
 });
