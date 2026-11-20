@@ -8,6 +8,12 @@ import {
   deleteIndexedDocument,
   wholeBillBudget,
 } from '../core/answer/context.js';
+import {
+  AskModeField,
+  validateAnswerLimits,
+  type AnswerLimits,
+  type AnswerMode,
+} from '../core/answer/modes.js';
 import { getConnInfo } from '@hono/node-server/conninfo';
 import { Hono, type Context, type MiddlewareHandler } from 'hono';
 import { getCookie, setCookie } from 'hono/cookie';
@@ -113,6 +119,12 @@ import {
   quoteTiers,
   type QuoteOptions,
 } from './quotes.js';
+import {
+  QuestionQuote,
+  type QuestionQuoteResponse,
+} from '../core/answer/question-quote.js';
+import type { QuestionQuoteHook } from './question-quote.js';
+import { questionCeiling } from '../core/cost/index.js';
 import { KeyedLock } from './keyed-lock.js';
 import { readExamples } from './examples.js';
 import {
@@ -196,6 +208,20 @@ export interface AppOptions {
   backgroundScope?: BackgroundScopeHook;
   /** Quote API settings and the plans admission estimates use. */
   quote?: QuoteOptions;
+  /**
+   * Output-token ceilings for one answer call per mode, thinking included. Unset values keep
+   * the defaults (16,000 whole, 8,192 focused), so local behaviour is unchanged. A lower focused
+   * cap also lowers the model's reasoning effort so a short answer still fits. Estimates and
+   * `questionQuote` worst cases use the same caps.
+   */
+  answerLimits?: AnswerLimits;
+  /**
+   * Prices a question per answer mode in the host's own units before the reader asks, so the
+   * web UI can offer a choice when a whole-bill read costs more than a focused answer. Called
+   * only from `POST /api/docs/:docId/question-quote`; without it the endpoint answers `null`
+   * and questions are asked directly.
+   */
+  questionQuote?: QuestionQuoteHook;
   publicMode?: boolean;
   privateMode?: boolean;
   accessKey?: string;
@@ -275,6 +301,7 @@ export function createApp(
     options.modelFor || options.backgroundScope
       ? routedRuntime(rawRuntime)
       : rawRuntime;
+  validateAnswerLimits(options.answerLimits);
   const publicMode = options.publicMode ?? false;
   const privateMode = options.privateMode ?? false;
   const configuredAuth: unknown = options.auth;
@@ -946,6 +973,8 @@ export function createApp(
       docId: string;
       chipId?: string | undefined;
       quoteId?: string | undefined;
+      /** A typed question's requested answer mode. */
+      mode?: AnswerMode | undefined;
     },
     opts: { exempt?: boolean } = {},
   ): Promise<Admitted | undefined> {
@@ -962,6 +991,17 @@ export function createApp(
       };
     const facts = await factsFor(job.docId);
     const base = defaultAssignment();
+    // Only a typed question has a mode; a chip's read and caps are part of the chip.
+    const typed = job.kind === 'question' && job.chipId === undefined;
+    const mode: AnswerMode | undefined = typed
+      ? (job.mode ?? 'auto')
+      : undefined;
+    const ranMode: 'whole' | 'focused' | undefined =
+      typed && mode !== 'focused' && facts.mode === 'whole'
+        ? 'whole'
+        : typed
+          ? 'focused'
+          : undefined;
     const estimateFor = (models: ModelChoice | undefined): FeatureEstimate =>
       questionEstimate(
         facts,
@@ -970,10 +1010,12 @@ export function createApp(
           extractModel: models?.extract ?? base.extractModel,
         },
         options.quote,
+        typed ? { mode, limits: options.answerLimits } : {},
       );
     const fields = {
       kind: job.kind,
       docId: job.docId,
+      ...(ranMode === undefined ? {} : { mode: ranMode }),
       ...(job.chipId === undefined ? {} : { chipId: job.chipId }),
       ...(job.quoteId === undefined ? {} : { quoteId: job.quoteId }),
     };
@@ -1967,12 +2009,57 @@ export function createApp(
     );
   });
 
+  /** The hook's view of what one question costs here, or null: no hook, no quote, or no model work. */
+  app.post('/api/docs/:docId/question-quote', async (c) => {
+    const hook = options.questionQuote;
+    const entry = await entryFor(c.req.param('docId'));
+    const none: QuestionQuoteResponse = { quote: null };
+    // A guest who may not ask, and a public server (no typed questions), have nothing to price.
+    if (!hook || publicMode || isReadOnly(c)) return c.json(none);
+    const facts = await factsFor(entry.docId);
+    const models = await readerModels(c, entry.docId);
+    const base = defaultAssignment();
+    const tier = options.modelFor ? tierName(models) : undefined;
+    const quote = await hook(
+      {
+        docId: entry.docId,
+        reader: readerFor(c),
+        ...(tier === undefined ? {} : { tier }),
+        worstCase: questionCeiling(facts, {
+          prices: options.quote?.prices,
+          limits: options.answerLimits,
+          plan: {
+            ...options.quote?.plan,
+            answerModel: models?.answer ?? base.answerModel,
+            extractModel: models?.extract ?? base.extractModel,
+          },
+        }),
+      },
+      c,
+    );
+    // A host's answer is checked like any outside data: the reader sees these numbers.
+    const checked =
+      quote === undefined ? undefined : QuestionQuote.safeParse(quote);
+    if (checked && !checked.success)
+      throw new Error('The questionQuote hook returned an invalid quote.');
+    const response: QuestionQuoteResponse = {
+      quote: checked?.data ?? null,
+    };
+    return c.json(response);
+  });
+
   app.post('/api/docs/:docId/ask', async (c) => {
     refuseReadOnly(c);
     const body = await parseBody(
       c,
       AskRequest,
       'Choose a question or type one (up to 500 characters).',
+    );
+    // `AskRequest` is a frozen contract without `mode`, so the field is read on its own.
+    const { mode } = await parseBody(
+      c,
+      AskModeField,
+      'The answer mode must be auto, whole or focused.',
     );
     if (publicMode && body.question !== undefined)
       throw new AppError('PUBLIC_MODE_FORBIDDEN');
@@ -1985,6 +2072,7 @@ export function createApp(
         docId: entry.docId,
         chipId: body.chipId,
         quoteId: body.quoteId,
+        mode,
       },
       // A metadata chip reads the stored document and never calls a model.
       {
@@ -2014,7 +2102,7 @@ export function createApp(
           const result = await ask(
             entry.docId,
             body.chipId === undefined
-              ? { question: body.question ?? '' }
+              ? { question: body.question ?? '', mode }
               : { chipId: body.chipId },
             {
               backend: runtime.backend,
@@ -2036,6 +2124,7 @@ export function createApp(
               // Public servers make no extra model call for a visitor's story.
               scenario: { enabled: !publicMode },
               publicMode,
+              answerLimits: options.answerLimits,
             },
             {
               signal,

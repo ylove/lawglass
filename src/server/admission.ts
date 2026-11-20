@@ -36,6 +36,13 @@ export interface AdmissionJob {
   /** The model tier the reader's work will run on, as `answer+extract` model names ('default' when `modelFor` chose none). */
   tier?: string;
   chipId?: string;
+  /**
+   * Typed questions only: the read this question will use, forecast from the document: `whole`
+   * (the whole bill) or `focused` (retrieved excerpts). The reader's `mode` of `focused` forces
+   * the second; `whole` and `auto` read the whole bill when it fits the whole-bill budget. The
+   * runtime's own scan decides at the moment of the read, so near the budget it can differ.
+   */
+  mode?: 'whole' | 'focused';
   /** Computed before any model call. A whole-bill estimate for ingest, one answer-like call otherwise. */
   estimate: BillEstimate | FeatureEstimate;
   /** Ingest only: the estimate for every configured tier, by tier name. */
