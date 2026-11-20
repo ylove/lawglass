@@ -8,7 +8,13 @@ export {
   type FeatureEstimate,
   type TokenEstimate,
   type BillEstimate,
+  type QuestionOptions,
 } from './estimate.js';
+export {
+  questionCeiling,
+  type QuestionCeiling,
+  type QuestionCeilingOptions,
+} from './question.js';
 export {
   PRICES,
   PriceTable,

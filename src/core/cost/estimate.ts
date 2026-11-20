@@ -8,7 +8,16 @@ import {
   REFERENCE_CHAR_BUDGET,
 } from '../breakdown/context.js';
 import { MAX_INJECTED_DEFINITIONS } from '../retrieve/definitions.js';
+import { DEFAULT_TOP_K } from '../retrieve/retrieve.js';
+import { MAX_EXCERPT_REFERENCES } from '../answer/references.js';
+import { MAX_CHANGE_EXCERPT_CHARS } from '../chip-changes.js';
+import { MAX_TEXT_CHARS } from '../enrich/references.js';
 import { ITEMS_PER_CALL } from '../picture/prompt.js';
+import {
+  maxTokensFor,
+  type AnswerLimits,
+  type AnswerMode,
+} from '../answer/modes.js';
 import type { BillFacts } from './facts.js';
 import {
   callDollars,
@@ -142,6 +151,8 @@ interface CallSpec {
   /** Calls at high include the initial call plus every retry/rewrite. */
   highCalls?: number;
   cachedPrefix?: boolean;
+  /** Only at the high bound: work that a question may or may not trigger (an optional story). */
+  highOnly?: boolean;
   /** The context is already sized from the built prompt, so PROMPT_MARKUP must not scale it. */
   promptSized?: boolean;
 }
@@ -162,6 +173,7 @@ function feature(
   for (const bound of ['low', 'high'] as const) {
     let prefixWritten = false;
     for (const spec of specs) {
+      if (spec.highOnly && bound === 'low') continue;
       const count = bound === 'low' ? 1 : (spec.highCalls ?? 1);
       for (let n = 0; n < count; n++) {
         const context = spec.promptSized
@@ -385,9 +397,20 @@ export function estimateBill(
       `Cache policy: ${plan.cache ?? 'reuse'}; reuse assumes the same prefix stays cached for five minutes within each feature.`,
       `Thinking tokens per answer call: ${String(plan.thinkingTokensPerCall?.low ?? 0)}–${String(plan.thinkingTokensPerCall?.high ?? 0)}; included within output limits, high reserves the full limit.`,
       'Picture item counts and prompt framing are forecasts; metadata may already be present and require no call.',
-      'Question/chip/locate estimate is separate from bill totals; excludes optional scenarios, embeddings, reranking and hosting.',
+      "Question/chip/locate estimate is separate from bill totals; excludes optional scenarios (a typed question's high bound counts them when asked to), embeddings, reranking and hosting.",
     ],
   };
+}
+
+/** Which read a question asks for and the output caps it runs under (see `core/answer/modes.ts`). */
+export interface QuestionOptions {
+  mode?: AnswerMode | undefined;
+  limits?: AnswerLimits | undefined;
+  /**
+   * Count the short story a typed question may draw (up to two more calls, high bound only).
+   * Off by default: chips, locate, examples and the CLI line do not draw one this way.
+   */
+  story?: boolean | undefined;
 }
 
 /** One answer-like question/chip/locate, including a possible reading-level rewrite.
@@ -397,6 +420,7 @@ export function estimateQuestion(
   facts: BillFacts,
   prices: PriceTable = {},
   plan: Partial<EstimatePlan> = {},
+  question: QuestionOptions = {},
 ): FeatureEstimate {
   const assignment: EstimatePlan = {
     answerModel: 'claude-sonnet-5-5',
@@ -404,7 +428,53 @@ export function estimateQuestion(
     ...plan,
   };
   validatePlan(assignment);
-  const whole = facts.mode === 'whole';
+  // `focused` reads excerpts even when the bill would fit; `whole` and `auto` read the whole
+  // bill exactly when it fits (a bill too long for that is answered from excerpts either way).
+  const whole = facts.mode === 'whole' && question.mode !== 'focused';
+  const wholeCap = maxTokensFor('whole', question.limits);
+  const focusedCap = maxTokensFor('focused', question.limits);
+  // The most an excerpt prompt can hold: the top chunks, the injected definitions and the
+  // reference texts, each at its limit, wrapped in the excerpt markup. A change question sends
+  // each hit's whole section inline (up to MAX_CHANGE_EXCERPT_CHARS), larger than a 450-token
+  // chunk, so every hit gets the larger allowance. A bound, not a forecast.
+  const hitTokens = Math.max(450, Math.ceil(MAX_CHANGE_EXCERPT_CHARS / 4));
+  const focusedHigh = Math.ceil(
+    (DEFAULT_TOP_K * hitTokens +
+      MAX_INJECTED_DEFINITIONS * 450 +
+      MAX_EXCERPT_REFERENCES * Math.ceil(MAX_TEXT_CHARS / 4)) *
+      PROMPT_MARKUP.high,
+  );
+  // A bill that fits whole cannot send more than itself (and its references) plus the injected
+  // definitions, however much the constants allow.
+  const wholeSized = Math.ceil(
+    wholeContext(facts.wholePrompt.questionHigh).high * PROMPT_MARKUP.high +
+      MAX_INJECTED_DEFINITIONS * 450,
+  );
+  // A change question forced to excerpts on an amended bill that fits whole is also inside this
+  // bound: `questionHigh` holds every changed section in full, with its inline markers.
+  const focused: Bounds = {
+    low: Math.ceil(3500 * PROMPT_MARKUP.low),
+    high:
+      facts.mode === 'whole' && wholeSized > 0
+        ? Math.min(focusedHigh, wholeSized)
+        : focusedHigh,
+  };
+  // A typed question may also draw a short story: up to two object calls over the same read.
+  const storyCalls = (context: Bounds): CallSpec[] =>
+    question.story === true ? [storySpec(context)] : [];
+  const storySpec = (context: Bounds): CallSpec => ({
+    context,
+    promptSized: true,
+    visibleOutput: 800,
+    maxTokens: 2000,
+    highCalls: 2,
+    highOnly: true,
+  });
+  // Read from excerpts, the story sees at most eight of them.
+  const storyExcerpts: Bounds = {
+    low: 0,
+    high: Math.ceil(8 * 450 * PROMPT_MARKUP.high),
+  };
   const spec = (
     context: Bounds,
     highCalls: number,
@@ -413,14 +483,14 @@ export function estimateQuestion(
     context,
     promptSized: sized,
     visibleOutput: 800,
-    maxTokens: whole ? 16_000 : 8192,
+    maxTokens: whole ? wholeCap : focusedCap,
     highCalls,
     cachedPrefix: whole,
   });
   if (!whole)
     return feature(
       assignment.answerModel,
-      [spec(boundedContext(3500), 2, false)],
+      [spec(focused, 2, true), ...storyCalls(storyExcerpts)],
       assignment,
       prices,
     );
@@ -432,13 +502,16 @@ export function estimateQuestion(
   // prompt. The high bound is whichever of the two reachable cases costs more.
   const usual = feature(
     assignment.answerModel,
-    [spec(ordinary, 2, true)],
+    [spec(ordinary, 2, true), ...storyCalls(wholeContext(sizes.scenario))],
     assignment,
     prices,
   );
   const asked = feature(
     assignment.answerModel,
-    [spec({ low: ordinary.low, high: changes.high }, 1, true)],
+    [
+      spec({ low: ordinary.low, high: changes.high }, 1, true),
+      ...storyCalls(wholeContext(sizes.scenario)),
+    ],
     assignment,
     prices,
   );
@@ -453,9 +526,10 @@ export function estimateQuestion(
               context: wholeContext(sizes.changeExcerpts),
               promptSized: true,
               visibleOutput: 800,
-              maxTokens: 8192,
+              maxTokens: focusedCap,
               highCalls: 1,
             },
+            ...storyCalls(storyExcerpts),
           ],
           assignment,
           prices,

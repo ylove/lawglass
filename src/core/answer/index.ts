@@ -18,3 +18,15 @@ export {
   fleschKincaidGrade,
   stripCitations,
 } from './readability.js';
+export {
+  AnswerMode,
+  DEFAULT_FOCUSED_MAX_TOKENS,
+  DEFAULT_WHOLE_MAX_TOKENS,
+  MAX_ANSWER_MAX_TOKENS,
+  MIN_ANSWER_MAX_TOKENS,
+  effortForCap,
+  maxTokensFor,
+  validateAnswerLimits,
+  type AnswerLimits,
+  type RanMode,
+} from './modes.js';
