@@ -15,6 +15,7 @@ import {
   type FeatureEstimate,
   type ModelAssignment,
   type PriceTable,
+  type QuestionOptions,
 } from '../core/cost/index.js';
 import type { SafeFetchResult } from '../core/fetch/index.js';
 import type { HistoryAttachment } from '../core/pipeline/ingest.js';
@@ -411,9 +412,15 @@ export function questionEstimate(
   facts: BillFacts,
   models: ModelAssignment,
   options: QuoteOptions | undefined,
+  asked: QuestionOptions = {},
 ): FeatureEstimate {
-  return estimateQuestion(facts, options?.prices, {
-    ...options?.plan,
-    ...models,
-  });
+  return estimateQuestion(
+    facts,
+    options?.prices,
+    {
+      ...options?.plan,
+      ...models,
+    },
+    asked,
+  );
 }

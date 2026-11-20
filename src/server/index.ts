@@ -39,6 +39,7 @@ export {
   billFacts,
   estimateBill,
   estimateQuestion,
+  questionCeiling,
 } from '../core/cost/index.js';
 export type {
   PriceTable,
@@ -49,6 +50,15 @@ export type {
   EstimatePlan,
   FeatureEstimate,
   TokenEstimate,
+  QuestionCeiling,
+  QuestionCeilingOptions,
   UsageEvent,
   JobBudget,
 } from '../core/cost/index.js';
+export { AnswerMode, type AnswerLimits } from '../core/answer/modes.js';
+export {
+  QuestionQuote,
+  QuestionQuoteResponse,
+  type QuestionQuoteHook,
+  type QuestionQuoteRequest,
+} from './question-quote.js';

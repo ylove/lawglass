@@ -18,6 +18,7 @@ const required = [
   'package/dist/server.js',
   'package/dist/server.d.ts',
   'package/dist/web/index.html',
+  'package/NOTICE',
 ];
 
 describe('packed archive guard', () => {

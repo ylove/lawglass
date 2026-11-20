@@ -74,6 +74,11 @@ export const ClientConfig = z.object({
   breakdownEnabled: z.boolean().default(false),
   /** "Find where it says that". Defaults to off for older servers. */
   locateEnabled: z.boolean().default(false),
+  /**
+   * True when the host can price a question per answer mode (`POST /api/docs/:docId/question-quote`),
+   * so the UI asks it before a typed question. Absent (older servers, local runs) means no.
+   */
+  questionQuote: z.boolean().optional(),
 });
 export type ClientConfig = z.infer<typeof ClientConfig>;
 
@@ -217,6 +222,12 @@ export const AskRequest = z
     turnstileToken: z.string().optional(),
     /** Echoed from a host's 402 quote when the reader confirms (ADR 0018). */
     quoteId: QuoteId.optional(),
+    /**
+     * Typed questions only: `auto` (default) reads the whole bill when it fits the whole-bill
+     * budget; `whole` asks for that read; `focused` uses retrieved excerpts even when the bill
+     * would fit. Ignored for chips.
+     */
+    mode: z.enum(['auto', 'whole', 'focused']).optional(),
   })
   .refine((r) => (r.chipId === undefined) !== (r.question === undefined), {
     message: 'Provide exactly one of chipId or question',

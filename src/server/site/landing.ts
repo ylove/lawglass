@@ -129,7 +129,7 @@ const PROOF: [string, string][] = [
   [ICON.cite, 'Answers cite the section, page and line they come from'],
   [ICON.edit, 'Tells struck words from added words'],
   [ICON.scale, 'Explains what a bill says, not whether it is good'],
-  [ICON.code, 'Open source, MIT licensed'],
+  [ICON.code, 'Open source, Apache 2.0 licensed'],
 ];
 
 const STEPS: [string, string][] = [

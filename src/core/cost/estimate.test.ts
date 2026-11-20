@@ -396,7 +396,10 @@ it('prices each feature from its own prompt size', () => {
   expect(high(features.breakdown)).toBeGreaterThan(
     high(features.summaryScenario),
   );
-  expect(high(estimateQuestion(facts))).toBeGreaterThan(high(features.summary));
+  // A question's two answer calls (the change prompt is the largest) outweigh the summary's.
+  expect(estimateQuestion(facts).high.inputTokens).toBeGreaterThan(
+    features.summary.high.inputTokens,
+  );
 });
 
 it('does not hold the high bound to the calibration shapes alone: markup-heavy bills cost more per character', () => {

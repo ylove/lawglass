@@ -6,8 +6,10 @@ import {
   documentContext,
   deleteIndexedDocument,
   MEMO_OWNER,
+  type DocumentContext,
 } from '../answer/context.js';
 import { answer } from '../answer/index.js';
+import type { AnswerLimits, AnswerMode } from '../answer/modes.js';
 import { referenceTokens } from '../answer/references.js';
 import type { AnswerLog } from '../answer/log.js';
 import type { ReadingLevelOptions } from '../answer/regenerate.js';
@@ -109,9 +111,16 @@ export interface AskDeps {
   limits?: Limits | undefined;
   /** Public servers skip optional model steps, such as the delegations lede. */
   publicMode?: boolean | undefined;
+  /** Output caps per answer mode, thinking included. Unset keeps today's 16,000 and 8,192. */
+  answerLimits?: AnswerLimits | undefined;
 }
 
-export type AskInput = { chipId: ChipId } | { question: string };
+/**
+ * A chip, or a typed question. `mode` applies to typed questions only: a chip's strategy (a
+ * whole-bill read for the summary, retrieval for others) is part of what the chip is.
+ */
+export type AskInput =
+  { chipId: ChipId } | { question: string; mode?: AnswerMode | undefined };
 
 export interface AskOptions {
   onToken?: ((text: string) => void) | undefined;
@@ -282,7 +291,9 @@ export async function ask(
 ): Promise<AskResult> {
   // Validate before taking a permit: a bad question must not occupy a slot.
   const checked: AskInput =
-    'chipId' in input ? input : { question: cleanQuestion(input.question) };
+    'chipId' in input
+      ? input
+      : { ...input, question: cleanQuestion(input.question) };
   const limits = deps.limits ?? sharedLimits();
   const release = await limits.acquire('ask', opts.signal);
   let result: AskResult;
@@ -405,12 +416,17 @@ async function askWithinLimits(
 
   const mode = deps.retrievalMode ?? 'hybrid_rerank';
   const includeDeleted = asksAboutChanges(question);
-  const whole = await documentContext(guard.backend, docId, doc.sections, {
-    budget: deps.wholeBillMaxTokens,
-    includeDeleted,
-    signal,
-    reservedTokens: referenceTokens(doc.references),
-  });
+  // `focused` skips the whole-bill scan outright: it is the cheaper read, and the scan would
+  // only be thrown away. `whole` and `auto` both read the whole bill exactly when it fits.
+  const whole: DocumentContext =
+    input.mode === 'focused'
+      ? { mode: 'excerpts', hits: [] }
+      : await documentContext(guard.backend, docId, doc.sections, {
+          budget: deps.wholeBillMaxTokens,
+          includeDeleted,
+          signal,
+          reservedTokens: referenceTokens(doc.references),
+        });
   const retrieved: {
     hits: (SearchHit & { injected?: boolean })[];
     usage: BackendUsage;
@@ -453,6 +469,7 @@ async function askWithinLimits(
     signal,
     onToken: opts.onToken,
     log: deps.log,
+    limits: deps.answerLimits,
     // A question about changes needs the bill's exact old and new wording.
     readingLevel: includeDeleted ? undefined : deps.readingLevel,
   });

@@ -319,6 +319,8 @@ export function sizeWholePrompts(input: WholePromptInput): WholePromptSizing {
         questionHigh,
         billBlock(doc.metadata, inline, placeholders ?? held),
       );
+      // A change question forced to excerpts is bounded by `questionHigh`: its inline block
+      // holds every changed section in full, so it is at least as large as any excerpt prompt.
     } else {
       changeExcerpts = changeExcerptBlock(
         doc.metadata,
