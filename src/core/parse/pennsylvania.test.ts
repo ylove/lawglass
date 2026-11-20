@@ -419,3 +419,88 @@ test('recovering many unmatched openings stays linear', () => {
   expect(performance.now() - started).toBeLessThan(2000);
   expect(runs(doc, 'deleted').length).toBeGreaterThan(0);
 });
+
+test('a numbered gutter before "Section 1." is not read as the section number', () => {
+  const doc = read(
+    act(
+      'Amending the act.',
+      '10 Section 1. Section 3 of the act is amended to read:',
+      'A literal [ opening.',
+      '',
+      'Section 2. Section 4 of the act is amended to read:',
+      'Text with a stray ] here.',
+    ),
+  );
+  expect(runs(doc, 'deleted').join(' ')).not.toContain('Section 2.');
+  expect(doc.warnings).toContainEqual(expect.stringMatching(/not closed/));
+});
+
+test('a lone closing bracket in unverified Pennsylvania text warns', () => {
+  const result = applyChangeMarks([{ text: 'Old obligation]' }], context);
+  expect(result.warnings).toHaveLength(1);
+  expect(result.warnings.every(isLegendNotFoundWarning)).toBe(true);
+});
+
+test('a deletion outside quoted law warns; one after "to read:" does not', () => {
+  const quoted = read(
+    act(
+      'Amending the act.',
+      'Section 1. Section 3 of the act is amended to read:',
+      'Old [removed] law.',
+    ),
+  );
+  expect(runs(quoted, 'deleted')).toEqual(['[removed]']);
+  expect(quoted.warnings).toEqual([]);
+  const stray = read(
+    act(
+      'Amending the act.',
+      'Section 1. Section 3 of the act is amended to read:',
+      'Old law.',
+      'Section 2. The form reads "Name [optional]". This act takes effect:',
+      'immediately.',
+    ),
+  );
+  expect(runs(stray, 'deleted')).toEqual(['[optional]']);
+  expect(stray.warnings).toContainEqual(
+    expect.stringMatching(/outside amended text/),
+  );
+  // A bracket before any operative section is unverified too.
+  const early = read(
+    act(
+      'Amending the act.',
+      'Preface [note].',
+      'Section 1. Section 3 is amended to read:',
+      'x',
+    ),
+  );
+  expect(early.warnings).toContainEqual(
+    expect.stringMatching(/outside amended text/),
+  );
+});
+
+test('a rules resolution quotes law after its RESOLVED colon without a warning', () => {
+  const doc = read(
+    [
+      COVER,
+      'A RESOLUTION',
+      'Adopting permanent rules for the House.',
+      'RESOLVED, That the rules be adopted with the following amendments:',
+      '[2023-2024] 2025-2026',
+    ].join('\n'),
+  );
+  expect(runs(doc, 'deleted')).toEqual(['[2023-2024]']);
+  expect(doc.warnings).toEqual([]);
+});
+
+test('many bill sections and bracket pairs stay linear', () => {
+  const body: string[] = [];
+  for (let i = 1; i <= 16000; i++)
+    body.push(
+      `Section ${String(i)}. Section 3 is amended to read:`,
+      `Old [x${String(i)}] law.`,
+    );
+  const started = performance.now();
+  const doc = read(act('Amending the act.', ...body));
+  expect(performance.now() - started).toBeLessThan(3000);
+  expect(runs(doc, 'deleted').length).toBeGreaterThan(0);
+});

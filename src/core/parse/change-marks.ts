@@ -113,35 +113,51 @@ export function pennsylvaniaAmendingBill(text: string): boolean {
 const PA_OPERATIVE_SECTION =
   /\b(?:amended|added|repealed|re-?enacted|to read|take effect|takes effect|The following)\b/i;
 
+interface PaSection {
+  /** Offset of the "Section N." line. */
+  start: number;
+  /** Offset where quoted law begins: just after the directive's colon ("to read:"). */
+  quotedFrom: number;
+}
+
 /**
- * Offsets where a bill's own operative section starts: "Section N." at a line start, N
- * continuing the bill's sequence, with an operative phrase in its first lines. A bracket
- * pair never legitimately crosses one, whereas a repealed run can span quoted sections inside it.
+ * A bill's own operative sections: "Section N." at a line start (any printed line-number gutter
+ * is skipped, and N is the number after the word "Section"), N continuing the bill's sequence,
+ * with an operative phrase in its first lines. A bracket pair never legitimately crosses one,
+ * whereas a repealed run can span quoted sections inside it. Law quoted after the directive's
+ * colon is where a deletion is expected.
  */
-function pennsylvaniaSectionBoundaries(
-  lines: readonly { text: string }[],
-): number[] {
-  const boundaries: number[] = [];
-  let expected = 1;
+function pennsylvaniaSections(lines: readonly { text: string }[]): PaSection[] {
+  const sections: PaSection[] = [];
+  const offsets: number[] = [];
   let position = 0;
-  for (const [index, line] of lines.entries()) {
-    const match = PA_SECTION_START.exec(line.text);
-    if (match && Number(/\d+/.exec(match[0])?.[0]) === expected) {
-      const near = [line.text, lines[index + 1]?.text, lines[index + 2]?.text]
-        .join(' ')
-        .replace(/\s+/g, ' ');
-      if (PA_OPERATIVE_SECTION.test(near)) {
-        boundaries.push(position);
-        expected++;
-      }
-    }
+  for (const line of lines) {
+    offsets.push(position);
     position += line.text.length + 1;
   }
-  return boundaries;
+  let expected = 1;
+  for (const [index, line] of lines.entries()) {
+    const match = PA_SECTION_START.exec(line.text);
+    if (!match || Number(match[1]) !== expected) continue;
+    const near = [line.text, lines[index + 1]?.text, lines[index + 2]?.text]
+      .join(' ')
+      .replace(/\s+/g, ' ');
+    if (!PA_OPERATIVE_SECTION.test(near)) continue;
+    let quotedFrom = Infinity;
+    for (let at = index; at < Math.min(lines.length, index + 12); at++) {
+      if ((lines[at]?.text ?? '').trimEnd().endsWith(':')) {
+        quotedFrom = offsets[at + 1] ?? Infinity;
+        break;
+      }
+    }
+    sections.push({ start: offsets[index] ?? 0, quotedFrom });
+    expected++;
+  }
+  return sections;
 }
 
 /** A bill section opening ("Section 2."): a paragraph boundary for bracket recovery. */
-const PA_SECTION_START = /^[ \t]*(?:\d{1,2}[ \t]+)?Section[ \t]+\d+[a-z]?\./;
+const PA_SECTION_START = /^[ \t]*(?:\d{1,2}[ \t]+)?Section[ \t]+(\d+)[a-z]?\./;
 
 function legendFor(context: ChangeMarkContext): RegExp | undefined {
   const state = changeMarkJurisdiction(context);
@@ -416,12 +432,31 @@ export function applyChangeMarks<T extends SourceLine>(
       convention,
       warnings:
         // Fail safe: brackets that could not be classified are never silently current law.
-        text.includes('[') ? [LEGEND_NOT_FOUND_WARNINGS[jurisdiction]] : [],
+        text.includes('[') || text.includes(']')
+          ? [LEGEND_NOT_FOUND_WARNINGS[jurisdiction]]
+          : [],
     };
   // Pennsylvania: brackets pair and recover within a paragraph (blank line or bill section).
   const paragraphStarts = new Set<number>();
-  const sectionBoundaries =
-    jurisdiction === 'PA' ? pennsylvaniaSectionBoundaries(lines) : [];
+  const paSections = jurisdiction === 'PA' ? pennsylvaniaSections(lines) : [];
+  let latestSection = -1;
+  // A measure with no bill sections (a rules resolution) quotes law after the first colon
+  // that ends a line following its RESOLVED clause.
+  let resolvedQuotedFrom = Infinity;
+  if (jurisdiction === 'PA' && paSections.length === 0) {
+    let position = 0;
+    let resolved = false;
+    for (const line of lines) {
+      resolved ||= /^[ \t]*(?:\d{1,2}[ \t]+)?RESOLVED\b/.test(line.text);
+      position += line.text.length + 1;
+      if (resolved && line.text.trimEnd().endsWith(':')) {
+        resolvedQuotedFrom = position;
+        break;
+      }
+    }
+  }
+  const paQuoted = (start: number, section: PaSection | undefined): boolean =>
+    start >= (section ? section.quotedFrom : resolvedQuotedFrom);
   /** Unmatched openings (including pairs that crossed a bill section), recovered below. */
   const unmatchedOpens: number[] = [];
   if (jurisdiction === 'PA') {
@@ -463,6 +498,8 @@ export function applyChangeMarks<T extends SourceLine>(
   const pairs: { start: number; end: number }[] = [];
   let unmatchedClosing = false;
   let paUnclosed = false;
+  let outsideQuoted = false;
+  let verifiedSection = -1;
   const mark = (start: number, end: number): void => {
     for (let at = start; at < end; at++)
       if (!removed[at]) statuses[at] = 'deleted';
@@ -473,6 +510,8 @@ export function applyChangeMarks<T extends SourceLine>(
     if (jurisdiction === 'PA') {
       if (statuses[at] === 'inserted') continue;
     }
+    while ((paSections[latestSection + 1]?.start ?? Infinity) <= at)
+      latestSection++;
     if (text[at] === '[') stack.push(at);
     else if (text[at] === ']') {
       const start = stack.pop();
@@ -480,7 +519,7 @@ export function applyChangeMarks<T extends SourceLine>(
         unmatchedClosing = true;
       } else if (
         jurisdiction === 'PA' &&
-        sectionBoundaries.some((boundary) => boundary > start && boundary < at)
+        (paSections[latestSection]?.start ?? -1) > start
       ) {
         // A pair that crosses into the next operative bill section cannot be legitimate:
         // read its opening as unmatched (bounded to its paragraph) and warn.
@@ -505,6 +544,11 @@ export function applyChangeMarks<T extends SourceLine>(
       continue;
     mark(start, end);
     deletedThrough = end;
+    if (jurisdiction === 'PA') {
+      while ((paSections[verifiedSection + 1]?.start ?? Infinity) <= start)
+        verifiedSection++;
+      if (!paQuoted(start, paSections[verifiedSection])) outsideQuoted = true;
+    }
     // PDF/HTML superscripts are removed before this pass. Matching plain-text committee
     // digits outside brackets are not law text.
     if (jurisdiction === 'NJ') {
@@ -535,6 +579,10 @@ export function applyChangeMarks<T extends SourceLine>(
     stack.length = 0;
     paUnclosed = true;
   }
+  if (outsideQuoted)
+    warnings.push(
+      'Bracketed wording outside amended text was treated as removed; check the original document.',
+    );
   if (paUnclosed)
     warnings.push(
       'An amendment bracket was not closed. Text is treated as deleted only to the end of its paragraph; check the original document.',
