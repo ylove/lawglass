@@ -33,11 +33,9 @@ import {
   type JobContext,
   type JobScope,
 } from '../cost/job.js';
-import {
-  HIGH_CHARS_PER_TOKEN,
-  callDollars,
-  modelPrice,
-} from '../cost/prices.js';
+import { jsonSchema } from '../llm/shared.js';
+import { runWithRetryGate, withRetryGate } from '../cost/attempt.js';
+import { callDollars, modelPrice } from '../cost/prices.js';
 
 export const DEFAULT_MAX_CONCURRENT_INGEST = 2;
 export const DEFAULT_MAX_CONCURRENT_ASK = 4;
@@ -157,6 +155,11 @@ export interface LimitsConfig {
   backgroundWaitMs?: number;
   /** How often it looks again. Default 1 s. */
   backgroundPollMs?: number;
+  /**
+   * How long the host's call gate may take to decide before the call is refused (default 30 s).
+   * A gate that never answers must not hold a concurrency slot forever.
+   */
+  gateTimeoutMs?: number;
 }
 
 /**
@@ -172,6 +175,7 @@ export class Limits {
   private readonly ceiling: RateCeiling;
   private readonly backgroundWaitMs: number;
   private readonly backgroundPollMs: number;
+  private readonly gateTimeoutMs: number;
   private readonly configuredSink: UsageSink;
 
   constructor(config: LimitsConfig, now: () => number = Date.now) {
@@ -186,6 +190,7 @@ export class Limits {
     this.ceiling = new RateCeiling(config.maxCallsPerMinute, now);
     this.backgroundWaitMs = config.backgroundWaitMs ?? 65_000;
     this.backgroundPollMs = config.backgroundPollMs ?? 1000;
+    this.gateTimeoutMs = config.gateTimeoutMs ?? 30_000;
   }
 
   /** In-flight and queued background calls, for tests. */
@@ -292,6 +297,16 @@ export class Limits {
      * One model call's identity. Created when the call starts; `gated` is set once the host's
      * per-call gate (if any) has allowed it, and `reported` once a usage event was delivered.
      */
+    interface RequestShape {
+      system: string;
+      messages?: readonly {
+        content: string | readonly { text: string }[];
+      }[];
+      prompt?: string | readonly { text: string }[];
+      schema?: Parameters<typeof jsonSchema>[0];
+      maxTokens: number;
+      signal?: AbortSignal | undefined;
+    }
     interface Call {
       callId: string;
       job: JobScope | undefined;
@@ -300,24 +315,21 @@ export class Limits {
       allowed: boolean;
     }
     /**
-     * The most a call can cost: the prompt at the estimator's conservative characters per token,
-     * priced at the dearer of the ordinary and cache-write input rates (with the long-context
+     * The most a call can cost. Input: the UTF-8 bytes of everything sent, one token per byte
+     * (no tokenizer emits more tokens than bytes), plus fixed framing for the request and each
+     * message and part; a structured-output schema counts twice, since adapters send it as a
+     * response format and again in the system text; anything that is not text cannot be bounded.
+     * Priced at the dearer of the ordinary and cache-write input rates (with the long-context
      * premium when the prompt is long enough), plus `maxTokens` at the output rate. Infinity for
-     * a model with no price, so a capping host refuses it.
+     * a model with no price, and for the claude-cli provider, whose subprocess has no output
+     * limit: a capping host refuses both.
      */
-    const worstCase = (
-      model: string,
-      req: {
-        system: string;
-        messages?: unknown;
-        prompt?: unknown;
-        maxTokens: number;
-      },
-      job: JobScope,
-    ): number => {
+    const worstCase = (req: RequestShape, job: JobScope): number => {
+      if (provider.id === 'claude-cli') return Number.POSITIVE_INFINITY;
       try {
-        const price = modelPrice(model, job.prices);
-        const input = Math.ceil(promptChars(req) / HIGH_CHARS_PER_TOKEN);
+        const price = modelPrice(provider.model, job.prices);
+        const input = inputTokenBound(req);
+        if (!Number.isFinite(input)) return Number.POSITIVE_INFINITY;
         const priced = (cacheWriteTokens: number): number =>
           callDollars(
             {
@@ -333,13 +345,12 @@ export class Limits {
         return Number.POSITIVE_INFINITY;
       }
     };
-    /** Begins a call: asks the host's per-call gate (awaited), which may refuse it. */
-    const begin = async (req: {
-      system: string;
-      messages?: unknown;
-      prompt?: unknown;
-      maxTokens: number;
-    }): Promise<Call> => {
+    /**
+     * Begins a call: asks the host's per-call gate and waits for the answer, but no longer than
+     * the reader stays or `gateTimeoutMs`. A gate that answers after the call was cancelled has
+     * reserved something, so that late approval ends the call once, unreported.
+     */
+    const begin = async (req: RequestShape): Promise<Call> => {
       const job = currentJob();
       const call: Call = {
         callId: randomUUID(),
@@ -350,14 +361,32 @@ export class Limits {
       };
       if (job?.callGate) {
         const context = job.context;
-        await gateCall(job, {
+        const decision = gateCall(job, {
           jobKind: context.jobKind,
           callId: call.callId,
           model: provider.model,
-          worstCaseUsd: worstCase(provider.model, req, job),
+          worstCaseUsd: worstCase(req, job),
           ...(context.ref === undefined ? {} : { ref: context.ref }),
           ...(context.docId === undefined ? {} : { docId: context.docId }),
         });
+        const wait = cancellation(req.signal, this.gateTimeoutMs);
+        try {
+          await Promise.race([decision, wait.promise]);
+        } catch (error) {
+          if (wait.cancelled()) {
+            job.spent.refusal = 'spend_gate';
+            void decision.then(
+              async () => {
+                call.allowed = true;
+                await finish(call);
+              },
+              () => undefined,
+            );
+          }
+          throw error;
+        } finally {
+          wait.dispose();
+        }
       }
       call.allowed = true;
       return call;
@@ -367,6 +396,7 @@ export class Limits {
       const job = call.job;
       if (!call.allowed || !job?.onCallEnd) return;
       const context = call.started ?? job.context;
+      call.allowed = false; // a call ends once, however many cleanups reach here
       try {
         await job.onCallEnd({
           callId: call.callId,
@@ -379,6 +409,22 @@ export class Limits {
         /* The host's bookkeeping failing must not change the call's result. */
       }
     };
+    /**
+     * What a provider calls before each HTTP request after its first for the same call (a plainer
+     * response format, a request without `stream_options`): the previous attempt ends unreported,
+     * and the next is gated and correlated as its own call.
+     */
+    const retryFor =
+      (call: Call, req: RequestShape) => async (): Promise<void> => {
+        await finish(call);
+        this.ceiling.admit();
+        const next = await begin(req);
+        call.callId = next.callId;
+        call.reported = false;
+        call.allowed = true;
+        assertBudget();
+        req.signal?.throwIfAborted();
+      };
     // Accounting failures must not discard a paid-for model answer or cause a retry.
     const report = async (
       usage: LlmUsage,
@@ -432,18 +478,24 @@ export class Limits {
             // The gate may have kept the reader waiting: if they left, no provider call is made
             // and nothing was billed, but the host still hears the call ended.
             req.signal?.throwIfAborted();
+            // The gate may have taken a while: the zero-argument kill switch and the budget are
+            // checked again right before the provider is touched.
+            if (call.job?.callGate) assertBudget();
             let partial: LlmUsage | undefined;
             let finished = false;
             let failed = false;
             let chars = 0;
             try {
-              const stream = provider.streamText({
-                ...req,
-                onPartialUsage: (usage) => {
-                  partial = usage;
-                  req.onPartialUsage?.(usage);
-                },
-              });
+              const stream = withRetryGate(
+                retryFor(call, req),
+                provider.streamText({
+                  ...req,
+                  onPartialUsage: (usage) => {
+                    partial = usage;
+                    req.onPartialUsage?.(usage);
+                  },
+                }),
+              );
               for await (const event of stream) {
                 if (event.type === 'text') chars += event.text.length;
                 if (event.type === 'done') {
@@ -485,9 +537,12 @@ export class Limits {
         try {
           // Aborted while the gate was deciding: no provider call, nothing billed.
           req.signal?.throwIfAborted();
+          if (call.job?.callGate) assertBudget();
           let result;
           try {
-            result = await provider.generateObject(req);
+            result = await runWithRetryGate(retryFor(call, req), () =>
+              provider.generateObject(req),
+            );
           } catch (error) {
             // A reply that arrived but was unusable (cut off, invalid) was still billed.
             if (error instanceof AppError && error.usage)
@@ -628,4 +683,93 @@ export function batchLimits(env: NodeJS.ProcessEnv = process.env): Limits {
     ...limitsConfigFromEnv(env),
     maxCallsPerMinute: Number.MAX_SAFE_INTEGER,
   });
+}
+
+const encoder = new TextEncoder();
+const utf8 = (text: string): number => encoder.encode(text).length;
+/** Fixed allowance for the request's own wrapper, adapter instructions and field names. */
+const REQUEST_FRAMING_TOKENS = 1024;
+const MESSAGE_FRAMING_TOKENS = 32;
+const PART_FRAMING_TOKENS = 16;
+
+/**
+ * An upper bound on the input tokens of one request, or Infinity when it cannot be bounded:
+ * the UTF-8 bytes of every text sent (a token is at least a byte), a structured-output schema
+ * twice (adapters send it as a response format and again in the system text), plus fixed
+ * framing for the request and each message and part. A part that is not text has no bound.
+ */
+function inputTokenBound(req: {
+  system: string;
+  messages?: readonly {
+    content: string | readonly { text: string }[];
+  }[];
+  prompt?: string | readonly { text: string }[];
+  schema?: Parameters<typeof jsonSchema>[0];
+}): number {
+  const content = (value: string | readonly { text: string }[]): number => {
+    if (typeof value === 'string') return utf8(value);
+    let total = 0;
+    for (const part of value) {
+      if (typeof (part as { text?: unknown }).text !== 'string')
+        return Number.POSITIVE_INFINITY;
+      total += utf8(part.text) + PART_FRAMING_TOKENS;
+    }
+    return total;
+  };
+  let tokens = REQUEST_FRAMING_TOKENS + utf8(req.system);
+  for (const message of req.messages ?? [])
+    tokens += MESSAGE_FRAMING_TOKENS + content(message.content);
+  if (req.prompt !== undefined)
+    tokens += MESSAGE_FRAMING_TOKENS + content(req.prompt);
+  if (req.schema) tokens += 2 * utf8(JSON.stringify(jsonSchema(req.schema)));
+  return tokens;
+}
+
+/**
+ * Rejects when `signal` aborts or `ms` pass, whichever is first. `cancelled()` says it was this
+ * that ended the wait (not the thing waited on); `dispose` removes the timer and listener.
+ */
+function cancellation(
+  signal: AbortSignal | undefined,
+  ms: number,
+): {
+  promise: Promise<never>;
+  cancelled: () => boolean;
+  dispose: () => void;
+} {
+  let timer: NodeJS.Timeout | undefined;
+  let onAbort: (() => void) | undefined;
+  let cancelled = false;
+  const promise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      cancelled = true;
+      reject(
+        new AppError('BUDGET_EXHAUSTED', 'The spend gate did not answer.', {
+          details: { reason: 'spend_gate' },
+        }),
+      );
+    }, ms);
+    if (signal) {
+      onAbort = () => {
+        cancelled = true;
+        reject(
+          signal.reason instanceof Error
+            ? signal.reason
+            : new DOMException('The operation was aborted.', 'AbortError'),
+        );
+      };
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+  // The race may end first; an unhandled rejection from the loser must not escape.
+  promise.catch(() => undefined);
+  return {
+    promise,
+    cancelled: () => cancelled,
+    dispose: () => {
+      clearTimeout(timer);
+      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
+    },
+  };
 }

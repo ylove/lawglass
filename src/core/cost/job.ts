@@ -7,6 +7,7 @@
  * reader and how a job's budget is enforced without threading parameters through every service.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { randomUUID } from 'node:crypto';
 import { AppError } from '../model/index.js';
 import { callDollars, modelPrice, type PriceTable } from './prices.js';
 import type { LlmUsage } from '../model/index.js';
@@ -394,5 +395,57 @@ export function chargeJob(
   } catch {
     // A model with no price cannot be bounded; stop rather than spend without limit.
     spent.dollars = Math.max(spent.dollars, scope.budget.dollars);
+  }
+}
+
+/**
+ * A billed backend request (an embedding or rerank call to a hosted index) is gated like a model
+ * call: the host's `callGate` is asked, with a fresh call id, before each attempt, and
+ * `onCallEnd` is told afterwards (`reported: false`: backends report no `UsageEvent`).
+ * `worstCaseUsd` comes from the job's price table when it has an entry for `model` (its `input`
+ * rate applied to one token per input byte, a bound), else `Infinity`: a host that gates
+ * Pinecone inference must price it.
+ */
+export async function startBackendCall(input: {
+  model: string;
+  inputBytes: number;
+}): Promise<{ end(): Promise<void> }> {
+  const job = currentJob();
+  if (!job) return { end: () => Promise.resolve() };
+  const call: GateCall = {
+    jobKind: job.context.jobKind,
+    callId: randomUUID(),
+    model: input.model,
+    worstCaseUsd: backendWorstCase(job, input),
+    ...(job.context.ref === undefined ? {} : { ref: job.context.ref }),
+    ...(job.context.docId === undefined ? {} : { docId: job.context.docId }),
+  };
+  await gateCall(job, call);
+  return {
+    async end() {
+      try {
+        await job.onCallEnd?.({
+          callId: call.callId,
+          reported: false,
+          jobKind: call.jobKind,
+          ...(call.ref === undefined ? {} : { ref: call.ref }),
+          ...(call.docId === undefined ? {} : { docId: call.docId }),
+        });
+      } catch {
+        /* The host's bookkeeping failing must not change the request's result. */
+      }
+    },
+  };
+}
+
+function backendWorstCase(
+  job: JobScope,
+  input: { model: string; inputBytes: number },
+): number {
+  try {
+    const price = modelPrice(input.model, job.prices);
+    return (input.inputBytes * price.input) / 1_000_000;
+  } catch {
+    return Number.POSITIVE_INFINITY;
   }
 }

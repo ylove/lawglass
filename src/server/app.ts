@@ -200,7 +200,9 @@ export interface AppOptions {
    * refuses that call with the same stop a closed `spendGate` makes. If `spendGate` is also set
    * both apply: it before the work and before each call, this before each provider call. The
    * server does not serialize calls: a host that must cap spend reserves `worstCaseUsd` here and
-   * settles on `onUsage` / `onCallEnd`.
+   * settles on `onUsage` / `onCallEnd`. Each billed attempt is gated (a provider's format
+   * fallback, a Pinecone 429 retry), and `worstCaseUsd` is `Infinity` for claude-cli and for
+   * Pinecone inference unless the `quote.prices` table has an entry for that model.
    */
   callGate?: CallGate;
   /**

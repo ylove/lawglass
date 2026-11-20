@@ -22,6 +22,7 @@ import {
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { contextualText } from '../../chunk/index.js';
+import { startBackendCall } from '../../cost/job.js';
 import { estimateTokens } from '../../chunk/tokens.js';
 import { pineconeConfig, type PineconeSettings } from '../../config.js';
 import {
@@ -463,7 +464,19 @@ export class PineconeBackend implements RetrievalBackend {
     budgetMs: number,
     signal?: AbortSignal,
     giveUpEarly = false,
+    billed?: { model: string; inputBytes: number },
   ): Promise<T> {
+    // Every attempt is a billed request (a 429 retry embeds again), so each is gated on its own.
+    const attempt = billed
+      ? async (): Promise<T> => {
+          const call = await startBackendCall(billed);
+          try {
+            return await run();
+          } finally {
+            await call.end();
+          }
+        }
+      : run;
     const startedAt = this.now();
     const deadline = startedAt + budgetMs;
     let backoffMs = 1_000;
@@ -475,7 +488,7 @@ export class PineconeBackend implements RetrievalBackend {
       if (remainingMs <= 0) throw rateLimited();
       try {
         const result = await boundedAttempt(
-          run,
+          attempt,
           remainingMs,
           wasRateLimited ? rateLimited() : new AppError('BACKEND_UNAVAILABLE'),
           signal,
@@ -529,6 +542,7 @@ export class PineconeBackend implements RetrievalBackend {
     batch: readonly IntegratedRecord[],
     signal: AbortSignal | undefined,
     limits: BatchLimits,
+    model: string,
   ): Promise<unknown[]> {
     try {
       const response = await this.retryRateLimit(
@@ -536,6 +550,7 @@ export class PineconeBackend implements RetrievalBackend {
         this.config.upsertRetryBudgetMs,
         signal,
         batch.length > 1,
+        { model, inputBytes: recordBytes(batch) },
       );
       return [response];
     } catch (error) {
@@ -553,6 +568,7 @@ export class PineconeBackend implements RetrievalBackend {
         batch.slice(0, middle),
         signal,
         limits,
+        model,
       );
       const second = await this.upsertBatch(
         index,
@@ -560,6 +576,7 @@ export class PineconeBackend implements RetrievalBackend {
         batch.slice(middle),
         signal,
         limits,
+        model,
       );
       return [...first, ...second];
     }
@@ -638,6 +655,9 @@ export class PineconeBackend implements RetrievalBackend {
               batch,
               signal,
               limits,
+              kind === 'dense'
+                ? this.config.denseModel
+                : this.config.sparseModel,
             );
             // SDK 9.0.0 returns void here. Unreported usage stays zero; never estimate billed tokens.
             for (const response of responses)
@@ -662,6 +682,8 @@ export class PineconeBackend implements RetrievalBackend {
             }),
           this.config.upsertRetryBudgetMs,
           signal,
+          false,
+          { model: this.config.denseModel, inputBytes: 64 },
         );
         usage = addUsage(usage, this.report('upsert:completion', response));
         const ids = this.expectedIds.get(docId) ?? new Set<string>();
@@ -700,6 +722,14 @@ export class PineconeBackend implements RetrievalBackend {
             }),
           this.config.queryRetryBudgetMs,
           req.signal,
+          false,
+          {
+            model:
+              req.index === 'dense'
+                ? this.config.denseModel
+                : this.config.sparseModel,
+            inputBytes: Buffer.byteLength(req.query),
+          },
         );
       } catch (error) {
         if (!hasStatus(error, 404, 'PineconeNotFoundError')) throw error;
@@ -777,6 +807,14 @@ export class PineconeBackend implements RetrievalBackend {
           }),
         this.config.queryRetryBudgetMs,
         req.signal,
+        false,
+        {
+          model: this.config.rerankModel,
+          inputBytes: Buffer.byteLength(
+            req.query +
+              req.hits.map((hit) => contextualText(hit.chunk)).join(''),
+          ),
+        },
       );
       abortIfNeeded(req.signal);
       const parsed = RerankResponse.parse(response);
@@ -848,4 +886,9 @@ export async function settle(
       delay(backend.config.pollIntervalMs, undefined, { signal }),
     );
   }
+}
+
+/** The text bytes a batch of records sends to be embedded: a bound on its tokens. */
+function recordBytes(batch: readonly IntegratedRecord[]): number {
+  return batch.reduce((n, r) => n + Buffer.byteLength(String(r.embed_text)), 0);
 }

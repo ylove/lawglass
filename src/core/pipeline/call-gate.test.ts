@@ -18,7 +18,7 @@ import {
   type ObjectRequest,
   type TextRequest,
 } from '../model/index.js';
-import { HIGH_CHARS_PER_TOKEN } from '../cost/prices.js';
+import { gateRetry } from '../cost/attempt.js';
 import { Limits } from './limits.js';
 
 const textReq: TextRequest = {
@@ -102,7 +102,7 @@ describe('per-call gate', () => {
     ]);
   });
 
-  it('prices the worst case from the prompt and maxTokens at the model rates', async () => {
+  it('prices the worst case from every byte sent, with framing, and maxTokens at the model rates', async () => {
     const rate = { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 4 };
     const calls: GateCall[] = [];
     const { job } = scope({
@@ -115,16 +115,107 @@ describe('per-call gate', () => {
     await runInJob(job, () =>
       drain(limits().meter(okProvider()).streamText(textReq)),
     );
-    // The prompt at the estimator's conservative 2.2 characters a token, at the dearest input
-    // rate (cache write, 4), plus 1,000 output tokens at 2.
-    const prompt = Math.ceil(
-      (textReq.system.length + JSON.stringify(textReq.messages).length) /
-        HIGH_CHARS_PER_TOKEN,
-    );
+    // One token per byte (a tokenizer never emits more) plus 1,024 for the request and 32 for the
+    // message, at the dearest input rate (cache write, 4), plus 1,000 output tokens at 2.
+    const input = 1024 + 32 + textReq.system.length + 360;
     expect(calls[0]?.worstCaseUsd).toBeCloseTo(
-      (prompt * 4 + 1000 * 2) / 1_000_000,
+      (input * 4 + 1000 * 2) / 1_000_000,
       10,
     );
+  });
+
+  it('counts multi-byte text by its UTF-8 bytes, not its characters', async () => {
+    const calls: GateCall[] = [];
+    const { job } = scope({
+      prices: {
+        scripted: { input: 1, output: 0, cacheRead: 0, cacheWrite: 1 },
+      },
+      callGate: (call: GateCall) => {
+        calls.push(call);
+        return true;
+      },
+    });
+    const text = '\u6cd5'.repeat(100); // 3 bytes each
+    await runInJob(job, () =>
+      drain(
+        limits()
+          .meter(okProvider())
+          .streamText({
+            system: '',
+            messages: [{ role: 'user', content: text }],
+            maxTokens: 1,
+          }),
+      ),
+    );
+    expect(calls[0]?.worstCaseUsd).toBeCloseTo(
+      (1024 + 32 + 300) / 1_000_000,
+      10,
+    );
+  });
+
+  it('counts a structured-output schema twice, as adapters send it twice', async () => {
+    const calls: GateCall[] = [];
+    const { job } = scope({
+      prices: {
+        scripted: { input: 1, output: 0, cacheRead: 0, cacheWrite: 1 },
+      },
+      callGate: (call: GateCall) => {
+        calls.push(call);
+        return true;
+      },
+    });
+    await runInJob(job, () =>
+      limits().meter(okProvider()).generateObject(objReq),
+    );
+    const schema = JSON.stringify(z.toJSONSchema(objReq.schema)).length;
+    expect(calls[0]?.worstCaseUsd).toBeCloseTo(
+      (1024 + 1 + 32 + 1 + 2 * schema) / 1_000_000,
+      10,
+    );
+  });
+
+  it('cannot bound a part that is not text: Infinity', async () => {
+    const calls: GateCall[] = [];
+    const { job } = scope({
+      prices: {
+        scripted: { input: 1, output: 1, cacheRead: 0, cacheWrite: 1 },
+      },
+      callGate: (call: GateCall) => {
+        calls.push(call);
+        return true;
+      },
+    });
+    const image = { type: 'image', data: 'x' } as unknown as { text: string };
+    await runInJob(job, () =>
+      drain(
+        limits()
+          .meter(okProvider())
+          .streamText({
+            system: '',
+            messages: [{ role: 'user', content: [image] }],
+            maxTokens: 1,
+          }),
+      ),
+    );
+    expect(calls[0]?.worstCaseUsd).toBe(Number.POSITIVE_INFINITY);
+  });
+
+  it('is Infinity for the claude-cli provider: its subprocess has no output limit', async () => {
+    const calls: GateCall[] = [];
+    const { job } = scope({
+      prices: {
+        scripted: { input: 1, output: 1, cacheRead: 0, cacheWrite: 1 },
+      },
+      callGate: (call: GateCall) => {
+        calls.push(call);
+        return true;
+      },
+    });
+    const cli = Object.assign(Object.create(okProvider()) as LlmProvider, {
+      id: 'claude-cli' as const,
+    });
+    await runInJob(job, () => drain(limits().meter(cli).streamText(textReq)));
+    expect(calls[0]?.worstCaseUsd).toBe(Number.POSITIVE_INFINITY);
   });
 
   it('includes the long-context premium when the prompt is long enough', async () => {
@@ -148,10 +239,7 @@ describe('per-call gate', () => {
     await runInJob(job, () =>
       drain(limits().meter(okProvider()).streamText(textReq)),
     );
-    const prompt = Math.ceil(
-      (textReq.system.length + JSON.stringify(textReq.messages).length) /
-        HIGH_CHARS_PER_TOKEN,
-    );
+    const prompt = 1024 + 32 + textReq.system.length + 360;
     // Over the threshold every token of the call is at the long-context rates.
     expect(calls[0]?.worstCaseUsd).toBeCloseTo(
       (prompt * 12 + 1000 * 6) / 1_000_000,
@@ -478,5 +566,171 @@ describe('spendGate and callGate together', () => {
     const provider = okProvider();
     await limits().meter(provider).generateObject(objReq);
     expect(provider.calls).toHaveLength(1);
+  });
+});
+
+describe('a gate that is slow or silent', () => {
+  const never = () => new Promise<boolean>(() => undefined);
+
+  it('does not outlive the reader: an abort ends the wait at once and no provider call is made', async () => {
+    const controller = new AbortController();
+    const provider = okProvider();
+    const { job, ends } = scope({ callGate: never });
+    const run = runInJob(job, () =>
+      limits()
+        .meter(provider)
+        .generateObject({ ...objReq, signal: controller.signal }),
+    );
+    controller.abort();
+    await expect(run).rejects.toThrow();
+    expect(provider.calls).toHaveLength(0);
+    expect(ends).toHaveLength(0);
+  });
+
+  it('times out, refuses like a closed gate, and holds no slot', async () => {
+    const l = new Limits({
+      maxConcurrentIngest: 1,
+      maxConcurrentAsk: 1,
+      maxCallsPerMinute: 1000,
+      gateTimeoutMs: 20,
+    });
+    const { job } = scope({ callGate: never });
+    const provider = okProvider();
+    const paced = l.paced(provider);
+    await expect(
+      runInJob(job, () => paced.generateObject(objReq)),
+    ).rejects.toSatisfy(isSpendGateStop);
+    // The single ask slot is free again.
+    const release = await l.acquire('ask');
+    release();
+    expect(provider.calls).toHaveLength(0);
+  });
+
+  it.each(['abort', 'timeout'] as const)(
+    'a late approval after %s ends the call exactly once, unreported, with no provider call',
+    async (how) => {
+      let approve: (open: boolean) => void = () => undefined;
+      const controller = new AbortController();
+      const provider = okProvider();
+      const l = new Limits({
+        maxConcurrentIngest: 1,
+        maxConcurrentAsk: 2,
+        maxCallsPerMinute: 1000,
+        gateTimeoutMs: how === 'timeout' ? 20 : 60_000,
+      });
+      const { job, ends } = scope({
+        callGate: () =>
+          new Promise<boolean>((resolve) => {
+            approve = resolve;
+          }),
+      });
+      const run = runInJob(job, () =>
+        l
+          .meter(provider)
+          .generateObject({ ...objReq, signal: controller.signal }),
+      );
+      if (how === 'abort') controller.abort();
+      await expect(run).rejects.toThrow();
+      expect(ends).toHaveLength(0);
+      approve(true); // the host reserved something after we gave up
+      await new Promise((r) => setTimeout(r, 10));
+      expect(ends).toEqual([expect.objectContaining({ reported: false })]);
+      approve(true);
+      await new Promise((r) => setTimeout(r, 10));
+      expect(ends).toHaveLength(1);
+      expect(provider.calls).toHaveLength(0);
+    },
+  );
+
+  it('rechecks the kill switch and budget after the gate answers, before the provider', async () => {
+    let killed = false;
+    const provider = okProvider();
+    const { job, ends } = scope({
+      spendGate: () => !killed,
+      callGate: () => {
+        killed = true; // closed while the gate was deciding
+        return true;
+      },
+    });
+    const metered = limits().meter(provider);
+    await expect(
+      runInJob(job, () => metered.generateObject(objReq)),
+    ).rejects.toSatisfy(isSpendGateStop);
+    await expect(
+      runInJob(job, async () => {
+        await drain(metered.streamText(textReq));
+      }),
+    ).rejects.toSatisfy(isSpendGateStop);
+    expect(provider.calls).toHaveLength(0);
+    expect(ends.map((e) => e.reported)).toEqual([false]);
+  });
+});
+
+describe('several HTTP attempts under one call', () => {
+  /** A provider that needs a second request, as OpenAI does for an unsupported format. */
+  function twoAttempts(): LlmProvider & { requests: number } {
+    const p = {
+      id: 'mock' as const,
+      model: 'scripted',
+      requests: 0,
+      async *streamText(): AsyncIterable<LlmStreamEvent> {
+        p.requests += 1;
+        await gateRetry();
+        p.requests += 1;
+        yield { type: 'text', text: 'hi' };
+        yield {
+          type: 'done',
+          usage: { inputTokens: 1, outputTokens: 1 },
+          stopReason: 'end_turn',
+        };
+      },
+      generateObject: async () => {
+        p.requests += 1;
+        await gateRetry();
+        p.requests += 1;
+        return { object: { a: 1 }, usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    return p as unknown as LlmProvider & { requests: number };
+  }
+
+  it.each(['generateObject', 'streamText'] as const)(
+    '%s: each attempt is gated with its own id; usage carries the last, the first ends unreported',
+    async (method) => {
+      const calls: GateCall[] = [];
+      const { job, usage, ends } = scope({
+        callGate: (c: GateCall) => {
+          calls.push(c);
+          return true;
+        },
+      });
+      const metered = limits().meter(twoAttempts());
+      await runInJob(job, () =>
+        method === 'streamText'
+          ? drain(metered.streamText(textReq))
+          : metered.generateObject(objReq),
+      );
+      expect(calls).toHaveLength(2);
+      expect(calls[0]?.callId).not.toBe(calls[1]?.callId);
+      expect(usage.map((u) => u.callId)).toEqual([calls[1]?.callId]);
+      expect(ends).toEqual([
+        expect.objectContaining({ callId: calls[0]?.callId, reported: false }),
+        expect.objectContaining({ callId: calls[1]?.callId, reported: true }),
+      ]);
+    },
+  );
+
+  it('a refused second attempt stops the call: it makes no second request and ends once each', async () => {
+    let n = 0;
+    const provider = twoAttempts();
+    const { job, ends } = scope({
+      callGate: () => ++n === 1,
+    });
+    await expect(
+      runInJob(job, () => limits().meter(provider).generateObject(objReq)),
+    ).rejects.toSatisfy(isSpendGateStop);
+    expect(provider.requests).toBe(1);
+    expect(ends).toHaveLength(1);
+    expect(ends[0]?.reported).toBe(false);
   });
 });

@@ -30,6 +30,7 @@ export {
   type UsageEvent,
   type UsageFeature,
 } from './usage.js';
+export { gateRetry, runWithRetryGate, withRetryGate } from './attempt.js';
 export {
   addBudget,
   bumpGrantEpoch,
@@ -39,6 +40,7 @@ export {
   canSpend,
   spendGateOpen,
   gateCall,
+  startBackendCall,
   stopCause,
   budgetRemaining,
   topUp,
