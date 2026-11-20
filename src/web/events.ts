@@ -49,6 +49,7 @@ function jurisdictionLabel(raw: unknown): string | undefined {
   if (/\bohio\b|^oh$/i.test(raw.trim())) return 'ohio';
   if (/new york/i.test(raw)) return 'new-york';
   if (/new jersey/i.test(raw)) return 'new-jersey';
+  if (/pennsylvania/i.test(raw)) return 'pennsylvania';
   if (/united states|congress|federal|^u\.?s\.?$/i.test(raw)) return 'federal';
   return 'other';
 }
