@@ -249,6 +249,94 @@
       "retrievedAt": "2026-10-26",
       "jurisdiction": "New Jersey",
       "notes": "Regression for #306 review: '7. This act shall take effect immediately.' follows '(cf: ...)' at a page break and must open sec-7."
+    },
+    {
+      "name": "pa-hb170-2025-pn2721",
+      "description": "Introduced amendment of Title 75: 2 bracketed deletions of the same phrase (sections 4702 and 4703) and 4 underlined insertion runs.",
+      "format": "pdf",
+      "url": "https://www.palegis.us/legislation/bills/text/PDF/2025/0/HB0170/PN2721",
+      "sha256": "1f80291468001344bbe00418960bf809c60fef4b07d6f75bd33ec0abd44100f7",
+      "bytes": 70473,
+      "retrievedAt": "2026-11-19",
+      "jurisdiction": "Pennsylvania",
+      "notes": "Amends existing law. PA prints no legend; marks per the legislature's 'Explanation to facilitate reading of legislative bills'. Counted from the extracted text layer and its drawn rules for the Pennsylvania jurisdiction work (#422)."
+    },
+    {
+      "name": "pa-sb1273-2025-pn1610",
+      "description": "Introduced: adds one subparagraph to Title 74; a single underlined insertion run and no brackets.",
+      "format": "pdf",
+      "url": "https://www.palegis.us/legislation/bills/text/PDF/2025/0/SB1273/PN1610",
+      "sha256": "b9cab0ed6c9028299829756c577d2756d2535ce5fccb6633a20ca02b869395cf",
+      "bytes": 62803,
+      "retrievedAt": "2026-11-19",
+      "jurisdiction": "Pennsylvania",
+      "notes": "Only adds new law inside an existing section ('* * *' elides the unchanged law). Checked for #422."
+    },
+    {
+      "name": "pa-hb150-2025-pn2066",
+      "description": "Amended print that repeals section 9777 (the whole section in brackets) and adds section 9778 with underlined and capital-letter text.",
+      "format": "pdf",
+      "url": "https://www.palegis.us/legislation/bills/text/PDF/2025/0/HB0150/PN2066",
+      "sha256": "525949bae71205c8d5726ba8e5970bccd251d7b1b9f97842890c40b299b5178d",
+      "bytes": 118675,
+      "retrievedAt": "2026-11-19",
+      "jurisdiction": "Pennsylvania",
+      "notes": "Repealed-section case: the bracketed section must read as deleted. Also has struck-and-underlined text from the House amendment. Checked for #422."
+    },
+    {
+      "name": "pa-hb2443-2025-pn4082",
+      "description": "Senate-amended new act: 4 struck-through runs and a capital-letter replacement, no underlining.",
+      "format": "pdf",
+      "url": "https://www.palegis.us/legislation/bills/text/PDF/2025/0/HB2443/PN4082",
+      "sha256": "7ee29fcb20473048b17d194ae954487bb6c385be52ea37b83f55ede0dde38bf7",
+      "bytes": 82190,
+      "retrievedAt": "2026-11-19",
+      "jurisdiction": "Pennsylvania",
+      "notes": "A new act has no bracket or underline marks; its amendments show only as strike-out type and CAPITAL LETTERS. Owner's example bill for #422."
+    },
+    {
+      "name": "pa-sr374-2025-pn1942",
+      "description": "Senate resolution directing a study; no change marks.",
+      "format": "pdf",
+      "url": "https://www.palegis.us/legislation/bills/text/PDF/2025/0/SR0374/PN1942",
+      "sha256": "45306bf0f44b898de316d81ccb4339bf8281081e36a6f104e75a61c0dcfa7337",
+      "bytes": 68201,
+      "retrievedAt": "2026-11-19",
+      "jurisdiction": "Pennsylvania",
+      "notes": "Resolution case; owner's example for #422."
+    },
+    {
+      "name": "pa-hr607-2025-pn3853",
+      "description": "House resolution designating a week; no change marks.",
+      "format": "pdf",
+      "url": "https://www.palegis.us/legislation/bills/text/PDF/2025/0/HR0607/PN3853",
+      "sha256": "59c047a80fe09226b42f8c967326a1b0bbe5b7e507448d36b93c5a58f4ebe32a",
+      "bytes": 64703,
+      "retrievedAt": "2026-11-19",
+      "jurisdiction": "Pennsylvania",
+      "notes": "Resolution case; owner's example for #422."
+    },
+    {
+      "name": "pa-sb605-2025-pn0613",
+      "description": "Joint resolution proposing a constitutional amendment, numbered as Senate Bill 605; one underlined insertion run.",
+      "format": "pdf",
+      "url": "https://www.palegis.us/legislation/bills/text/PDF/2025/0/SB0605/PN0613",
+      "sha256": "5d79fd289e234f8cde87495ac4733021dad74afe2a0ba97b080c68715ce109cb",
+      "bytes": 64784,
+      "retrievedAt": "2026-11-19",
+      "jurisdiction": "Pennsylvania",
+      "notes": "A joint resolution is a bill number with a 'A JOINT RESOLUTION' title, so it is read as a resolution. Checked for #422."
+    },
+    {
+      "name": "pa-hr125-2025-pn1009",
+      "description": "Concurrent resolution (House Resolution 125) applying for an Article V convention; no change marks.",
+      "format": "pdf",
+      "url": "https://www.palegis.us/legislation/bills/text/PDF/2025/0/HR0125/PN1009",
+      "sha256": "a690c22e154ef70a1fb500b6f514d7a22a9f5a0a56359dedb4f880db91f64d01",
+      "bytes": 73937,
+      "retrievedAt": "2026-11-19",
+      "jurisdiction": "Pennsylvania",
+      "notes": "A concurrent resolution is numbered as a House or Senate resolution and titled 'A CONCURRENT RESOLUTION'. Checked for #422."
     }
   ]
 }

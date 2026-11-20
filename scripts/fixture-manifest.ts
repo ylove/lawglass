@@ -13,7 +13,13 @@ export const manifestSchema = z.strictObject({
         name: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
         description: z.string().min(1),
         retrievedAt: z.iso.date(),
-        jurisdiction: z.enum(['US Congress', 'Ohio', 'New York', 'New Jersey']),
+        jurisdiction: z.enum([
+          'US Congress',
+          'Ohio',
+          'New York',
+          'New Jersey',
+          'Pennsylvania',
+        ]),
         notes: z.string().min(1),
       })
         .strict()
