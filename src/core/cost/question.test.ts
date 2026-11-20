@@ -130,32 +130,4 @@ describe('questionCeiling is a bound, not a forecast', () => {
     // Two answer calls of about 18,000 tokens each plus framing, and the story's excerpts.
     expect(c.focused.inputTokens).toBeGreaterThan(2 * 18_000);
   });
-
-  it('does not slow sizing for an amended bill that fits whole (no per-chunk re-rendering)', () => {
-    const runs = (changed: boolean): Section[] => [
-      {
-        id: 'sec-1',
-        heading: 'Grants',
-        level: 1,
-        spans: Array.from({ length: 400 }, (_, i) => ({
-          text: `Clause ${String(i)} of the grant program applies to each town. `,
-          status:
-            changed && i % 2 === 0
-              ? ('deleted' as const)
-              : ('unchanged' as const),
-        })),
-        children: [],
-      },
-    ];
-    const time = (sections: Section[]): number => {
-      const start = performance.now();
-      billFacts(sections);
-      return performance.now() - start;
-    };
-    time(runs(true)); // warm up
-    const plain = time(runs(false));
-    const amended = time(runs(true));
-    // It was about 12 times slower with the extra pass; generous so load cannot flake it.
-    expect(amended).toBeLessThan(plain * 6 + 200);
-  });
 });

@@ -10,6 +10,7 @@ import {
 import { MAX_INJECTED_DEFINITIONS } from '../retrieve/definitions.js';
 import { DEFAULT_TOP_K } from '../retrieve/retrieve.js';
 import { MAX_EXCERPT_REFERENCES } from '../answer/references.js';
+import { MAX_CHANGE_EXCERPT_CHARS } from '../chip-changes.js';
 import { MAX_TEXT_CHARS } from '../enrich/references.js';
 import { ITEMS_PER_CALL } from '../picture/prompt.js';
 import {
@@ -433,9 +434,12 @@ export function estimateQuestion(
   const wholeCap = maxTokensFor('whole', question.limits);
   const focusedCap = maxTokensFor('focused', question.limits);
   // The most an excerpt prompt can hold: the top chunks, the injected definitions and the
-  // reference texts, each at its limit, wrapped in the excerpt markup. A bound, not a forecast.
+  // reference texts, each at its limit, wrapped in the excerpt markup. A change question sends
+  // each hit's whole section inline (up to MAX_CHANGE_EXCERPT_CHARS), larger than a 450-token
+  // chunk, so every hit gets the larger allowance. A bound, not a forecast.
+  const hitTokens = Math.max(450, Math.ceil(MAX_CHANGE_EXCERPT_CHARS / 4));
   const focusedHigh = Math.ceil(
-    (DEFAULT_TOP_K * 450 +
+    (DEFAULT_TOP_K * hitTokens +
       MAX_INJECTED_DEFINITIONS * 450 +
       MAX_EXCERPT_REFERENCES * Math.ceil(MAX_TEXT_CHARS / 4)) *
       PROMPT_MARKUP.high,
