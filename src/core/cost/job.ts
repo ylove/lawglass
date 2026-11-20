@@ -30,6 +30,46 @@ export interface JobBudget {
   tokens?: number;
 }
 
+/**
+ * What a per-call spend gate is told about one model call, before it is made. Carries no text,
+ * URLs or credentials.
+ */
+export interface GateCall {
+  /** The host's admission reference for the job, when it gave one. */
+  ref?: string;
+  jobKind: JobKind;
+  docId?: string;
+  /** Unique per call. The same id arrives in that call's `UsageEvent` and `CallEnd`. */
+  callId: string;
+  model: string;
+  /**
+   * The most this call can cost: the prompt (about four characters a token, at the dearest
+   * input rate) plus `maxTokens` at the output rate. `Infinity` for a model with no price, so
+   * a host that caps spend refuses it.
+   */
+  worstCaseUsd: number;
+}
+
+/**
+ * How a gated call ended. Sent once for every call the gate allowed, after its usage event (if
+ * any) was delivered. `reported` is false when the call produced no usage event (it failed
+ * before the provider billed anything, or the provider could not say), so a host that reserved
+ * `worstCaseUsd` can release the reservation.
+ */
+export interface CallEnd {
+  callId: string;
+  reported: boolean;
+  ref?: string;
+  jobKind: JobKind;
+  docId?: string;
+}
+
+/**
+ * The host's per-call gate: given the call, it may be async and is awaited before each provider
+ * call. Anything but `true`, or a throw or rejection, refuses that call.
+ */
+export type CallGate = (call: GateCall) => boolean | Promise<boolean>;
+
 export interface ModelChoice {
   answer?: string;
   extract?: string;
@@ -52,6 +92,10 @@ export interface JobScope {
    * anything but `true`, or throws, is closed.
    */
   spendGate?: (() => boolean) | undefined;
+  /** The host's per-call gate (issue #435), awaited before every provider call. */
+  callGate?: CallGate | undefined;
+  /** Told how each call the gate allowed ended; see `CallEnd`. */
+  onCallEnd?: ((end: CallEnd) => void | Promise<void>) | undefined;
   /** The grant epoch of the (document, tier) when this scope was resolved or handed out. */
   epoch?: number | undefined;
   /** Shared by every scope derived from the same admission, so one budget covers them all. */
@@ -115,6 +159,28 @@ export function spendGateOpen(
     // A broken gate cannot be trusted to be open.
     return false;
   }
+}
+
+/**
+ * Asks the per-call gate about one call and waits for the answer. Throws BUDGET_EXHAUSTED with
+ * `details.reason: 'spend_gate'` (the same stop a closed zero-arg gate makes) unless it says `true`.
+ */
+export async function gateCall(scope: JobScope, call: GateCall): Promise<void> {
+  const gate = scope.callGate;
+  if (!gate) return;
+  let open = false;
+  try {
+    // A host's answer is untrusted at runtime: only a real `true` opens the gate.
+    const answer: unknown = await gate(call);
+    open = answer === true;
+  } catch {
+    // A broken gate cannot be trusted to be open.
+  }
+  if (open) return;
+  scope.spent.refusal = 'spend_gate';
+  throw new AppError('BUDGET_EXHAUSTED', 'The spend gate is closed.', {
+    details: { reason: 'spend_gate' },
+  });
 }
 
 /** True when a model call may be made now: the gate is open and the budget has room. */

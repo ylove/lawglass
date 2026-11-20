@@ -22,6 +22,7 @@ import {
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { contextualText } from '../../chunk/index.js';
+import { startBackendCall } from '../../cost/gate.js';
 import { estimateTokens } from '../../chunk/tokens.js';
 import { pineconeConfig, type PineconeSettings } from '../../config.js';
 import {
@@ -227,12 +228,15 @@ function retryAfterMs(error: unknown, now: number): number | undefined {
 // The SDK records API has no signal option. Stop waiting promptly; an in-flight
 // write may still finish remotely, but must never publish ingest completion here.
 async function boundedAttempt<T>(
-  run: () => Promise<T>,
+  run: (abandoned: AbortSignal) => Promise<T>,
   remainingMs: number,
   timeoutError: AppError,
   signal?: AbortSignal,
 ): Promise<T> {
   abortIfNeeded(signal);
+  // Aborted when this stops waiting, so work that has not been dispatched yet (a host's gate
+  // still deciding) is cancelled instead of sending the request after everyone left.
+  const abandon = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
   const interrupted = new Promise<never>((_resolve, reject) => {
@@ -247,10 +251,11 @@ async function boundedAttempt<T>(
   try {
     const attempt = Promise.resolve().then(() => {
       abortIfNeeded(signal);
-      return run();
+      return run(abandon.signal);
     });
     return await Promise.race([attempt, interrupted]);
   } finally {
+    abandon.abort();
     clearTimeout(timer);
     if (onAbort) signal?.removeEventListener('abort', onAbort);
   }
@@ -414,9 +419,11 @@ export class PineconeBackend implements RetrievalBackend {
     const { dense } = await this.readyIndexes();
     let response: unknown;
     try {
-      response = await dense
-        .namespace(completionNamespace(docId))
-        .fetch({ ids: [COMPLETION_ID] });
+      response = await this.billedOnce(this.config.denseModel, () =>
+        dense
+          .namespace(completionNamespace(docId))
+          .fetch({ ids: [COMPLETION_ID] }),
+      );
     } catch (error) {
       if (hasStatus(error, 404, 'PineconeNotFoundError')) return false;
       throw error;
@@ -434,7 +441,9 @@ export class PineconeBackend implements RetrievalBackend {
   private async removeCompletion(docId: string): Promise<void> {
     const { dense } = await this.readyIndexes();
     try {
-      await dense.deleteNamespace(completionNamespace(docId));
+      await this.billedOnce(this.config.denseModel, () =>
+        dense.deleteNamespace(completionNamespace(docId)),
+      );
     } catch (error) {
       if (!hasStatus(error, 404, 'PineconeNotFoundError')) throw error;
     }
@@ -458,12 +467,44 @@ export class PineconeBackend implements RetrievalBackend {
       backoffMs = nextBackoffMs(backoffMs);
     }
   }
-  private async retryRateLimit<T>(
+  /** One billed data-plane request outside the rate-limit retries: gated, run, ended. */
+  private async billedOnce<T>(
+    model: string,
     run: () => Promise<T>,
+  ): Promise<T> {
+    const call = await startBackendCall({ model });
+    try {
+      return await run();
+    } finally {
+      await call.end();
+    }
+  }
+  private async retryRateLimit<T>(
+    run: (abandoned?: AbortSignal) => Promise<T>,
     budgetMs: number,
     signal?: AbortSignal,
     giveUpEarly = false,
+    billed?: { model: string },
   ): Promise<T> {
+    // Every attempt is a billed request (a 429 retry embeds again), so each is gated on its own.
+    const attempt = billed
+      ? async (abandoned?: AbortSignal): Promise<T> => {
+          // The gate wait ends with the reader or when this attempt is abandoned; an approval
+          // that arrives later is ended by the gate lifecycle and never reaches `run`.
+          const waiting = [signal, abandoned].filter(
+            (s): s is AbortSignal => s !== undefined,
+          );
+          const call = await startBackendCall({
+            ...billed,
+            signal: waiting.length > 0 ? AbortSignal.any(waiting) : undefined,
+          });
+          try {
+            return await run();
+          } finally {
+            await call.end();
+          }
+        }
+      : run;
     const startedAt = this.now();
     const deadline = startedAt + budgetMs;
     let backoffMs = 1_000;
@@ -475,7 +516,7 @@ export class PineconeBackend implements RetrievalBackend {
       if (remainingMs <= 0) throw rateLimited();
       try {
         const result = await boundedAttempt(
-          run,
+          attempt,
           remainingMs,
           wasRateLimited ? rateLimited() : new AppError('BACKEND_UNAVAILABLE'),
           signal,
@@ -529,6 +570,7 @@ export class PineconeBackend implements RetrievalBackend {
     batch: readonly IntegratedRecord[],
     signal: AbortSignal | undefined,
     limits: BatchLimits,
+    model: string,
   ): Promise<unknown[]> {
     try {
       const response = await this.retryRateLimit(
@@ -536,6 +578,7 @@ export class PineconeBackend implements RetrievalBackend {
         this.config.upsertRetryBudgetMs,
         signal,
         batch.length > 1,
+        { model },
       );
       return [response];
     } catch (error) {
@@ -553,6 +596,7 @@ export class PineconeBackend implements RetrievalBackend {
         batch.slice(0, middle),
         signal,
         limits,
+        model,
       );
       const second = await this.upsertBatch(
         index,
@@ -560,6 +604,7 @@ export class PineconeBackend implements RetrievalBackend {
         batch.slice(middle),
         signal,
         limits,
+        model,
       );
       return [...first, ...second];
     }
@@ -638,6 +683,9 @@ export class PineconeBackend implements RetrievalBackend {
               batch,
               signal,
               limits,
+              kind === 'dense'
+                ? this.config.denseModel
+                : this.config.sparseModel,
             );
             // SDK 9.0.0 returns void here. Unreported usage stays zero; never estimate billed tokens.
             for (const response of responses)
@@ -662,6 +710,8 @@ export class PineconeBackend implements RetrievalBackend {
             }),
           this.config.upsertRetryBudgetMs,
           signal,
+          false,
+          { model: this.config.denseModel },
         );
         usage = addUsage(usage, this.report('upsert:completion', response));
         const ids = this.expectedIds.get(docId) ?? new Set<string>();
@@ -700,6 +750,13 @@ export class PineconeBackend implements RetrievalBackend {
             }),
           this.config.queryRetryBudgetMs,
           req.signal,
+          false,
+          {
+            model:
+              req.index === 'dense'
+                ? this.config.denseModel
+                : this.config.sparseModel,
+          },
         );
       } catch (error) {
         if (!hasStatus(error, 404, 'PineconeNotFoundError')) throw error;
@@ -727,7 +784,9 @@ export class PineconeBackend implements RetrievalBackend {
         const batch = ids.slice(offset, offset + 1_000);
         let response: unknown;
         try {
-          response = await namespace.fetch({ ids: batch });
+          response = await this.billedOnce(this.config.denseModel, () =>
+            namespace.fetch({ ids: batch }),
+          );
         } catch (error) {
           if (hasStatus(error, 404, 'PineconeNotFoundError')) continue;
           throw error;
@@ -777,6 +836,10 @@ export class PineconeBackend implements RetrievalBackend {
           }),
         this.config.queryRetryBudgetMs,
         req.signal,
+        false,
+        {
+          model: this.config.rerankModel,
+        },
       );
       abortIfNeeded(req.signal);
       const parsed = RerankResponse.parse(response);
@@ -813,7 +876,11 @@ export class PineconeBackend implements RetrievalBackend {
     return safe(async () => {
       const counts: number[] = [];
       for (const index of Object.values(await this.readyIndexes())) {
-        const stats = Stats.parse(await index.describeIndexStats());
+        const stats = Stats.parse(
+          await this.billedOnce(this.config.denseModel, () =>
+            index.describeIndexStats(),
+          ),
+        );
         counts.push(stats.namespaces?.[docId]?.recordCount ?? 0);
       }
       return counts;

@@ -20,6 +20,8 @@ export interface UsageEvent {
   estimated?: boolean;
   /** Who the call was for, when a hosted route admitted the work (ADR 0018). */
   job?: JobContext;
+  /** Names this call in the host's spend gate (`GateCall.callId`) and `CallEnd`. Set when a job scope exists. */
+  callId?: string;
 }
 /** Called once when a call reports usage. Failed calls without usage cannot be accounted for.
  * No prompts or credentials cross this seam; `job` names the reader and job, never text.

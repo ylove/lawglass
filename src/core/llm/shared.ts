@@ -83,6 +83,9 @@ export function providerStatusOf(error: unknown): number | undefined {
 
 /** SDK errors can contain headers, credentials and request bodies, even in their cause. */
 export function providerFailure(error: unknown, usage?: LlmUsage): AppError {
+  // A host's gate refusing an attempt is not a provider failure; keep its stop reason intact.
+  if (error instanceof AppError && error.code === 'BUDGET_EXHAUSTED')
+    return error;
   const failure =
     error instanceof AppError && error.code === 'PROVIDER_BAD_OUTPUT'
       ? new ProviderFailure('PROVIDER_BAD_OUTPUT')

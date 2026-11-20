@@ -10,6 +10,7 @@ import {
   describeHttpProvider,
   objectRequest,
 } from '../../../tests/llm/provider-tests.js';
+import { newSpend, runInJob } from '../cost/index.js';
 import { GoogleProvider } from './google.js';
 const make = (fetch: typeof globalThis.fetch) =>
   new GoogleProvider(
@@ -66,4 +67,67 @@ it('defaults missing usage to zero', async () => {
       ).generateObject(objectRequest)
     ).usage,
   ).toEqual({ inputTokens: 0, outputTokens: 0 });
+});
+const continuation = (text: string) => ({
+  candidates: [
+    {
+      content: { parts: [{ text }] },
+      finishReason: 'CONTINUATION',
+      continuationToken: 'token-1',
+    },
+  ],
+  usageMetadata: { promptTokenCount: 4, candidatesTokenCount: 2 },
+});
+/** Runs `fn` inside a job whose host has (or has not) a per-call gate. */
+const inJob = <T>(gated: boolean, fn: () => Promise<T>): Promise<T> =>
+  runInJob(
+    {
+      context: { readerId: 'a', jobKind: 'question', jobId: 'j' },
+      spent: newSpend(),
+      ...(gated ? { callGate: () => true } : {}),
+    },
+    fn,
+  );
+it('under a call gate, one HTTP request per call even when the model answers CONTINUATION (object)', async () => {
+  const replay = httpReplay([
+    {
+      body: JSON.stringify(continuation('{"billNumber":null,"sponsors":null}')),
+    },
+    { body: asset('google-object.json') },
+  ]);
+  await inJob(true, () =>
+    make(replay.fetch).generateObject(objectRequest),
+  ).catch(() => undefined);
+  // The SDK would have resumed from the token with a second billed request.
+  expect(replay.requests).toHaveLength(1);
+});
+it('under a call gate, one HTTP request per call even when the stream ends at a CONTINUATION checkpoint', async () => {
+  const replay = httpReplay([
+    {
+      stream: true,
+      body: `data: ${JSON.stringify(continuation('Hello'))}\n\n`,
+    },
+    { stream: true, body: asset('google-stream.sse') },
+  ]);
+  await inJob(true, () => drain(make(replay.fetch))).catch(() => undefined);
+  expect(replay.requests).toHaveLength(1);
+});
+it('without a call gate the SDK default is unchanged: a split reply still assembles across hops', async () => {
+  const replay = httpReplay([
+    { body: JSON.stringify(continuation('{"billNumber":null,')) },
+    { body: asset('google-object.json') },
+  ]);
+  await inJob(false, () =>
+    make(replay.fetch).generateObject(objectRequest),
+  ).catch(() => undefined);
+  expect(replay.requests.length).toBeGreaterThan(1);
+  // And with no job at all, as in a local run.
+  const local = httpReplay([
+    { body: JSON.stringify(continuation('{"billNumber":null,')) },
+    { body: asset('google-object.json') },
+  ]);
+  await make(local.fetch)
+    .generateObject(objectRequest)
+    .catch(() => undefined);
+  expect(local.requests.length).toBeGreaterThan(1);
 });

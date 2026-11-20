@@ -4,6 +4,7 @@ import type {
   ChatCompletionCreateParamsStreaming,
 } from 'openai/resources/chat/completions';
 import { envVar } from '../brand.js';
+import { gateRetry } from '../cost/attempt.js';
 import {
   AppError,
   type LlmProvider,
@@ -149,6 +150,8 @@ export class OpenAIProvider implements LlmProvider {
       } catch (error) {
         if (!rejectsStreamOptions(error)) throw error;
         signal.throwIfAborted();
+        // A second HTTP request: the host's call gate sees it as its own call.
+        await gateRetry();
         includeUsage = false;
         const { stream_options: _streamOptions, ...compatibleParams } = params;
         stream = await this.client.chat.completions.create(compatibleParams, {
@@ -189,6 +192,8 @@ export class OpenAIProvider implements LlmProvider {
           undefined,
         ];
       for (const [index, response_format] of formats.entries()) {
+        // Each format attempt is its own HTTP request, gated and correlated separately.
+        if (index > 0) await gateRetry();
         try {
           const result = await this.client.chat.completions.create(
             {

@@ -56,8 +56,10 @@ import {
   grantEpoch,
   budgetRemaining,
   topUp,
+  type CallEnd,
   type JobKind,
   type JobScope,
+  type CallGate,
   type ModelAssignment,
   type ModelChoice,
   type UsageEvent,
@@ -191,6 +193,28 @@ export interface AppOptions {
    */
   spendGate?: () => boolean;
   /**
+   * A per-call gate, given the call (job `ref`, `jobKind`, `docId`, a unique `callId`, the
+   * `model` and the call's `worstCaseUsd`, an upper bound) and awaited before EVERY provider
+   * call: answers, chips, stories, locate, summary, breakdown, pictures, examples, metadata,
+   * retries and each of several parallel calls. Anything but `true`, or a throw or rejection,
+   * refuses that call with the same stop a closed `spendGate` makes. If `spendGate` is also set
+   * both apply: it before the work and before each call, this before each provider call. The
+   * server does not serialize calls: a host that must cap spend reserves `worstCaseUsd` here and
+   * settles on `onUsage` / `onCallEnd`. Each billed attempt is gated (a provider's format
+   * fallback, a Pinecone request or 429 retry), and `worstCaseUsd` is `Infinity` for claude-cli and
+   * for every Pinecone request. The hosted Pinecone backend is not supported with `callGate`
+   * yet (#437): `createApp` refuses that combination at startup.
+   */
+  callGate?: CallGate;
+  /**
+   * Told once for each call that was let through (by `callGate` or without one), after its
+   * usage event, with whether one was delivered. `reported: false` means the call ended with no
+   * usage (it threw before the provider billed anything, or could not say), so a host that
+   * reserved `worstCaseUsd` for it can release the reservation. Calls the gate refused are not
+   * reported here. The same `callId` as the gate's call.
+   */
+  onCallEnd?: (end: CallEnd) => void | Promise<void>;
+  /**
    * Per request: when it returns `true`, the server serves cached results only and never starts
    * or resumes generation for any source, like public mode. Ingest, questions, quotes, locate
    * and scenarios are refused or disabled. Anything but `false` counts as read-only, so a
@@ -303,6 +327,11 @@ export function createApp(
       ? routedRuntime(rawRuntime)
       : rawRuntime;
   validateAnswerLimits(options.answerLimits);
+  // The hosted Pinecone backend makes billed requests whose gating is not complete yet (#437).
+  if (options.callGate && rawRuntime.backend.kind === 'pinecone')
+    throw invalid(
+      'callGate does not support the Pinecone backend yet; see #437. Use the local backend.',
+    );
   const publicMode = options.publicMode ?? false;
   const privateMode = options.privateMode ?? false;
   const configuredAuth: unknown = options.auth;
@@ -335,6 +364,8 @@ export function createApp(
     modelFor: options.modelFor,
     onJobEnd: options.onJobEnd,
     spendGate: options.spendGate,
+    onCallEnd: options.onCallEnd,
+    callGate: options.callGate,
     readOnly: options.readOnly,
     landing: options.site?.landing,
     quickstart: options.site?.quickstart,
@@ -653,7 +684,9 @@ export function createApp(
     options.onUsage !== undefined ||
     options.modelFor !== undefined ||
     options.backgroundScope !== undefined ||
-    options.spendGate !== undefined;
+    options.spendGate !== undefined ||
+    options.callGate !== undefined ||
+    options.onCallEnd !== undefined;
   const estimating =
     options.admission !== undefined || options.modelFor !== undefined;
   const quotes = new QuoteStore(now);
@@ -913,6 +946,8 @@ export function createApp(
     budget: extra.budget,
     models: extra.models,
     spendGate: options.spendGate,
+    callGate: options.callGate,
+    onCallEnd: options.onCallEnd,
     prices: options.quote?.prices,
     onUsage: options.onUsage,
     onBudgetExhausted: (spent) => {

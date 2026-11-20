@@ -31,6 +31,14 @@ export {
   type UsageFeature,
 } from './usage.js';
 export {
+  beginAttempt,
+  endAttempt,
+  startBackendCall,
+  DEFAULT_GATE_TIMEOUT_MS,
+  type Attempt,
+} from './gate.js';
+export { gateRetry, runWithRetryGate, withRetryGate } from './attempt.js';
+export {
   addBudget,
   bumpGrantEpoch,
   grantEpoch,
@@ -38,6 +46,7 @@ export {
   assertBudget,
   canSpend,
   spendGateOpen,
+  gateCall,
   stopCause,
   budgetRemaining,
   topUp,
@@ -49,6 +58,9 @@ export {
   isSpendGateStop,
   newSpend,
   runInJob,
+  type CallEnd,
+  type GateCall,
+  type CallGate,
   type JobBudget,
   type JobContext,
   type JobKind,
