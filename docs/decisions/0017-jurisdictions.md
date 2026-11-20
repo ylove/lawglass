@@ -30,3 +30,7 @@ New Jersey was refused at launch for exactly that reason: it prints removed word
 - New York and New Jersey are supported in v1.1. The hosted allowlist and the refusal message name them.
 - Every new state ships with synthetic samples in `tests/synth/` and a local-only test against real bills, whose files are hashed in the manifest and never committed. Each records a span-by-span accuracy count.
 - States that block automated fetches (California and Hawaii at the time of writing) need another official route before they can be supported.
+
+## Addendum: a state with no printed legend (Pennsylvania, #422)
+
+Pennsylvania's bills print no legend; the legislature explains its marks on a separate help page. Rule 2 is kept in spirit: the bracket rule turns on only for a document from the state's official source that opens with the state's printed bill cover (`THE GENERAL ASSEMBLY OF PENNSYLVANIA`) and says it amends existing law, because the legislature states that brackets are used only in bills amending an existing law. Everywhere else a bracket stays text. No contract changed.
