@@ -211,7 +211,8 @@ describe('estimateBill', () => {
 });
 it('quotes a separate question, with a cached whole prefix or roughly 4.5k excerpt input', () => {
   const whole = estimateQuestion(small());
-  expect(whole).toMatchObject({ low: { calls: 1 }, high: { calls: 2 } });
+  // High: the answer and its rewrite, plus the two calls of an optional story.
+  expect(whole).toMatchObject({ low: { calls: 1 }, high: { calls: 4 } });
   expect(whole.high.cachedInputTokens).toBe(0);
   expect(whole.high.cacheWriteTokens).toBeGreaterThan(0);
   const excerpts = estimateQuestion(billFacts(many(80)));
@@ -278,6 +279,7 @@ const full = (w: {
   summaryHigh: w.summary,
   questionHigh: w.question,
   changeExcerpts: 0,
+  focusedChange: 0,
 });
 const CALIBRATED = [
   {
@@ -396,7 +398,10 @@ it('prices each feature from its own prompt size', () => {
   expect(high(features.breakdown)).toBeGreaterThan(
     high(features.summaryScenario),
   );
-  expect(high(estimateQuestion(facts))).toBeGreaterThan(high(features.summary));
+  // A question's two answer calls (the change prompt is the largest) outweigh the summary's.
+  expect(estimateQuestion(facts).high.inputTokens).toBeGreaterThan(
+    features.summary.high.inputTokens,
+  );
 });
 
 it('does not hold the high bound to the calibration shapes alone: markup-heavy bills cost more per character', () => {
@@ -426,7 +431,7 @@ describe('question high bound', () => {
       }),
     };
     const high = estimateQuestion(facts).high;
-    expect(high.calls).toBe(2);
+    expect(high.calls).toBe(4);
     const plain = estimateQuestion({
       ...facts,
       wholePrompt: { ...facts.wholePrompt, question: 31_160 },
@@ -447,7 +452,7 @@ describe('question high bound', () => {
     // Input is the one change call, not two; calls and output keep the two-call case.
     expect(high.inputTokens).toBeGreaterThan(90_000 / 2.2);
     expect(high.inputTokens).toBeLessThan(2 * (90_000 / 2.2));
-    expect(high.calls).toBe(2);
+    expect(high.calls).toBe(4);
   });
 });
 

@@ -12,7 +12,7 @@ import { IngestEvent } from '../core/model/index.js';
 import { resetSharedLimits } from '../core/pipeline/limits.js';
 import { readSseEvents } from '../web/sse.js';
 import { createApp, type AppOptions, type ExternalAuth } from './app.js';
-import type { AdmissionJob } from './admission.js';
+import type { AdmissionJob, JobEnd } from './admission.js';
 import type { QuestionQuote, QuestionQuoteRequest } from './question-quote.js';
 
 const url = 'https://govinfo.gov/a.txt';
@@ -98,7 +98,7 @@ describe('POST /api/docs/:docId/question-quote', () => {
     const { worstCase } = seen[0]!;
     expect(worstCase.whole!.dollars).toBeGreaterThan(worstCase.focused.dollars);
     // The focused cap the server runs under is the one that was priced.
-    expect(worstCase.focused.outputTokens).toBe(2 * 4096);
+    expect(worstCase.focused.outputTokens).toBe(2 * 4096 + 2 * 2000);
   });
 
   test('names the tier modelFor chose', async () => {
@@ -260,8 +260,117 @@ describe('ask mode', () => {
 
 describe('answerLimits', () => {
   test('a cap below the floor is refused at startup', () => {
-    expect(() => app({ answerLimits: { focusedMaxTokens: 10 } })).toThrow(
+    expect(() => app({ answerLimits: { focusedMaxTokens: 100 } })).toThrow(
       RangeError,
     );
+  });
+});
+
+describe('config', () => {
+  test('questionQuote is offered only when the host has a hook', async () => {
+    const withHook = app({ questionQuote: () => Promise.resolve(undefined) });
+    const without = app();
+    const flag = async (a: Hono) =>
+      (
+        (await (await call(a, '/api/config')).json()) as {
+          questionQuote?: boolean;
+        }
+      ).questionQuote;
+    expect(await flag(withHook)).toBe(true);
+    expect(await flag(without)).toBeUndefined();
+  });
+});
+
+describe('the admitted read is the read that runs', () => {
+  const ask = (a: Hono, docId: string, body: object) =>
+    call(a, `/api/docs/${docId}/ask`, { question: 'Who pays?', ...body });
+  const hooked = (extra: AppOptions = {}) =>
+    app({
+      admission: () => Promise.resolve({ allow: true }),
+      backgroundScope: () => Promise.resolve(undefined),
+      questionQuote: () => Promise.resolve(undefined),
+      ...extra,
+    });
+
+  test('admitted focused forces excerpts even if the scan would now read the whole bill', async () => {
+    vi.stubEnv(envVar('WHOLE_BILL_MAX_TOKENS'), '1');
+    const a = hooked();
+    const docId = await ingestDoc(a);
+    // Facts are forecast (and cached) while the bill does not fit; the budget then grows.
+    await call(a, `/api/docs/${docId}/question-quote`, {});
+    vi.stubEnv(envVar('WHOLE_BILL_MAX_TOKENS'), '100000');
+    const text = await (await ask(a, docId, {})).text();
+    expect(text).toContain('"context":"excerpts"');
+    expect(text).not.toContain('"mode":"whole"');
+  });
+
+  test('admitted whole that no longer fits reports ran focused, so a host can refund', async () => {
+    const ends: JobEnd[] = [];
+    const a = hooked({
+      onJobEnd: (end) => {
+        ends.push(end);
+      },
+    });
+    const docId = await ingestDoc(a);
+    await call(a, `/api/docs/${docId}/question-quote`, {});
+    vi.stubEnv(envVar('WHOLE_BILL_MAX_TOKENS'), '1');
+    await (await ask(a, docId, { mode: 'whole' })).text();
+    const end = ends.find((e) => e.job.jobKind === 'question');
+    expect(end).toMatchObject({ outcome: 'ok', ran: 'focused' });
+  });
+
+  test('a whole read that ran says ran whole; a chip says nothing', async () => {
+    const ends: JobEnd[] = [];
+    const a = hooked({
+      onJobEnd: (end) => {
+        ends.push(end);
+      },
+    });
+    const docId = await ingestDoc(a);
+    await (await ask(a, docId, { mode: 'whole' })).text();
+    await (
+      await call(a, `/api/docs/${docId}/ask`, { chipId: 'who-affected' })
+    ).text();
+    const questions = ends.filter((e) => e.job.jobKind === 'question');
+    expect(questions[0]?.ran).toBe('whole');
+    expect(questions[1]?.ran).toBeUndefined();
+  });
+
+  test('admission is told what the reader asked for, as sent', async () => {
+    const jobs: AdmissionJob[] = [];
+    const a = hooked({
+      admission: (_c, job) => {
+        jobs.push(job);
+        return Promise.resolve({ allow: true });
+      },
+    });
+    const docId = await ingestDoc(a);
+    jobs.length = 0;
+    for (const body of [{}, { mode: 'whole' }, { mode: 'focused' }])
+      await (await ask(a, docId, body)).text();
+    expect(jobs.map((j) => j.requestedMode)).toEqual([
+      'auto',
+      'whole',
+      'focused',
+    ]);
+  });
+
+  test('the quote picks its tier with a question-shaped job, like admission', async () => {
+    const jobs: AdmissionJob[] = [];
+    const a = hooked({
+      modelFor: (job) => {
+        jobs.push(job);
+        return {};
+      },
+    });
+    const docId = await ingestDoc(a);
+    jobs.length = 0;
+    await call(a, `/api/docs/${docId}/question-quote`, {});
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]).toMatchObject({
+      kind: 'question',
+      mode: 'whole',
+      requestedMode: 'auto',
+    });
   });
 });

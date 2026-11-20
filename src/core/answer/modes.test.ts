@@ -42,12 +42,17 @@ describe('validateAnswerLimits', () => {
     expect(() => {
       validateAnswerLimits(undefined);
       validateAnswerLimits({});
-      validateAnswerLimits({ focusedMaxTokens: 4096, wholeMaxTokens: 16_000 });
+      validateAnswerLimits({ focusedMaxTokens: 2048, wholeMaxTokens: 64_000 });
     }).not.toThrow();
   });
-  it.each([0, 1023, 4096.5, Number.NaN, -1])('refuses %s', (value) => {
+  it.each([0, 2047, 64_001, 4096.5, Number.NaN, -1])('refuses %s', (value) => {
     expect(() => {
       validateAnswerLimits({ focusedMaxTokens: value });
+    }).toThrow(RangeError);
+  });
+  it('refuses an unknown key, so a typo cannot silently keep the default', () => {
+    expect(() => {
+      validateAnswerLimits({ focusMaxTokens: 4096 } as never);
     }).toThrow(RangeError);
   });
 });

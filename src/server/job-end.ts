@@ -12,11 +12,7 @@ import type { JobEnd, JobOutcome } from './admission.js';
 
 export interface JobSettlement {
   /** Ends the job. Only the first call per job reaches the host. Never rejects. */
-  end(
-    outcome: JobOutcome,
-    error?: unknown,
-    extra?: { docId?: string; granted?: 'used' | 'unused' },
-  ): Promise<void>;
+  end(outcome: JobOutcome, error?: unknown, extra?: EndExtra): Promise<void>;
   /**
    * Like `end`, but tells the caller SYNCHRONOUSLY whether this call won the exactly-once race
    * (`won`), so work that must follow only a winning end can run in the same tick.
@@ -24,7 +20,7 @@ export interface JobSettlement {
   tryEnd(
     outcome: JobOutcome,
     error?: unknown,
-    extra?: { docId?: string; granted?: 'used' | 'unused' },
+    extra?: EndExtra,
   ): { won: boolean; done: Promise<void> };
   /** `failed` with the error, or `aborted` when the request's reader had already gone. */
   fail(error: unknown, extra?: { docId?: string }): Promise<void>;
@@ -32,9 +28,21 @@ export interface JobSettlement {
   markDelivered(): void;
 }
 
+/** What an end can add: the document, an ingest's grant use, a typed question's read that ran. */
+export interface EndExtra {
+  docId?: string;
+  granted?: 'used' | 'unused';
+  ran?: 'whole' | 'focused';
+}
+
 /** A job the host admitted: the scope to run it in, and how to tell the host it ended. */
 export interface Admitted {
   scope: JobScope;
+  /**
+   * A typed question only: the read the admission settled on, which the question must not
+   * exceed (`focused` forces excerpts; `whole` may still fall back to them).
+   */
+  mode?: 'whole' | 'focused' | undefined;
   /** Present only when the host asked to hear about job ends (`onJobEnd`). */
   settlement: JobSettlement | undefined;
 }
@@ -61,7 +69,7 @@ export function createSettlement(input: {
   const deliver = async (
     outcome: JobOutcome,
     error: unknown,
-    extra: { docId?: string; granted?: 'used' | 'unused' } | undefined,
+    extra: EndExtra | undefined,
   ): Promise<void> => {
     const event: JobEnd = {
       job: {
@@ -72,6 +80,7 @@ export function createSettlement(input: {
       outcome,
       delivered: outcome === 'ok' ? 'full' : partial ? 'partial' : 'none',
       ...(outcome === 'ok' && extra?.granted ? { granted: extra.granted } : {}),
+      ...(outcome === 'ok' && extra?.ran ? { ran: extra.ran } : {}),
       ...(error === undefined || outcome === 'ok'
         ? {}
         : { error: input.payload(error) }),

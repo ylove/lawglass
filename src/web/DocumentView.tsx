@@ -89,22 +89,27 @@ export function DocumentView({
     checking || turn?.phase === 'searching' || turn?.phase === 'writing';
 
   /**
-   * Asks the host what each answer mode costs, when the server has a host hook, and holds the
-   * question for a choice if the whole-bill read costs more. Anything else is asked directly:
-   * no hook, one price for both, or a quote that could not be fetched (the host's admission
-   * still decides whether the question may run).
+   * With a host quote hook (`config.questionQuote`), asks what each answer mode costs and holds
+   * the question for a choice when the whole-bill read costs more. Without a hook, a typed
+   * question is asked directly. If the quote cannot be fetched the question is asked FOCUSED:
+   * a reader who never saw the choice must not be charged for the costlier read.
    */
   async function ask(question: string) {
     if (busy) return;
+    if (config.questionQuote !== true) {
+      void run({ question }, question);
+      return;
+    }
     setChecking(true);
-    let quote: QuestionQuote | null = null;
+    let quote: QuestionQuote | null;
     try {
       quote = (await api.getQuestionQuote(docId)).quote;
     } catch {
-      /* ask directly */
-    } finally {
       setChecking(false);
+      void run({ question, mode: 'focused' }, question);
+      return;
     }
+    setChecking(false);
     if (quote && needsModeChoice(quote)) setChoosing({ question, quote });
     else void run({ question }, question);
   }

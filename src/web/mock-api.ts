@@ -543,6 +543,7 @@ export function createMockApi(options: MockApiOptions = {}): ApiClient {
     scenariosEnabled: !publicMode,
     breakdownEnabled: !publicMode,
     locateEnabled: !publicMode,
+    ...(options.questionQuote ? { questionQuote: true } : {}),
     examples: [
       { label: 'Clean Water Infrastructure Act', url: SAMPLE_DOC.sourceUrl },
       {

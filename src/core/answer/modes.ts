@@ -16,11 +16,8 @@ import type { AskRequest } from '../model/index.js';
 export const AnswerMode = z.enum(['auto', 'whole', 'focused']);
 export type AnswerMode = z.infer<typeof AnswerMode>;
 
-/** Request body field for the ask route; absent means `auto`. */
-export const AskModeField = z.object({ mode: AnswerMode.optional() });
-
-/** An ask request as the web client sends it: the frozen `AskRequest` plus the answer mode. */
-export type AskWithMode = AskRequest & z.infer<typeof AskModeField>;
+/** An ask request as the web client sends it. `mode` is part of `AskRequest` (#431). */
+export type AskWithMode = AskRequest;
 
 /** What a question actually read. */
 export type RanMode = 'whole' | 'focused';
@@ -33,8 +30,19 @@ export interface AnswerLimits {
 
 export const DEFAULT_WHOLE_MAX_TOKENS = 16_000;
 export const DEFAULT_FOCUSED_MAX_TOKENS = 8192;
-/** Below this a thinking model has too little room for its reasoning plus a cited answer. */
-export const MIN_ANSWER_MAX_TOKENS = 1024;
+/** Enough for a low-effort reasoning pass and a cited answer; below it replies get cut off. */
+export const MIN_ANSWER_MAX_TOKENS = 2048;
+/** The most output a current Claude model allows in one call. */
+export const MAX_ANSWER_MAX_TOKENS = 64_000;
+
+const Cap = z
+  .number()
+  .int()
+  .min(MIN_ANSWER_MAX_TOKENS)
+  .max(MAX_ANSWER_MAX_TOKENS);
+const AnswerLimitsSchema = z
+  .object({ wholeMaxTokens: Cap.optional(), focusedMaxTokens: Cap.optional() })
+  .strict();
 
 export type Effort = 'low' | 'medium' | 'high';
 
@@ -48,17 +56,13 @@ export function maxTokensFor(
     : (limits?.focusedMaxTokens ?? DEFAULT_FOCUSED_MAX_TOKENS);
 }
 
-/** Throws a RangeError for a cap that is not a whole number of at least `MIN_ANSWER_MAX_TOKENS`. */
+/** Throws a RangeError for an unknown key or a cap that is not a whole number in range. */
 export function validateAnswerLimits(limits: AnswerLimits | undefined): void {
-  for (const [name, value] of Object.entries(limits ?? {})) {
-    if (
-      value !== undefined &&
-      (!Number.isSafeInteger(value) || value < MIN_ANSWER_MAX_TOKENS)
-    )
-      throw new RangeError(
-        `answerLimits.${name} must be a whole number of at least ${String(MIN_ANSWER_MAX_TOKENS)}.`,
-      );
-  }
+  const parsed = AnswerLimitsSchema.safeParse(limits ?? {});
+  if (!parsed.success)
+    throw new RangeError(
+      `answerLimits: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'value'} ${i.message}`).join('; ')} (caps are whole numbers from ${String(MIN_ANSWER_MAX_TOKENS)} to ${String(MAX_ANSWER_MAX_TOKENS)}).`,
+    );
 }
 
 const EFFORT_ORDER: readonly Effort[] = ['low', 'medium', 'high'];

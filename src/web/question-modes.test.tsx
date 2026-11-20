@@ -22,11 +22,16 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-/** A mock API whose ask is spied, with the host quote under test (null: no hook). */
+/**
+ * A mock API whose ask is spied. `quote` null means the server has no hook (the config then does
+ * not offer the quote); 'fails' means a hook exists but the quote request errors.
+ */
 function setup(quote: QuestionQuote | null | 'fails') {
   const mock = createMockApi({
     delayMs: 0,
-    ...(quote && quote !== 'fails' ? { questionQuote: quote } : {}),
+    ...(quote
+      ? { questionQuote: quote === 'fails' ? MOCK_QUESTION_QUOTE : quote }
+      : {}),
   });
   const ask = vi.spyOn(mock, 'ask');
   const getQuestionQuote = vi.fn(() =>
@@ -46,8 +51,8 @@ async function typeQuestion(text = 'Who pays?') {
 }
 
 describe('asking with no host hook', () => {
-  test('asks directly, with no dialog and no mode', async () => {
-    const { api, ask } = setup(null);
+  test('asks directly, with no dialog, no mode and no quote request', async () => {
+    const { api, ask, getQuestionQuote } = setup(null);
     render(<App api={api} />);
     await typeQuestion();
     await waitFor(() => {
@@ -55,14 +60,19 @@ describe('asking with no host hook', () => {
     });
     expect(ask.mock.calls[0]?.[1]).toEqual({ question: 'Who pays?' });
     expect(screen.queryByRole('dialog')).toBeNull();
+    expect(getQuestionQuote).not.toHaveBeenCalled();
   });
 
-  test('a quote that could not be fetched is asked directly too', async () => {
+  test('a quote that could not be fetched asks FOCUSED, never auto', async () => {
     const { api, ask } = setup('fails');
     render(<App api={api} />);
     await typeQuestion();
     await waitFor(() => {
       expect(ask).toHaveBeenCalledTimes(1);
+    });
+    expect(ask.mock.calls[0]?.[1]).toEqual({
+      question: 'Who pays?',
+      mode: 'focused',
     });
     expect(screen.queryByRole('dialog')).toBeNull();
   });
@@ -104,11 +114,22 @@ describe('asking when a whole-bill read costs more', () => {
     render(<App api={api} />);
     await typeQuestion();
     const dialog = await screen.findByRole('dialog', {
-      name: 'This question needs a full read of the bill',
+      name: 'How much of the bill should we read?',
     });
     expect(dialog.getAttribute('aria-modal')).toBe('true');
     expect(dialog.textContent).toContain('uses 4 of your 30 questions');
     expect(dialog.textContent).toContain('uses 1 question');
+    // The cheaper choice is first and the filled primary; the costlier one is secondary.
+    const buttons = screen
+      .getAllByRole('button')
+      .filter((b) => dialog.contains(b));
+    expect(buttons.map((b) => b.textContent)).toEqual([
+      'Get a focused answer (1 question)',
+      'Read the whole bill (4 questions)',
+      'Cancel',
+    ]);
+    expect(buttons[0]?.className).toContain('primary');
+    expect(buttons[1]?.className).not.toContain('primary');
     expect(
       screen.getByRole('button', { name: 'Read the whole bill (4 questions)' }),
     ).toBeTruthy();
@@ -119,7 +140,7 @@ describe('asking when a whole-bill read costs more', () => {
     expect(ask).not.toHaveBeenCalled();
     // Focus starts on the title, not on a button that would spend something.
     expect(document.activeElement).toBe(
-      screen.getByRole('heading', { name: /full read/ }),
+      screen.getByRole('heading', { name: /How much of the bill/ }),
     );
   });
 
@@ -191,20 +212,43 @@ describe('QuestionModeDialog', () => {
   test('says "units" when the host gave no label and omits the allowance', () => {
     show();
     const text = screen.getByRole('dialog').textContent;
-    expect(text).toContain('uses 5 units. A focused answer');
+    expect(text).toContain('uses 5 units');
     expect(text).toContain('uses 2 units');
     expect(text).not.toContain('of your');
   });
 
   test('Tab wraps inside the dialog in both directions', () => {
     show();
-    const first = screen.getByRole('button', { name: /Read the whole bill/ });
+    const first = screen.getByRole('button', { name: /Get a focused answer/ });
     const last = screen.getByRole('button', { name: 'Cancel' });
     last.focus();
     fireEvent.keyDown(last, { key: 'Tab' });
     expect(document.activeElement).toBe(first);
     fireEvent.keyDown(first, { key: 'Tab', shiftKey: true });
     expect(document.activeElement).toBe(last);
+  });
+});
+
+describe('QuestionModeDialog from the title', () => {
+  test('Shift+Tab from the title goes to the last button, Tab to the first', () => {
+    render(
+      <QuestionModeDialog
+        quote={{ whole: { units: 5 }, focused: { units: 2 } }}
+        onChoose={() => undefined}
+        onCancel={() => undefined}
+      />,
+    );
+    const title = screen.getByRole('heading');
+    expect(document.activeElement).toBe(title);
+    fireEvent.keyDown(title, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: 'Cancel' }),
+    );
+    title.focus();
+    fireEvent.keyDown(title, { key: 'Tab' });
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: /Get a focused answer/ }),
+    );
   });
 });
 

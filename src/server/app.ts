@@ -9,7 +9,6 @@ import {
   wholeBillBudget,
 } from '../core/answer/context.js';
 import {
-  AskModeField,
   validateAnswerLimits,
   type AnswerLimits,
   type AnswerMode,
@@ -991,17 +990,7 @@ export function createApp(
       };
     const facts = await factsFor(job.docId);
     const base = defaultAssignment();
-    // Only a typed question has a mode; a chip's read and caps are part of the chip.
-    const typed = job.kind === 'question' && job.chipId === undefined;
-    const mode: AnswerMode | undefined = typed
-      ? (job.mode ?? 'auto')
-      : undefined;
-    const ranMode: 'whole' | 'focused' | undefined =
-      typed && mode !== 'focused' && facts.mode === 'whole'
-        ? 'whole'
-        : typed
-          ? 'focused'
-          : undefined;
+    const { typed, mode, ranMode } = questionRead(facts, job);
     const estimateFor = (models: ModelChoice | undefined): FeatureEstimate =>
       questionEstimate(
         facts,
@@ -1016,6 +1005,7 @@ export function createApp(
       kind: job.kind,
       docId: job.docId,
       ...(ranMode === undefined ? {} : { mode: ranMode }),
+      ...(typed ? { requestedMode: mode } : {}),
       ...(job.chipId === undefined ? {} : { chipId: job.chipId }),
       ...(job.quoteId === undefined ? {} : { quoteId: job.quoteId }),
     };
@@ -1034,7 +1024,35 @@ export function createApp(
       estimate: estimateFor(models),
     });
     const scope = makeScope(c, job, { budget, models, ref });
-    return { scope, settlement: settlementFor(c, scope) };
+    return { scope, settlement: settlementFor(c, scope), mode: ranMode };
+  }
+
+  /**
+   * What a typed question will read, forecast from the document. Only a typed question has a
+   * mode; a chip's read and caps are part of the chip. `focused` is forced; `whole` and `auto`
+   * read the whole bill when the forecast says it fits.
+   */
+  function questionRead(
+    facts: BillFacts,
+    job: {
+      kind: string;
+      chipId?: string | undefined;
+      mode?: AnswerMode | undefined;
+    },
+  ): {
+    typed: boolean;
+    mode: AnswerMode | undefined;
+    ranMode: 'whole' | 'focused' | undefined;
+  } {
+    const typed = job.kind === 'question' && job.chipId === undefined;
+    if (!typed) return { typed, mode: undefined, ranMode: undefined };
+    const mode = job.mode ?? 'auto';
+    return {
+      typed,
+      mode,
+      ranMode:
+        mode !== 'focused' && facts.mode === 'whole' ? 'whole' : 'focused',
+    };
   }
 
   // Background generation runs under the scope of its (document, tier); see `resolveDocScope`.
@@ -1104,6 +1122,10 @@ export function createApp(
       breakdownEnabled: !publicMode,
       locateEnabled: !publicMode && !isReadOnly(c),
       library: hosted ? 'reader' : 'local',
+      // Only a server that can price a question for this reader invites the UI to ask first.
+      ...(options.questionQuote && !publicMode && !isReadOnly(c)
+        ? { questionQuote: true }
+        : {}),
       ...(examples && examples.length > 0 ? { examples } : {}),
       ...(options.accountUrl !== undefined
         ? { accountUrl: options.accountUrl }
@@ -2017,8 +2039,34 @@ export function createApp(
     // A guest who may not ask, and a public server (no typed questions), have nothing to price.
     if (!hook || publicMode || isReadOnly(c)) return c.json(none);
     const facts = await factsFor(entry.docId);
-    const models = await readerModels(c, entry.docId);
     const base = defaultAssignment();
+    // The tier is what `modelFor` picks for a question on this document, asked the way
+    // admission asks it (a question-shaped job), not the ingest's.
+    const read = questionRead(facts, { kind: 'question' });
+    const forecast = (models: ModelChoice | undefined): FeatureEstimate =>
+      questionEstimate(
+        facts,
+        {
+          answerModel: models?.answer ?? base.answerModel,
+          extractModel: models?.extract ?? base.extractModel,
+        },
+        options.quote,
+        { mode: read.mode, limits: options.answerLimits },
+      );
+    const models = options.modelFor
+      ? checkedChoice(
+          options.modelFor(
+            {
+              kind: 'question',
+              docId: entry.docId,
+              mode: read.ranMode,
+              requestedMode: 'auto',
+              estimate: forecast(undefined),
+            },
+            c,
+          ),
+        )
+      : undefined;
     const tier = options.modelFor ? tierName(models) : undefined;
     const quote = await hook(
       {
@@ -2055,12 +2103,6 @@ export function createApp(
       AskRequest,
       'Choose a question or type one (up to 500 characters).',
     );
-    // `AskRequest` is a frozen contract without `mode`, so the field is read on its own.
-    const { mode } = await parseBody(
-      c,
-      AskModeField,
-      'The answer mode must be auto, whole or focused.',
-    );
     if (publicMode && body.question !== undefined)
       throw new AppError('PUBLIC_MODE_FORBIDDEN');
     const entry = await entryFor(c.req.param('docId'));
@@ -2072,7 +2114,7 @@ export function createApp(
         docId: entry.docId,
         chipId: body.chipId,
         quoteId: body.quoteId,
-        mode,
+        mode: body.mode,
       },
       // A metadata chip reads the stored document and never calls a model.
       {
@@ -2102,7 +2144,12 @@ export function createApp(
           const result = await ask(
             entry.docId,
             body.chipId === undefined
-              ? { question: body.question ?? '', mode }
+              ? {
+                  question: body.question ?? '',
+                  // What the host admitted wins: a `focused` admission cannot run whole, and a
+                  // `whole` one may only fall back to the cheaper read.
+                  mode: admitted?.mode ?? body.mode,
+                }
               : { chipId: body.chipId },
             {
               backend: runtime.backend,
@@ -2147,7 +2194,14 @@ export function createApp(
           // `done` (#131 renders the late event).
           emit({ type: 'done', answer: result.answer });
           // A usable answer (a decline included) is delivered; the scenario is a bonus.
-          if (!signal.aborted) await settlement?.end('ok');
+          if (!signal.aborted)
+            await settlement?.end(
+              'ok',
+              undefined,
+              body.chipId === undefined
+                ? { ran: result.mode === 'whole' ? 'whole' : 'focused' }
+                : undefined,
+            );
           const scenario = await result.scenario;
           if (scenario) emit({ type: 'scenario', scenario });
         }),

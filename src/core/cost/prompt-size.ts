@@ -81,11 +81,18 @@ export interface WholePromptSizes {
    * included. Zero when that question is whole too, or nothing is amended.
    */
   changeExcerpts: number;
+  /**
+   * A question about changes forced to read excerpts (`mode: 'focused'`) on an amended bill that
+   * does fit whole: the same largest excerpt prompt as `changeExcerpts`. Zero when nothing is
+   * amended or the bill is not whole.
+   */
+  focusedChange: number;
 }
 export const NO_PROMPT: WholePromptSizes = {
   summaryHigh: 0,
   questionHigh: 0,
   changeExcerpts: 0,
+  focusedChange: 0,
   summary: 0,
   breakdown: 0,
   scenario: 0,
@@ -299,6 +306,7 @@ export function sizeWholePrompts(input: WholePromptInput): WholePromptSizing {
   let question = summary;
   let questionHigh = summaryHigh;
   let changeExcerpts = 0;
+  let focusedChange = 0;
   // A question about changes reads struck text too. When that keeps the bill whole, each
   // changed section is rebuilt with inline markers; when it does not, the runtime retrieves
   // excerpts (struck text included) instead.
@@ -318,6 +326,15 @@ export function sizeWholePrompts(input: WholePromptInput): WholePromptSizing {
       questionHigh = Math.max(
         questionHigh,
         billBlock(doc.metadata, inline, placeholders ?? held),
+      );
+      // Forced to excerpts, the same question retrieves and renders changes inline instead.
+      focusedChange = changeExcerptBlock(
+        doc.metadata,
+        all,
+        input.sections,
+        doc.docId,
+        placeholders ?? held,
+        checkpoint,
       );
     } else {
       changeExcerpts = changeExcerptBlock(
@@ -341,6 +358,7 @@ export function sizeWholePrompts(input: WholePromptInput): WholePromptSizing {
       question,
       questionHigh,
       changeExcerpts,
+      focusedChange,
     },
   };
 }

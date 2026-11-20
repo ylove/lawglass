@@ -64,10 +64,14 @@ export function QuestionModeDialog({
         if (!stops || stops.length === 0) return;
         const first = stops[0];
         const last = stops[stops.length - 1];
-        if (e.shiftKey && document.activeElement === first) {
+        // Focus may be on the title, which is not a stop: treat it as outside the ring, so
+        // Shift+Tab goes to the last button and Tab to the first.
+        const at = document.activeElement;
+        const inRing = Array.from(stops).some((el) => el === at);
+        if (e.shiftKey && (!inRing || at === first)) {
           e.preventDefault();
           last?.focus();
-        } else if (!e.shiftKey && document.activeElement === last) {
+        } else if (!e.shiftKey && (!inRing || at === last)) {
           e.preventDefault();
           first?.focus();
         }
@@ -82,31 +86,31 @@ export function QuestionModeDialog({
         className="quote-dialog"
       >
         <h2 id={titleId} ref={title} tabIndex={-1}>
-          This question needs a full read of the bill
+          How much of the bill should we read?
         </h2>
         <p id={bodyId}>
-          Reading the whole bill uses {wholeUses}. A focused answer, drawn from
-          the most relevant parts, uses{' '}
-          {amount(quote.focused.units, quote.unit)}.
+          A focused answer, drawn from the most relevant parts, uses{' '}
+          {amount(quote.focused.units, quote.unit)}. Reading the whole bill uses{' '}
+          {wholeUses}.
         </p>
         <div className="quote-actions mode-actions">
           <button
             type="button"
             className="btn primary"
             onClick={() => {
-              onChoose('whole');
+              onChoose('focused');
             }}
           >
-            Read the whole bill ({amount(whole, quote.unit)})
+            Get a focused answer ({amount(quote.focused.units, quote.unit)})
           </button>
           <button
             type="button"
             className="btn"
             onClick={() => {
-              onChoose('focused');
+              onChoose('whole');
             }}
           >
-            Get a focused answer ({amount(quote.focused.units, quote.unit)})
+            Read the whole bill ({amount(whole, quote.unit)})
           </button>
           <button type="button" className="btn" onClick={onCancel}>
             Cancel

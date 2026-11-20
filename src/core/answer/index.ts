@@ -20,9 +20,9 @@ export {
 } from './readability.js';
 export {
   AnswerMode,
-  AskModeField,
   DEFAULT_FOCUSED_MAX_TOKENS,
   DEFAULT_WHOLE_MAX_TOKENS,
+  MAX_ANSWER_MAX_TOKENS,
   MIN_ANSWER_MAX_TOKENS,
   effortForCap,
   maxTokensFor,

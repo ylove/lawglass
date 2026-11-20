@@ -8,6 +8,9 @@ import {
   REFERENCE_CHAR_BUDGET,
 } from '../breakdown/context.js';
 import { MAX_INJECTED_DEFINITIONS } from '../retrieve/definitions.js';
+import { DEFAULT_TOP_K } from '../retrieve/retrieve.js';
+import { MAX_EXCERPT_REFERENCES } from '../answer/references.js';
+import { MAX_TEXT_CHARS } from '../enrich/references.js';
 import { ITEMS_PER_CALL } from '../picture/prompt.js';
 import {
   maxTokensFor,
@@ -147,6 +150,8 @@ interface CallSpec {
   /** Calls at high include the initial call plus every retry/rewrite. */
   highCalls?: number;
   cachedPrefix?: boolean;
+  /** Only at the high bound: work that a question may or may not trigger (an optional story). */
+  highOnly?: boolean;
   /** The context is already sized from the built prompt, so PROMPT_MARKUP must not scale it. */
   promptSized?: boolean;
 }
@@ -167,6 +172,7 @@ function feature(
   for (const bound of ['low', 'high'] as const) {
     let prefixWritten = false;
     for (const spec of specs) {
+      if (spec.highOnly && bound === 'low') continue;
       const count = bound === 'low' ? 1 : (spec.highCalls ?? 1);
       for (let n = 0; n < count; n++) {
         const context = spec.promptSized
@@ -421,6 +427,45 @@ export function estimateQuestion(
   const whole = facts.mode === 'whole' && question.mode !== 'focused';
   const wholeCap = maxTokensFor('whole', question.limits);
   const focusedCap = maxTokensFor('focused', question.limits);
+  // The most an excerpt prompt can hold: the top chunks, the injected definitions and the
+  // reference texts, each at its limit, wrapped in the excerpt markup. A bound, not a forecast.
+  const focusedHigh = Math.ceil(
+    (DEFAULT_TOP_K * 450 +
+      MAX_INJECTED_DEFINITIONS * 450 +
+      MAX_EXCERPT_REFERENCES * Math.ceil(MAX_TEXT_CHARS / 4)) *
+      PROMPT_MARKUP.high,
+  );
+  // Forced to excerpts on an amended bill that fits whole, a change question retrieves sections
+  // with their struck and inserted words inline: take the larger of the two bounds.
+  // A bill that fits whole cannot send more than itself (and its references) plus the injected
+  // definitions, however much the constants allow.
+  const wholeSized = Math.ceil(
+    wholeContext(facts.wholePrompt.questionHigh).high * PROMPT_MARKUP.high +
+      MAX_INJECTED_DEFINITIONS * 450,
+  );
+  const focused: Bounds = {
+    low: Math.ceil(3500 * PROMPT_MARKUP.low),
+    high: Math.max(
+      facts.mode === 'whole' && wholeSized > 0
+        ? Math.min(focusedHigh, wholeSized)
+        : focusedHigh,
+      wholeContext(facts.wholePrompt.focusedChange).high,
+    ),
+  };
+  // A typed question may also draw a short story: up to two object calls over the same read.
+  const story = (context: Bounds): CallSpec => ({
+    context,
+    promptSized: true,
+    visibleOutput: 800,
+    maxTokens: 2000,
+    highCalls: 2,
+    highOnly: true,
+  });
+  // Read from excerpts, the story sees at most eight of them.
+  const storyExcerpts: Bounds = {
+    low: 0,
+    high: Math.ceil(8 * 450 * PROMPT_MARKUP.high),
+  };
   const spec = (
     context: Bounds,
     highCalls: number,
@@ -436,7 +481,7 @@ export function estimateQuestion(
   if (!whole)
     return feature(
       assignment.answerModel,
-      [spec(boundedContext(3500), 2, false)],
+      [spec(focused, 2, true), story(storyExcerpts)],
       assignment,
       prices,
     );
@@ -448,13 +493,16 @@ export function estimateQuestion(
   // prompt. The high bound is whichever of the two reachable cases costs more.
   const usual = feature(
     assignment.answerModel,
-    [spec(ordinary, 2, true)],
+    [spec(ordinary, 2, true), story(wholeContext(sizes.scenario))],
     assignment,
     prices,
   );
   const asked = feature(
     assignment.answerModel,
-    [spec({ low: ordinary.low, high: changes.high }, 1, true)],
+    [
+      spec({ low: ordinary.low, high: changes.high }, 1, true),
+      story(wholeContext(sizes.scenario)),
+    ],
     assignment,
     prices,
   );
@@ -472,6 +520,7 @@ export function estimateQuestion(
               maxTokens: focusedCap,
               highCalls: 1,
             },
+            story(storyExcerpts),
           ],
           assignment,
           prices,

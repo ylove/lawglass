@@ -43,6 +43,11 @@ export interface AdmissionJob {
    * runtime's own scan decides at the moment of the read, so near the budget it can differ.
    */
   mode?: 'whole' | 'focused';
+  /**
+   * Typed questions only: what the reader asked for, as sent (`auto` when absent). `whole` or
+   * `focused` is a choice the reader made (the web UI after its confirm step); `auto` is not.
+   */
+  requestedMode?: 'auto' | 'whole' | 'focused';
   /** Computed before any model call. A whole-bill estimate for ingest, one answer-like call otherwise. */
   estimate: BillEstimate | FeatureEstimate;
   /** Ingest only: the estimate for every configured tier, by tier name. */
@@ -86,6 +91,11 @@ export interface JobEnd {
    * generation remained to do for the reader's tier (`unused`), so the host can refund a grant.
    */
   granted?: 'used' | 'unused';
+  /**
+   * Typed questions, with `ok`: the read that actually ran. A `whole`-admitted question that
+   * fell back to excerpts says `focused`, so a host can refund the difference.
+   */
+  ran?: 'whole' | 'focused';
   error?: ErrorPayload;
 }
 

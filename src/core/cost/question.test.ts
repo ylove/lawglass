@@ -27,7 +27,7 @@ describe('estimateQuestion by mode', () => {
     expect(estimateQuestion(facts, {}, {}, { mode: 'whole' })).toEqual(auto);
     const focused = estimateQuestion(facts, {}, {}, { mode: 'focused' });
     expect(focused.high.dollars).toBeLessThan(auto.high.dollars);
-    expect(focused.high.outputTokens).toBe(2 * 8192);
+    expect(focused.high.outputTokens).toBe(2 * 8192 + 2 * 2000);
   });
 
   it('a bill too long for whole reads excerpts whatever the mode', () => {
@@ -38,21 +38,23 @@ describe('estimateQuestion by mode', () => {
 
   it('defaults to the old caps and follows host caps', () => {
     const facts = small();
-    expect(estimateQuestion(facts).high.outputTokens).toBe(16_000 * 2);
+    expect(estimateQuestion(facts).high.outputTokens).toBe(
+      16_000 * 2 + 2 * 2000,
+    );
     const capped = estimateQuestion(
       facts,
       {},
       {},
       { limits: { wholeMaxTokens: 10_000 } },
     );
-    expect(capped.high.outputTokens).toBe(10_000 * 2);
+    expect(capped.high.outputTokens).toBe(10_000 * 2 + 2 * 2000);
     const focused = estimateQuestion(
       facts,
       {},
       {},
       { mode: 'focused', limits: { focusedMaxTokens: 4096 } },
     );
-    expect(focused.high.outputTokens).toBe(4096 * 2);
+    expect(focused.high.outputTokens).toBe(4096 * 2 + 2 * 2000);
   });
 });
 
@@ -102,5 +104,46 @@ describe('questionCeiling', () => {
     });
     expect(ceiling.model).toBe('host-model');
     expect(ceiling.focused.dollars).toBeGreaterThan(0);
+  });
+});
+
+describe('questionCeiling is a bound, not a forecast', () => {
+  it('counts the optional story: up to two more calls on top of the answer', () => {
+    const c = questionCeiling(small());
+    // Whole: the answer and its rewrite, plus two story calls.
+    const answerOnly = estimateQuestion(small(), {}, {}, { mode: 'whole' });
+    expect(answerOnly.high.calls).toBe(4);
+    expect(c.whole!.calls).toBe(4);
+    expect(c.focused.calls).toBe(4);
+    // The story's output is part of the bound, and the low forecast does not count it.
+    expect(c.focused.outputTokens).toBe(2 * 8192 + 2 * 2000);
+    expect(answerOnly.low.calls).toBe(1);
+  });
+
+  it('sizes focused input at the most an excerpt prompt can hold, not 3,500 tokens', () => {
+    const c = questionCeiling(
+      billFacts(many(2, 10_000), { wholeBillMaxTokens: 0 }),
+    );
+    // Two answer calls of about 18,000 tokens each plus framing, and the story's excerpts.
+    expect(c.focused.inputTokens).toBeGreaterThan(2 * 18_000);
+  });
+
+  it('forced focused on an amended bill that fits whole is sized from inline-change excerpts', () => {
+    const amended: Section[] = Array.from({ length: 12 }, (_, i) => ({
+      id: `sec-${String(i + 1)}`,
+      heading: 'Grants',
+      level: 1,
+      spans: [
+        { text: 'The department shall award ', status: 'unchanged' },
+        { text: 'old '.repeat(2000), status: 'deleted' },
+        { text: 'new '.repeat(2000), status: 'inserted' },
+      ],
+      children: [],
+    }));
+    const facts = billFacts(amended);
+    expect(facts.mode).toBe('whole');
+    expect(facts.wholePrompt.focusedChange).toBeGreaterThan(0);
+    const plain = billFacts(many(12, 100));
+    expect(plain.wholePrompt.focusedChange).toBe(0);
   });
 });
