@@ -122,6 +122,13 @@ describe('model contracts', () => {
     expect(AskRequest.safeParse({ chipId: 'summary' }).success).toBe(true);
     expect(AskRequest.safeParse({ question: 'Who pays?' }).success).toBe(true);
     expect(AskRequest.safeParse({}).success).toBe(false);
+    for (const mode of ['auto', 'whole', 'focused'])
+      expect(
+        AskRequest.safeParse({ question: 'Who pays?', mode }).success,
+      ).toBe(true);
+    expect(
+      AskRequest.safeParse({ question: 'Who pays?', mode: 'cheap' }).success,
+    ).toBe(false);
     expect(
       AskRequest.safeParse({ chipId: 'summary', question: 'Who pays?' })
         .success,
