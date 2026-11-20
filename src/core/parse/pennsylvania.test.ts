@@ -11,6 +11,7 @@ import {
   changeMarkConvention,
   isLegendNotFoundWarning,
   pennsylvaniaAmendingBill,
+  pennsylvaniaSections,
 } from './change-marks.js';
 import { parsePdf } from './pdf.js';
 import { parseText } from './text.js';
@@ -285,6 +286,16 @@ test('a rules resolution is amending; an ordinary resolution is not', () => {
     ),
   ).toBe(true);
   expect(rules('Amending the rules of the Senate.')).toBe(true);
+  expect(rules('Adopting temporary rules for the Senate.')).toBe(true);
+  // Not chamber rules: another body's rules or federal law.
+  expect(
+    rules(
+      'Urging the Congress to enact legislation amending the Fair Labor Standards Act.',
+    ),
+  ).toBe(false);
+  expect(
+    rules('Urging the agency to refrain from adopting rules on samples.'),
+  ).toBe(false);
   expect(rules('Designating the week as "Sample Week" in Pennsylvania.')).toBe(
     false,
   );
@@ -361,6 +372,52 @@ test('brackets inside verified inserted words stay literal', async () => {
     'The form shall read "Name [optional]".',
   ]);
   expect(runs(doc, 'deleted')).toEqual(['[removed words]']);
+});
+
+test('a pair never crosses into the next operative bill section: its opening is bounded and warns', () => {
+  const doc = read(
+    act(
+      'Amending the act.',
+      'Section 1. Section 3 of the act is amended to read:',
+      'A literal [ stays only to its paragraph end.',
+      '',
+      'Current text of section one stays.',
+      'Section 2. Section 4 of the act is amended to read:',
+      'Text with a stray ] here.',
+    ),
+  );
+  const deleted = runs(doc, 'deleted').join(' ');
+  expect(deleted).toContain('[ stays only to its paragraph end.');
+  expect(deleted).not.toContain('Current text of section one');
+  expect(doc.warnings).toContainEqual(expect.stringMatching(/not closed/));
+});
+
+test('an enacting clause wrapped between "of" and "Pennsylvania" still ends the title', () => {
+  const text = [
+    COVER,
+    'AN ACT',
+    'Providing for samples.',
+    'The General Assembly of the Commonwealth of',
+    'Pennsylvania hereby enacts as follows:',
+    'Section 1. The bylaws are amending [rules] only as written.',
+  ].join('\n');
+  expect(pennsylvaniaAmendingBill(text)).toBe(false);
+  expect(runs(read(text), 'deleted')).toEqual([]);
+  // No verified boundary at all: not amending, and brackets warn instead of being decided silently.
+  const open = [COVER, 'AN ACT', 'Amending the act [x].'].join('\n');
+  expect(pennsylvaniaAmendingBill(open)).toBe(false);
+  expect(read(open).warnings.length).toBeGreaterThan(0);
+});
+
+test('[Reserved] and [sic] are deleted wording in an amending PA measure', () => {
+  const doc = read(
+    act(
+      'Amending the act.',
+      'Section 1. Section 2 is amended to read:',
+      'A [Reserved] and [sic] word.',
+    ),
+  );
+  expect(runs(doc, 'deleted')).toEqual(['[Reserved]', '[sic]']);
 });
 
 test('a pair never crosses into the next operative bill section: its opening is bounded and warns', () => {
@@ -492,15 +549,103 @@ test('a rules resolution quotes law after its RESOLVED colon without a warning',
   expect(doc.warnings).toEqual([]);
 });
 
-test('many bill sections and bracket pairs stay linear', () => {
-  const body: string[] = [];
-  for (let i = 1; i <= 16000; i++)
-    body.push(
-      `Section ${String(i)}. Section 3 is amended to read:`,
-      `Old [x${String(i)}] law.`,
-    );
-  const started = performance.now();
-  const doc = read(act('Amending the act.', ...body));
-  expect(performance.now() - started).toBeLessThan(3000);
-  expect(runs(doc, 'deleted').length).toBeGreaterThan(0);
+/** Time of one parse, best of three to damp load noise. */
+function timed(build: () => string): number {
+  let best = Infinity;
+  for (let run = 0; run < 3; run++) {
+    const text = build();
+    const started = performance.now();
+    read(text);
+    best = Math.min(best, performance.now() - started);
+  }
+  return best;
+}
+
+test.each([
+  [
+    'unmatched openings',
+    (n: number) =>
+      act(
+        'Amending the act.',
+        ...Array.from({ length: n }, (_, i) => `word [open ${String(i)}`),
+        '',
+      ),
+  ],
+  [
+    'sections and bracket pairs',
+    (n: number) =>
+      act(
+        'Amending the act.',
+        ...Array.from({ length: n }, (_, i) => [
+          `Section ${String(i + 1)}. Section 3 is amended to read:`,
+          `Old [x${String(i)}] law.`,
+        ]).flat(),
+      ),
+  ],
+  [
+    'a long resolution title',
+    (n: number) =>
+      [
+        COVER,
+        'A JOINT RESOLUTION',
+        ...Array.from({ length: n }, () => 'proposing amendment words'),
+        ENACT,
+      ].join('\n'),
+  ],
+])(
+  '%s: four times the input takes well under sixteen times as long',
+  (_name, build) => {
+    const small = timed(() => build(2000));
+    const large = timed(() => build(8000));
+    // Linear would be about 4x; quadratic about 16x. Allow generous noise.
+    expect(large).toBeLessThan(Math.max(small, 5) * 10);
+  },
+);
+
+test('sections without an operative phrase and decimal sections are still boundaries', () => {
+  const lines = [
+    'Section 1. Section 3 of the act is amended to read:',
+    'Old [x] law.',
+    'Section 2. Any regulations are abrogated.',
+    'Section 2.1. A decimal section.',
+    'Section 3. Section 5 of the act is amended to read:',
+    'Section 7. Section 9 is amended to read:',
+  ];
+  const sections = pennsylvaniaSections(lines);
+  expect(sections.map((x) => x.start)).toHaveLength(5);
+  // The non-operative section verifies nothing.
+  expect(sections[1]?.quotedFrom).toBe(Infinity);
+  // A look-ahead never borrows words from the next section.
+  expect(
+    pennsylvaniaSections([
+      'Section 1. Plain.',
+      'Section 2. This act shall take effect:',
+    ])[0]?.quotedFrom,
+  ).toBe(Infinity);
+});
+
+test('a crossing pair through an undetected-style section (HB 150 shape) and a plain new section both warn', () => {
+  const crossing = read(
+    act(
+      'Amending the act.',
+      'Section 1. Section 3 of the act is amended to read:',
+      'Old [law that is opened',
+      'Section 2. Any regulations are abrogated.',
+      'Section 3. This act takes effect immediately.]',
+    ),
+  );
+  expect(crossing.warnings).toContainEqual(expect.stringMatching(/not closed/));
+  expect(runs(crossing, 'deleted').join(' ')).not.toContain('abrogated');
+  const optional = read(
+    act(
+      'Amending the act.',
+      'Section 1. Section 3 of the act is amended to read:',
+      'Old [removed] law.',
+      'Section 2. The form reads "Name [optional]".',
+    ),
+  );
+  expect(runs(optional, 'deleted')).toEqual(['[removed]', '[optional]']);
+  expect(optional.warnings).toContainEqual(
+    expect.stringMatching(/outside amended text/),
+  );
 });

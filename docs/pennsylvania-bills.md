@@ -99,27 +99,44 @@ effect as light face brackets, added by an amendment).
 
 **Gate instead of a legend: the title.** The NY and NJ bracket rule is switched on by a printed
 legend. Pennsylvania has none, so the rule is decided from the measure's **title** alone: the
-text between the cover's `AN ACT` / `A JOINT RESOLUTION` line and the enacting or resolving
-clause (gutters stripped, lines joined, case ignored). A measure is _amending_ when the cover
-reads `THE GENERAL ASSEMBLY OF PENNSYLVANIA` and the title of an act says it is amending,
-reenacting and amending, or repealing, or the title of a joint resolution proposes an amendment
-(or amendments) to the Constitution (whatever sits between those words), or the title of a simple
-or concurrent resolution adopts, readopts or amends chamber rules (2025 HR 1) or says it is
-amending. New acts and ordinary resolutions are never amending. This follows the legislature's statement that brackets are used only in bills
-amending existing law. In an amending measure, every bracketed run outside an underlined
-(inserted) run is deleted, anywhere in the body; in any other measure a bracket is ordinary
-text (`[sic]`). Balanced brackets pair across paragraphs and quoted headings (one pair can enclose several
-repealed sections, as in 2019 HB 2073); only an unmatched opening bracket is bounded, deleting to
-the end of its paragraph (a blank line or a `Section N.` start) and warning. A
-Pennsylvania document with brackets that this rule does not read as deleted carries the
-"bracketed wording could not be marked as removed" warning New York and New Jersey get.
+text between the cover's `AN ACT` / `A JOINT RESOLUTION` / `A RESOLUTION` line and the enacting
+or resolving clause (gutters stripped, lines joined, case ignored; no clause found means no
+verified title and brackets only warn). A measure is _amending_ when the cover reads `THE
+GENERAL ASSEMBLY OF PENNSYLVANIA` and:
 
-**Known trade-off.** Because the rule uses the title and not the structure, a literal bracket
-in a plain, non-underlined new section of an amending bill (for example a form reading
-`Name [optional]`) is read as deleted. That errs toward the hard rule that removed text is never
-presented as current law; underlined text is never touched. A structural scope (only after
-"is amended to read:") was tried and dropped: quoted statute section numbers, line-number
-gutters, numbering gaps and long directives defeated it.
+- the title of an act says amending, reenacting or repealing;
+- the title of a joint resolution proposes an amendment (or amendments) to the Constitution,
+  whatever sits between those words, or says amending;
+- the title of a simple or concurrent resolution adopts, readopts or amends **chamber rules**
+  (`rules of/for the House or Senate`, `permanent/temporary/joint rules`, `House Rule N`; 2025
+  HR 1). A bare "amending" does not count: "legislation amending the Fair Labor Standards
+  Act" is not a rules resolution.
+
+New acts and ordinary resolutions are never amending. This follows the legislature's statement
+that brackets are used only in bills amending existing law.
+
+In an amending measure every bracketed run outside an underlined (inserted) run is deleted,
+anywhere in the body. Balanced pairs match across paragraphs and quoted headings (one pair can
+enclose several repealed sections, as in 2019 HB 2073) but **never across the next operative
+bill section**; such a pair, and any unmatched opening, deletes only to the end of its
+paragraph (a blank line, a `Section N.` start, a `§` heading or a page break) and warns. Bill
+sections are `Section N.` at a line start (gutters skipped) continuing the bill's own sequence
+(a section with no directive, such as "Any regulations ... are abrogated", still counts; a gap
+resyncs on an operative line; `Section 36.1.` belongs to the current section). Quoted statute
+headings (`Section 2. Findings.--`) are not bill sections. No literal exemptions apply: `[Reserved]`
+and `[sic]` are deleted wording.
+
+**Warnings, never silent.** A deletion is _verified_ when it lies in quoted law, after the
+directive's colon ("to read:") inside its bill section. Any other deletion is still made, but
+adds "Bracketed wording outside amended text was treated as removed". A deleted pair that
+covers underlined text, an unmatched opening or closing bracket, and brackets in a Pennsylvania
+document the rule does not read (lone `[` or `]`, no verified title) also warn. Real amending
+bills (HB 170, HB 150, HB 2073, HB 918, HB 1257, HR 1) produce none of these warnings.
+
+**Known trade-off.** Because the rule uses the title, a literal bracket in a plain,
+non-underlined new section of an amending bill (for example a form reading `Name [optional]`)
+is read as deleted, with the "outside amended text" warning. That errs toward the hard rule that
+removed text is never presented as current law; underlined text is never touched.
 
 Shared with NY/NJ: nested brackets and runs that cross pages. Three Pennsylvania-only repairs run first:
 the `<--` pointers are dropped; the cover lines above the title (`PRINTER'S NO. 4082`,

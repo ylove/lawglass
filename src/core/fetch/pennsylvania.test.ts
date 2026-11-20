@@ -198,7 +198,6 @@ test.each([
   'https://www.palegis.us/legislation/bills/2025/hb2443',
   'https://www.palegis.us/legislation/bills/text/PDF/2025/0/HB2443/PN4082',
   'https://palegis.us/legislation/bills/text/PDF/2025/0/SR0374/PN1942',
-  'https://www.palegis.us/404',
 ])('fetch of %s is allowed', (url) => {
   expect(() => {
     assertPennsylvaniaFetch(new URL(url));
@@ -216,5 +215,15 @@ test.each([
 ])('fetch of %s is blocked', (url) => {
   expect(() => {
     assertPennsylvaniaFetch(new URL(url));
+  }).toThrow(expect.objectContaining({ code: 'SSRF_BLOCKED' }));
+});
+
+test('/404 is allowed only for the bill-page lookup, never for the PDF text fetch', () => {
+  const missing = new URL('https://www.palegis.us/404');
+  expect(() => {
+    assertPennsylvaniaFetch(missing, true);
+  }).not.toThrow();
+  expect(() => {
+    assertPennsylvaniaFetch(missing);
   }).toThrow(expect.objectContaining({ code: 'SSRF_BLOCKED' }));
 });

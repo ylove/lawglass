@@ -17,6 +17,7 @@ import {
   type Span,
 } from '../model/index.js';
 import { parsePdf } from './pdf.js';
+import { pennsylvaniaSections } from './change-marks.js';
 
 const normalize = (text: string) => text.replace(/\s+/g, ' ').trim();
 const spans = (doc: NormalizedDoc): Span[] =>
@@ -245,5 +246,27 @@ await describeWithFixture('pa-hb1257-1971-pn1408', () => {
   it('a constitutional amendment whose title names an article and section is amending', () => {
     expect(runs(doc(), 'deleted').length).toBeGreaterThan(0);
     expect(currentLaw(doc())).not.toMatch(/[[\]]/);
+  });
+});
+
+const sectionCount = (doc: NormalizedDoc): number =>
+  pennsylvaniaSections(
+    spans(doc)
+      .map((span) => span.text)
+      .join('')
+      .split('\n'),
+  ).length;
+await describeWithFixture('pa-hb150-2025-pn2066', () => {
+  const doc = load('pa-hb150-2025-pn2066');
+  it('detects all five bill sections, including the one with no directive', () => {
+    expect(sectionCount(doc())).toBe(5);
+    expect(doc().warnings.join(' ')).not.toMatch(/outside amended text/);
+  });
+});
+await describeWithFixture('pa-hb2073-2019-pn2927', () => {
+  const doc = load('pa-hb2073-2019-pn2927');
+  it('detects every bill section, past the wrapped directives and decimal sections', () => {
+    expect(sectionCount(doc())).toBeGreaterThanOrEqual(170);
+    expect(doc().warnings.join(' ')).not.toMatch(/outside amended text/);
   });
 });

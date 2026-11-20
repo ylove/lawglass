@@ -57,7 +57,8 @@ export function checkIngestFetchHost(
   // New Jersey landing hosts are allowed only for the bill-text JSON the resolver reads.
   if (NEW_JERSEY_HOSTS.includes(url.hostname)) assertNewJerseyFetch(url);
   // Pennsylvania: only the bill page (for its printer's numbers) and the PDF text are fetched.
-  if (PENNSYLVANIA_HOSTS.includes(url.hostname)) assertPennsylvaniaFetch(url);
+  if (PENNSYLVANIA_HOSTS.includes(url.hostname))
+    assertPennsylvaniaFetch(url, true);
   if (hosts.has(url.hostname)) return;
   // Sponsor enrichment permits these exact published directory files, never arbitrary paths.
   if ((Object.values(LEGISLATORS_URLS) as string[]).includes(url.href)) return;

@@ -253,7 +253,11 @@ export function choosePennsylvaniaText(
 }
 
 /** safeFetch invokes this on every redirect as well as on the final URL. */
-export function assertPennsylvaniaFetch(url: URL): void {
+export function assertPennsylvaniaFetch(
+  url: URL,
+  /** True only for the bill-page lookup, whose missing page redirects to /404. */
+  allowNotFound = false,
+): void {
   const allowed =
     SITE_HOSTS.has(url.hostname) &&
     (/^\/legislation\/bills\/\d{4}\/(?:[0-3]\/)?[a-z]{2}\d{1,4}\/?$/i.test(
@@ -263,7 +267,7 @@ export function assertPennsylvaniaFetch(url: URL): void {
         url.pathname,
       ) ||
       // A page that does not exist redirects here; the lookup then reports "no text".
-      url.pathname === '/404');
+      (allowNotFound && url.pathname === '/404'));
   if (
     url.protocol !== 'https:' ||
     url.port ||

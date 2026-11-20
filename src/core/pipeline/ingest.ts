@@ -676,17 +676,20 @@ async function fetchIngestDocument(
     // The bill page is server-rendered and lists every printer's number; read the newest.
     let html: string;
     try {
+      const lookupPolicy = (url: URL): void => {
+        assertPennsylvaniaFetch(url, true);
+      };
       const page = await deps.fetcher(
         pennsylvaniaPageUrl(pennsylvania.lookup),
         {
           signal,
-          validateUrl,
+          validateUrl: lookupPolicy,
           refresh: true,
           // A bill page is mostly links (printer's numbers, amendments); it is read, not indexed.
           skipWrapperCheck: true,
         },
       );
-      validateUrl(new URL(page.finalUrl));
+      lookupPolicy(new URL(page.finalUrl));
       html = new TextDecoder().decode(page.bytes);
     } catch (error) {
       if (

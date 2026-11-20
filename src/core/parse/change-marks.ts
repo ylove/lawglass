@@ -52,14 +52,18 @@ const NJ_LEGEND =
 /**
  * Pennsylvania prints no legend on the bill itself. The legislature explains its marks on a
  * separate help page ("Explanation to facilitate reading of legislative bills"): light face
- * brackets "are used only in bills amending an existing law". So the rule is decided from the
- * measure's TITLE alone: an act whose title says it amends, reenacts or repeals, or a joint
- * resolution that proposes an amendment to the Constitution, is an amending measure and every
- * bracket outside an underlined run is deleted wording. Any other measure (a new act, a simple
- * or concurrent resolution) keeps its brackets as text.
- *
- * Known trade-off, chosen to honour "removed text is never presented as current law": a literal
- * bracket in a plain, non-underlined new section of an amending bill is read as deleted.
+ * brackets "are used only in bills amending an existing law". The final rule:
+ * - Whether a measure amends is decided from its TITLE alone: an act titled amending,
+ *   reenacting or repealing; a joint resolution proposing a constitutional amendment (or titled
+ *   amending); a simple or concurrent resolution that adopts, readopts or amends chamber rules.
+ *   Anything else (a new act, an ordinary resolution) keeps its brackets as text.
+ * - In an amending measure every bracket outside an underlined run is deleted wording. Balanced
+ *   pairs match across paragraphs and quoted headings, but never across the next operative bill
+ *   section; such a pair, and any unmatched opening, deletes only to the end of its paragraph and
+ *   warns. Lone brackets in an unverified measure warn.
+ * - A deletion is verified when it lies in quoted law (after the directive's "to read:" colon in
+ *   its bill section). Any other deletion is still made, to honour "removed text is never
+ *   presented as current law", but adds a warning.
  */
 const PA_COVER = /THE\s+GENERAL\s+ASSEMBLY\s+OF\s+PENNSYLVANIA/;
 /** The cover is on page one; mentions deep in a bill's prose do not count. */
@@ -71,10 +75,23 @@ const PA_TITLE_START =
 const PA_TITLE_END =
   /The\s+General\s+Assembly\s+of\s+the\s+Commonwealth\s+of\s+Pennsylvania|\bWHEREAS\b|\bRESOLVED\b/i;
 const PA_TITLE_AMENDS = /\b(?:amending|re-?enacting|repealing)\b/i;
-const PA_TITLE_PROPOSES =
-  /\bproposing\b[\s\S]*?\bamendments?\b[\s\S]*?\bconstitution\b/i;
-/** A resolution that adopts, readopts or amends chamber rules changes existing rules. */
-const PA_TITLE_RULES = /\b(?:adopting|readopting|amending)\b[\s\S]*?\brules\b/i;
+/** Words that must appear in this order (a linear indexOf chain, never a backtracking regex). */
+function inOrder(text: string, words: readonly string[]): boolean {
+  const lower = text.toLowerCase();
+  let at = 0;
+  for (const word of words) {
+    const found = lower.indexOf(word, at);
+    if (found < 0) return false;
+    at = found + word.length;
+  }
+  return true;
+}
+/** Resolutions' titles are short; a longer window is never needed and never scanned. */
+const PA_RESOLUTION_TITLE_WINDOW = 4000;
+/** "Rules of the House", "permanent rules", "Senate Rule 12": chamber rules, not any rules. */
+const PA_CHAMBER_RULES =
+  /\brules\s+(?:of|for)\s+the\s+(?:house|senate)\b|\b(?:permanent|temporary|joint)\s+rules\b|\b(?:house|senate)\s+rules?\s+\d/i;
+const PA_RULES_VERB = /\b(?:adopting|readopting|amending)\b/i;
 
 /** The title, gutters stripped and lines joined, or undefined when no cover title is found. */
 function pennsylvaniaTitle(
@@ -84,7 +101,7 @@ function pennsylvaniaTitle(
   const start = PA_TITLE_START.exec(plain);
   if (!start || start.index > PA_COVER_WINDOW) return undefined;
   const rest = plain.slice(start.index + start[0].length);
-  const end = PA_TITLE_END.exec(rest);
+  const end = PA_TITLE_END.exec(rest.slice(0, 60000));
   // No verified boundary means no verified title: never scan body text for a decision.
   if (!end) return undefined;
   return {
@@ -100,20 +117,29 @@ export function pennsylvaniaAmendingBill(text: string): boolean {
   const found = pennsylvaniaTitle(text);
   if (!found) return false;
   if (found.kind === 'AN ACT') return PA_TITLE_AMENDS.test(found.title);
+  const title = found.title.slice(0, PA_RESOLUTION_TITLE_WINDOW);
   if (found.kind === 'A JOINT RESOLUTION')
     return (
-      PA_TITLE_PROPOSES.test(found.title) || PA_TITLE_AMENDS.test(found.title)
+      inOrder(title, ['proposing', 'amendment', 'constitution']) ||
+      PA_TITLE_AMENDS.test(title)
     );
   // A simple or concurrent resolution is ordinary text unless it adopts, readopts or amends
-  // chamber rules (which print their changes in brackets) or says it is amending.
-  return PA_TITLE_RULES.test(found.title) || /\bamending\b/i.test(found.title);
+  // chamber rules, which print their changes in brackets.
+  return PA_RULES_VERB.test(title) && PA_CHAMBER_RULES.test(title);
 }
 
 /** Words that make a "Section N." line a bill's own directive rather than a quoted heading. */
 const PA_OPERATIVE_SECTION =
   /\b(?:amended|added|repealed|re-?enacted|to read|take effect|takes effect|The following)\b/i;
+/** A quoted statute's heading ("Section 2. Findings.--"), never a bill section. */
+const PA_QUOTED_HEADING = /^.{0,100}\.--/;
 
-interface PaSection {
+/** Lines of a section's opening searched for an operative phrase (a section list can wrap). */
+const PA_OPERATIVE_LINES = 8;
+/** A directive can list dozens of sections before its colon; this bounds the search. */
+const PA_DIRECTIVE_LINES = 60;
+
+export interface PaSection {
   /** Offset of the "Section N." line. */
   start: number;
   /** Offset where quoted law begins: just after the directive's colon ("to read:"). */
@@ -121,43 +147,59 @@ interface PaSection {
 }
 
 /**
- * A bill's own operative sections: "Section N." at a line start (any printed line-number gutter
- * is skipped, and N is the number after the word "Section"), N continuing the bill's sequence,
- * with an operative phrase in its first lines. A bracket pair never legitimately crosses one,
- * whereas a repealed run can span quoted sections inside it. Law quoted after the directive's
- * colon is where a deletion is expected.
+ * A bill's own sections: "Section N." at a line start (any printed gutter is skipped, and N is
+ * the number after the word "Section"), N continuing the bill's sequence. A section with no
+ * operative phrase ("Any regulations ... are abrogated") is still a boundary, but nothing in it
+ * is verified quoted law. After a gap the sequence resyncs on an operative line within three
+ * numbers; "Section 36.1." belongs to the current section. The operative look-ahead and the
+ * directive colon never borrow words from the following section. A bracket pair never
+ * legitimately crosses a boundary, whereas a repealed run can span quoted sections inside one.
  */
-function pennsylvaniaSections(lines: readonly { text: string }[]): PaSection[] {
+export function pennsylvaniaSections(lines: readonly string[]): PaSection[] {
   const sections: PaSection[] = [];
   const offsets: number[] = [];
   let position = 0;
   for (const line of lines) {
     offsets.push(position);
-    position += line.text.length + 1;
+    position += line.length + 1;
   }
   let expected = 1;
   for (const [index, line] of lines.entries()) {
-    const match = PA_SECTION_START.exec(line.text);
-    if (!match || Number(match[1]) !== expected) continue;
-    const near = [line.text, lines[index + 1]?.text, lines[index + 2]?.text]
-      .join(' ')
-      .replace(/\s+/g, ' ');
-    if (!PA_OPERATIVE_SECTION.test(near)) continue;
+    const match = PA_SECTION_START.exec(line);
+    if (!match || PA_QUOTED_HEADING.test(line.slice(match[0].length))) continue;
+    const number = Number(match[1]);
+    const decimal = match[2] !== undefined;
+    // This section's own lines: up to the next "Section N." line, at most PA_DIRECTIVE_LINES.
+    let end = index + 1;
+    while (
+      end < Math.min(lines.length, index + PA_DIRECTIVE_LINES) &&
+      !PA_SECTION_START.test(lines[end] ?? '')
+    )
+      end++;
+    const own = lines.slice(index, end);
+    const operative = PA_OPERATIVE_SECTION.test(
+      own.slice(0, PA_OPERATIVE_LINES).join(' ').replace(/\s+/g, ' '),
+    );
+    if (decimal) {
+      if (number !== expected - 1) continue;
+    } else if (number === expected) {
+      expected++;
+    } else if (operative && number > expected && number <= expected + 3) {
+      expected = number + 1;
+    } else continue;
     let quotedFrom = Infinity;
-    for (let at = index; at < Math.min(lines.length, index + 12); at++) {
-      if ((lines[at]?.text ?? '').trimEnd().endsWith(':')) {
-        quotedFrom = offsets[at + 1] ?? Infinity;
-        break;
-      }
+    if (operative) {
+      const colon = own.findIndex((text) => text.trimEnd().endsWith(':'));
+      if (colon >= 0) quotedFrom = offsets[index + colon + 1] ?? Infinity;
     }
     sections.push({ start: offsets[index] ?? 0, quotedFrom });
-    expected++;
   }
   return sections;
 }
 
 /** A bill section opening ("Section 2."): a paragraph boundary for bracket recovery. */
-const PA_SECTION_START = /^[ \t]*(?:\d{1,2}[ \t]+)?Section[ \t]+(\d+)[a-z]?\./;
+const PA_SECTION_START =
+  /^[ \t]*(?:\d{1,2}[ \t]+)?Section[ \t]+(\d+)(?:\.(\d+))?[a-z]?\./;
 
 function legendFor(context: ChangeMarkContext): RegExp | undefined {
   const state = changeMarkJurisdiction(context);
@@ -425,7 +467,19 @@ export function applyChangeMarks<T extends SourceLine>(
   const lines =
     jurisdiction === 'PA' ? readPennsylvaniaPrint(printedLines) : printedLines;
   const text = lines.map((line) => line.text).join('\n');
-  const convention = changeMarkConvention(legendText ?? text, context);
+  // Pennsylvania: the title is read with struck-through words removed, as metadata does.
+  const gateText =
+    jurisdiction === 'PA'
+      ? lines
+          .map((line) =>
+            line.text
+              .split('')
+              .filter((_char, at) => line.statuses?.[at] !== 'deleted')
+              .join(''),
+          )
+          .join('\n')
+      : (legendText ?? text);
+  const convention = changeMarkConvention(gateText, context);
   if (convention === 'default')
     return {
       lines: [...lines],
@@ -438,7 +492,8 @@ export function applyChangeMarks<T extends SourceLine>(
     };
   // Pennsylvania: brackets pair and recover within a paragraph (blank line or bill section).
   const paragraphStarts = new Set<number>();
-  const paSections = jurisdiction === 'PA' ? pennsylvaniaSections(lines) : [];
+  const paSections =
+    jurisdiction === 'PA' ? pennsylvaniaSections(lines.map((l) => l.text)) : [];
   let latestSection = -1;
   // A measure with no bill sections (a rules resolution) quotes law after the first colon
   // that ends a line following its RESOLVED clause.
@@ -499,6 +554,7 @@ export function applyChangeMarks<T extends SourceLine>(
   let unmatchedClosing = false;
   let paUnclosed = false;
   let outsideQuoted = false;
+  let overwroteInserted = false;
   let verifiedSection = -1;
   const mark = (start: number, end: number): void => {
     for (let at = start; at < end; at++)
@@ -542,6 +598,11 @@ export function applyChangeMarks<T extends SourceLine>(
         ))
     )
       continue;
+    if (
+      jurisdiction === 'PA' &&
+      statuses.slice(start, end).includes('inserted')
+    )
+      overwroteInserted = true;
     mark(start, end);
     deletedThrough = end;
     if (jurisdiction === 'PA') {
@@ -567,7 +628,10 @@ export function applyChangeMarks<T extends SourceLine>(
     // Balanced pairs were matched across paragraphs and quoted headings above (a repealed run
     // can enclose several sections). Only an unmatched opening is bounded: it deletes to the
     // end of its own paragraph. One advancing cursor keeps this linear.
-    const starts = [...paragraphStarts].sort((a, b) => a - b);
+    // Blank lines, bill sections, quoted headings and page breaks all end a recovery.
+    const starts = [
+      ...new Set([...paragraphStarts, ...recoveryBoundaries(lines)]),
+    ].sort((a, b) => a - b);
     let cursor = 0;
     let recoveredThrough = 0;
     for (const start of [...stack, ...unmatchedOpens].sort((a, b) => a - b)) {
@@ -579,6 +643,10 @@ export function applyChangeMarks<T extends SourceLine>(
     stack.length = 0;
     paUnclosed = true;
   }
+  if (overwroteInserted)
+    warnings.push(
+      'Underlined wording inside a bracketed deletion was treated as removed; check the original document.',
+    );
   if (outsideQuoted)
     warnings.push(
       'Bracketed wording outside amended text was treated as removed; check the original document.',
