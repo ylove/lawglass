@@ -7,7 +7,8 @@ import { PDFDocument, StandardFonts } from 'pdf-lib';
  * for amendments made to a bill, and a "<--" pointer beside changed lines. Nothing here is real
  * legislation.
  */
-export type PaSample = 'amending' | 'amended-new-act' | 'resolution';
+export type PaSample =
+  'amending' | 'amended-new-act' | 'resolution' | 'inserted-bracket';
 
 const COVER = [
   'THE GENERAL ASSEMBLY OF PENNSYLVANIA',
@@ -89,7 +90,16 @@ export async function paPdf(
         : text,
     );
   }
-  if (sample === 'amending') {
+  if (sample === 'inserted-bracket') {
+    line('AN ACT');
+    line('Amending Title 75 (Vehicles) of the Pennsylvania Consolidated');
+    line('Statutes, further providing for forms.');
+    line('The General Assembly of the Commonwealth of Pennsylvania');
+    line('hereby enacts as follows:');
+    line('Section 1. Section 1111(a) of Title 75 is amended to read:');
+    marked([['u', 'The form shall read "Name [optional]".']]);
+    line('Old [removed words] stay deleted.');
+  } else if (sample === 'amending') {
     line('AN ACT');
     line('Amending Title 75 (Vehicles) of the Pennsylvania Consolidated');
     line('Statutes, further providing for sample permits.');

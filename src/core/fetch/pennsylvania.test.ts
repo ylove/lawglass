@@ -116,6 +116,20 @@ test("non-Pennsylvania hosts and non-URLs are not this resolver's", () => {
 });
 
 test.each([
+  'https://www.legis.state.pa.us/cfdocs/legis/PN/Public/btCheck.cfm?txtType=PDF&sessYr=2025&sessInd=0&billBody=H&billTyp=B&billNbr=2443&pn=abc',
+  'https://www.legis.state.pa.us/cfdocs/legis/PN/Public/btCheck.cfm?txtType=PDF&sessYr=2025&sessInd=0&billBody=H&billTyp=B&billNbr=2443&pn=-1',
+  'https://www.legis.state.pa.us/cfdocs/legis/PN/Public/btCheck.cfm?txtType=PDF&sessYr=2025&sessInd=0&billBody=H&billTyp=B&billNbr=2443&pn=0',
+  'https://www.legis.state.pa.us/WU01/LI/BI/BT/2025/0/HB2443P0000.pdf',
+])(
+  'malformed printer number in %s is refused, not replaced by the newest',
+  (input) => {
+    expect(() => resolvePennsylvania(input)).toThrow(
+      expect.objectContaining({ code: 'INVALID_INPUT' }),
+    );
+  },
+);
+
+test.each([
   'http://www.palegis.us/legislation/bills/2025/hb2443',
   'https://www.palegis.us:8443/legislation/bills/2025/hb2443',
   'https://user@www.palegis.us/legislation/bills/2025/hb2443',

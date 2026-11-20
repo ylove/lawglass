@@ -95,6 +95,12 @@ function plainUrl(url: URL, input: string): void {
     throw billUrlError();
 }
 
+function badPrinter(): AppError {
+  return billUrlError(
+    "That Pennsylvania link's printer's number (pn) is not a positive whole number.",
+  );
+}
+
 function notBillText(): AppError {
   return billUrlError(
     'That Pennsylvania link is a fiscal note, memo or other document, not bill text. Paste the bill page or a printer-number bill text link.',
@@ -134,11 +140,11 @@ function resolveOld(url: URL): PennsylvaniaResolution {
     };
     if (lookup.number < 1) throw billUrlError();
     if (!isText) return { lookup };
-    const printer = /^\d{1,5}$/.test(params.get('pn') ?? '')
-      ? Number(params.get('pn'))
-      : 0;
-    // Without a printer's number, read the page for the newest.
-    return printer > 0 ? { textUrl: textUrlFor(lookup, printer) } : { lookup };
+    // The latest print is used only when no printer's number is given; a given one must be real.
+    const pn = params.get('pn');
+    if (pn === null || pn === '') return { lookup };
+    if (!/^[1-9]\d{0,4}$/.test(pn)) throw badPrinter();
+    return { textUrl: textUrlFor(lookup, Number(pn)) };
   }
 
   // Direct files: /WU01/LI/BI/BT/2025/0/HB2443P4082.pdf (bill text). FN/SFN/etc. are not text.
@@ -155,6 +161,7 @@ function resolveOld(url: URL): PennsylvaniaResolution {
       number: Number(file[5]),
     };
     if (lookup.number < 1) throw billUrlError();
+    if (!/^0*[1-9]\d{0,4}$/.test(file[6] ?? '')) throw badPrinter();
     return { textUrl: textUrlFor(lookup, Number(file[6])) };
   }
   throw billUrlError();

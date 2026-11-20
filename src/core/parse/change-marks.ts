@@ -57,13 +57,25 @@ const NJ_LEGEND =
  * or resolution, where a bracket is ordinary punctuation, is left alone.
  */
 const PA_COVER = /THE\s+GENERAL\s+ASSEMBLY\s+OF\s+PENNSYLVANIA/;
-const PA_AMENDATORY = /\b(?:Amending|(?:is|are|be) amended)\b/;
+/**
+ * A real amending directive, not prose that happens to say "amended": an amendatory title
+ * ("AN ACT Amending ..."), an operative "Section N. ... is amended" clause, or a joint
+ * resolution's "That Article III be amended". Whitespace (line breaks) is normalised first.
+ */
+const PA_AMENDATORY = [
+  /(?:AN ACT|A JOINT RESOLUTION)\s+(?:to\s+)?amend(?:ing|s)?\b/i,
+  /(?:^|\. )Section \d+[a-z]?\.\s[^.]{0,300}?\b(?:is|are) (?:hereby )?amended\b/i,
+  /\bThat (?:Article|Section)\b[^.]{0,200}?\bbe amended\b/i,
+];
 /** The cover is on page one; mentions deep in a bill's prose do not count. */
 const PA_COVER_WINDOW = 3000;
 
 export function pennsylvaniaAmendingBill(text: string): boolean {
+  // The raw text layer keeps the printed line-number gutter at the start of each line.
+  const flat = text.replace(/^[ \t]*\d{1,2}[ \t]+/gm, '').replace(/\s+/g, ' ');
   return (
-    PA_COVER.test(text.slice(0, PA_COVER_WINDOW)) && PA_AMENDATORY.test(text)
+    PA_COVER.test(flat.slice(0, PA_COVER_WINDOW)) &&
+    PA_AMENDATORY.some((pattern) => pattern.test(flat))
   );
 }
 
@@ -336,13 +348,8 @@ export function applyChangeMarks<T extends SourceLine>(
       lines: [...lines],
       convention,
       warnings:
-        text.includes('[') &&
-        // A Pennsylvania document with a cover that does not amend anything may use brackets as
-        // ordinary punctuation, so only a missing cover (nothing verified) is worth a warning.
-        (jurisdiction !== 'PA' ||
-          !PA_COVER.test(text.slice(0, PA_COVER_WINDOW)))
-          ? [LEGEND_NOT_FOUND_WARNINGS[jurisdiction]]
-          : [],
+        // Fail safe: brackets that could not be classified are never silently current law.
+        text.includes('[') ? [LEGEND_NOT_FOUND_WARNINGS[jurisdiction]] : [],
     };
   const statuses: SpanStatus[] = [];
   for (const line of lines) {
@@ -380,6 +387,8 @@ export function applyChangeMarks<T extends SourceLine>(
   };
   for (let at = 0; at < text.length; at++) {
     if (removed[at]) continue;
+    // Verified inserted words (Pennsylvania) may contain literal brackets, e.g. a form's "[optional]".
+    if (jurisdiction === 'PA' && statuses[at] === 'inserted') continue;
     if (text[at] === '[') stack.push(at);
     else if (text[at] === ']') {
       const start = stack.pop();

@@ -148,7 +148,7 @@ test('a Pennsylvania text with brackets and no cover warns that nothing was veri
   expect(result.convention).toBe('default');
   expect(result.warnings.every(isLegendNotFoundWarning)).toBe(true);
   expect(result.warnings).toHaveLength(1);
-  // A cover that amends nothing is not worth a warning.
+  // Fail safe: a cover that amends nothing still warns about unclassified brackets.
   const act = applyChangeMarks(
     [
       { text: 'THE GENERAL ASSEMBLY OF PENNSYLVANIA' },
@@ -157,7 +157,7 @@ test('a Pennsylvania text with brackets and no cover warns that nothing was veri
     ],
     context,
   );
-  expect(act.warnings).toEqual([]);
+  expect(act.warnings).toHaveLength(1);
 });
 
 test('unbalanced brackets are recovered at the next boundary, as for other states', () => {
@@ -216,4 +216,44 @@ test('metadata is empty without the bill designation or for a mirror without an 
     version: "Printer's No. 613",
   });
   expect(pennsylvaniaSessionLabel(2025, 0)).toBe('2025-2026 Regular Session');
+});
+
+test('the gate reads upper case and wrapped directives, not incidental prose', () => {
+  const cover = 'THE GENERAL ASSEMBLY OF PENNSYLVANIA\n';
+  expect(pennsylvaniaAmendingBill(`${cover}AN ACT\nAMENDING Title 1.`)).toBe(
+    true,
+  );
+  expect(
+    pennsylvaniaAmendingBill(
+      `${cover}AN ACT\nProviding.\nSection 2. Section 5 of the act\nIS AMENDED to read:`,
+    ),
+  ).toBe(true);
+  expect(
+    pennsylvaniaAmendingBill(
+      `${cover}A JOINT RESOLUTION\nThat Article III\nbe\namended by adding.`,
+    ),
+  ).toBe(true);
+  expect(
+    pennsylvaniaAmendingBill(
+      `${cover}AN ACT\nProviding for bylaws.\nSection 3. The bylaws may be amended annually.`,
+    ),
+  ).toBe(false);
+  // Bracketed words in such an act are unverified, so the document warns.
+  const lines = [
+    { text: 'THE GENERAL ASSEMBLY OF PENNSYLVANIA' },
+    { text: 'AN ACT' },
+    { text: 'Providing for bylaws.' },
+    {
+      text: 'Section 3. The bylaws may be amended annually [shall pay a fee].',
+    },
+  ];
+  expect(applyChangeMarks(lines, context).warnings).toHaveLength(1);
+});
+
+test('brackets inside verified inserted words stay literal', async () => {
+  const doc = await parsePdf(await paPdf('inserted-bracket'), context);
+  expect(runs(doc, 'inserted')).toEqual([
+    'The form shall read "Name [optional]".',
+  ]);
+  expect(runs(doc, 'deleted')).toEqual(['[removed words]']);
 });
