@@ -63,6 +63,12 @@ export function modelPrice(
   return ModelPrice.parse(table[model]);
 }
 
+/**
+ * Characters per token at the cost estimator's conservative (high) bound: about 12% under the
+ * lowest ratio measured on real bills. A prompt sized at this ratio is a bound, not a forecast.
+ */
+export const HIGH_CHARS_PER_TOKEN = 2.2;
+
 export interface CallTokens {
   /** All input, including both cache categories, as in LlmUsage. */
   inputTokens: number;

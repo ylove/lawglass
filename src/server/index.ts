@@ -52,7 +52,7 @@ export type {
   TokenEstimate,
   CallEnd,
   GateCall,
-  SpendGate,
+  CallGate,
   QuestionCeiling,
   QuestionCeilingOptions,
   UsageEvent,

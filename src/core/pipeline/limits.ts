@@ -27,14 +27,17 @@ import {
 } from '../cost/usage.js';
 import {
   assertBudget,
-  callGateOf,
   chargeJob,
   currentJob,
   gateCall,
   type JobContext,
   type JobScope,
 } from '../cost/job.js';
-import { callDollars, modelPrice } from '../cost/prices.js';
+import {
+  HIGH_CHARS_PER_TOKEN,
+  callDollars,
+  modelPrice,
+} from '../cost/prices.js';
 
 export const DEFAULT_MAX_CONCURRENT_INGEST = 2;
 export const DEFAULT_MAX_CONCURRENT_ASK = 4;
@@ -296,7 +299,12 @@ export class Limits {
       reported: boolean;
       allowed: boolean;
     }
-    /** The most a call can cost; Infinity when the model has no price, so a capping host refuses it. */
+    /**
+     * The most a call can cost: the prompt at the estimator's conservative characters per token,
+     * priced at the dearer of the ordinary and cache-write input rates (with the long-context
+     * premium when the prompt is long enough), plus `maxTokens` at the output rate. Infinity for
+     * a model with no price, so a capping host refuses it.
+     */
     const worstCase = (
       model: string,
       req: {
@@ -309,16 +317,18 @@ export class Limits {
     ): number => {
       try {
         const price = modelPrice(model, job.prices);
-        // Input at the dearest input rate: a prompt written to the cache costs more than a read.
-        return callDollars(
-          {
-            inputTokens: promptTokens(req),
-            cachedInputTokens: 0,
-            cacheWriteTokens: promptTokens(req),
-            outputTokens: req.maxTokens,
-          },
-          price,
-        );
+        const input = Math.ceil(promptChars(req) / HIGH_CHARS_PER_TOKEN);
+        const priced = (cacheWriteTokens: number): number =>
+          callDollars(
+            {
+              inputTokens: input,
+              cachedInputTokens: 0,
+              cacheWriteTokens,
+              outputTokens: req.maxTokens,
+            },
+            price,
+          );
+        return Math.max(priced(0), priced(input));
       } catch {
         return Number.POSITIVE_INFINITY;
       }
@@ -338,7 +348,7 @@ export class Limits {
         reported: false,
         allowed: false,
       };
-      if (job && callGateOf(job)) {
+      if (job?.callGate) {
         const context = job.context;
         await gateCall(job, {
           jobKind: context.jobKind,
@@ -418,45 +428,51 @@ export class Limits {
           // Gated before the provider is touched: a refused call never starts a stream.
           const call = await begin(req);
           const started = call.started;
-          let partial: LlmUsage | undefined;
-          const stream = provider.streamText({
-            ...req,
-            onPartialUsage: (usage) => {
-              partial = usage;
-              req.onPartialUsage?.(usage);
-            },
-          });
-          let finished = false;
-          let failed = false;
-          let chars = 0;
           try {
-            for await (const event of stream) {
-              if (event.type === 'text') chars += event.text.length;
-              if (event.type === 'done') {
-                finished = true;
-                await report(event.usage, feature, false, started, call);
+            // The gate may have kept the reader waiting: if they left, no provider call is made
+            // and nothing was billed, but the host still hears the call ended.
+            req.signal?.throwIfAborted();
+            let partial: LlmUsage | undefined;
+            let finished = false;
+            let failed = false;
+            let chars = 0;
+            try {
+              const stream = provider.streamText({
+                ...req,
+                onPartialUsage: (usage) => {
+                  partial = usage;
+                  req.onPartialUsage?.(usage);
+                },
+              });
+              for await (const event of stream) {
+                if (event.type === 'text') chars += event.text.length;
+                if (event.type === 'done') {
+                  finished = true;
+                  await report(event.usage, feature, false, started, call);
+                }
+                yield event;
               }
-              yield event;
+            } catch (error) {
+              failed = true;
+              if (!finished && error instanceof AppError && error.usage)
+                await report(error.usage, feature, false, started, call);
+              else if (!finished && partial)
+                await report(partial, feature, false, started, call);
+              else if (
+                !finished &&
+                (chars > 0 || req.signal?.aborted || maybeBilled(error))
+              )
+                // A timeout or an overload mid-answer: the provider billed what it produced.
+                await report(guess(req, chars), feature, true, started, call);
+              throw error;
+            } finally {
+              // The reader left mid-answer: the provider billed what it had produced so far.
+              if (!finished && !failed)
+                await (partial
+                  ? report(partial, feature, false, started, call)
+                  : report(guess(req, chars), feature, true, started, call));
             }
-          } catch (error) {
-            failed = true;
-            if (!finished && error instanceof AppError && error.usage)
-              await report(error.usage, feature, false, started, call);
-            else if (!finished && partial)
-              await report(partial, feature, false, started, call);
-            else if (
-              !finished &&
-              (chars > 0 || req.signal?.aborted || maybeBilled(error))
-            )
-              // A timeout or an overload mid-answer: the provider billed what it produced.
-              await report(guess(req, chars), feature, true, started, call);
-            throw error;
           } finally {
-            // The reader left mid-answer: the provider billed what it had produced so far.
-            if (!finished && !failed)
-              await (partial
-                ? report(partial, feature, false, started, call)
-                : report(guess(req, chars), feature, true, started, call));
             await finish(call);
           }
         })();
@@ -467,6 +483,8 @@ export class Limits {
         const call = await begin(req);
         const started = call.started;
         try {
+          // Aborted while the gate was deciding: no provider call, nothing billed.
+          req.signal?.throwIfAborted();
           let result;
           try {
             result = await provider.generateObject(req);
@@ -520,9 +538,15 @@ function promptTokens(req: {
   messages?: unknown;
   prompt?: unknown;
 }): number {
-  return Math.ceil(
-    (req.system.length + JSON.stringify(req.messages ?? req.prompt).length) / 4,
-  );
+  return Math.ceil(promptChars(req) / 4);
+}
+
+function promptChars(req: {
+  system: string;
+  messages?: unknown;
+  prompt?: unknown;
+}): number {
+  return req.system.length + JSON.stringify(req.messages ?? req.prompt).length;
 }
 
 /** What an abandoned stream is charged when the provider could not say: the prompt plus what was read. */

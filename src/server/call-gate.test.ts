@@ -9,7 +9,12 @@ import {
 import { scenarioProvider } from '../../tests/support/scenario-provider.js';
 import { makeSectionedText } from '../../tests/synth/index.js';
 import { envVar } from '../core/brand.js';
-import type { CallEnd, GateCall, UsageEvent } from '../core/cost/index.js';
+import {
+  callDollars,
+  type CallEnd,
+  type GateCall,
+  type UsageEvent,
+} from '../core/cost/index.js';
 import { MockProvider } from '../core/llm/mock.js';
 import { IngestEvent, type LlmProvider } from '../core/model/index.js';
 import { resetSharedLimits } from '../core/pipeline/limits.js';
@@ -101,7 +106,7 @@ const json = async (res: Response) => (await res.json()) as { status: string };
 describe('a per-call gate sees every model call exactly once', () => {
   test('ingest, summary, breakdown, pictures, examples, questions, chips, locate and scenarios', async () => {
     const a = app({
-      spendGate: (c: GateCall) => {
+      callGate: (c: GateCall) => {
         gates.push(c);
         return true;
       },
@@ -176,11 +181,25 @@ describe('a per-call gate sees every model call exactly once', () => {
     expect(ends.map((e) => e.callId).sort()).toEqual([...ids].sort());
     const reportedIds = new Set(usage.map((u) => u.callId));
     for (const e of ends) expect(e.reported).toBe(reportedIds.has(e.callId));
+    // The worst case the gate saw is an upper bound on what each call really cost.
+    for (const u of usage) {
+      const gate = gates.find((g) => g.callId === u.callId);
+      const cost = callDollars(
+        {
+          inputTokens: u.usage.inputTokens,
+          cachedInputTokens: u.usage.cacheReadTokens ?? 0,
+          cacheWriteTokens: u.usage.cacheWriteTokens ?? 0,
+          outputTokens: u.usage.outputTokens,
+        },
+        RATE,
+      );
+      expect(gate?.worstCaseUsd).toBeGreaterThanOrEqual(cost);
+    }
   });
 
   test('a gate that refuses stops every feature before any provider is reached', async () => {
     const a = app({
-      spendGate: (c: GateCall) => {
+      callGate: (c: GateCall) => {
         gates.push(c);
         return false;
       },
@@ -192,8 +211,8 @@ describe('a per-call gate sees every model call exactly once', () => {
   });
 });
 
-describe('zero-parameter hosts are unchanged', () => {
-  test('a () => boolean gate is not given a call, and onUsage events still arrive', async () => {
+describe('a spendGate alone is unchanged', () => {
+  test('a () => boolean spendGate is checked as before; there are no gate calls or ends', async () => {
     let asked = 0;
     const a = app({
       spendGate: () => {

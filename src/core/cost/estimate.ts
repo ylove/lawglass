@@ -20,6 +20,7 @@ import {
 } from '../answer/modes.js';
 import type { BillFacts } from './facts.js';
 import {
+  HIGH_CHARS_PER_TOKEN,
   callDollars,
   modelPrice,
   type CallTokens,
@@ -123,7 +124,7 @@ const PROMPT_MARKUP = { low: 1.1, high: 1.25 };
  * summary's: NJ's breakdown measured 3,504 tokens on 2,582 characters). Three bills are a thin
  * sample: the next calibration run should check this figure.
  */
-const WHOLE_PROMPT_CHARS_PER_TOKEN = { low: 2.9, high: 2.2 };
+const WHOLE_PROMPT_CHARS_PER_TOKEN = { low: 2.9, high: HIGH_CHARS_PER_TOKEN };
 
 /** A whole-bill prompt's bill-sized block, in tokens. Not scaled by PROMPT_MARKUP. */
 function wholeContext(characters: number, highCharacters = characters): Bounds {

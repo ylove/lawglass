@@ -18,6 +18,7 @@ import {
   type ObjectRequest,
   type TextRequest,
 } from '../model/index.js';
+import { HIGH_CHARS_PER_TOKEN } from '../cost/prices.js';
 import { Limits } from './limits.js';
 
 const textReq: TextRequest = {
@@ -75,7 +76,7 @@ describe('per-call gate', () => {
   it('is asked once per call with the job, a unique id and the worst-case dollars', async () => {
     const calls: GateCall[] = [];
     const { job, usage, ends } = scope({
-      spendGate: (call: GateCall) => {
+      callGate: (call: GateCall) => {
         calls.push(call);
         return true;
       },
@@ -106,7 +107,7 @@ describe('per-call gate', () => {
     const calls: GateCall[] = [];
     const { job } = scope({
       prices: { scripted: rate },
-      spendGate: (call: GateCall) => {
+      callGate: (call: GateCall) => {
         calls.push(call);
         return true;
       },
@@ -114,9 +115,11 @@ describe('per-call gate', () => {
     await runInJob(job, () =>
       drain(limits().meter(okProvider()).streamText(textReq)),
     );
-    // About 110 prompt tokens at the dearest input rate (cache write, 4) plus 1,000 at 2.
+    // The prompt at the estimator's conservative 2.2 characters a token, at the dearest input
+    // rate (cache write, 4), plus 1,000 output tokens at 2.
     const prompt = Math.ceil(
-      (textReq.system.length + JSON.stringify(textReq.messages).length) / 4,
+      (textReq.system.length + JSON.stringify(textReq.messages).length) /
+        HIGH_CHARS_PER_TOKEN,
     );
     expect(calls[0]?.worstCaseUsd).toBeCloseTo(
       (prompt * 4 + 1000 * 2) / 1_000_000,
@@ -124,10 +127,42 @@ describe('per-call gate', () => {
     );
   });
 
+  it('includes the long-context premium when the prompt is long enough', async () => {
+    const tier = { input: 3, output: 6, cacheRead: 0.3, cacheWrite: 12 };
+    const calls: GateCall[] = [];
+    const { job } = scope({
+      prices: {
+        scripted: {
+          input: 1,
+          output: 2,
+          cacheRead: 0.1,
+          cacheWrite: 4,
+          longContext: { aboveInputTokens: 50, ...tier },
+        },
+      },
+      callGate: (call: GateCall) => {
+        calls.push(call);
+        return true;
+      },
+    });
+    await runInJob(job, () =>
+      drain(limits().meter(okProvider()).streamText(textReq)),
+    );
+    const prompt = Math.ceil(
+      (textReq.system.length + JSON.stringify(textReq.messages).length) /
+        HIGH_CHARS_PER_TOKEN,
+    );
+    // Over the threshold every token of the call is at the long-context rates.
+    expect(calls[0]?.worstCaseUsd).toBeCloseTo(
+      (prompt * 12 + 1000 * 6) / 1_000_000,
+      10,
+    );
+  });
+
   it('is Infinity for a model with no price, so a capping host refuses it', async () => {
     const calls: GateCall[] = [];
     const { job } = scope({
-      spendGate: (call: GateCall) => {
+      callGate: (call: GateCall) => {
         calls.push(call);
         return true;
       },
@@ -141,7 +176,7 @@ describe('per-call gate', () => {
   it('is awaited: an async gate that says no stops the call before the provider is touched', async () => {
     const provider = okProvider();
     const { job, usage, ends } = scope({
-      spendGate: async () => {
+      callGate: async () => {
         await new Promise((r) => setTimeout(r, 5));
         return false;
       },
@@ -173,7 +208,7 @@ describe('per-call gate', () => {
     ['a rejection', () => Promise.reject(new Error('db down'))],
   ])('refuses on %s', async (_name, gate) => {
     const provider = okProvider();
-    const { job } = scope({ spendGate: (_call: GateCall) => gate() });
+    const { job } = scope({ callGate: (_call: GateCall) => gate() });
     await expect(
       runInJob(job, () => limits().meter(provider).generateObject(objReq)),
     ).rejects.toSatisfy(isSpendGateStop);
@@ -185,7 +220,7 @@ describe('per-call gate', () => {
     let open = 0;
     let peak = 0;
     const { job, usage } = scope({
-      spendGate: async (call: GateCall) => {
+      callGate: async (call: GateCall) => {
         ids.push(call.callId);
         open += 1;
         peak = Math.max(peak, open);
@@ -222,7 +257,7 @@ function scripted(
 
 describe('call end notices', () => {
   const gated = (): ReturnType<typeof scope> =>
-    scope({ spendGate: (_call: GateCall) => true });
+    scope({ callGate: (_call: GateCall) => true });
 
   it('says reported false when a call fails before the provider billed anything', async () => {
     const { job, usage, ends } = gated();
@@ -288,7 +323,7 @@ describe('call end notices', () => {
 
   it('a host that throws in onCallEnd cannot change the call result', async () => {
     const { job } = scope({
-      spendGate: (_call: GateCall) => true,
+      callGate: (_call: GateCall) => true,
       onCallEnd: () => {
         throw new Error('bookkeeping failed');
       },
@@ -300,30 +335,143 @@ describe('call end notices', () => {
   });
 });
 
-describe('zero-parameter hosts are unchanged', () => {
-  it('a () => boolean gate is checked as before and is not given a call', async () => {
-    const seen: unknown[][] = [];
-    const gate = vi.fn((...args: unknown[]) => {
-      seen.push(args);
+describe('aborts and timeouts', () => {
+  const gated = (
+    gate: (c: GateCall) => boolean | Promise<boolean> = () => true,
+  ) => scope({ callGate: gate });
+
+  /** A stream that waits for its request's abort signal, as a real provider does. */
+  function hanging(seen: { signal?: AbortSignal | undefined }): LlmProvider {
+    return {
+      id: 'mock',
+      model: 'scripted',
+      streamText: (req) =>
+        (async function* () {
+          seen.signal = req.signal;
+          yield { type: 'text', text: 'partial' } as const;
+          await new Promise<never>((_, reject) => {
+            const abort = () => {
+              reject(new DOMException('aborted', 'AbortError'));
+            };
+            if (req.signal?.aborted) abort();
+            else req.signal?.addEventListener('abort', abort);
+          });
+        })(),
+      generateObject: () => Promise.reject(new Error('unused')),
+    };
+  }
+
+  it('an abort mid-stream reaches the provider and ends the call once, with an estimate', async () => {
+    const { job, usage, ends } = gated();
+    const seen: { signal?: AbortSignal | undefined } = {};
+    const controller = new AbortController();
+    const metered = limits().meter(hanging(seen));
+    const run = runInJob(job, async () => {
+      for await (const event of metered.streamText({
+        ...textReq,
+        signal: controller.signal,
+      })) {
+        expect(event.type).toBe('text');
+        controller.abort();
+      }
+    });
+    await expect(run).rejects.toThrow('aborted');
+    expect(seen.signal?.aborted).toBe(true);
+    expect(usage).toHaveLength(1);
+    expect(usage[0]).toMatchObject({ estimated: true });
+    expect(ends).toEqual([
+      expect.objectContaining({ callId: usage[0]?.callId, reported: true }),
+    ]);
+  });
+
+  it('an abort while the gate is deciding makes no provider call and ends the call unreported', async () => {
+    const controller = new AbortController();
+    const provider = okProvider();
+    const { job, usage, ends } = gated(async () => {
+      controller.abort();
+      await Promise.resolve();
       return true;
     });
-    // `vi.fn` has no parameters of its own: a plain zero-arg host.
-    const legacy = () => (gate() ? true : false);
-    const { job, usage } = scope({ spendGate: legacy, onCallEnd: undefined });
+    const metered = limits().meter(provider);
+    await expect(
+      runInJob(job, () =>
+        drain(metered.streamText({ ...textReq, signal: controller.signal })),
+      ),
+    ).rejects.toThrow();
+    await expect(
+      runInJob(job, () =>
+        metered.generateObject({ ...objReq, signal: controller.signal }),
+      ),
+    ).rejects.toThrow();
+    expect(provider.calls).toHaveLength(0);
+    expect(usage).toHaveLength(0);
+    expect(ends.map((e) => e.reported)).toEqual([false, false]);
+  });
+
+  it('a provider timeout is charged as an estimate and ends the call once', async () => {
+    const { job, usage, ends } = gated();
+    const timeout = Object.assign(new Error('timed out'), {
+      name: 'TimeoutError',
+    });
+    const provider: LlmProvider = {
+      id: 'mock',
+      model: 'scripted',
+      streamText: () =>
+        (async function* () {
+          await Promise.resolve();
+          yield* [] as LlmStreamEvent[];
+          throw timeout;
+        })(),
+      generateObject: () => Promise.reject(timeout),
+    };
+    const metered = limits().meter(provider);
+    await expect(
+      runInJob(job, () => drain(metered.streamText(textReq))),
+    ).rejects.toThrow('timed out');
+    await expect(
+      runInJob(job, () => metered.generateObject(objReq)),
+    ).rejects.toThrow('timed out');
+    expect(usage.map((u) => u.estimated)).toEqual([true, true]);
+    expect(ends).toHaveLength(2);
+    expect(ends.map((e) => e.reported)).toEqual([true, true]);
+    expect(new Set(ends.map((e) => e.callId)).size).toBe(2);
+  });
+});
+
+describe('spendGate and callGate together', () => {
+  it('a () => boolean spendGate alone is checked as before and is never given a call', async () => {
+    const seen: unknown[][] = [];
+    const { job, usage } = scope({
+      spendGate: (...args: unknown[]) => {
+        seen.push(args);
+        return true;
+      },
+      onCallEnd: undefined,
+    });
     const provider = okProvider();
     await runInJob(job, () => limits().meter(provider).generateObject(objReq));
-    expect(gate).toHaveBeenCalled();
-    expect(seen[0]).toEqual([]);
+    expect(seen).toEqual([[]]);
     expect(usage).toHaveLength(1);
   });
 
-  it('a closed zero-arg gate refuses before the provider, as before', async () => {
+  it('a closed spendGate refuses before the call gate is asked', async () => {
     const provider = okProvider();
-    const { job } = scope({ spendGate: () => false });
+    const gate = vi.fn(() => true);
+    const { job } = scope({ spendGate: () => false, callGate: gate });
     await expect(
       runInJob(job, () => limits().meter(provider).generateObject(objReq)),
     ).rejects.toSatisfy(isSpendGateStop);
+    expect(gate).not.toHaveBeenCalled();
     expect(provider.calls).toHaveLength(0);
+  });
+
+  it('both open: each call is gated', async () => {
+    const gate = vi.fn(() => true);
+    const { job } = scope({ spendGate: () => true, callGate: gate });
+    await runInJob(job, () =>
+      limits().meter(okProvider()).generateObject(objReq),
+    );
+    expect(gate).toHaveBeenCalledTimes(1);
   });
 
   it('no gate and no hooks: calls run and nothing is asked', async () => {

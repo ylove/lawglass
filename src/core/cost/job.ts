@@ -65,13 +65,10 @@ export interface CallEnd {
 }
 
 /**
- * The host's gate. Zero parameters (`() => boolean`, synchronous) is the original kill switch:
- * it is checked before every call and before background work starts. One parameter is the
- * per-call gate: it is given the call, may be async, and is awaited before each provider call;
- * anything but `true`, or a throw or rejection, refuses that call.
+ * The host's per-call gate: given the call, it may be async and is awaited before each provider
+ * call. Anything but `true`, or a throw or rejection, refuses that call.
  */
-export type SpendGate =
-  (() => boolean) | ((call: GateCall) => boolean | Promise<boolean>);
+export type CallGate = (call: GateCall) => boolean | Promise<boolean>;
 
 export interface ModelChoice {
   answer?: string;
@@ -94,7 +91,9 @@ export interface JobScope {
    * background included. Synchronous: the host keeps its state in memory. A gate that returns
    * anything but `true`, or throws, is closed.
    */
-  spendGate?: SpendGate | undefined;
+  spendGate?: (() => boolean) | undefined;
+  /** The host's per-call gate (issue #435), awaited before every provider call. */
+  callGate?: CallGate | undefined;
   /** Told how each call the gate allowed ended; see `CallEnd`. */
   onCallEnd?: ((end: CallEnd) => void | Promise<void>) | undefined;
   /** The grant epoch of the (document, tier) when this scope was resolved or handed out. */
@@ -152,10 +151,9 @@ export function currentTier(): string {
 export function spendGateOpen(
   scope: JobScope | undefined = currentJob(),
 ): boolean {
-  // A per-call gate is asked at each call, not here: a before-the-work check has no call to give.
-  if (!scope?.spendGate || scope.spendGate.length > 0) return true;
+  if (!scope?.spendGate) return true;
   try {
-    const open: unknown = (scope.spendGate as () => boolean)();
+    const open: unknown = scope.spendGate();
     return open === true;
   } catch {
     // A broken gate cannot be trusted to be open.
@@ -163,20 +161,12 @@ export function spendGateOpen(
   }
 }
 
-/** The per-call gate of this job, if the host gave one (a gate that takes the call). */
-export function callGateOf(
-  scope: JobScope | undefined,
-): ((call: GateCall) => boolean | Promise<boolean>) | undefined {
-  const gate = scope?.spendGate;
-  return gate && gate.length > 0 ? gate : undefined;
-}
-
 /**
  * Asks the per-call gate about one call and waits for the answer. Throws BUDGET_EXHAUSTED with
  * `details.reason: 'spend_gate'` (the same stop a closed zero-arg gate makes) unless it says `true`.
  */
 export async function gateCall(scope: JobScope, call: GateCall): Promise<void> {
-  const gate = callGateOf(scope);
+  const gate = scope.callGate;
   if (!gate) return;
   let open = false;
   try {

@@ -59,7 +59,7 @@ import {
   type CallEnd,
   type JobKind,
   type JobScope,
-  type SpendGate,
+  type CallGate,
   type ModelAssignment,
   type ModelChoice,
   type UsageEvent,
@@ -186,25 +186,25 @@ export interface AppOptions {
    */
   onJobEnd?: (end: JobEnd) => void | Promise<void>;
   /**
-   * The host's spend gate, in one of two forms, told apart by the number of parameters.
-   *
-   * `() => boolean`: a synchronous kill switch, checked before EVERY model call, background work
-   * included. While it returns anything but `true` (or throws), calls are refused with
-   * `BUDGET_EXHAUSTED` and background work stops cleanly with `stoppedReason: 'spend_gate'`,
-   * keeping what it wrote. A later generating request resumes when it reopens.
-   *
-   * `(call: GateCall) => boolean | Promise<boolean>`: a per-call gate. It is given the call (job
-   * `ref`, `jobKind`, `docId`, a unique `callId`, the `model` and the call's `worstCaseUsd`) and
-   * awaited before EVERY provider call: answers, chips, stories, locate, summary, breakdown,
-   * pictures, examples, metadata, retries and each of several parallel calls. Anything but
-   * `true`, or a throw or rejection, refuses that call the way a closed kill switch does. The
-   * same `callId` arrives in that call's `UsageEvent` and in `onCallEnd`. The server does not
-   * serialize calls: a host that must cap spend reserves `worstCaseUsd` inside the gate.
-   * There is no before-the-work check for this form; refusals stop work as they arrive.
+   * Synchronous kill switch, checked before EVERY model call, background work included. While it
+   * returns anything but `true` (or throws), calls are refused with `BUDGET_EXHAUSTED` and
+   * background work stops cleanly with `stoppedReason: 'spend_gate'`, keeping what it wrote. A
+   * later generating request resumes when it reopens.
    */
-  spendGate?: SpendGate;
+  spendGate?: () => boolean;
   /**
-   * Told once for each call a per-call gate (or any call in a job scope) let through, after its
+   * A per-call gate, given the call (job `ref`, `jobKind`, `docId`, a unique `callId`, the
+   * `model` and the call's `worstCaseUsd`, an upper bound) and awaited before EVERY provider
+   * call: answers, chips, stories, locate, summary, breakdown, pictures, examples, metadata,
+   * retries and each of several parallel calls. Anything but `true`, or a throw or rejection,
+   * refuses that call with the same stop a closed `spendGate` makes. If `spendGate` is also set
+   * both apply: it before the work and before each call, this before each provider call. The
+   * server does not serialize calls: a host that must cap spend reserves `worstCaseUsd` here and
+   * settles on `onUsage` / `onCallEnd`.
+   */
+  callGate?: CallGate;
+  /**
+   * Told once for each call that was let through (by `callGate` or without one), after its
    * usage event, with whether one was delivered. `reported: false` means the call ended with no
    * usage (it threw before the provider billed anything, or could not say), so a host that
    * reserved `worstCaseUsd` for it can release the reservation. Calls the gate refused are not
@@ -357,6 +357,7 @@ export function createApp(
     onJobEnd: options.onJobEnd,
     spendGate: options.spendGate,
     onCallEnd: options.onCallEnd,
+    callGate: options.callGate,
     readOnly: options.readOnly,
     landing: options.site?.landing,
     quickstart: options.site?.quickstart,
@@ -676,6 +677,7 @@ export function createApp(
     options.modelFor !== undefined ||
     options.backgroundScope !== undefined ||
     options.spendGate !== undefined ||
+    options.callGate !== undefined ||
     options.onCallEnd !== undefined;
   const estimating =
     options.admission !== undefined || options.modelFor !== undefined;
@@ -936,6 +938,7 @@ export function createApp(
     budget: extra.budget,
     models: extra.models,
     spendGate: options.spendGate,
+    callGate: options.callGate,
     onCallEnd: options.onCallEnd,
     prices: options.quote?.prices,
     onUsage: options.onUsage,
