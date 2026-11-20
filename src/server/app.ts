@@ -202,7 +202,8 @@ export interface AppOptions {
    * server does not serialize calls: a host that must cap spend reserves `worstCaseUsd` here and
    * settles on `onUsage` / `onCallEnd`. Each billed attempt is gated (a provider's format
    * fallback, a Pinecone request or 429 retry), and `worstCaseUsd` is `Infinity` for claude-cli and
-   * for every Pinecone request: a host that gates Pinecone applies its own policy to those.
+   * for every Pinecone request. The hosted Pinecone backend is not supported with `callGate`
+   * yet (#437): `createApp` refuses that combination at startup.
    */
   callGate?: CallGate;
   /**
@@ -326,6 +327,11 @@ export function createApp(
       ? routedRuntime(rawRuntime)
       : rawRuntime;
   validateAnswerLimits(options.answerLimits);
+  // The hosted Pinecone backend makes billed requests whose gating is not complete yet (#437).
+  if (options.callGate && rawRuntime.backend.kind === 'pinecone')
+    throw invalid(
+      'callGate does not support the Pinecone backend yet; see #437. Use the local backend.',
+    );
   const publicMode = options.publicMode ?? false;
   const privateMode = options.privateMode ?? false;
   const configuredAuth: unknown = options.auth;

@@ -233,3 +233,17 @@ describe('a spendGate alone is unchanged', () => {
     expect(ends).toHaveLength(0);
   });
 });
+
+describe('callGate and the Pinecone backend', () => {
+  test('createApp refuses the combination at startup, naming the follow-up issue', () => {
+    const runtime = Object.create(env.runtime) as typeof env.runtime;
+    Object.defineProperty(runtime, 'backend', {
+      value: { ...env.runtime.backend, kind: 'pinecone' },
+    });
+    expect(() => createApp(runtime, { auth, callGate: () => true })).toThrow(
+      /does not support the Pinecone backend yet; see #437/,
+    );
+    // Without callGate the hosted backend starts as before.
+    expect(() => createApp(runtime, { auth })).not.toThrow();
+  });
+});

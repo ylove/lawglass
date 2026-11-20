@@ -1,4 +1,5 @@
 import { GoogleGenAI, type GenerateContentResponse } from '@google/genai';
+import { currentJob } from '../cost/job.js';
 import {
   AppError,
   type LlmProvider,
@@ -29,6 +30,24 @@ function usageOf(result: GenerateContentResponse): LlmUsage {
       (result.usageMetadata?.thoughtsTokenCount ?? 0),
     ...(cached > 0 ? { cacheReadTokens: cached } : {}),
   };
+}
+
+/**
+ * Under a host's per-call gate one call must be one HTTP request: the SDK's automatic function
+ * calling and continuation would send more, billed on the accumulated context, under a single
+ * gate decision. Without a call gate the SDK's defaults stay (a reply split across hops still
+ * assembles, as it always did).
+ */
+function onePerCall(): {
+  automaticFunctionCalling?: { disable: true };
+  automaticContinuation?: false;
+} {
+  return currentJob()?.callGate
+    ? {
+        automaticFunctionCalling: { disable: true },
+        automaticContinuation: false,
+      }
+    : {};
 }
 
 export class GoogleProvider implements LlmProvider {
@@ -68,10 +87,7 @@ export class GoogleProvider implements LlmProvider {
           maxOutputTokens: req.maxTokens,
           temperature: req.temperature,
           abortSignal: signal,
-          // One call is one HTTP request: the SDK's automatic continuation would make more,
-          // billed on the accumulated context, under a single gate decision.
-          automaticFunctionCalling: { disable: true },
-          automaticContinuation: false,
+          ...onePerCall(),
         },
       });
       let usage = ZERO_LLM_USAGE;
@@ -104,8 +120,7 @@ export class GoogleProvider implements LlmProvider {
           systemInstruction: req.system,
           maxOutputTokens: req.maxTokens,
           abortSignal: signal,
-          automaticFunctionCalling: { disable: true },
-          automaticContinuation: false,
+          ...onePerCall(),
           responseMimeType: 'application/json',
           responseJsonSchema: jsonSchema(req.schema),
         },
