@@ -164,8 +164,6 @@ export function pennsylvaniaSections(lines: readonly string[]): PaSection[] {
     position += line.length + 1;
   }
   let expected = 1;
-  /** The lowest number a resync skipped: the real section may still turn up under it. */
-  let lowestSkipped: number | undefined;
   for (const [index, line] of lines.entries()) {
     const match = PA_SECTION_START.exec(line);
     if (!match || PA_QUOTED_HEADING.test(line.slice(match[0].length))) continue;
@@ -186,15 +184,9 @@ export function pennsylvaniaSections(lines: readonly string[]): PaSection[] {
       if (number !== expected - 1) continue;
     } else if (number === expected) {
       expected++;
-      lowestSkipped = undefined;
     } else if (operative && number > expected && number <= expected + 3) {
-      lowestSkipped = Math.min(lowestSkipped ?? expected, expected);
       expected = number + 1;
-    } else if (
-      number < expected &&
-      (number >= expected - 3 ||
-        (lowestSkipped !== undefined && number >= lowestSkipped))
-    ) {
+    } else if (number < expected) {
       // A number already used: a quoted heading shadowing the real section. It still bounds
       // pairs, but expected is unchanged and nothing in it is verified unless it is operative.
     } else continue;

@@ -804,3 +804,43 @@ test('the overlap warning counts drawn underlines, not capital-letter runs', () 
   ]);
   expect(capitals.warnings.join(' ')).not.toMatch(/Underlined wording/);
 });
+
+test('consecutive exactly matching quoted headings cannot hide the real section (Q)', () => {
+  const doc = read(
+    act(
+      'Amending the act.',
+      'Section 1. Sections 2, 3, 4 and 5 of the act are amended to read:',
+      'Section 2. Short title.',
+      'Section 3. Definitions.',
+      'Section 4. Terms.',
+      'Section 5. Fees.',
+      '(1) A permit fee of [ten] twenty dollars.',
+      'Section 2. The survey form shall read "Name [optional]".',
+      'Section 3. This act shall take effect in 60 days.',
+    ),
+  );
+  expect(runs(doc, 'deleted')).toContain('[optional]');
+  expect(doc.warnings).toContainEqual(
+    expect.stringMatching(/outside amended text/),
+  );
+});
+
+test('a pair cannot cross the real section after consecutive quoted headings (R)', () => {
+  const doc = read(
+    act(
+      'Amending the act.',
+      'Section 1. Sections 2, 3, 4 and 5 of the act are amended to read:',
+      'Section 2. Short title.',
+      'Section 3. Definitions.',
+      'Section 4. Terms.',
+      'Section 5. Fees.',
+      '(1) A permit fee of [ten twenty dollars.',
+      'Section 2. Section 12 of the act is amended to read:',
+      'Section 12. Terms.',
+      'The term is six] years.',
+      'Section 3. This act shall take effect in 60 days.',
+    ),
+  );
+  expect(runs(doc, 'deleted').join(' ')).not.toContain('The term is six');
+  expect(doc.warnings).toContainEqual(expect.stringMatching(/not closed/));
+});
