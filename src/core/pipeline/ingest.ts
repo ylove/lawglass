@@ -1,6 +1,12 @@
 import { addLlmUsage } from '../cost/usage.js';
 import { resolveNewYork, assertNewYorkFetch } from '../fetch/new-york.js';
 import {
+  resolvePennsylvania,
+  assertPennsylvaniaFetch,
+  choosePennsylvaniaText,
+  pennsylvaniaPageUrl,
+} from '../fetch/pennsylvania.js';
+import {
   resolveNewJersey,
   assertNewJerseyFetch,
   chooseNewJerseyText,
@@ -629,14 +635,20 @@ async function fetchIngestDocument(
   // WRAPPER_PAGE (with candidate links in `details`) propagates untouched for callers to offer.
   const newYork = resolveNewYork(url);
   const newJersey = newYork ? undefined : resolveNewJersey(url);
-  const plan = newYork || newJersey ? undefined : resolveHistory(url);
+  const pennsylvania =
+    newYork || newJersey ? undefined : resolvePennsylvania(url);
+  const plan =
+    newYork || newJersey || pennsylvania ? undefined : resolveHistory(url);
   let attachment: HistoryAttachment | undefined;
-  let fetchUrl = newYork?.textUrl ?? newJersey?.textUrl ?? url;
+  let fetchUrl =
+    newYork?.textUrl ?? newJersey?.textUrl ?? pennsylvania?.textUrl ?? url;
   let validateUrl: (url: URL) => void = newYork
     ? assertNewYorkFetch
     : newJersey
       ? assertNewJerseyFetch
-      : assertNoCongressFetch;
+      : pennsylvania
+        ? assertPennsylvaniaFetch
+        : assertNoCongressFetch;
   if (newJersey?.lookup) {
     // A bill page is a script-rendered shell; the site's own JSON names the newest text.
     const lookupUrl = newJerseyLookupUrl(newJersey.lookup);
@@ -659,6 +671,32 @@ async function fetchIngestDocument(
       throw new AppError('FETCH_FAILED');
     }
     fetchUrl = chooseNewJerseyText(json, newJersey.lookup);
+  }
+  if (pennsylvania?.lookup) {
+    // The bill page is server-rendered and lists every printer's number; read the newest.
+    let html: string;
+    try {
+      const page = await deps.fetcher(
+        pennsylvaniaPageUrl(pennsylvania.lookup),
+        {
+          signal,
+          validateUrl,
+          refresh: true,
+          // A bill page is mostly links (printer's numbers, amendments); it is read, not indexed.
+          skipWrapperCheck: true,
+        },
+      );
+      validateUrl(new URL(page.finalUrl));
+      html = new TextDecoder().decode(page.bytes);
+    } catch (error) {
+      if (
+        signal?.aborted ||
+        (error instanceof AppError && error.code === 'SSRF_BLOCKED')
+      )
+        throw error;
+      throw new AppError('FETCH_FAILED');
+    }
+    fetchUrl = choosePennsylvaniaText(html, pennsylvania.lookup);
   }
   if (plan) {
     const source = historySource(plan.source);

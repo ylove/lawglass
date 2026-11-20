@@ -51,7 +51,7 @@ test.each(DEFAULT_INGEST_HOSTS)('allows exact official host %s', (host) => {
 
 test.each([
   'https://www.nxleg.example/bill',
-  'https://www.palegis.us/bill',
+  'https://www.legis.ga.gov/bill',
   'https://127.0.0.1/bill',
   'https://[::1]/bill',
   'https://govinfo.gov@evil.example/bill',
@@ -63,7 +63,7 @@ test.each([
   }).toThrow(
     expect.objectContaining({
       code: 'INVALID_INPUT',
-      userMessage: `${BRAND.displayName} currently reads U.S. federal bills (congress.gov, govinfo.gov), Ohio legislation (legislature.ohio.gov), New York bills (nysenate.gov, nyassembly.gov), and New Jersey bills (njleg.state.nj.us, pub.njleg.gov). Other states are on the roadmap.`,
+      userMessage: `${BRAND.displayName} currently reads U.S. federal bills (congress.gov, govinfo.gov), Ohio legislation (legislature.ohio.gov), New York bills (nysenate.gov, nyassembly.gov), New Jersey bills (njleg.state.nj.us, pub.njleg.gov), and Pennsylvania bills and resolutions (palegis.us). Other states are on the roadmap.`,
     }),
   );
 });
@@ -146,8 +146,48 @@ test('fetches only bill text and the bill-text JSON from New Jersey hosts', () =
     }).toThrow();
 });
 
+test.each(['palegis.us', 'www.palegis.us', 'legis.state.pa.us'])(
+  'accepts the Pennsylvania host %s when pasted',
+  (host) => {
+    expect(() => {
+      checkIngestHost(
+        `https://${host}/legislation/bills/2025/hb2443`,
+        ingestHosts({}),
+      );
+    }).not.toThrow();
+    expect(DEFAULT_INGEST_HOSTS).toContain(host);
+  },
+);
+
+test('fetches only a bill page and its PDF text from Pennsylvania, never the older site', () => {
+  const hosts = ingestHosts({});
+  for (const ok of [
+    'https://www.palegis.us/legislation/bills/2025/hb2443',
+    'https://www.palegis.us/legislation/bills/2023/1/hb1',
+    'https://www.palegis.us/legislation/bills/text/PDF/2025/0/SR0374/PN1942',
+    'https://www.palegis.us/404',
+  ])
+    expect(() => {
+      checkIngestFetchHost(new URL(ok), hosts);
+    }).not.toThrow();
+  for (const bad of [
+    'https://www.palegis.us/legislation/bills/text/HTM/2025/0/HB2443/PN4082',
+    'https://www.palegis.us/WU01/LI/BI/FN/2025/0/HB2443P4082.pdf',
+    'https://www.palegis.us/legislation/amendments/amendment-list?billnum=1',
+    'https://www.palegis.us/legislation/bills/text/PDF/2025/0/SR374/PN1942',
+    'http://www.palegis.us/legislation/bills/2025/hb2443',
+    'https://www.palegis.us:8443/legislation/bills/2025/hb2443',
+    'https://www.legis.state.pa.us/cfdocs/billinfo/billinfo.cfm?syear=2025',
+  ])
+    expect(() => {
+      checkIngestFetchHost(new URL(bad), hosts);
+    }).toThrow(expect.objectContaining({ code: 'SSRF_BLOCKED' }));
+});
+
 test.each([
   'https://evilnjleg.gov/bill',
+  'https://evilpalegis.us/bill',
+  'https://palegis.us.evil.example/bill',
   'https://njleg.gov.evil.example/bill',
   'https://pub.njleg.gov@evil.example/bill',
   'https://notpub.njleg.gov/bill',
