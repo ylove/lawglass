@@ -26,7 +26,7 @@ _The demo shows a real federal bill, S. 202 of the 119th Congress, answered by C
 - **“Find where it says that.”** Paste a sentence from a headline, press release or post. Get verified source words, a label showing whether they are added, removed or unchanged, plain context and a copyable receipt with the section, version and official link. Check wording in earlier official versions without a model call.
 - **Questions in your own words.** Ask "Does this raise my taxes?" or "What does the bill cross out?" and get an answer with citations.
 - **Plain language, measured.** Every answer's reading grade is measured and returned by the API. When the summary or a section brief reads above 8th grade, Lawglass asks again for simpler wording and keeps the new answer only if it still cites everything the first one did. For bills that amend law, the rewrite is also refused if it brings in wording that the bill strikes or drops a new number it adds. Declines and exact-wording answers are left as they are.
-- **Federal, Ohio, New York and New Jersey bills.** Paste a bill's page on congress.gov, the Ohio legislature's site, the New York Senate or Assembly site, or the New Jersey legislature's site. New York and New Jersey mark removed words with brackets, and Lawglass reads them as removed. [Adding the other 47 states](docs/jurisdictions.md) is planned state by state.
+- **Federal, Ohio, New York, New Jersey and Pennsylvania bills.** Paste a bill's page on congress.gov, the Ohio legislature's site, the New York Senate or Assembly site, the New Jersey legislature's site, or palegis.us for a Pennsylvania bill or resolution. New York, New Jersey and Pennsylvania mark removed words with brackets, and Lawglass reads them as removed. [Adding the other 46 states](docs/jurisdictions.md) is planned state by state.
 - **A home for your documents.** The homepage takes a new link and lists the bills you have opened. On a shared server, each visitor sees only their own list.
 
 ## How to check an answer
@@ -75,6 +75,7 @@ Paste a bill's own page, for example:
 - An Ohio bill: `https://www.legislature.ohio.gov/legislation/136/sb113`
 - A New York bill: `https://www.nysenate.gov/legislation/bills/2025/S1234`
 - A New Jersey bill: `https://www.njleg.state.nj.us/bill-search/2024/S1000`
+- A Pennsylvania bill or resolution: `https://www.palegis.us/legislation/bills/2025/hb2443`
 
 If the link does not name a text version, Lawglass reads the latest one in the official record and tells you which version it read. You can also paste a PDF, XML, HTML or plain-text link, or a local file.
 
@@ -88,7 +89,7 @@ Coming from the earlier `legislation-summary` name? Move `~/.legislation-summary
 
 Lawglass explains what a bill's text says. It is not a lawyer, and it does not tell you what a bill means for your situation. For a decision that matters, read the cited text and talk to a qualified attorney. Know its limits:
 
-- **US first.** It was built and tested on U.S. federal, Ohio, New York and New Jersey bills. Other jurisdictions may work if you give it the bill's text, but their change marks may not be read, and you get no history view.
+- **US first.** It was built and tested on U.S. federal, Ohio, New York, New Jersey and Pennsylvania bills. Other jurisdictions may work if you give it the bill's text, but their change marks may not be read, and you get no history view.
 - **History covers federal and Ohio only,** and only what those official records contain.
 - **Scans are read with care, not trusted.** A PDF needs a text layer: a scan with none stops with a clear message. A scan that was run through OCR is read, but each scanned page is flagged, because struck and added words cannot be detected on it.
 - **Plain language is a goal, not a promise.** The target reading level is 7th grade. Before v1.1, measured grades averaged 8.5 to 10.2, mostly because legal terms push the score up ([results](docs/eval-analysis.md)). Since v1.1 every answer's grade is measured; from 2.0 it is reported by the API and eval rather than shown to readers. The summary is rewritten once from the bill when it reads above grade 8, and answers to your questions when they read above grade 10. A rewrite is kept only if it reads lower, cites every section the first answer did, and gains no citation or truncation warning. Declines, answers about struck or added text, and metadata answers are never rewritten.
@@ -255,7 +256,7 @@ refuse `claude-cli` and the test-only `mock` provider. `--private` and `--public
 exclusive. `--trust-proxy` defaults to `0`; set it to the number of proxies you trust, counted
 from the right of `X-Forwarded-For`.
 
-Both hosted modes read federal, Ohio, New York and New Jersey bill hosts by default.
+Both hosted modes read federal, Ohio, New York, New Jersey and Pennsylvania bill hosts by default.
 `LAWGLASS_INGEST_HOSTS` can replace that list with comma-separated exact hostnames. Each hosted
 ingest has a 15-minute processing deadline.
 
@@ -362,18 +363,18 @@ Pinecone ingest handles rate limits for you. It retries 429 responses with jitte
 
 ### Status
 
-| Piece                                                                                            | State on `main`                                                                                                                                                                          |
-| ------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Fetch, parse, enrich, chunk, local backend, retrieval, answer, chips                             | Implemented and tested                                                                                                                                                                   |
-| CLI `init`, `ingest`, `ask`, `search`, `get-section`, `list`, `remove`, `serve`, `eval`, `<url>` | Implemented and tested; e2e and package smoke run in CI                                                                                                                                  |
-| Server: REST, SSE, public mode, web UI                                                           | Implemented and tested                                                                                                                                                                   |
-| Eval harness and golden sets                                                                     | Implemented; results in [`eval/results.md`](eval/results.md)                                                                                                                             |
-| Pinecone adapter and CLI runtime                                                                 | Wired into all commands; live contract suite and five-bill eval run on Starter (2026-10-14)                                                                                              |
-| Hosted private preview (Cloud Run)                                                               | Deployment files and runbook in [`deploy/cloud-run/`](deploy/cloud-run/README.md)                                                                                                        |
-| Jurisdictions                                                                                    | Federal, Ohio, New York and New Jersey; the plan for the other states is in [`docs/jurisdictions.md`](docs/jurisdictions.md) ([decision 0017](docs/decisions/0017-jurisdictions.md))     |
-| Cost estimate (`lawglass estimate`)                                                              | Implemented; prices a bill from its parsed size before any model call. Not yet calibrated against real usage (#385)                                                                      |
-| Hosting hooks                                                                                    | Sign-in, read access, quotes, admission, budgets, settlement, spend gate and read-only requests for a separate hosted product ([decision 0018](docs/decisions/0018-hosting-hooks.md))    |
-| MCP server (`lawglass mcp`)                                                                      | A prototype and measurement harness. No claim that it beats pasting a bill into a chat until its pre-registered evaluation passes ([decision 0013](docs/decisions/0013-agent-access.md)) |
+| Piece                                                                                            | State on `main`                                                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Fetch, parse, enrich, chunk, local backend, retrieval, answer, chips                             | Implemented and tested                                                                                                                                                                             |
+| CLI `init`, `ingest`, `ask`, `search`, `get-section`, `list`, `remove`, `serve`, `eval`, `<url>` | Implemented and tested; e2e and package smoke run in CI                                                                                                                                            |
+| Server: REST, SSE, public mode, web UI                                                           | Implemented and tested                                                                                                                                                                             |
+| Eval harness and golden sets                                                                     | Implemented; results in [`eval/results.md`](eval/results.md)                                                                                                                                       |
+| Pinecone adapter and CLI runtime                                                                 | Wired into all commands; live contract suite and five-bill eval run on Starter (2026-10-14)                                                                                                        |
+| Hosted private preview (Cloud Run)                                                               | Deployment files and runbook in [`deploy/cloud-run/`](deploy/cloud-run/README.md)                                                                                                                  |
+| Jurisdictions                                                                                    | Federal, Ohio, New York, New Jersey and Pennsylvania; the plan for the other states is in [`docs/jurisdictions.md`](docs/jurisdictions.md) ([decision 0017](docs/decisions/0017-jurisdictions.md)) |
+| Cost estimate (`lawglass estimate`)                                                              | Implemented; prices a bill from its parsed size before any model call. Not yet calibrated against real usage (#385)                                                                                |
+| Hosting hooks                                                                                    | Sign-in, read access, quotes, admission, budgets, settlement, spend gate and read-only requests for a separate hosted product ([decision 0018](docs/decisions/0018-hosting-hooks.md))              |
+| MCP server (`lawglass mcp`)                                                                      | A prototype and measurement harness. No claim that it beats pasting a bill into a chat until its pre-registered evaluation passes ([decision 0013](docs/decisions/0013-agent-access.md))           |
 
 ### Development
 

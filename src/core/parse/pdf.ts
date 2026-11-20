@@ -13,7 +13,7 @@ import {
   readParseLimits,
   type ParseControl,
 } from './limits.js';
-import { AppError, NormalizedDoc } from '../model/index.js';
+import { AppError, NormalizedDoc, type SpanStatus } from '../model/index.js';
 import {
   collectGlyphWidths,
   extractMarkSegments,
@@ -505,7 +505,9 @@ export async function parsePdf(
   warnings.push(...marked.warnings);
   warnings.push(...layout.warnings);
   const metadata = stateBillMetadata(
-    layout.lines.map((line) => line.text).join('\n'),
+    jurisdiction === 'PA'
+      ? withoutDeletedText(marked.lines)
+      : layout.lines.map((line) => line.text).join('\n'),
     options,
     rawText,
   );
@@ -547,6 +549,23 @@ export async function parsePdf(
   const normalized = NormalizedDoc.parse(doc);
   budget.check();
   return normalized;
+}
+
+/**
+ * PA prints the earlier wording of an amended title struck through, and the text layer keeps
+ * it, so cover metadata is read from the marked lines with deleted characters dropped.
+ */
+function withoutDeletedText(
+  lines: readonly { text: string; statuses?: readonly SpanStatus[] }[],
+): string {
+  return lines
+    .map((line) =>
+      line.text
+        .split('')
+        .filter((_char, at) => line.statuses?.[at] !== 'deleted')
+        .join(''),
+    )
+    .join('\n');
 }
 
 /** Indents within this many points are the same indent. */

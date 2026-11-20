@@ -135,7 +135,7 @@ const PROOF: [string, string][] = [
 const STEPS: [string, string][] = [
   [
     'Paste a link',
-    'From Congress.gov, GovInfo, the Ohio Legislature, the New York Senate or Assembly or the New Jersey Legislature.',
+    'From Congress.gov, GovInfo, the Ohio Legislature, the New York Senate or Assembly, the New Jersey Legislature or the Pennsylvania General Assembly.',
   ],
   [
     `${BRAND.displayName} reads every section`,
@@ -169,7 +169,7 @@ const FAQ: [string, string][] = [
   ],
   [
     'Which bills does it read?',
-    'U.S. federal bills from Congress.gov and GovInfo, Ohio bills from the Ohio Legislature, New York bills from the New York Senate and Assembly, and New Jersey bills from the New Jersey Legislature. Running it yourself, it can also read a PDF or XML file of a bill.',
+    'U.S. federal bills from Congress.gov and GovInfo, Ohio bills from the Ohio Legislature, New York bills from the New York Senate and Assembly, New Jersey bills from the New Jersey Legislature, and Pennsylvania bills and resolutions from the Pennsylvania General Assembly. Running it yourself, it can also read a PDF or XML file of a bill.',
   ],
   [
     'Where do the explanations come from?',
@@ -196,7 +196,7 @@ export function landingPage(ctx: PageContext): string {
   const main = `<section class="hero">
 <div class="wrap hero-grid">
 <div class="hero-text">
-<p class="eyebrow">Open source · Federal, Ohio, New York and New Jersey bills</p>
+<p class="eyebrow">Open source · Federal, Ohio, New York, New Jersey and Pennsylvania bills</p>
 <h1>Know what a bill really says.</h1>
 <p class="lead">Paste a link to a bill. ${name} explains it in plain words and simple pictures, and points to the section, page and line behind each answer.</p>
 <div class="actions">

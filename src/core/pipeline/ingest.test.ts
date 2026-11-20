@@ -1106,6 +1106,87 @@ test('NJ lookup that returns an HTML page is FETCH_FAILED, never WRAPPER_PAGE wi
   expect(env.fetches).toEqual([njApi('S1000', 2024)]);
 });
 
+const paPage = 'https://www.palegis.us/legislation/bills/2025/hb9001';
+const paText = (pn: string) =>
+  `https://www.palegis.us/legislation/bills/text/PDF/2025/0/HB9001/PN${pn}`;
+const paPageHtml = (...pns: string[]) =>
+  Buffer.from(
+    `<html><body>${pns
+      .map(
+        (pn) =>
+          `<a href='/legislation/bills/text/PDF/2025/0/HB9001/PN${pn}'>${pn}</a>`,
+      )
+      .join(
+        '\n',
+      )}<a href="/legislation/bills/2025/hb9002">next</a></body></html>`,
+  );
+
+test('PA bill page lists printer numbers, then the newest PDF is read', async () => {
+  const { paPdf } = await import('../../../tests/synth/pennsylvania.js');
+  env.serve(paPage, { bytes: paPageHtml('9001', '9005', '9003') }, 'text/html');
+  env.serve(
+    paText('9005'),
+    { bytes: await paPdf('amended-new-act') },
+    'application/pdf',
+  );
+  const fetcher = vi.fn(env.runtime.fetcher);
+  const result = await ingest(
+    'https://palegis.us/legislation/bills/2025/HB9001',
+    deps({ fetcher }),
+  );
+  expect(env.fetches).toEqual([paPage, paText('9005')]);
+  expect(fetcher).toHaveBeenCalledWith(
+    paPage,
+    expect.objectContaining({ refresh: true, skipWrapperCheck: true }),
+  );
+  expect(result.stats.deletedSpanCount).toBeGreaterThan(0);
+});
+
+test('PA text link of any format goes straight to its padded PDF without the page', async () => {
+  const { paPdf } = await import('../../../tests/synth/pennsylvania.js');
+  env.serve(
+    paText('9001'),
+    { bytes: await paPdf('amending') },
+    'application/pdf',
+  );
+  await ingest(
+    'https://www.palegis.us/legislation/bills/text/HTM/2025/0/HB9001/PN9001',
+    deps(),
+  );
+  expect(env.fetches).toEqual([paText('9001')]);
+});
+
+test('PA bill without a printer number fails before any text fetch', async () => {
+  env.serve(
+    paPage,
+    { bytes: Buffer.from('<html>Page Not Found</html>') },
+    'text/html',
+  );
+  await expect(ingest(paPage, deps())).rejects.toMatchObject({
+    code: 'INVALID_INPUT',
+  });
+  expect(env.fetches).toEqual([paPage]);
+});
+
+test('PA fetched final URLs are revalidated even with an injected fetcher', async () => {
+  env.serve(paPage, { bytes: paPageHtml('9001') }, 'text/html');
+  const fetcher: IngestDeps['fetcher'] = async (url, options) => ({
+    ...(await env.runtime.fetcher(url, options)),
+    finalUrl: 'https://evil.example/page',
+  });
+  await expect(ingest(paPage, deps({ fetcher }))).rejects.toMatchObject({
+    code: 'SSRF_BLOCKED',
+  });
+});
+
+test('PA lookup that fails is FETCH_FAILED, never WRAPPER_PAGE with scraped links', async () => {
+  const fetcher: IngestDeps['fetcher'] = () =>
+    Promise.reject(new AppError('WRAPPER_PAGE'));
+  await expect(ingest(paPage, deps({ fetcher }))).rejects.toMatchObject({
+    code: 'FETCH_FAILED',
+  });
+});
+
 test('an admitted docId with no kept bytes refuses a download that is a different document', async () => {
   const url = 'https://govinfo.gov/admitted.txt';
   env.serve(url, makeSectionedText(), 'text/plain');

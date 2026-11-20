@@ -184,6 +184,10 @@ export function jurisdictionSections(
       createSectionGate: () => billSectionGate('NY'),
       shortSectionHeadings: true,
     };
+  // PA: bill sections print as "Section 1." and quoted statute sections as "§ 8117.", both
+  // already in the default patterns. Only the heading is short, so the wrapped amending
+  // clause ("Section 8117(d)(2) of Title 74 of the") is not mistaken for a section title.
+  if (state === 'PA') return { shortSectionHeadings: true };
   if (state === 'NJ')
     return {
       patterns: [

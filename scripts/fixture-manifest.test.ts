@@ -11,8 +11,8 @@ const manifest = readManifest();
 const fixture = manifest.fixtures[0];
 if (!fixture) throw new Error('The manifest needs at least one fixture');
 
-test('the committed manifest contains twenty-two validated public sources', () => {
-  expect(manifest.fixtures).toHaveLength(22);
+test('the committed manifest contains thirty-four validated public sources', () => {
+  expect(manifest.fixtures).toHaveLength(34);
   expect(manifest.fixtures.map(({ name }) => name)).toEqual([
     'us-s202-119-is',
     'us-s202-119-is-html',
@@ -36,6 +36,18 @@ test('the committed manifest contains twenty-two validated public sources', () =
     'ny-s07334-2025-assembly',
     'ny-a06137-2025-assembly',
     'nj-a170-2024-i1',
+    'pa-hb170-2025-pn2721',
+    'pa-sb1273-2025-pn1610',
+    'pa-hb150-2025-pn2066',
+    'pa-hb2443-2025-pn4082',
+    'pa-sr374-2025-pn1942',
+    'pa-hr607-2025-pn3853',
+    'pa-sb605-2025-pn0613',
+    'pa-hr125-2025-pn1009',
+    'pa-hb918-2011-pn981',
+    'pa-hb2073-2019-pn2927',
+    'pa-hr1-2025-pn1',
+    'pa-hb1257-1971-pn1408',
   ]);
   expect(
     manifest.fixtures.every(({ retrievedAt }) =>
@@ -45,6 +57,7 @@ test('the committed manifest contains twenty-two validated public sources', () =
         '2026-10-21',
         '2026-10-25',
         '2026-10-26',
+        '2026-11-19',
       ].includes(retrievedAt),
     ),
   ).toBe(true);
