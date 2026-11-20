@@ -67,3 +67,31 @@ it('defaults missing usage to zero', async () => {
     ).usage,
   ).toEqual({ inputTokens: 0, outputTokens: 0 });
 });
+it('asks the SDK for one HTTP request per call: automatic continuation is off', async () => {
+  const replay = httpReplay([
+    {
+      body: asset('google-object.json'),
+    },
+  ]);
+  const provider = make(replay.fetch);
+  const models = (
+    provider as unknown as {
+      client: {
+        models: Record<string, (...args: unknown[]) => Promise<unknown>>;
+      };
+    }
+  ).client.models;
+  const configs: unknown[] = [];
+  for (const method of ['generateContent', 'generateContentStream'] as const) {
+    const original = models[method]!.bind(models);
+    models[method] = (...args: unknown[]) => {
+      configs.push((args[0] as { config?: unknown }).config);
+      return original(...args);
+    };
+  }
+  await provider.generateObject(objectRequest);
+  expect(replay.requests).toHaveLength(1);
+  expect(configs[0]).toMatchObject({
+    automaticFunctionCalling: { disable: true },
+  });
+});

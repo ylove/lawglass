@@ -22,7 +22,7 @@ import {
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { contextualText } from '../../chunk/index.js';
-import { startBackendCall } from '../../cost/job.js';
+import { startBackendCall } from '../../cost/gate.js';
 import { estimateTokens } from '../../chunk/tokens.js';
 import { pineconeConfig, type PineconeSettings } from '../../config.js';
 import {
@@ -228,12 +228,15 @@ function retryAfterMs(error: unknown, now: number): number | undefined {
 // The SDK records API has no signal option. Stop waiting promptly; an in-flight
 // write may still finish remotely, but must never publish ingest completion here.
 async function boundedAttempt<T>(
-  run: () => Promise<T>,
+  run: (abandoned: AbortSignal) => Promise<T>,
   remainingMs: number,
   timeoutError: AppError,
   signal?: AbortSignal,
 ): Promise<T> {
   abortIfNeeded(signal);
+  // Aborted when this stops waiting, so work that has not been dispatched yet (a host's gate
+  // still deciding) is cancelled instead of sending the request after everyone left.
+  const abandon = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let onAbort: (() => void) | undefined;
   const interrupted = new Promise<never>((_resolve, reject) => {
@@ -248,10 +251,11 @@ async function boundedAttempt<T>(
   try {
     const attempt = Promise.resolve().then(() => {
       abortIfNeeded(signal);
-      return run();
+      return run(abandon.signal);
     });
     return await Promise.race([attempt, interrupted]);
   } finally {
+    abandon.abort();
     clearTimeout(timer);
     if (onAbort) signal?.removeEventListener('abort', onAbort);
   }
@@ -460,7 +464,7 @@ export class PineconeBackend implements RetrievalBackend {
     }
   }
   private async retryRateLimit<T>(
-    run: () => Promise<T>,
+    run: (abandoned?: AbortSignal) => Promise<T>,
     budgetMs: number,
     signal?: AbortSignal,
     giveUpEarly = false,
@@ -468,8 +472,16 @@ export class PineconeBackend implements RetrievalBackend {
   ): Promise<T> {
     // Every attempt is a billed request (a 429 retry embeds again), so each is gated on its own.
     const attempt = billed
-      ? async (): Promise<T> => {
-          const call = await startBackendCall(billed);
+      ? async (abandoned?: AbortSignal): Promise<T> => {
+          // The gate wait ends with the reader or when this attempt is abandoned; an approval
+          // that arrives later is ended by the gate lifecycle and never reaches `run`.
+          const waiting = [signal, abandoned].filter(
+            (s): s is AbortSignal => s !== undefined,
+          );
+          const call = await startBackendCall({
+            ...billed,
+            signal: waiting.length > 0 ? AbortSignal.any(waiting) : undefined,
+          });
           try {
             return await run();
           } finally {

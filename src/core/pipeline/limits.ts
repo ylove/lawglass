@@ -11,7 +11,6 @@
  * `_MAX_CONCURRENT_ASK`, `_MAX_CONCURRENT_CLAUDE_CLI` and `_MAX_CALLS_PER_MINUTE`
  * (not `ConfigSettings`, which is strict).
  */
-import { randomUUID } from 'node:crypto';
 import {
   AppError,
   type LlmProvider,
@@ -25,14 +24,8 @@ import {
   type UsageFeature,
   type UsageSink,
 } from '../cost/usage.js';
-import {
-  assertBudget,
-  chargeJob,
-  currentJob,
-  gateCall,
-  type JobContext,
-  type JobScope,
-} from '../cost/job.js';
+import { assertBudget, chargeJob, currentJob } from '../cost/job.js';
+import { beginAttempt, endAttempt, type Attempt } from '../cost/gate.js';
 import { jsonSchema } from '../llm/shared.js';
 import { runWithRetryGate, withRetryGate } from '../cost/attempt.js';
 import { callDollars, modelPrice } from '../cost/prices.js';
@@ -289,14 +282,6 @@ export class Limits {
       schemaName === 'scenario' && feature !== 'examples'
         ? 'scenario'
         : feature;
-    const startContext = (): JobContext | undefined => {
-      const job = currentJob();
-      return job ? { ...job.context } : undefined;
-    };
-    /**
-     * One model call's identity. Created when the call starts; `gated` is set once the host's
-     * per-call gate (if any) has allowed it, and `reported` once a usage event was delivered.
-     */
     interface RequestShape {
       system: string;
       messages?: readonly {
@@ -307,12 +292,9 @@ export class Limits {
       maxTokens: number;
       signal?: AbortSignal | undefined;
     }
-    interface Call {
-      callId: string;
-      job: JobScope | undefined;
-      started: JobContext | undefined;
-      reported: boolean;
-      allowed: boolean;
+    /** The attempt a call is on now; a provider's retry replaces it. */
+    interface Current {
+      attempt: Attempt;
     }
     /**
      * The most a call can cost. Input: the UTF-8 bytes of everything sent, one token per byte
@@ -324,10 +306,10 @@ export class Limits {
      * a model with no price, and for the claude-cli provider, whose subprocess has no output
      * limit: a capping host refuses both.
      */
-    const worstCase = (req: RequestShape, job: JobScope): number => {
+    const worstCase = (req: RequestShape): number => {
       if (provider.id === 'claude-cli') return Number.POSITIVE_INFINITY;
       try {
-        const price = modelPrice(provider.model, job.prices);
+        const price = modelPrice(provider.model, currentJob()?.prices);
         const input = inputTokenBound(req);
         if (!Number.isFinite(input)) return Number.POSITIVE_INFINITY;
         const priced = (cacheWriteTokens: number): number =>
@@ -345,97 +327,41 @@ export class Limits {
         return Number.POSITIVE_INFINITY;
       }
     };
-    /**
-     * Begins a call: asks the host's per-call gate and waits for the answer, but no longer than
-     * the reader stays or `gateTimeoutMs`. A gate that answers after the call was cancelled has
-     * reserved something, so that late approval ends the call once, unreported.
-     */
-    const begin = async (req: RequestShape): Promise<Call> => {
-      const job = currentJob();
-      const call: Call = {
-        callId: randomUUID(),
-        job,
-        started: startContext(),
-        reported: false,
-        allowed: false,
-      };
-      if (job?.callGate) {
-        const context = job.context;
-        const decision = gateCall(job, {
-          jobKind: context.jobKind,
-          callId: call.callId,
+    /** Begins an attempt: the host's call gate (if any) decides, waited for no longer than the reader stays. */
+    const begin = (req: RequestShape): Promise<Attempt> =>
+      beginAttempt({
+        signal: req.signal,
+        gateTimeoutMs: this.gateTimeoutMs,
+        describe: () => ({
           model: provider.model,
-          worstCaseUsd: worstCase(req, job),
-          ...(context.ref === undefined ? {} : { ref: context.ref }),
-          ...(context.docId === undefined ? {} : { docId: context.docId }),
-        });
-        const wait = cancellation(req.signal, this.gateTimeoutMs);
-        try {
-          await Promise.race([decision, wait.promise]);
-        } catch (error) {
-          if (wait.cancelled()) {
-            job.spent.refusal = 'spend_gate';
-            void decision.then(
-              async () => {
-                call.allowed = true;
-                await finish(call);
-              },
-              () => undefined,
-            );
-          }
-          throw error;
-        } finally {
-          wait.dispose();
-        }
-      }
-      call.allowed = true;
-      return call;
-    };
-    /** Ends a call the gate allowed: tells the host whether a usage event was delivered for it. */
-    const finish = async (call: Call): Promise<void> => {
-      const job = call.job;
-      if (!call.allowed || !job?.onCallEnd) return;
-      const context = call.started ?? job.context;
-      call.allowed = false; // a call ends once, however many cleanups reach here
-      try {
-        await job.onCallEnd({
-          callId: call.callId,
-          reported: call.reported,
-          jobKind: context.jobKind,
-          ...(context.ref === undefined ? {} : { ref: context.ref }),
-          ...(context.docId === undefined ? {} : { docId: context.docId }),
-        });
-      } catch {
-        /* The host's bookkeeping failing must not change the call's result. */
-      }
-    };
+          worstCaseUsd: worstCase(req),
+        }),
+      });
     /**
      * What a provider calls before each HTTP request after its first for the same call (a plainer
      * response format, a request without `stream_options`): the previous attempt ends unreported,
-     * and the next is gated and correlated as its own call.
+     * and the next is gated and correlated as its own call, under the context it begins with.
+     * Only per-call gating counts such an attempt against the rate ceiling.
      */
     const retryFor =
-      (call: Call, req: RequestShape) => async (): Promise<void> => {
-        await finish(call);
-        this.ceiling.admit();
+      (current: Current, req: RequestShape) => async (): Promise<void> => {
+        const previous = current.attempt;
+        previous.dispatched = false; // nothing of the next attempt has left yet
+        await endAttempt(previous);
+        if (previous.job?.callGate) this.ceiling.admit();
         const next = await begin(req);
-        call.callId = next.callId;
-        call.reported = false;
-        call.allowed = true;
-        assertBudget();
-        req.signal?.throwIfAborted();
+        current.attempt = next;
+        next.dispatched = true;
       };
     // Accounting failures must not discard a paid-for model answer or cause a retry.
     const report = async (
       usage: LlmUsage,
-      callFeature = feature,
-      estimated = false,
-      /** Who the call was for when it STARTED: a top-up may switch the scope's payer meanwhile. */
-      started?: JobContext,
-      call?: Call,
+      callFeature: UsageFeature,
+      estimated: boolean,
+      attempt: Attempt,
     ): Promise<void> => {
       // The scope is read when the call finishes, inside the async chain that made it (ADR 0018,
-      // section 5); the context it is reported under was fixed when the call began.
+      // section 5); the context and ids it is reported under were fixed when the attempt began.
       const job = currentJob();
       if (job) chargeJob(job, provider.model, usage);
       const event = {
@@ -443,10 +369,10 @@ export class Limits {
         model: provider.model,
         usage: { ...usage },
         ...(estimated ? { estimated: true } : {}),
-        ...(job ? { job: { ...(started ?? job.context) } } : {}),
-        ...(job && call ? { callId: call.callId } : {}),
+        ...(job ? { job: { ...(attempt.context ?? job.context) } } : {}),
+        ...(job ? { callId: attempt.callId } : {}),
       };
-      if (call) call.reported = true;
+      attempt.reported = true;
       try {
         await sink.record(event);
       } catch {
@@ -471,23 +397,18 @@ export class Limits {
         assertBudget();
         this.ceiling.admit();
         return (async function* () {
-          // Gated before the provider is touched: a refused call never starts a stream.
-          const call = await begin(req);
-          const started = call.started;
+          // Gated before the provider is touched: a refused call never starts a stream. If the
+          // reader leaves or the budget closes while the gate decides, nothing is dispatched.
+          const current: Current = { attempt: await begin(req) };
           try {
-            // The gate may have kept the reader waiting: if they left, no provider call is made
-            // and nothing was billed, but the host still hears the call ended.
-            req.signal?.throwIfAborted();
-            // The gate may have taken a while: the zero-argument kill switch and the budget are
-            // checked again right before the provider is touched.
-            if (call.job?.callGate) assertBudget();
             let partial: LlmUsage | undefined;
             let finished = false;
             let failed = false;
             let chars = 0;
             try {
+              current.attempt.dispatched = true;
               const stream = withRetryGate(
-                retryFor(call, req),
+                retryFor(current, req),
                 provider.streamText({
                   ...req,
                   onPartialUsage: (usage) => {
@@ -500,66 +421,68 @@ export class Limits {
                 if (event.type === 'text') chars += event.text.length;
                 if (event.type === 'done') {
                   finished = true;
-                  await report(event.usage, feature, false, started, call);
+                  await report(event.usage, feature, false, current.attempt);
                 }
                 yield event;
               }
             } catch (error) {
               failed = true;
+              const attempt = current.attempt;
+              // Only an attempt that was dispatched can have been billed.
               if (!finished && error instanceof AppError && error.usage)
-                await report(error.usage, feature, false, started, call);
+                await report(error.usage, feature, false, attempt);
               else if (!finished && partial)
-                await report(partial, feature, false, started, call);
+                await report(partial, feature, false, attempt);
               else if (
                 !finished &&
+                attempt.dispatched &&
                 (chars > 0 || req.signal?.aborted || maybeBilled(error))
               )
                 // A timeout or an overload mid-answer: the provider billed what it produced.
-                await report(guess(req, chars), feature, true, started, call);
+                await report(guess(req, chars), feature, true, attempt);
               throw error;
             } finally {
               // The reader left mid-answer: the provider billed what it had produced so far.
               if (!finished && !failed)
                 await (partial
-                  ? report(partial, feature, false, started, call)
-                  : report(guess(req, chars), feature, true, started, call));
+                  ? report(partial, feature, false, current.attempt)
+                  : report(guess(req, chars), feature, true, current.attempt));
             }
           } finally {
-            await finish(call);
+            await endAttempt(current.attempt);
           }
         })();
       },
       generateObject: async (req) => {
         assertBudget();
         this.ceiling.admit();
-        const call = await begin(req);
-        const started = call.started;
+        const current: Current = { attempt: await begin(req) };
         try {
-          // Aborted while the gate was deciding: no provider call, nothing billed.
-          req.signal?.throwIfAborted();
-          if (call.job?.callGate) assertBudget();
           let result;
           try {
-            result = await runWithRetryGate(retryFor(call, req), () =>
+            current.attempt.dispatched = true;
+            result = await runWithRetryGate(retryFor(current, req), () =>
               provider.generateObject(req),
             );
           } catch (error) {
+            const attempt = current.attempt;
             // A reply that arrived but was unusable (cut off, invalid) was still billed.
             if (error instanceof AppError && error.usage)
               await report(
                 error.usage,
                 objectFeature(req.schemaName),
                 false,
-                started,
-                call,
+                attempt,
               );
-            else if (req.signal?.aborted || maybeBilled(error))
+            else if (
+              attempt.dispatched &&
+              (req.signal?.aborted || maybeBilled(error))
+            )
               await report(
                 { inputTokens: promptTokens(req), outputTokens: req.maxTokens },
                 objectFeature(req.schemaName),
                 true,
-                started,
-                call,
+                attempt,
               );
             throw error;
           }
@@ -567,12 +490,11 @@ export class Limits {
             result.usage,
             objectFeature(req.schemaName),
             false,
-            started,
-            call,
+            current.attempt,
           );
           return result;
         } finally {
-          await finish(call);
+          await endAttempt(current.attempt);
         }
       },
     };
@@ -723,53 +645,4 @@ function inputTokenBound(req: {
     tokens += MESSAGE_FRAMING_TOKENS + content(req.prompt);
   if (req.schema) tokens += 2 * utf8(JSON.stringify(jsonSchema(req.schema)));
   return tokens;
-}
-
-/**
- * Rejects when `signal` aborts or `ms` pass, whichever is first. `cancelled()` says it was this
- * that ended the wait (not the thing waited on); `dispose` removes the timer and listener.
- */
-function cancellation(
-  signal: AbortSignal | undefined,
-  ms: number,
-): {
-  promise: Promise<never>;
-  cancelled: () => boolean;
-  dispose: () => void;
-} {
-  let timer: NodeJS.Timeout | undefined;
-  let onAbort: (() => void) | undefined;
-  let cancelled = false;
-  const promise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => {
-      cancelled = true;
-      reject(
-        new AppError('BUDGET_EXHAUSTED', 'The spend gate did not answer.', {
-          details: { reason: 'spend_gate' },
-        }),
-      );
-    }, ms);
-    if (signal) {
-      onAbort = () => {
-        cancelled = true;
-        reject(
-          signal.reason instanceof Error
-            ? signal.reason
-            : new DOMException('The operation was aborted.', 'AbortError'),
-        );
-      };
-      if (signal.aborted) onAbort();
-      else signal.addEventListener('abort', onAbort, { once: true });
-    }
-  });
-  // The race may end first; an unhandled rejection from the loser must not escape.
-  promise.catch(() => undefined);
-  return {
-    promise,
-    cancelled: () => cancelled,
-    dispose: () => {
-      clearTimeout(timer);
-      if (signal && onAbort) signal.removeEventListener('abort', onAbort);
-    },
-  };
 }

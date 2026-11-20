@@ -734,3 +734,123 @@ describe('several HTTP attempts under one call', () => {
     expect(ends[0]?.reported).toBe(false);
   });
 });
+
+describe('attempts keep their own context, dispatch and admission', () => {
+  /** A provider that makes a second request after the gate, optionally failing it. */
+  function retrying(
+    afterRetry: (req: TextRequest | ObjectRequest<unknown>) => Promise<unknown>,
+  ): LlmProvider & { requests: number } {
+    const p = {
+      id: 'mock' as const,
+      model: 'scripted',
+      requests: 0,
+      streamText: () =>
+        (async function* (): AsyncGenerator<LlmStreamEvent> {
+          p.requests += 1;
+          await gateRetry();
+          p.requests += 1;
+          yield { type: 'text', text: 'x' };
+          yield {
+            type: 'done',
+            usage: { inputTokens: 1, outputTokens: 1 },
+            stopReason: 'end_turn',
+          };
+        })(),
+      generateObject: async (req: ObjectRequest<unknown>) => {
+        p.requests += 1;
+        await gateRetry();
+        p.requests += 1;
+        await afterRetry(req);
+        return { object: { a: 1 }, usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    };
+    return p as unknown as LlmProvider & { requests: number };
+  }
+
+  it('an abort while a retry is gated emits no usage for the attempt that never left', async () => {
+    const controller = new AbortController();
+    let n = 0;
+    let approveSecond: (open: boolean) => void = () => undefined;
+    const { job, usage, ends } = scope({
+      callGate: () =>
+        ++n === 1
+          ? true
+          : new Promise<boolean>((resolve) => {
+              approveSecond = resolve;
+            }),
+    });
+    const provider = retrying(() => Promise.resolve());
+    const run = runInJob(job, () =>
+      limits()
+        .meter(provider)
+        .generateObject({ ...objReq, signal: controller.signal }),
+    );
+    await vi.waitFor(() => {
+      expect(n).toBe(2);
+    });
+    controller.abort();
+    await expect(run).rejects.toThrow();
+    // Nothing was billed for the second attempt: no estimate, and the first already ended.
+    expect(usage).toHaveLength(0);
+    expect(provider.requests).toBe(1);
+    expect(ends.map((e) => e.reported)).toEqual([false]);
+    // The host approves late: that attempt ends once, unreported, with no request.
+    approveSecond(true);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(ends.map((e) => e.reported)).toEqual([false, false]);
+    expect(new Set(ends.map((e) => e.callId)).size).toBe(2);
+    expect(provider.requests).toBe(1);
+  });
+
+  it('each attempt reports and ends under the reference it was gated with, even after a top-up', async () => {
+    const gated: GateCall[] = [];
+    const { job, usage, ends } = scope({
+      callGate: (c: GateCall) => {
+        gated.push(c);
+        return true;
+      },
+    });
+    const base = retrying(() => Promise.resolve());
+    const topUpBetween = {
+      id: base.id,
+      model: base.model,
+      streamText: base.streamText,
+      generateObject: async () => {
+        job.context.ref = 'hold-b'; // admitted again while the first request was in flight
+        await gateRetry();
+        return { object: { a: 1 }, usage: { inputTokens: 1, outputTokens: 1 } };
+      },
+    } as unknown as LlmProvider;
+    await runInJob(job, () =>
+      limits().meter(topUpBetween).generateObject(objReq),
+    );
+    expect(gated.map((c) => c.ref)).toEqual(['hold-1', 'hold-b']);
+    expect(ends.map((e) => e.ref)).toEqual(['hold-1', 'hold-b']);
+    expect(usage.map((u) => u.job?.ref)).toEqual(['hold-b']);
+  });
+
+  it('without a call gate a retry takes no extra rate admission; with one it does', async () => {
+    const tight = () =>
+      new Limits({
+        maxConcurrentIngest: 1,
+        maxConcurrentAsk: 1,
+        maxCallsPerMinute: 1,
+      });
+    const plain = scope();
+    await expect(
+      runInJob(plain.job, () =>
+        tight()
+          .meter(retrying(() => Promise.resolve()))
+          .generateObject(objReq),
+      ),
+    ).resolves.toBeDefined();
+    const gated = scope({ callGate: () => true });
+    await expect(
+      runInJob(gated.job, () =>
+        tight()
+          .meter(retrying(() => Promise.resolve()))
+          .generateObject(objReq),
+      ),
+    ).rejects.toMatchObject({ code: 'RATE_LIMITED' });
+  });
+});

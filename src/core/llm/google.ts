@@ -68,6 +68,9 @@ export class GoogleProvider implements LlmProvider {
           maxOutputTokens: req.maxTokens,
           temperature: req.temperature,
           abortSignal: signal,
+          // One call is one HTTP request: the SDK's automatic continuation would make more,
+          // billed on the accumulated context, under a single gate decision.
+          automaticFunctionCalling: { disable: true },
         },
       });
       let usage = ZERO_LLM_USAGE;
@@ -100,6 +103,7 @@ export class GoogleProvider implements LlmProvider {
           systemInstruction: req.system,
           maxOutputTokens: req.maxTokens,
           abortSignal: signal,
+          automaticFunctionCalling: { disable: true },
           responseMimeType: 'application/json',
           responseJsonSchema: jsonSchema(req.schema),
         },

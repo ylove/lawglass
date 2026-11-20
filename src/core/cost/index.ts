@@ -30,6 +30,13 @@ export {
   type UsageEvent,
   type UsageFeature,
 } from './usage.js';
+export {
+  beginAttempt,
+  endAttempt,
+  startBackendCall,
+  DEFAULT_GATE_TIMEOUT_MS,
+  type Attempt,
+} from './gate.js';
 export { gateRetry, runWithRetryGate, withRetryGate } from './attempt.js';
 export {
   addBudget,
@@ -40,7 +47,6 @@ export {
   canSpend,
   spendGateOpen,
   gateCall,
-  startBackendCall,
   stopCause,
   budgetRemaining,
   topUp,

@@ -137,4 +137,70 @@ describe('Pinecone integrated inference under a call gate', () => {
     await backend.upsertChunks(DOC_A, CHUNKS_A);
     expect(calls).toHaveLength(0);
   });
+
+  it('an approval that arrives after the reader left is ended unreported and sends nothing', async () => {
+    const sdk = fakeSdk();
+    const backend = new PineconeBackend({
+      client: sdk.client,
+      config: { ...pineconeConfig({}, {}), pollIntervalMs: 1, timeoutMs: 20 },
+      logUsage: () => undefined,
+    });
+    await backend.ensureReady();
+    await backend.upsertChunks(DOC_A, CHUNKS_A);
+    sdk.dense.search.mockClear();
+    let approve: (open: boolean) => void = () => undefined;
+    const ends: CallEnd[] = [];
+    const job: JobScope = {
+      context: { readerId: 'a', jobKind: 'question', jobId: 'j', docId: DOC_A },
+      spent: newSpend(),
+      callGate: () =>
+        new Promise<boolean>((resolve) => {
+          approve = resolve;
+        }),
+      onCallEnd: (e) => {
+        ends.push(e);
+      },
+    };
+    const controller = new AbortController();
+    const run = runInJob(job, () =>
+      backend.search({
+        docId: DOC_A,
+        index: 'dense',
+        query: 'town',
+        topK: 2,
+        signal: controller.signal,
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    controller.abort();
+    await expect(run).rejects.toThrow();
+    approve(true);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(sdk.dense.search).not.toHaveBeenCalled();
+    expect(ends).toEqual([expect.objectContaining({ reported: false })]);
+  });
+
+  it('checks the kill switch again after the gate answers: nothing is sent', async () => {
+    const { backend, sdk, job } = setup();
+    await backend.ensureReady();
+    await runInJob(job, () => backend.upsertChunks(DOC_A, CHUNKS_A));
+    sdk.dense.search.mockClear();
+    let closed = false;
+    job.spendGate = () => !closed;
+    job.callGate = () => {
+      closed = true;
+      return true;
+    };
+    await expect(
+      runInJob(job, () =>
+        backend.search({
+          docId: DOC_A,
+          index: 'dense',
+          query: 'town',
+          topK: 2,
+        }),
+      ),
+    ).rejects.toMatchObject({ code: 'BUDGET_EXHAUSTED' });
+    expect(sdk.dense.search).not.toHaveBeenCalled();
+  });
 });
