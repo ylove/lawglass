@@ -21,7 +21,8 @@
     "!dist/**/*.map",
     "!dist/calibrate.js",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "NOTICE"
   ],
   "license": "Apache-2.0",
   "homepage": "https://lawglass.xyz",
