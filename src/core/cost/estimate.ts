@@ -9,6 +9,11 @@ import {
 } from '../breakdown/context.js';
 import { MAX_INJECTED_DEFINITIONS } from '../retrieve/definitions.js';
 import { ITEMS_PER_CALL } from '../picture/prompt.js';
+import {
+  maxTokensFor,
+  type AnswerLimits,
+  type AnswerMode,
+} from '../answer/modes.js';
 import type { BillFacts } from './facts.js';
 import {
   callDollars,
@@ -390,6 +395,12 @@ export function estimateBill(
   };
 }
 
+/** Which read a question asks for and the output caps it runs under (see `core/answer/modes.ts`). */
+export interface QuestionOptions {
+  mode?: AnswerMode | undefined;
+  limits?: AnswerLimits | undefined;
+}
+
 /** One answer-like question/chip/locate, including a possible reading-level rewrite.
  * Model assignment is optional for the default Sonnet quote, explicit for other providers.
  */
@@ -397,6 +408,7 @@ export function estimateQuestion(
   facts: BillFacts,
   prices: PriceTable = {},
   plan: Partial<EstimatePlan> = {},
+  question: QuestionOptions = {},
 ): FeatureEstimate {
   const assignment: EstimatePlan = {
     answerModel: 'claude-sonnet-5-5',
@@ -404,7 +416,11 @@ export function estimateQuestion(
     ...plan,
   };
   validatePlan(assignment);
-  const whole = facts.mode === 'whole';
+  // `focused` reads excerpts even when the bill would fit; `whole` and `auto` read the whole
+  // bill exactly when it fits (a bill too long for that is answered from excerpts either way).
+  const whole = facts.mode === 'whole' && question.mode !== 'focused';
+  const wholeCap = maxTokensFor('whole', question.limits);
+  const focusedCap = maxTokensFor('focused', question.limits);
   const spec = (
     context: Bounds,
     highCalls: number,
@@ -413,7 +429,7 @@ export function estimateQuestion(
     context,
     promptSized: sized,
     visibleOutput: 800,
-    maxTokens: whole ? 16_000 : 8192,
+    maxTokens: whole ? wholeCap : focusedCap,
     highCalls,
     cachedPrefix: whole,
   });
@@ -453,7 +469,7 @@ export function estimateQuestion(
               context: wholeContext(sizes.changeExcerpts),
               promptSized: true,
               visibleOutput: 800,
-              maxTokens: 8192,
+              maxTokens: focusedCap,
               highCalls: 1,
             },
           ],

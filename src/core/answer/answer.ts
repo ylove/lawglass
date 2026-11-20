@@ -14,6 +14,13 @@ import {
 import { coveredSectionIds, validateCitations } from './citations.js';
 import { createEchoGuard, echoesSystemPrompt } from './echo.js';
 import { wholeBillEffort, type ContextMode } from './context.js';
+import {
+  DEFAULT_FOCUSED_MAX_TOKENS,
+  DEFAULT_WHOLE_MAX_TOKENS,
+  effortForCap,
+  maxTokensFor,
+  type AnswerLimits,
+} from './modes.js';
 import type { AnswerLog } from './log.js';
 import { dropExcerptTalk } from './excerpt-filter.js';
 import {
@@ -48,6 +55,8 @@ export interface AnswerInput {
   /** Called with each streamed piece. The final text may differ (invalid markers stripped). */
   onToken?: ((text: string) => void) | undefined;
   maxTokens?: number | undefined;
+  /** Host output caps per mode; used when `maxTokens` is not given. Defaults keep today's caps. */
+  limits?: AnswerLimits | undefined;
   /** Sink for the count of "the excerpts" sentences removed (#274). Not a reader warning. */
   log?: AnswerLog | undefined;
   /** Enforce the reading level by regenerating a too-hard answer once (#285). Off when unset. */
@@ -114,11 +123,20 @@ async function answerOnce(input: AnswerInput): Promise<AnswerResult> {
   let usage: LlmUsage = { inputTokens: 0, outputTokens: 0 };
   let stopReason: string | null = null;
   let finished = false;
+  const whole = context.mode === 'whole';
+  const maxTokens =
+    input.maxTokens ?? maxTokensFor(whole ? 'whole' : 'focused', input.limits);
+  // Thinking is part of the cap, so a lowered cap lowers the effort with it.
+  const effort = effortForCap(
+    whole ? wholeBillEffort() : undefined,
+    maxTokens,
+    whole ? DEFAULT_WHOLE_MAX_TOKENS : DEFAULT_FOCUSED_MAX_TOKENS,
+  );
   for await (const event of provider.streamText({
     system: prompt.system,
     messages: [{ role: 'user', content: prompt.user }],
-    maxTokens: input.maxTokens ?? (context.mode === 'whole' ? 16_000 : 8192),
-    ...(context.mode === 'whole' ? { effort: wholeBillEffort() } : {}),
+    maxTokens,
+    ...(effort ? { effort } : {}),
     signal: input.signal,
   })) {
     if (event.type === 'text') {
