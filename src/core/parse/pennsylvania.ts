@@ -37,7 +37,7 @@ export function pennsylvaniaMetadata(
   text: string,
   context: ChangeMarkContext,
 ): BillMetadata {
-  const opening = text.slice(0, 3000);
+  const opening = text.slice(0, 8000);
   const designation = DESIGNATION.exec(opening);
   const number = NUMBER.exec(opening);
   if (
@@ -59,7 +59,7 @@ export function pennsylvaniaMetadata(
 
   let title: string | null = null;
   if (kind) {
-    const rest = opening.slice(kind.index + kind[0].length);
+    const rest = text.slice(0, 40000).slice(kind.index + kind[0].length);
     const end = TITLE_END.exec(rest);
     const body = end ? rest.slice(0, end.index) : '';
     title = body.replace(/\s+/g, ' ').trim() || null;

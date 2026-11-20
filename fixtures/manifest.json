@@ -348,6 +348,39 @@
       "retrievedAt": "2026-11-19",
       "jurisdiction": "Pennsylvania",
       "notes": "Joint resolution numbered as a bill; found by Codex review of #427. Large amendment with many underlined runs; its title, not its directives, makes it an amending measure."
+    },
+    {
+      "name": "pa-hb2073-2019-pn2927",
+      "description": "2019 bill whose section 19 encloses quoted sections 404 to 406 in one bracket pair.",
+      "format": "pdf",
+      "url": "https://www.palegis.us/legislation/bills/text/PDF/2019/0/HB2073/PN2927",
+      "sha256": "56af1ce4f7b2c96454236b4d1ad88a1507bd46e4a87a0859b7cac009ba570cff",
+      "bytes": 1140013,
+      "retrievedAt": "2026-11-19",
+      "jurisdiction": "Pennsylvania",
+      "notes": "Balanced-bracket regression (#427 review): one pair spans several quoted sections."
+    },
+    {
+      "name": "pa-hr1-2025-pn1",
+      "description": "2025 House Resolution 1 adopting permanent House rules with bracketed deletions.",
+      "format": "pdf",
+      "url": "https://www.palegis.us/legislation/bills/text/PDF/2025/0/HR0001/PN0001",
+      "sha256": "7438c97e2235da6d2e90598c2d153da9c0631079119d55227c484b91caf83ec1",
+      "bytes": 119678,
+      "retrievedAt": "2026-11-19",
+      "jurisdiction": "Pennsylvania",
+      "notes": "Rules-resolution regression (#427 review): a resolution that amends chamber rules uses brackets."
+    },
+    {
+      "name": "pa-hb1257-1971-pn1408",
+      "description": "1971 joint resolution amending article two, section sixteen of the Constitution; removed district counts in brackets.",
+      "format": "pdf",
+      "url": "https://www.palegis.us/legislation/bills/text/PDF/1971/0/HB1257/PN1408",
+      "sha256": "88d961c1c0b2c96b445a3f9026c1659205f390e947cb43aa4508911920326cb2",
+      "bytes": 5382,
+      "retrievedAt": "2026-11-19",
+      "jurisdiction": "Pennsylvania",
+      "notes": "Title-wording regression (#427 review): a section reference sits between 'amendment' and 'Constitution'."
     }
   ]
 }

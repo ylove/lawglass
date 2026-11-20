@@ -103,12 +103,14 @@ text between the cover's `AN ACT` / `A JOINT RESOLUTION` line and the enacting o
 clause (gutters stripped, lines joined, case ignored). A measure is _amending_ when the cover
 reads `THE GENERAL ASSEMBLY OF PENNSYLVANIA` and the title of an act says it is amending,
 reenacting and amending, or repealing, or the title of a joint resolution proposes an amendment
-(or amendments) to the Constitution. New acts, simple resolutions and concurrent resolutions are
-never amending. This follows the legislature's statement that brackets are used only in bills
+(or amendments) to the Constitution (whatever sits between those words), or the title of a simple
+or concurrent resolution adopts, readopts or amends chamber rules (2025 HR 1) or says it is
+amending. New acts and ordinary resolutions are never amending. This follows the legislature's statement that brackets are used only in bills
 amending existing law. In an amending measure, every bracketed run outside an underlined
 (inserted) run is deleted, anywhere in the body; in any other measure a bracket is ordinary
-text (`[sic]`). Brackets pair and recover within a paragraph (a blank line or a `Section N.`
-start), never across one: an unclosed bracket deletes to the end of its paragraph and warns. A
+text (`[sic]`). Balanced brackets pair across paragraphs and quoted headings (one pair can enclose several
+repealed sections, as in 2019 HB 2073); only an unmatched opening bracket is bounded, deleting to
+the end of its paragraph (a blank line or a `Section N.` start) and warning. A
 Pennsylvania document with brackets that this rule does not read as deleted carries the
 "bracketed wording could not be marked as removed" warning New York and New Jersey get.
 

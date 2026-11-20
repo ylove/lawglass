@@ -52,7 +52,7 @@ function load(name: string): () => NormalizedDoc {
       sourceUrl: fixture.url,
       fetchedAt: '2026-11-19T00:00:00.000Z',
     });
-  });
+  }, 120_000);
   return () => doc;
 }
 const noMarkWarnings = (doc: NormalizedDoc) =>
@@ -215,5 +215,35 @@ await describeWithFixture('pa-hb918-2011-pn981', () => {
     expect(runs(doc(), 'inserted').length).toBeGreaterThan(50);
     // The whole text parses with no unclosed-bracket or missing-cover warning.
     expect(noMarkWarnings(doc()).join(' ')).not.toMatch(/bracket|cover/i);
+  });
+});
+
+await describeWithFixture('pa-hb2073-2019-pn2927', () => {
+  const doc = load('pa-hb2073-2019-pn2927');
+  it('one bracket pair enclosing quoted sections 404 to 406 deletes all of them', () => {
+    expect(currentLaw(doc())).not.toMatch(/Section 40[456]\./);
+    expect(currentLaw(doc())).not.toMatch(/[[\]]/);
+    expect(runs(doc(), 'deleted').length).toBeGreaterThan(0);
+    expect(doc().metadata.title).toMatch(/^Amending the act of June 24, 1931/);
+  });
+});
+
+await describeWithFixture('pa-hr1-2025-pn1', () => {
+  const doc = load('pa-hr1-2025-pn1');
+  it('a resolution adopting chamber rules reads its bracketed deletions as deleted', () => {
+    expect(runs(doc(), 'deleted').length).toBeGreaterThan(0);
+    expect(currentLaw(doc())).not.toMatch(/[[\]]/);
+    expect(doc().metadata).toMatchObject({
+      billNumber: 'HR 1',
+      docKind: 'resolution',
+    });
+  });
+});
+
+await describeWithFixture('pa-hb1257-1971-pn1408', () => {
+  const doc = load('pa-hb1257-1971-pn1408');
+  it('a constitutional amendment whose title names an article and section is amending', () => {
+    expect(runs(doc(), 'deleted').length).toBeGreaterThan(0);
+    expect(currentLaw(doc())).not.toMatch(/[[\]]/);
   });
 });

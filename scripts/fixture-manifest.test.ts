@@ -11,8 +11,8 @@ const manifest = readManifest();
 const fixture = manifest.fixtures[0];
 if (!fixture) throw new Error('The manifest needs at least one fixture');
 
-test('the committed manifest contains thirty-one validated public sources', () => {
-  expect(manifest.fixtures).toHaveLength(31);
+test('the committed manifest contains thirty-four validated public sources', () => {
+  expect(manifest.fixtures).toHaveLength(34);
   expect(manifest.fixtures.map(({ name }) => name)).toEqual([
     'us-s202-119-is',
     'us-s202-119-is-html',
@@ -45,6 +45,9 @@ test('the committed manifest contains thirty-one validated public sources', () =
     'pa-sb605-2025-pn0613',
     'pa-hr125-2025-pn1009',
     'pa-hb918-2011-pn981',
+    'pa-hb2073-2019-pn2927',
+    'pa-hr1-2025-pn1',
+    'pa-hb1257-1971-pn1408',
   ]);
   expect(
     manifest.fixtures.every(({ retrievedAt }) =>

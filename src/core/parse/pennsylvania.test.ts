@@ -159,7 +159,7 @@ test('the gate is the title: amending, reenacting, repealing or a constitutional
   for (const kind of ['A RESOLUTION', 'A CONCURRENT RESOLUTION'])
     expect(
       pennsylvaniaAmendingBill(
-        `${COVER}\n${kind}\nAmending the rules.\nWHEREAS, x; therefore be it`,
+        `${COVER}\n${kind}\nDesignating a week.\nWHEREAS, x; therefore be it`,
       ),
     ).toBe(false);
   expect(pennsylvaniaAmendingBill('AN ACT\nAmending Title 1.\n' + ENACT)).toBe(
@@ -241,21 +241,61 @@ test('numbered gutters, line breaks and gaps in section numbers do not matter', 
   expect(runs(doc, 'deleted')).toEqual(['[first]', '[fourth]']);
 });
 
-test('brackets never pair across a paragraph; an unclosed one stops there and warns', () => {
+test('a balanced bracket pair encloses several paragraphs and quoted sections', () => {
+  const doc = read(
+    act(
+      'Amending the act.',
+      'Section 1. Section 404 of the act is repealed:',
+      '[Section 404. First.',
+      '',
+      'Section 405. Second.',
+      '',
+      'Section 406. Third.]',
+      'Section 2. This act takes effect immediately.',
+    ),
+  );
+  const deleted = runs(doc, 'deleted').join(' ');
+  expect(deleted).toContain('Section 404. First.');
+  expect(deleted).toContain('Section 405. Second.');
+  expect(deleted).toContain('Section 406. Third.]');
+  expect(deleted).not.toContain('takes effect');
+});
+
+test('an unmatched opening deletes only to the end of its paragraph and warns', () => {
   const doc = read(
     act(
       'Amending Title 75.',
       'Old [removed words',
       '',
-      'A separate paragraph that stays] with a stray close.',
-      'Section 2. Another [kept? no] bracket.',
+      'A separate paragraph that stays.',
     ),
   );
-  expect(runs(doc, 'deleted')).toEqual(['[removed words', '[kept? no]']);
+  expect(runs(doc, 'deleted')).toEqual(['[removed words']);
   expect(doc.warnings).toContainEqual(expect.stringMatching(/not closed/));
-  expect(doc.warnings).toContainEqual(
-    expect.stringMatching(/unmatched closing/),
+});
+
+test('a rules resolution is amending; an ordinary resolution is not', () => {
+  const rules = (title: string) =>
+    pennsylvaniaAmendingBill(
+      `${COVER}\nA RESOLUTION\n${title}\nRESOLVED, That the rules be adopted:\n[2023-2024]`,
+    );
+  expect(
+    rules(
+      'Adopting permanent rules for the House of Representatives,\nfurther providing for definitions.',
+    ),
+  ).toBe(true);
+  expect(rules('Amending the rules of the Senate.')).toBe(true);
+  expect(rules('Designating the week as "Sample Week" in Pennsylvania.')).toBe(
+    false,
   );
+});
+
+test('a constitutional amendment title with a reference before "Constitution" is amending', () => {
+  expect(
+    pennsylvaniaAmendingBill(
+      `${COVER}\nA JOINT RESOLUTION\nProposing an amendment to article two, section sixteen of the\nConstitution of the Commonwealth of Pennsylvania, reducing districts.\nThe General Assembly of the Commonwealth of Pennsylvania\nhereby resolves as follows:`,
+    ),
+  ).toBe(true);
 });
 
 test('a Pennsylvania text with brackets and no cover warns that nothing was verified', () => {

@@ -63,7 +63,7 @@ const NJ_LEGEND =
  */
 const PA_COVER = /THE\s+GENERAL\s+ASSEMBLY\s+OF\s+PENNSYLVANIA/;
 /** The cover is on page one; mentions deep in a bill's prose do not count. */
-const PA_COVER_WINDOW = 3000;
+const PA_COVER_WINDOW = 8000;
 /** The printed line-number gutter may precede a line's own text in the raw layer. */
 const PA_GUTTER = /^[ \t]*\d{1,2}[ \t]+/gm;
 const PA_TITLE_START =
@@ -72,7 +72,9 @@ const PA_TITLE_END =
   /The General Assembly of the Commonwealth of Pennsylvania|\bWHEREAS\b|\bRESOLVED\b/i;
 const PA_TITLE_AMENDS = /\b(?:amending|re-?enacting|repealing)\b/i;
 const PA_TITLE_PROPOSES =
-  /\bproposing\b[^.]{0,40}?\bamendments?\b[^.]{0,20}?\bconstitution\b/i;
+  /\bproposing\b[\s\S]*?\bamendments?\b[\s\S]*?\bconstitution\b/i;
+/** A resolution that adopts, readopts or amends chamber rules changes existing rules. */
+const PA_TITLE_RULES = /\b(?:adopting|readopting|amending)\b[\s\S]*?\brules\b/i;
 
 /** The title, gutters stripped and lines joined, or undefined when no cover title is found. */
 function pennsylvaniaTitle(
@@ -99,12 +101,13 @@ export function pennsylvaniaAmendingBill(text: string): boolean {
   const found = pennsylvaniaTitle(text);
   if (!found) return false;
   if (found.kind === 'AN ACT') return PA_TITLE_AMENDS.test(found.title);
-  // Simple and concurrent resolutions never amend law; a joint resolution amends the
-  // Constitution (or, rarely, a statute).
-  return (
-    found.kind === 'A JOINT RESOLUTION' &&
-    (PA_TITLE_PROPOSES.test(found.title) || PA_TITLE_AMENDS.test(found.title))
-  );
+  if (found.kind === 'A JOINT RESOLUTION')
+    return (
+      PA_TITLE_PROPOSES.test(found.title) || PA_TITLE_AMENDS.test(found.title)
+    );
+  // A simple or concurrent resolution is ordinary text unless it adopts, readopts or amends
+  // chamber rules (which print their changes in brackets) or says it is amending.
+  return PA_TITLE_RULES.test(found.title) || /\bamending\b/i.test(found.title);
 }
 
 /** A bill section opening ("Section 2."): a paragraph boundary for bracket recovery. */
@@ -434,12 +437,6 @@ export function applyChangeMarks<T extends SourceLine>(
     if (removed[at]) continue;
     // Verified inserted words (Pennsylvania) may contain literal brackets, e.g. a form's "[optional]".
     if (jurisdiction === 'PA') {
-      if (paragraphStarts.has(at) && stack.length) {
-        // Never pair across a paragraph: an open bracket deletes only to here.
-        for (const start of stack) mark(start, at);
-        stack.length = 0;
-        paUnclosed = true;
-      }
       if (statuses[at] === 'inserted') continue;
     }
     if (text[at] === '[') stack.push(at);
@@ -479,7 +476,17 @@ export function applyChangeMarks<T extends SourceLine>(
       'An unmatched closing amendment bracket was found; check the original document.',
     );
   if (jurisdiction === 'PA' && stack.length) {
-    for (const start of stack) mark(start, text.length);
+    // Balanced pairs were matched across paragraphs and quoted headings above (a repealed run
+    // can enclose several sections). Only a genuinely unmatched opening is bounded: it
+    // deletes to the end of its own paragraph.
+    const starts = [...paragraphStarts].sort((a, b) => a - b);
+    let recoveredThrough = 0;
+    for (const start of stack) {
+      if (start < recoveredThrough) continue;
+      recoveredThrough =
+        starts.find((boundary) => boundary > start) ?? text.length;
+      mark(start, recoveredThrough);
+    }
     stack.length = 0;
     paUnclosed = true;
   }
